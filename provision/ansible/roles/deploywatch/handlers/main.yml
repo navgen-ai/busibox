@@ -1,0 +1,11 @@
+---
+- name: Reload systemd
+  systemd:
+    daemon_reload: yes
+
+- name: Enable timer
+  systemd:
+    name: deploywatch.timer
+    state: started
+    enabled: yes
+

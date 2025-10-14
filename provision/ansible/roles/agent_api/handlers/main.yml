@@ -1,0 +1,6 @@
+---
+- name: Restart agent API
+  systemd:
+    name: agent-api
+    state: restarted
+

@@ -142,14 +142,3 @@
     name: ingest-worker
     enabled: yes
     daemon_reload: yes
-
-handlers:
-  - name: Restart Redis
-    systemd:
-      name: redis-server
-      state: restarted
-  
-  - name: Restart ingest worker
-    systemd:
-      name: ingest-worker
-      state: restarted

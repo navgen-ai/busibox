@@ -72,9 +72,3 @@
     - { version: 2, name: "add_rls_policies", file: "002_add_rls_policies.sql" }
   register: migration_result
   changed_when: "'applied successfully' in migration_result.stdout"
-
-handlers:
-  - name: Restart Postgres
-    service: { name: postgresql, state: restarted }
-  - name: Reload Postgres
-    service: { name: postgresql, state: reloaded }

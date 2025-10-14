@@ -128,8 +128,3 @@
     name: milvus
     enabled: yes
     daemon_reload: yes
-
-handlers:
-  - name: Up Milvus
-    shell: docker compose up -d
-    args: { chdir: /srv/milvus }
