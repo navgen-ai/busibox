@@ -163,11 +163,13 @@ test_health_checks() {
   
   # PostgreSQL
   log_info "Checking PostgreSQL..."
-  if psql -h 10.96.201.26 -U busibox_test_user -d busibox_test -c "SELECT 1" &>/dev/null; then
+  export PGPASSWORD='busibox_password_change_me'
+  if psql -h 10.96.201.26 -U busibox_user -d busibox -c "SELECT 1" &>/dev/null; then
     record_test "PostgreSQL health" "PASS"
   else
     record_test "PostgreSQL health" "FAIL" "Connection failed"
   fi
+  unset PGPASSWORD
   
   # MinIO
   log_info "Checking MinIO..."
@@ -200,20 +202,23 @@ test_database_schema() {
   
   log_info "Verifying database schema..."
   
+  export PGPASSWORD='busibox_password_change_me'
+  
   # Check tables exist
-  local tables=$(psql -h 10.96.201.26 -U busibox_test_user -d busibox_test -t -c "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;" 2>/dev/null | wc -l)
+  local tables=$(psql -h 10.96.201.26 -U busibox_user -d busibox -t -c "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;" 2>/dev/null | wc -l)
   
   if [[ "$tables" -gt 0 ]]; then
     log_success "Found $tables tables in database"
     record_test "Database schema" "PASS"
   else
     record_test "Database schema" "FAIL" "No tables found"
+    unset PGPASSWORD
     return 1
   fi
   
   # Check migrations applied
   log_info "Checking migrations..."
-  local migrations=$(psql -h 10.96.201.26 -U busibox_test_user -d busibox_test -t -c "SELECT COUNT(*) FROM schema_migrations;" 2>/dev/null | xargs)
+  local migrations=$(psql -h 10.96.201.26 -U busibox_user -d busibox -t -c "SELECT COUNT(*) FROM schema_migrations;" 2>/dev/null | xargs)
   
   if [[ "$migrations" -ge 2 ]]; then
     log_success "Found $migrations migrations applied"
@@ -221,6 +226,8 @@ test_database_schema() {
   else
     record_test "Database migrations" "FAIL" "Expected >= 2 migrations, found $migrations"
   fi
+  
+  unset PGPASSWORD
 }
 
 test_idempotency() {
