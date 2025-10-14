@@ -1,0 +1,10 @@
+# Node / Python / secrets / artifacts
+node_modules/
+dist/
+.env
+*.env
+*.local
+__pycache__/
+*.pyc
+*.log
+provision/ansible/inventory/hosts.local

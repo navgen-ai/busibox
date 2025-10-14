@@ -1,0 +1,33 @@
+- name: Create agent app dir
+  file: { path: /srv/apps/agent, state: directory }
+
+- name: Seed minimal agent (placeholder)
+  copy:
+    dest: /srv/apps/agent/server.js
+    content: |
+      import http from 'http';
+      const srv = http.createServer((req,res)=>{
+        if(req.url==='/health'){ res.writeHead(200); res.end('ok'); return; }
+        res.writeHead(200); res.end('agent alive');
+      });
+      srv.listen(3001);
+
+- name: systemd service
+  copy:
+    dest: /etc/systemd/system/agent.service
+    content: |
+      [Unit]
+      Description=Agent API
+      After=network-online.target
+      [Service]
+      User=root
+      WorkingDirectory=/srv/apps/agent
+      ExecStart=/usr/bin/node server.js
+      Restart=always
+      [Install]
+      WantedBy=multi-user.target
+  notify: Restart agent
+
+handlers:
+  - name: Restart agent
+    systemd: { name: agent, state: restarted, enabled: yes }

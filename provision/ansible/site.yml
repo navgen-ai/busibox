@@ -1,0 +1,14 @@
+- hosts: files
+  roles: [minio]
+
+- hosts: pg
+  roles: [postgres]
+
+- hosts: milvus
+  roles: [milvus]
+
+- hosts: agent
+  roles: [node_common, agent_api, deploywatch]
+
+- hosts: ingest
+  roles: [node_common, ingest_worker]

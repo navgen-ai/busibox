@@ -1,0 +1,28 @@
+- name: Create ingest dir
+  file: { path: /srv/apps/ingest, state: directory }
+
+- name: Seed minimal worker (placeholder)
+  copy:
+    dest: /srv/apps/ingest/worker.js
+    content: |
+      setInterval(()=>console.log('worker tick'), 10000);
+
+- name: systemd service
+  copy:
+    dest: /etc/systemd/system/ingest.service
+    content: |
+      [Unit]
+      Description=Ingest Worker
+      After=network-online.target
+      [Service]
+      User=root
+      WorkingDirectory=/srv/apps/ingest
+      ExecStart=/usr/bin/node worker.js
+      Restart=always
+      [Install]
+      WantedBy=multi-user.target
+  notify: Restart ingest
+
+handlers:
+  - name: Restart ingest
+    systemd: { name: ingest, state: restarted, enabled: yes }

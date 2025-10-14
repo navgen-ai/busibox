@@ -1,0 +1,48 @@
+- name: Install Postgres
+  apt:
+    name:
+      - postgresql
+      - postgresql-contrib
+    state: present
+    update_cache: yes
+
+- name: Allow listen on all
+  lineinfile:
+    path: "/etc/postgresql/{{ lookup('pipe','ls /etc/postgresql') | split() | sort | last }}/main/postgresql.conf"
+    regexp: "^#?listen_addresses"
+    line: "listen_addresses = '*'"
+  notify: Restart Postgres
+
+- name: pg_hba for vlan
+  blockinfile:
+    path: "/etc/postgresql/{{ lookup('pipe','ls /etc/postgresql') | split() | sort | last }}/main/pg_hba.conf"
+    block: |
+      host    all    all    10.96.200.0/21    md5
+  notify: Reload Postgres
+
+- name: Create db and user
+  become_user: postgres
+  postgresql_user:
+    name: appuser
+    password: "app_password_change_me"
+    role_attr_flags: "LOGIN"
+- become_user: postgres
+  postgresql_db:
+    name: appdb
+    owner: appuser
+
+- name: Copy schema
+  copy:
+    src: files/schema.sql
+    dest: /root/schema.sql
+    mode: "0644"
+
+- name: Apply schema
+  become_user: postgres
+  command: psql -d appdb -f /root/schema.sql
+
+handlers:
+  - name: Restart Postgres
+    service: { name: postgresql, state: restarted }
+  - name: Reload Postgres
+    service: { name: postgresql, state: reloaded }

@@ -1,0 +1,48 @@
+- name: Install deps
+  apt: { name: [git, jq, curl], state: present, update_cache: yes }
+
+- name: Create dirs
+  file: { path: /opt/deploywatch, state: directory, mode: "0755" }
+
+- name: Script
+  copy:
+    src: files/deploywatch.sh
+    dest: /opt/deploywatch/deploywatch.sh
+    mode: "0755"
+
+- name: Service
+  copy:
+    dest: /etc/systemd/system/deploywatch.service
+    content: |
+      [Unit]
+      Description=Poll GitHub Releases and deploy on update
+      After=network-online.target
+      [Service]
+      Type=oneshot
+      User=root
+      EnvironmentFile=-/etc/deploywatch.env
+      RuntimeDirectory=deploywatch
+      RuntimeDirectoryMode=0750
+      ExecStart=/opt/deploywatch/deploywatch.sh
+  notify: Reload systemd
+
+- name: Timer
+  copy:
+    dest: /etc/systemd/system/deploywatch.timer
+    content: |
+      [Unit]
+      Description=Run deploywatch periodically
+      [Timer]
+      OnBootSec=2m
+      OnUnitActiveSec=5m
+      RandomizedDelaySec=45s
+      Persistent=true
+      [Install]
+      WantedBy=timers.target
+  notify: Enable timer
+
+handlers:
+  - name: Reload systemd
+    systemd: { daemon_reload: yes }
+  - name: Enable timer
+    systemd: { name: deploywatch.timer, state: started, enabled: yes }
