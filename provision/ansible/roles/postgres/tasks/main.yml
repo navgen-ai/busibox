@@ -24,7 +24,6 @@
     psql --version | awk '{print $3}' | cut -d'.' -f1
   register: pg_version
   changed_when: false
-  failed_when: false
 
 - name: Verify PostgreSQL version detected
   debug:
@@ -97,15 +96,19 @@
 
 - name: Create migrations directory
   file:
-    path: /root/migrations
+    path: /var/lib/postgresql/migrations
     state: directory
     mode: "0755"
+    owner: postgres
+    group: postgres
 
 - name: Copy migration files
   copy:
     src: "files/migrations/"
-    dest: /root/migrations/
+    dest: /var/lib/postgresql/migrations/
     mode: "0644"
+    owner: postgres
+    group: postgres
 
 - name: Apply database migrations
   become_user: postgres
@@ -115,7 +118,7 @@
     
     if [ "$APPLIED" -eq "0" ]; then
       echo "Applying migration {{ item.version }}: {{ item.name }}"
-      psql -d busibox -f /root/migrations/{{ item.file }}
+      psql -d busibox -f /var/lib/postgresql/migrations/{{ item.file }}
       if [ $? -eq 0 ]; then
         echo "Migration {{ item.version }} applied successfully"
       else
