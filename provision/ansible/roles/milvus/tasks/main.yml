@@ -12,11 +12,14 @@
     apt update && apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
   args: { executable: /bin/bash }
 
-- name: Create Milvus data directory
+- name: Create Milvus directories
   file:
-    path: /srv/milvus/data
+    path: "{{ item }}"
     state: directory
     mode: "0755"
+  loop:
+    - /srv/milvus
+    - /srv/milvus/data
 
 - name: Deploy Milvus standalone
   copy:

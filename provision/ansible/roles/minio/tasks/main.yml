@@ -12,6 +12,15 @@
     apt update && apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
   args: { executable: /bin/bash }
 
+- name: Create MinIO directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /srv/minio
+    - /srv/minio/data
+
 - name: Deploy MinIO compose
   copy:
     dest: /srv/minio/docker-compose.yml
