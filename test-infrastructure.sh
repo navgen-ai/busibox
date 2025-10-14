@@ -43,7 +43,7 @@ if ! command -v pct &> /dev/null; then
     exit 1
 fi
 
-SCRIPT_DIR="$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROVISION_DIR="${SCRIPT_DIR}/provision"
 PCT_DIR="${PROVISION_DIR}/pct"
 ANSIBLE_DIR="${PROVISION_DIR}/ansible"

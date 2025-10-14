@@ -1,0 +1,6 @@
+---
+- name: Up Milvus
+  shell: docker compose up -d
+  args:
+    chdir: /srv/milvus
+

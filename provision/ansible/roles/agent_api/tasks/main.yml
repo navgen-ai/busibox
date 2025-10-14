@@ -118,9 +118,3 @@
       #!/bin/bash
       curl -f -s http://localhost:8000/health/live > /dev/null
     mode: "0755"
-
-handlers:
-  - name: Restart agent API
-    systemd:
-      name: agent-api
-      state: restarted
