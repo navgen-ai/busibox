@@ -120,14 +120,33 @@ rollback() {
 # Download release from GitHub
 download_release() {
     local version=$1
-    local tarball_url="https://github.com/${GITHUB_REPO}/archive/refs/tags/${version}.tar.gz"
     local temp_dir=$(mktemp -d)
     
-    log_info "Downloading release ${version} from ${tarball_url}"
+    # Try to get release assets first (uploaded tarballs)
+    log_info "Checking for release assets for ${version}"
+    local release_info=$(curl -s "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${version}")
+    local asset_url=$(echo "${release_info}" | jq -r '.assets[] | select(.name | test("\\.tar\\.gz$")) | .browser_download_url' | head -1)
+    
+    if [[ -n "${asset_url}" && "${asset_url}" != "null" ]]; then
+        # Use uploaded release asset
+        log_info "Downloading release asset from ${asset_url}"
+        if curl -L -o "${temp_dir}/release.tar.gz" "${asset_url}"; then
+            log_success "Downloaded release asset"
+            echo "${temp_dir}"
+            return 0
+        else
+            log_error "Failed to download release asset"
+        fi
+    fi
+    
+    # Fall back to source archive
+    local tarball_url="https://github.com/${GITHUB_REPO}/archive/refs/tags/${version}.tar.gz"
+    log_info "Downloading source archive from ${tarball_url}"
     
     if curl -L -o "${temp_dir}/release.tar.gz" "${tarball_url}"; then
-        log_success "Download complete"
+        log_success "Downloaded source archive"
         echo "${temp_dir}"
+        return 0
     else
         log_error "Failed to download release"
         rm -rf "${temp_dir}"
