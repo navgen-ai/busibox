@@ -24,6 +24,7 @@
     psql --version | awk '{print $3}' | cut -d'.' -f1
   register: pg_version
   changed_when: false
+  check_mode: no  # Always run this task, even in check mode
 
 - name: Verify PostgreSQL version detected
   debug:
