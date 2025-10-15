@@ -20,7 +20,7 @@ ENV_FILE="${DEPLOY_PATH}/.env"
 
 # Logging functions
 log_info() {
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] [${APP_NAME}] INFO: $*"
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] [${APP_NAME}] INFO: $*" >&2
 }
 
 log_error() {
@@ -28,7 +28,7 @@ log_error() {
 }
 
 log_success() {
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] [${APP_NAME}] SUCCESS: $*"
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] [${APP_NAME}] SUCCESS: $*" >&2
 }
 
 # Get current deployed version
