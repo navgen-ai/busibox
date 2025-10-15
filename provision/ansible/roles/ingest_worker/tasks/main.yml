@@ -70,6 +70,7 @@
   shell: /srv/ingest/venv/bin/python -m spacy download en_core_web_sm
   args:
     creates: /srv/ingest/venv/lib/python*/site-packages/en_core_web_sm
+  when: not ansible_check_mode  # Skip in check mode (requires network access)
 
 - name: Create ingest worker environment file
   copy:
@@ -135,10 +136,15 @@
       
       [Install]
       WantedBy=multi-user.target
-  notify: Restart ingest worker
+  register: ingest_service_file
 
-- name: Enable ingest worker service
+- name: Reload systemd daemon if service file changed
+  systemd:
+    daemon_reload: yes
+  when: ingest_service_file.changed
+
+- name: Enable and start ingest worker service
   systemd:
     name: ingest-worker
     enabled: yes
-    daemon_reload: yes
+    state: started
