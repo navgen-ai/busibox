@@ -10,6 +10,7 @@
       - applications is iterable
     fail_msg: "applications list not defined in apps.yml"
     success_msg: "applications list found ({{ applications | length }} apps)"
+  when: applications is defined
 
 - name: Validate each application has required fields
   assert:

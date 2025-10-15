@@ -3,6 +3,14 @@
 # Purpose: Generate deploywatch scripts and .env files for all applications
 # Requirements: FR-001, FR-005, FR-030 (GitHub deployment, secrets as env vars, extensibility)
 
+- name: Check if applications are defined
+  debug:
+    msg: "Applications defined: {{ applications is defined }}, Count: {{ (applications | default([])) | length }}"
+
+- name: Skip app deployer if no applications defined
+  meta: end_host
+  when: applications is not defined or applications | length == 0
+
 - name: Include validation tasks
   include_tasks: validate.yml
 
