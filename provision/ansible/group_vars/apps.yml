@@ -33,12 +33,12 @@
 # Example application definitions:
 #
 # # Example: Public web application (domain routing)
-# - name: cashman-portal
-#   github_repo: jazzmind/cashman
+# - name: ai-portal
+#   github_repo: jazzmind/ai-portal
 #   container: apps-lxc
 #   container_ip: "{{ apps_ip }}"
 #   port: 3000
-#   deploy_path: /srv/apps/cashman
+#   deploy_path: /srv/apps/ai-portal
 #   health_endpoint: /api/health
 #   build_command: "npm run build"
 #   routes:
@@ -57,7 +57,7 @@
 #     - jwt_secret
 #   env:
 #     NODE_ENV: production
-#     JWT_ISSUER: cashman-portal
+#     JWT_ISSUER: ai-portal
 #
 # # Example: Application with subdomain and path routing
 # - name: agent-client
