@@ -114,7 +114,7 @@ main() {
 }
 
 install_nvidia_drivers() {
-  log_info "Installing NVIDIA drivers on host..."
+  log_info "Installing NVIDIA driver 550 (CUDA 12.4 compatible) on host..."
   
   # Add NVIDIA repository
   wget https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/3bf863cc.pub -O /tmp/nvidia-cuda-keyring.asc
@@ -124,18 +124,21 @@ install_nvidia_drivers() {
   echo "deb [signed-by=/usr/share/keyrings/nvidia-cuda-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/ /" > /etc/apt/sources.list.d/nvidia-cuda.list
   
   apt-get update
-  apt-get install -y cuda-drivers
+  
+  # Install specific driver version 550 (compatible with CUDA 12.4)
+  apt-get install -y cuda-drivers-550
   
   log_warning "=========================================="
-  log_warning "NVIDIA drivers installed!"
+  log_warning "NVIDIA driver 550 installed!"
   log_warning "HOST REBOOT REQUIRED!"
   log_warning "=========================================="
   log_info "Run: reboot"
   log_info "After reboot, verify with: nvidia-smi"
+  log_info "Should show driver version 550.x"
 }
 
 install_cuda_drivers_metapackage() {
-  log_info "Installing cuda-drivers meta-package..."
+  log_info "Installing cuda-drivers-550 package..."
   
   # Ensure NVIDIA repo is configured
   if [[ ! -f /etc/apt/sources.list.d/nvidia-cuda.list ]]; then
@@ -144,9 +147,9 @@ install_cuda_drivers_metapackage() {
   fi
   
   apt-get update
-  apt-get install -y cuda-drivers
+  apt-get install -y cuda-drivers-550
   
-  log_success "cuda-drivers meta-package installed"
+  log_success "cuda-drivers-550 package installed"
 }
 
 purge_and_reinstall() {
