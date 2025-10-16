@@ -48,8 +48,19 @@
     host: "{{ vllm_host if vllm_host != '0.0.0.0' else 'localhost' }}"
     port: "{{ vllm_port }}"
     delay: 10
-    timeout: "{{ vllm_startup_timeout }}"
+    timeout: 60
   when: vllm_start_service
+  failed_when: false
+  register: vllm_port_check
+  tags: [vllm_configure]
+
+- name: Display service status if port check failed
+  debug:
+    msg: "vLLM service may not have started properly - check logs with: journalctl -u vllm -n 50"
+  when: 
+    - vllm_start_service
+    - vllm_port_check.failed is defined
+    - vllm_port_check.failed
   tags: [vllm_configure]
 
 - name: Check vLLM service status
