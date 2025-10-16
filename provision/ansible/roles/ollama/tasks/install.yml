@@ -142,6 +142,7 @@
       apt:
         name:
           - cuda-drivers-550
+          - cuda-toolkit-12-4
           - cuda-cudart-12-4
           - cuda-libraries-12-4
         state: present
