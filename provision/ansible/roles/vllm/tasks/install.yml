@@ -82,21 +82,40 @@
         install_recommends: yes
       register: nvidia_install
 
-    - name: Notify about required reboot
-      debug:
-        msg: "NVIDIA drivers installed. Container reboot required for GPU to be available."
+    - name: Reboot container if drivers were installed
+      shell: "sleep 2 && reboot"
+      async: 1
+      poll: 0
+      when: nvidia_install.changed
+      ignore_errors: true
+
+    - name: Wait for container to go down
+      wait_for_connection:
+        delay: 5
+        timeout: 30
+        state: stopped
+      when: nvidia_install.changed
+      ignore_errors: true
+
+    - name: Wait for container to come back up
+      wait_for_connection:
+        delay: 10
+        timeout: 300
       when: nvidia_install.changed
 
-    - name: Check if nvidia-smi works after install
+    - name: Verify nvidia-smi works after reboot
       command: nvidia-smi
       register: nvidia_check_after
       changed_when: false
-      failed_when: false
+      retries: 5
+      delay: 5
+      until: nvidia_check_after.rc == 0
+      when: nvidia_install.changed
 
-    - name: Display GPU information if available
+    - name: Display GPU information after driver install
       debug:
         msg: "{{ nvidia_check_after.stdout_lines }}"
-      when: nvidia_check_after.rc == 0
+      when: nvidia_install.changed
   when: nvidia_check.rc != 0
   tags: [vllm_install, vllm_gpu]
 
@@ -201,15 +220,10 @@
     msg: "{{ pytorch_cuda_check.stdout_lines }}"
   tags: [vllm_install, vllm_gpu]
 
-- name: Set PyTorch CUDA availability fact
-  set_fact:
-    pytorch_cuda_available: "{{ 'CUDA available: True' in pytorch_cuda_check.stdout }}"
-  tags: [vllm_install, vllm_gpu]
-
-- name: Warn if PyTorch cannot detect CUDA
-  debug:
-    msg: "WARNING: PyTorch cannot detect CUDA. This is expected if drivers were just installed - container reboot required."
-  when: not pytorch_cuda_available
+- name: Fail if PyTorch cannot detect CUDA
+  fail:
+    msg: "PyTorch cannot detect CUDA! GPU passthrough may not be configured correctly."
+  when: "'CUDA available: False' in pytorch_cuda_check.stdout"
   tags: [vllm_install, vllm_gpu]
 
 - name: Install vLLM
