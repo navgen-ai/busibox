@@ -114,6 +114,14 @@
   when: not ollama_binary.stat.exists
   tags: [ollama_install]
 
+- name: Stop Ollama service installed by script (we'll reconfigure it)
+  systemd:
+    name: ollama
+    state: stopped
+  when: not ollama_binary.stat.exists
+  failed_when: false
+  tags: [ollama_install]
+
 - name: Verify Ollama installation
   command: "{{ ollama_install_dir }}/ollama --version"
   register: ollama_verify
