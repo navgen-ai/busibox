@@ -1,0 +1,68 @@
+---
+# vLLM Role - Default Variables
+# Created: 2025-10-16
+# Purpose: High-performance inference for large language models with GPU support
+
+# vLLM Installation
+vllm_version: "0.6.3"  # Specific version for stability
+vllm_install_method: "pip"  # pip or source
+vllm_install_dir: /opt/vllm
+vllm_venv_dir: "{{ vllm_install_dir }}/venv"
+
+# Python Configuration
+vllm_python_version: "3.10"
+vllm_pip_extra_index_url: "https://download.pytorch.org/whl/cu121"  # CUDA 12.1
+
+# vLLM Service Configuration
+vllm_user: vllm
+vllm_group: vllm
+vllm_home: /var/lib/vllm
+vllm_cache_dir: "{{ vllm_home }}/huggingface"
+
+# Network Configuration
+vllm_host: "0.0.0.0"
+vllm_port: 8000
+
+# Model Configuration
+vllm_default_model: "meta-llama/Meta-Llama-3-8B-Instruct"  # Start with smaller model for testing
+vllm_download_dir: "{{ vllm_cache_dir }}/hub"
+vllm_tensor_parallel_size: 1  # Number of GPUs to use for tensor parallelism
+vllm_gpu_memory_utilization: 0.9  # 90% of GPU memory
+vllm_max_model_len: 4096  # Max sequence length
+vllm_trust_remote_code: true
+
+# HuggingFace Configuration
+vllm_hf_token: ""  # Set via secrets or environment for gated models
+
+# Performance Configuration
+vllm_max_num_seqs: 256  # Maximum number of sequences to process
+vllm_max_num_batched_tokens: null  # Auto-calculate based on model
+vllm_enable_prefix_caching: true
+vllm_disable_log_stats: false
+
+# API Configuration
+vllm_served_model_name: null  # Override model name in API (null = use actual name)
+vllm_api_key: null  # Optional API key for authentication
+vllm_enable_api_key: false
+
+# Service Configuration
+vllm_enable_service: true
+vllm_start_service: true
+vllm_restart_on_failure: true
+vllm_restart_sec: 15
+
+# Logging
+vllm_log_level: info  # debug, info, warning, error
+
+# Resource Limits (systemd)
+vllm_memory_limit: "32G"
+vllm_cpu_limit: "8"
+
+# Health Check
+vllm_health_check_enabled: true
+vllm_health_check_interval: 60  # seconds
+vllm_startup_timeout: 600  # 10 minutes for model loading
+
+# CUDA Configuration
+vllm_cuda_visible_devices: "0"  # GPU device ID (override from inventory)
+
