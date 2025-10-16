@@ -54,9 +54,18 @@
   register: vllm_port_check
   tags: [vllm_configure]
 
-- name: Display service status if port check failed
+- name: Get vLLM service logs if port check failed
+  shell: "journalctl -u vllm -n 50 --no-pager"
+  register: vllm_logs
+  when: 
+    - vllm_start_service
+    - vllm_port_check.failed is defined
+    - vllm_port_check.failed
+  tags: [vllm_configure]
+
+- name: Display vLLM service logs
   debug:
-    msg: "vLLM service may not have started properly - check logs with: journalctl -u vllm -n 50"
+    msg: "{{ vllm_logs.stdout_lines }}"
   when: 
     - vllm_start_service
     - vllm_port_check.failed is defined

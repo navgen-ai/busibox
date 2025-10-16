@@ -379,7 +379,7 @@
                 print(f'GPU {i}: Successfully allocated tensor')
             except Exception as e:
                 print(f'GPU {i}: Error - {type(e).__name__}: {str(e)}')
-    "
+    " 2>&1
   register: pytorch_cuda_check
   become: true
   become_user: "{{ vllm_user }}"
@@ -390,6 +390,12 @@
 - name: Display PyTorch CUDA status
   debug:
     msg: "{{ pytorch_cuda_check.stdout_lines }}"
+  tags: [vllm_install, vllm_gpu]
+
+- name: Display PyTorch errors if any
+  debug:
+    msg: "{{ pytorch_cuda_check.stderr_lines }}"
+  when: pytorch_cuda_check.stderr is defined and pytorch_cuda_check.stderr != ''
   tags: [vllm_install, vllm_gpu]
 
 - name: Warn if PyTorch cannot detect CUDA but devices are present
