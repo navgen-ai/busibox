@@ -138,13 +138,14 @@
       debug:
         msg: "Host NVIDIA driver version: {{ host_nvidia_version.stdout }}"
 
-    - name: Install NVIDIA userspace utilities matching host driver
+    - name: Install NVIDIA userspace utilities for CUDA 12.4 (driver 550 compatible)
       apt:
         name:
-          - cuda-drivers
-          - cuda-toolkit
+          - cuda-drivers-550
+          - cuda-cudart-12-4
+          - cuda-libraries-12-4
         state: present
-        install_recommends: no
+        install_recommends: yes
       register: nvidia_install
       environment:
         DEBIAN_FRONTEND: noninteractive
