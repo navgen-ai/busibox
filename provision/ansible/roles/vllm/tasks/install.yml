@@ -141,7 +141,7 @@
       apt:
         name:
           - nvidia-driver-cuda
-          - cuda-toolkit
+          - nvidia-open
         state: present
         install_recommends: yes
       register: nvidia_install
