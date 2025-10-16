@@ -201,10 +201,15 @@
     msg: "{{ pytorch_cuda_check.stdout_lines }}"
   tags: [vllm_install, vllm_gpu]
 
-- name: Fail if PyTorch cannot detect CUDA
-  fail:
-    msg: "PyTorch cannot detect CUDA! Check GPU passthrough configuration."
-  when: "'CUDA available: False' in pytorch_cuda_check.stdout"
+- name: Set PyTorch CUDA availability fact
+  set_fact:
+    pytorch_cuda_available: "{{ 'CUDA available: True' in pytorch_cuda_check.stdout }}"
+  tags: [vllm_install, vllm_gpu]
+
+- name: Warn if PyTorch cannot detect CUDA
+  debug:
+    msg: "WARNING: PyTorch cannot detect CUDA. This is expected if drivers were just installed - container reboot required."
+  when: not pytorch_cuda_available
   tags: [vllm_install, vllm_gpu]
 
 - name: Install vLLM
