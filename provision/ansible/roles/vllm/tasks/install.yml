@@ -137,9 +137,33 @@
     vllm_gpu_ready: "{{ nvidia_final_check.rc == 0 }}"
   tags: [vllm_install, vllm_gpu]
 
+- name: Check if GPU devices are visible in container
+  shell: "ls -la /dev/nvidia* 2>/dev/null || echo 'No NVIDIA devices found'"
+  register: gpu_devices_check
+  changed_when: false
+  tags: [vllm_install, vllm_gpu]
+
+- name: Display GPU device status
+  debug:
+    msg: "{{ gpu_devices_check.stdout_lines }}"
+  tags: [vllm_install, vllm_gpu]
+
 - name: Display GPU readiness status
   debug:
-    msg: "{{ 'GPU is ready and available' if vllm_gpu_ready else 'GPU not ready - container reboot may be required if drivers were just installed' }}"
+    msg: "{{ 'GPU is ready and available' if vllm_gpu_ready else 'GPU not ready - check if GPU passthrough is configured on Proxmox host' }}"
+  tags: [vllm_install, vllm_gpu]
+
+- name: Fail if GPU devices not found in container
+  fail:
+    msg: |
+      No NVIDIA GPU devices found in container!
+      
+      GPU passthrough may not be configured. To configure GPU passthrough:
+      1. On Proxmox host, run: bash /root/busibox/provision/pct/configure-gpu-passthrough.sh {{ container_id }}
+      2. Or run the test infrastructure script which includes GPU setup
+      
+      The container needs GPU device {{ gpu_device | default('N/A') }} to be passed through.
+  when: "'No NVIDIA devices found' in gpu_devices_check.stdout"
   tags: [vllm_install, vllm_gpu]
 
 - name: Create vLLM system group
