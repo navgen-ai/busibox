@@ -305,8 +305,21 @@
     msg: "{{ cuda_libs_check.stdout_lines }}"
   tags: [vllm_install, vllm_gpu]
 
+- name: Configure CUDA library paths
+  lineinfile:
+    path: /etc/ld.so.conf.d/cuda.conf
+    line: /usr/local/cuda/lib64
+    create: yes
+  tags: [vllm_install, vllm_gpu]
+
+- name: Update library cache
+  command: ldconfig
+  changed_when: false
+  tags: [vllm_install, vllm_gpu]
+
 - name: Verify PyTorch CUDA availability
   shell: |
+    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
     {{ vllm_venv_dir }}/bin/python -c "
     import torch
     import os
