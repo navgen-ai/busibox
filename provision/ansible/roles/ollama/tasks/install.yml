@@ -87,16 +87,40 @@
         install_recommends: yes
       register: nvidia_install
 
-    - name: Check NVIDIA driver version after install
+    - name: Reboot container if drivers were installed
+      shell: "sleep 2 && reboot"
+      async: 1
+      poll: 0
+      when: nvidia_install.changed
+      ignore_errors: true
+
+    - name: Wait for container to go down
+      wait_for_connection:
+        delay: 5
+        timeout: 30
+        state: stopped
+      when: nvidia_install.changed
+      ignore_errors: true
+
+    - name: Wait for container to come back up
+      wait_for_connection:
+        delay: 10
+        timeout: 300
+      when: nvidia_install.changed
+
+    - name: Verify nvidia-smi works after reboot
       command: nvidia-smi
       register: nvidia_smi_check
       changed_when: false
-      failed_when: false
+      retries: 5
+      delay: 5
+      until: nvidia_smi_check.rc == 0
+      when: nvidia_install.changed
 
-    - name: Display NVIDIA driver info
+    - name: Display NVIDIA driver info after install
       debug:
         msg: "{{ nvidia_smi_check.stdout_lines }}"
-      when: nvidia_smi_check.rc == 0
+      when: nvidia_install.changed
   when: not ollama_has_gpu and ollama_gpu_enabled
   tags: [ollama_install, ollama_gpu]
 
