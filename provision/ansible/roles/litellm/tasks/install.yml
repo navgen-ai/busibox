@@ -91,9 +91,7 @@
   tags: [litellm_install]
 
 - name: Verify LiteLLM installation
-  shell: |
-    source {{ litellm_venv_dir }}/bin/activate
-    python -c "import litellm; print('LiteLLM version:', litellm.__version__)"
+  command: "{{ litellm_venv_dir }}/bin/python -c \"import litellm; try:\n    from importlib.metadata import version\n    print('LiteLLM version:', version('litellm'))\nexcept:\n    try:\n        print('LiteLLM version:', litellm.__version__)\n    except:\n        print('LiteLLM version: (unable to detect)')\nprint('LiteLLM imported successfully!')\""
   register: litellm_version_check
   become: true
   become_user: "{{ litellm_user }}"
@@ -102,6 +100,6 @@
 
 - name: Display LiteLLM version
   debug:
-    msg: "{{ litellm_version_check.stdout }}"
+    msg: "{{ litellm_version_check.stdout_lines }}"
   tags: [litellm_install]
 
