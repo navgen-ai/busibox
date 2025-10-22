@@ -166,29 +166,84 @@ else
 fi
 echo ""
 
-# 7. Setup LLM model storage
+# 7. Setup ZFS storage for persistent data
 echo "=========================================="
-echo "Step 7: Setting up LLM Model Storage"
+echo "Step 7: Setting up ZFS Storage for Data"
 echo "=========================================="
 
-# Create ZFS dataset for models if using ZFS
+# Check if ZFS is available
 if command -v zfs &>/dev/null && zfs list rpool &>/dev/null 2>&1; then
-    echo "Detected ZFS storage"
+    echo "✓ ZFS detected - setting up datasets for persistent data"
+    echo ""
     
+    # Create parent dataset
+    if ! zfs list rpool/data &>/dev/null 2>&1; then
+        echo "  Creating parent dataset: rpool/data"
+        zfs create rpool/data
+    fi
+    
+    # Function to create and configure dataset
+    setup_zfs_dataset() {
+        local name=$1
+        local mountpoint=$2
+        local recordsize=$3
+        local logbias=$4
+        
+        if ! zfs list "rpool/data/${name}" &>/dev/null 2>&1; then
+            echo "  Creating dataset: rpool/data/${name}"
+            zfs create "rpool/data/${name}"
+            zfs set mountpoint="${mountpoint}" "rpool/data/${name}"
+            zfs set compression=lz4 "rpool/data/${name}"
+            zfs set recordsize="${recordsize}" "rpool/data/${name}"
+            zfs set logbias="${logbias}" "rpool/data/${name}"
+            
+            # Special tuning for Milvus
+            if [[ "$name" == "milvus" ]]; then
+                zfs set primarycache=metadata "rpool/data/${name}"
+            fi
+            
+            echo "    ✓ ${mountpoint} (recordsize=${recordsize}, compression=lz4)"
+        else
+            echo "  ✓ Dataset rpool/data/${name} already exists"
+        fi
+    }
+    
+    # Setup datasets for each service
+    echo ""
+    echo "  Setting up datasets for services:"
+    setup_zfs_dataset "postgres" "/var/lib/data/postgres" "8K" "latency"
+    setup_zfs_dataset "minio" "/var/lib/data/minio" "1M" "throughput"
+    setup_zfs_dataset "milvus" "/var/lib/data/milvus" "128K" "latency"
+    
+    # Setup LLM models dataset
     if ! zfs list rpool/llm-models &>/dev/null 2>&1; then
-        echo "  Creating ZFS dataset for LLM models..."
+        echo "  Creating dataset: rpool/llm-models"
         zfs create -o mountpoint=/var/lib/llm-models rpool/llm-models
         zfs create rpool/llm-models/ollama
         zfs create rpool/llm-models/huggingface
-        echo "  ✓ ZFS datasets created:"
-        echo "    rpool/llm-models/ollama -> /var/lib/llm-models/ollama"
-        echo "    rpool/llm-models/huggingface -> /var/lib/llm-models/huggingface"
+        zfs set compression=lz4 rpool/llm-models
+        echo "    ✓ /var/lib/llm-models (for LLM models)"
     else
-        echo "  ✓ ZFS dataset already exists"
+        echo "  ✓ Dataset rpool/llm-models already exists"
     fi
+    
+    echo ""
+    echo "  ✓ ZFS storage configured"
+    echo ""
+    echo "  Dataset summary:"
+    zfs list -o name,used,avail,compressratio,mountpoint rpool/data 2>/dev/null || true
+    zfs list -o name,used,avail,compressratio,mountpoint rpool/llm-models 2>/dev/null || true
+    
 else
+    echo "⚠ ZFS not detected - using regular directories"
+    echo "  (ZFS recommended for production - provides snapshots, compression, etc.)"
+    echo ""
+    
     # Fallback to regular directories
-    echo "  Creating directories for LLM models..."
+    echo "  Creating directories for persistent data..."
+    mkdir -p /var/lib/data/postgres
+    mkdir -p /var/lib/data/minio
+    mkdir -p /var/lib/data/milvus
     mkdir -p /var/lib/llm-models/ollama
     mkdir -p /var/lib/llm-models/huggingface
     echo "  ✓ Directories created"
