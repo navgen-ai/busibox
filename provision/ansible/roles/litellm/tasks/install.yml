@@ -87,6 +87,7 @@
       - python-dotenv
       - psycopg2-binary  # PostgreSQL adapter
       - prisma  # Database ORM for LiteLLM
+      - prisma-client-py  # Prisma Python client generator
     virtualenv: "{{ litellm_venv_dir }}"
   become: true
   become_user: "{{ litellm_user }}"
