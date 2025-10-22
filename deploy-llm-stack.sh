@@ -83,8 +83,8 @@ fi
 log_info "Ollama container: ${OLLAMA_CTID} (GPU 0)"
 log_info "vLLM container: ${VLLM_CTID} (GPU 1)"
 
-bash configure-gpu-passthrough.sh "${OLLAMA_CTID}" 0
-bash configure-gpu-passthrough.sh "${VLLM_CTID}" 1
+# configure-gpu-passthrough.sh expects both container IDs as arguments
+bash configure-gpu-passthrough.sh "${OLLAMA_CTID}" "${VLLM_CTID}"
 
 log_success "GPU passthrough configured"
 echo ""
