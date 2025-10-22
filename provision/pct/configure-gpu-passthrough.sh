@@ -82,12 +82,26 @@ fi
 if [[ "$CHANGES_MADE" == "true" ]]; then
     echo ""
     echo "==> Restarting containers to apply GPU passthrough..."
-    pct stop "${OLLAMA_CTID}" 2>/dev/null || true
-    pct stop "${VLLM_CTID}" 2>/dev/null || true
-    sleep 2
+    
+    # Check if containers are running before stopping
+    if pct status "${OLLAMA_CTID}" | grep -q "running"; then
+        echo "  Stopping Ollama container ${OLLAMA_CTID}..."
+        pct stop "${OLLAMA_CTID}"
+        sleep 2
+    fi
+    
+    if pct status "${VLLM_CTID}" | grep -q "running"; then
+        echo "  Stopping vLLM container ${VLLM_CTID}..."
+        pct stop "${VLLM_CTID}"
+        sleep 2
+    fi
+    
+    echo "  Starting containers..."
     pct start "${OLLAMA_CTID}"
     pct start "${VLLM_CTID}"
     sleep 5
+    
+    echo "  ✓ Containers restarted"
 else
     echo ""
     echo "==> No configuration changes needed - containers already have GPU passthrough"
