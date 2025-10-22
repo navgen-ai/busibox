@@ -83,10 +83,12 @@
     msg: "LiteLLM service is {{ litellm_service_status.status.ActiveState }}"
   tags: [litellm_configure]
 
-- name: Test LiteLLM health endpoint
+- name: Test LiteLLM health endpoint with auth
   uri:
     url: "http://{{ litellm_host if litellm_host != '0.0.0.0' else 'localhost' }}:{{ litellm_port }}/health"
     method: GET
+    headers:
+      Authorization: "Bearer {{ litellm_master_key }}"
     status_code: 200
   register: litellm_health_test
   retries: 3
@@ -96,7 +98,7 @@
 
 - name: Display health check result
   debug:
-    msg: "LiteLLM health check passed"
+    msg: "LiteLLM health check passed (authenticated)"
   when: litellm_health_test is defined and litellm_health_test.status == 200
   tags: [litellm_configure, litellm_test]
 
