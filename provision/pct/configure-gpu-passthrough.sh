@@ -34,10 +34,12 @@ fi
 nvidia-smi
 echo ""
 
+# Track if any changes were made
+CHANGES_MADE=false
+
 # Check if already configured
 if grep -q "GPU Passthrough" "/etc/pve/lxc/${OLLAMA_CTID}.conf" 2>/dev/null; then
-    echo "WARNING: Ollama container ${OLLAMA_CTID} already has GPU passthrough configured"
-    echo "         Remove existing GPU config lines to re-configure"
+    echo "✓ Ollama container ${OLLAMA_CTID} already has GPU passthrough configured"
 else
     echo "==> Configuring Ollama container ${OLLAMA_CTID} for GPU 0..."
     cat >> "/etc/pve/lxc/${OLLAMA_CTID}.conf" << 'OLLAMA_EOF'
@@ -50,11 +52,11 @@ lxc.mount.entry: /dev/nvidia-uvm dev/nvidia-uvm none bind,optional,create=file
 lxc.mount.entry: /dev/nvidia-uvm-tools dev/nvidia-uvm-tools none bind,optional,create=file
 OLLAMA_EOF
     echo "    ✓ Ollama GPU 0 configuration added"
+    CHANGES_MADE=true
 fi
 
 if grep -q "GPU Passthrough" "/etc/pve/lxc/${VLLM_CTID}.conf" 2>/dev/null; then
-    echo "WARNING: vLLM container ${VLLM_CTID} already has GPU passthrough configured"
-    echo "         Remove existing GPU config lines to re-configure"
+    echo "✓ vLLM container ${VLLM_CTID} already has GPU passthrough configured"
 else
     echo "==> Configuring vLLM container ${VLLM_CTID} for GPU 1..."
     cat >> "/etc/pve/lxc/${VLLM_CTID}.conf" << 'VLLM_EOF'
@@ -67,17 +69,23 @@ lxc.mount.entry: /dev/nvidia-uvm dev/nvidia-uvm none bind,optional,create=file
 lxc.mount.entry: /dev/nvidia-uvm-tools dev/nvidia-uvm-tools none bind,optional,create=file
 VLLM_EOF
     echo "    ✓ vLLM GPU 1 configuration added"
+    CHANGES_MADE=true
 fi
 
-# Restart containers
-echo ""
-echo "==> Restarting containers to apply GPU passthrough..."
-pct stop "${OLLAMA_CTID}" 2>/dev/null || true
-pct stop "${VLLM_CTID}" 2>/dev/null || true
-sleep 2
-pct start "${OLLAMA_CTID}"
-pct start "${VLLM_CTID}"
-sleep 5
+# Only restart containers if changes were made
+if [[ "$CHANGES_MADE" == "true" ]]; then
+    echo ""
+    echo "==> Restarting containers to apply GPU passthrough..."
+    pct stop "${OLLAMA_CTID}" 2>/dev/null || true
+    pct stop "${VLLM_CTID}" 2>/dev/null || true
+    sleep 2
+    pct start "${OLLAMA_CTID}"
+    pct start "${VLLM_CTID}"
+    sleep 5
+else
+    echo ""
+    echo "==> No configuration changes needed - containers already have GPU passthrough"
+fi
 
 echo ""
 echo "=========================================="
