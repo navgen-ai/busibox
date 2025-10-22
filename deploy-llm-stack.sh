@@ -71,13 +71,20 @@ echo ""
 # Step 2: Configure GPU passthrough
 log_info "Step 2: Configuring GPU passthrough..."
 
+# Set container IDs based on mode
 if [[ "$MODE" == "test" ]]; then
-    bash configure-gpu-passthrough.sh "${CT_OLLAMA_TEST}" 0
-    bash configure-gpu-passthrough.sh "${CT_VLLM_TEST}" 1
+    OLLAMA_CTID="${CT_OLLAMA_TEST}"
+    VLLM_CTID="${CT_VLLM_TEST}"
 else
-    bash configure-gpu-passthrough.sh "${CT_OLLAMA}" 0
-    bash configure-gpu-passthrough.sh "${CT_VLLM}" 1
+    OLLAMA_CTID="${CT_OLLAMA}"
+    VLLM_CTID="${CT_VLLM}"
 fi
+
+log_info "Ollama container: ${OLLAMA_CTID} (GPU 0)"
+log_info "vLLM container: ${VLLM_CTID} (GPU 1)"
+
+bash configure-gpu-passthrough.sh "${OLLAMA_CTID}" 0
+bash configure-gpu-passthrough.sh "${VLLM_CTID}" 1
 
 log_success "GPU passthrough configured"
 echo ""
