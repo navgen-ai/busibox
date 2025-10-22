@@ -56,12 +56,12 @@
     - name: Install NVIDIA userspace utilities (no kernel driver needed in LXC)
       apt:
         name:
-          - nvidia-utils
-          - libnvidia-ml1
+          - cuda-drivers
         state: present
         install_recommends: no
       environment:
         DEBIAN_FRONTEND: noninteractive
+      register: nvidia_drivers_install
 
     - name: Verify nvidia-smi is available
       command: nvidia-smi
