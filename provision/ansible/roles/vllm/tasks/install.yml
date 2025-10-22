@@ -155,19 +155,22 @@
     virtualenv: "{{ vllm_venv_dir }}"
   tags: [vllm_install, vllm_gpu]
 
-- name: Check CUDA libraries are available
+- name: Check CUDA libraries and GPU device permissions
   shell: |
     echo "=== Checking for CUDA libraries ==="
     ldconfig -p | grep -i cuda || echo "No CUDA libs in ldconfig cache"
     echo ""
-    echo "=== Checking /usr/local/cuda ==="
-    ls -la /usr/local/cuda/targets/x86_64-linux/lib/ 2>/dev/null | head -20 || echo "Directory not found"
-    echo ""
     echo "=== Checking for libcuda.so ==="
     find /usr/lib /lib -name "libcuda.so*" 2>/dev/null || echo "libcuda.so not found"
     echo ""
+    echo "=== Checking /dev/nvidia* permissions ==="
+    ls -la /dev/nvidia* || echo "No /dev/nvidia* devices"
+    echo ""
     echo "=== Checking nvidia-smi ==="
     nvidia-smi -L || echo "nvidia-smi failed"
+    echo ""
+    echo "=== Trying to access GPU as current user ==="
+    nvidia-smi || echo "nvidia-smi as user failed"
   register: cuda_libs_check
   changed_when: false
   tags: [vllm_install, vllm_gpu]
@@ -180,6 +183,8 @@
 - name: Test PyTorch CUDA availability
   shell: |
     {{ vllm_venv_dir }}/bin/python -c "
+    import os
+    print('LD_LIBRARY_PATH:', os.environ.get('LD_LIBRARY_PATH', 'NOT SET'))
     import torch
     print('PyTorch version:', torch.__version__)
     print('CUDA available:', torch.cuda.is_available())
@@ -188,9 +193,15 @@
     if torch.cuda.is_available():
         for i in range(torch.cuda.device_count()):
             print(f'GPU {i}: {torch.cuda.get_device_name(i)}')
+    else:
+        print('CUDA not available - checking why...')
+        try:
+            torch.cuda.init()
+        except Exception as e:
+            print(f'CUDA init error: {e}')
     "
   environment:
-    LD_LIBRARY_PATH: "/usr/local/cuda/targets/x86_64-linux/lib:/lib/x86_64-linux-gnu"
+    LD_LIBRARY_PATH: "/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu"
   register: pytorch_cuda_test
   changed_when: false
   tags: [vllm_install, vllm_gpu]
@@ -204,7 +215,7 @@
   shell: |
     {{ vllm_venv_dir }}/bin/python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
   environment:
-    LD_LIBRARY_PATH: "/usr/local/cuda/targets/x86_64-linux/lib:/lib/x86_64-linux-gnu"
+    LD_LIBRARY_PATH: "/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu"
   register: pytorch_cuda_verify
   changed_when: false
   failed_when: pytorch_cuda_verify.rc != 0
