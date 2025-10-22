@@ -91,7 +91,10 @@
   tags: [litellm_install]
 
 - name: Verify LiteLLM installation
-  command: "{{ litellm_venv_dir }}/bin/python -c \"import litellm; try:\n    from importlib.metadata import version\n    print('LiteLLM version:', version('litellm'))\nexcept:\n    try:\n        print('LiteLLM version:', litellm.__version__)\n    except:\n        print('LiteLLM version: (unable to detect)')\nprint('LiteLLM imported successfully!')\""
+  shell: |
+    {{ litellm_venv_dir }}/bin/python -c "import litellm; from importlib.metadata import version; print('LiteLLM version:', version('litellm')); print('LiteLLM imported successfully!')"
+  args:
+    executable: /bin/bash
   register: litellm_version_check
   become: true
   become_user: "{{ litellm_user }}"
