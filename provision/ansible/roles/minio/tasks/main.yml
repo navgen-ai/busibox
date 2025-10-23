@@ -112,8 +112,8 @@
       queue_dir="/tmp/minio-events"
     
     echo "=== Restarting MinIO to apply webhook config ==="
-    # Restart MinIO to apply config
-    mc admin service restart local
+    # Restart MinIO to apply config (use docker restart instead of mc admin)
+    docker restart minio-standalone
     
     echo "=== Waiting for MinIO to restart ==="
     # Wait for MinIO to come back
