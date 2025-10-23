@@ -62,6 +62,12 @@
     state: present
   tags: [nextjs_install]
 
+- name: Create app group
+  group:
+    name: "{{ app_group }}"
+    system: yes
+  tags: [nextjs_install]
+
 - name: Create app user
   user:
     name: "{{ app_user }}"

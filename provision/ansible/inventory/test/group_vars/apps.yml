@@ -12,7 +12,7 @@ app_port: 3000
 nodejs_version: "20"
 
 # Git repository (update with actual repo)
-app_git_repo: "https://github.com/sonnenreich/ai-portal.git"
+app_git_repo: "https://github.com/jazzmind/ai-portal.git"
 app_git_branch: "main"
 
 # Database configuration
@@ -34,23 +34,23 @@ app_env_vars:
   
   # Better Auth (will be set from vault)
   BETTER_AUTH_SECRET: "{{ vault_better_auth_secret | default('change-me-in-vault') }}"
-  BETTER_AUTH_URL: "https://test.ai.jaycashman.com"
+  BETTER_AUTH_URL: "{{ vault_better_auth_url | default('https://ai.maigentpartners.com') }}"
   
   # Resend Email
   RESEND_API_KEY: "{{ vault_resend_api_key | default('') }}"
-  EMAIL_FROM: "AI Portal <noreply@jaycashman.com>"
+  EMAIL_FROM: "{{ vault_email_from | default('AI Portal <noreply@maigentpartners.com>') }}"
   
   # SSO Configuration
   SSO_JWT_SECRET: "{{ vault_sso_jwt_secret | default('change-me-in-vault') }}"
-  SSO_TOKEN_EXPIRY: "900"
+  SSO_TOKEN_EXPIRY: "{{ vault_sso_token_expiry | default('900') }}"
   
   # Admin Bootstrap
-  ADMIN_EMAIL: "admin@jaycashman.com"
+  ADMIN_EMAIL: "{{ vault_admin_email | default('admin@maigentpartners.com') }}"
   
   # Email Domain Restrictions
-  ALLOWED_EMAIL_DOMAINS: "jaycashman.com"
+  ALLOWED_EMAIL_DOMAINS: "{{ vault_allowed_email_domains | default('maigentpartners.com') }}"
   
   # Environment
-  NODE_ENV: "production"
+  NODE_ENV: "{{ vault_node_env | default('production') }}"
   PORT: "{{ app_port }}"
 
