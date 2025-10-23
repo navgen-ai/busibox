@@ -20,38 +20,12 @@
   tags: [nextjs_deploy]
   no_log: true  # Don't log the repo URL with token
 
-- name: Check package.json exists
-  stat:
-    path: "{{ app_home }}/current/package.json"
-  register: package_json_check
-  tags: [nextjs_deploy]
-
-- name: Display repo contents
-  command: ls -la
-  args:
-    chdir: "{{ app_home }}/current"
-  register: repo_contents
-  tags: [nextjs_deploy]
-
-- name: Show repo contents
-  debug:
-    var: repo_contents.stdout_lines
-  tags: [nextjs_deploy]
-
 - name: Install npm dependencies
   command: npm install
   args:
     chdir: "{{ app_home }}/current"
   become: yes
   become_user: "{{ app_user }}"
-  register: npm_install
-  tags: [nextjs_deploy]
-
-- name: Display npm install output
-  debug:
-    msg: |
-      STDOUT: {{ npm_install.stdout }}
-      STDERR: {{ npm_install.stderr }}
   tags: [nextjs_deploy]
 
 - name: Build Next.js app
