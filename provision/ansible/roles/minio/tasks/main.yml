@@ -84,9 +84,20 @@
     url: "http://{{ agent_api_host | default('localhost') }}:{{ agent_api_port | default(4111) }}/auth/health"
     method: GET
     status_code: 200
+    timeout: 5
   register: agent_health_check
   failed_when: false
   changed_when: false
+  when: agent_api_host is defined
+
+- name: Display agent API status
+  debug:
+    msg: |
+      Agent API Status: {{ 'Available' if (agent_health_check.status is defined and agent_health_check.status == 200) else 'Not Available' }}
+      {% if agent_health_check.status is not defined or agent_health_check.status != 200 %}
+      Note: MinIO webhook will not be configured. To configure it later, re-run:
+        ansible-playbook -i inventory/{{ busibox_env }}/hosts.yml site.yml --limit files --tags minio
+      {% endif %}
   when: agent_api_host is defined
 
 - name: Configure bucket event notification (webhook to agent API)
@@ -113,7 +124,22 @@
     - agent_api_host is defined
     - agent_health_check.status is defined
     - agent_health_check.status == 200
-  ignore_errors: yes  # Webhook config is optional - system works without it
+  register: webhook_config
+  failed_when: false
+
+- name: Display webhook configuration result
+  debug:
+    msg: |
+      {% if webhook_config.changed is defined and webhook_config.changed %}
+      ✅ MinIO webhook configured successfully
+      {% elif webhook_config.skipped is defined and webhook_config.skipped %}
+      ⏭️  MinIO webhook skipped (agent API not available)
+      {% elif webhook_config.rc is defined and webhook_config.rc != 0 %}
+      ⚠️  MinIO webhook configuration failed (non-critical)
+      {% else %}
+      ℹ️  MinIO webhook not configured
+      {% endif %}
+  when: agent_api_host is defined
 
 - name: Create MinIO health check script
   copy:
