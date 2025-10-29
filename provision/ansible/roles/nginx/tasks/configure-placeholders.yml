@@ -33,6 +33,10 @@
     src: vhost-placeholder-subdomain.conf.j2
     dest: "/etc/nginx/sites-available/placeholder-{{ item.subdomain }}.conf"
     mode: '0644'
+  vars:
+    subdomain: "{{ item.subdomain }}"
+    app_name: "{{ item.app_name }}"
+    placeholder_file: "{{ item.placeholder_file }}"
   loop:
     - { subdomain: "agents", app_name: "agent-client", placeholder_file: "agents.html" }
     - { subdomain: "docs", app_name: "doc-intel", placeholder_file: "docs.html" }
