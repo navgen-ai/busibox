@@ -88,10 +88,20 @@
     lc_ctype: en_US.UTF-8
     template: template0
 
-- name: Build list of application databases
+- name: Load secrets to determine which apps need databases
+  include_vars:
+    file: "{{ playbook_dir }}/roles/secrets/vars/vault.yml"
+  no_log: true
+  tags: [postgres, secrets]
+
+- name: Build list of application databases from secrets
   set_fact:
-    app_databases: "{{ applications | selectattr('secrets', 'defined') | selectattr('secrets', 'search', 'database_url') | map(attribute='name') | map('replace', '-', '_') | list }}"
-  when: applications is defined
+    app_databases: "{{ secrets.keys() | select('match', '^(agent-server|ai-portal|agent-client|doc-intel|innovation|litellm)$') | map('replace', '-', '_') | list }}"
+  when: secrets is defined
+
+- name: Display databases to be created
+  debug:
+    msg: "Will create databases: {{ app_databases | default([]) }}"
 
 - name: Create application-specific databases
   become_user: postgres
@@ -103,7 +113,7 @@
     lc_ctype: en_US.UTF-8
     template: template0
   loop: "{{ app_databases | default([]) }}"
-  when: applications is defined and app_databases is defined
+  when: app_databases is defined and app_databases | length > 0
 
 - name: Create migrations directory
   file:
