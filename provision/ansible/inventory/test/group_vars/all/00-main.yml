@@ -46,7 +46,7 @@ full_domain: "{{ env_suffix }}.{{ domain }}"
 
 # SSL Certificate Mode
 # Options: "letsencrypt", "provisioned", "selfsigned"
-ssl_mode: selfsigned  # Use self-signed for testing
+ssl_mode: provisioned  # Use self-signed for testing
 # ssl_email comes from vault
 
 # ============================================================================
