@@ -61,6 +61,12 @@ The certificates will be stored in:
   
 Under the path: secrets.ssl_certificates
 
+IMPORTANT:
+- Script stores certificates generically (no domain in vault)
+- Domain names come from inventory (base_domain variable)
+- Works with wildcard certificates (*.ai.jaycashman.com)
+- Same certificates used for all environments (test/production)
+
 This file is encrypted with ansible-vault and should NOT be committed unencrypted.
 EOF
 }
@@ -118,6 +124,22 @@ success "Certificate and key match"
 # Display certificate info
 info "Certificate information:"
 openssl x509 -in "$CERT_FILE" -noout -subject -issuer -dates
+
+# Show certificate domains (CN and SANs)
+echo ""
+info "Certificate covers these domains:"
+CERT_CN=$(openssl x509 -in "$CERT_FILE" -noout -subject | sed -n 's/.*CN = \(.*\)/\1/p')
+echo "  Common Name (CN): $CERT_CN"
+
+CERT_SANS=$(openssl x509 -in "$CERT_FILE" -noout -text | grep -A1 "Subject Alternative Name" | tail -1 | sed 's/DNS://g' | tr ',' '\n' | sed 's/^[[:space:]]*/  - /')
+if [ -n "$CERT_SANS" ]; then
+    echo "  Subject Alternative Names (SANs):"
+    echo "$CERT_SANS"
+fi
+
+if [[ "$CERT_CN" == "*."* ]]; then
+    success "Wildcard certificate detected - will work for all subdomains"
+fi
 
 # Check if vault file exists
 if [ ! -f "$VAULT_FILE" ]; then
