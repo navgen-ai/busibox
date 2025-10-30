@@ -94,9 +94,22 @@
   no_log: true
   tags: [postgres, secrets]
 
+- name: Debug - Show secrets keys
+  debug:
+    msg: "Secrets keys available: {{ secrets.keys() | list }}"
+  when: secrets is defined
+
 - name: Build list of application databases from secrets
   set_fact:
     app_databases: []
+  when: secrets is defined
+
+- name: Debug - Check each secret entry
+  debug:
+    msg: "Checking {{ item.key }}: is_mapping={{ item.value is mapping }}, has_database_url={{ (item.value is mapping) and (item.value.database_url is defined) }}"
+  loop: "{{ secrets | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
   when: secrets is defined
 
 - name: Find apps with database_url in secrets
@@ -109,7 +122,6 @@
     - secrets is defined
     - item.value is mapping
     - item.value.database_url is defined
-  no_log: true
 
 - name: Display databases to be created
   debug:
