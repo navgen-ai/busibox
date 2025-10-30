@@ -68,7 +68,20 @@ echo ""
 section "1. GPU Device Visibility"
 
 # Check if GPU devices exist
-if $EXEC_PREFIX ls -la /dev/nvidia* 2>/dev/null; then
+if [ -n "$EXEC_PREFIX" ]; then
+    # Running from host - need to quote to prevent local expansion
+    GPU_DEVICES=$($EXEC_PREFIX bash -c "ls -la /dev/nvidia* 2>/dev/null" || echo "")
+    GPU_CHECK=$($EXEC_PREFIX bash -c "test -e /dev/nvidia0 && echo 'exists' || echo 'missing'" 2>/dev/null)
+else
+    # Running inside container
+    GPU_DEVICES=$(ls -la /dev/nvidia* 2>/dev/null || echo "")
+    GPU_CHECK=$(test -e /dev/nvidia0 && echo 'exists' || echo 'missing')
+fi
+
+echo "$GPU_DEVICES"
+echo ""
+
+if [ "$GPU_CHECK" = "exists" ]; then
     success "GPU devices are visible in container"
 else
     error "GPU devices NOT visible in container"
