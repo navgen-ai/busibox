@@ -24,6 +24,7 @@
     - item.stat is defined
     - not item.stat.exists
     - not item.skipped | default(false)
+    - deploy_app is not defined or deploy_app == item.item.name
   register: initial_deployment
   failed_when: false
   async: 1800  # 30 minutes timeout for deployment
@@ -78,6 +79,7 @@
     - applications | length > 0
     - inventory_hostname is match('.*' + item.container + '.*')
     - (initial_deployment.changed | default(false)) or (forced_deployment is defined and forced_deployment.changed | default(false))
+    - deploy_app is not defined or deploy_app == item.name
   failed_when: false
 
 - name: Display final deployment status
