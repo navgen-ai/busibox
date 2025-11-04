@@ -69,6 +69,15 @@
     mode: '0755'
   tags: [litellm_configure]
 
+- name: Deploy LiteLLM API test script
+  copy:
+    src: test-litellm-api.sh
+    dest: /usr/local/bin/test-litellm-api
+    owner: root
+    group: root
+    mode: '0755'
+  tags: [litellm_configure]
+
 - name: Ensure systemd is reloaded
   systemd:
     daemon_reload: yes
