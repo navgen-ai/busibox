@@ -20,6 +20,8 @@ if [[ "$MODE" == "test" ]]; then
     CT_PG="$CT_PG_TEST"
     CT_FILES="$CT_FILES_TEST"
     CT_MILVUS="$CT_MILVUS_TEST"
+    CT_VLLM="$CT_VLLM_TEST"
+    CT_OLLAMA="$CT_OLLAMA_TEST"
 else
     source "${SCRIPT_DIR}/vars.env"
 fi
@@ -78,6 +80,16 @@ echo "Milvus Container (${CT_MILVUS}):"
 add_mount "$CT_MILVUS" "/var/lib/data/milvus" "/srv/milvus/data" "0"
 echo ""
 
+# Add mount for vLLM container (HuggingFace model cache)
+echo "vLLM Container (${CT_VLLM}):"
+add_mount "$CT_VLLM" "/var/lib/llm-models/huggingface" "/var/lib/llm-models/huggingface" "0"
+echo ""
+
+# Add mount for Ollama container (if not using vLLM only)
+# echo "Ollama Container (${CT_OLLAMA}):"
+# add_mount "$CT_OLLAMA" "/var/lib/llm-models/ollama" "/var/lib/ollama/models" "0"
+# echo ""
+
 echo "=========================================="
 echo "Bind Mounts Configuration Complete"
 echo "=========================================="
@@ -89,17 +101,19 @@ if [[ "$MODE" == "test" ]]; then
     echo "  pct stop ${CT_PG} && pct start ${CT_PG}"
     echo "  pct stop ${CT_FILES} && pct start ${CT_FILES}"
     echo "  pct stop ${CT_MILVUS} && pct start ${CT_MILVUS}"
+    echo "  pct stop ${CT_VLLM} && pct start ${CT_VLLM}"
 else
     echo "  pct stop ${CT_PG} && pct start ${CT_PG}"
     echo "  pct stop ${CT_FILES} && pct start ${CT_FILES}"
     echo "  pct stop ${CT_MILVUS} && pct start ${CT_MILVUS}"
+    echo "  pct stop ${CT_VLLM} && pct start ${CT_VLLM}"
 fi
 echo ""
 echo "Or restart all containers:"
 if [[ "$MODE" == "test" ]]; then
-    echo "  for ct in ${CT_PG} ${CT_FILES} ${CT_MILVUS}; do pct stop \$ct; pct start \$ct; done"
+    echo "  for ct in ${CT_PG} ${CT_FILES} ${CT_MILVUS} ${CT_VLLM}; do pct stop \$ct; pct start \$ct; done"
 else
-    echo "  for ct in ${CT_PG} ${CT_FILES} ${CT_MILVUS}; do pct stop \$ct; pct start \$ct; done"
+    echo "  for ct in ${CT_PG} ${CT_FILES} ${CT_MILVUS} ${CT_VLLM}; do pct stop \$ct; pct start \$ct; done"
 fi
 echo ""
 
