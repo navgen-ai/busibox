@@ -82,27 +82,36 @@
     
     # Navigate to LiteLLM proxy directory
     PRISMA_DIR=$(python -c "import os, litellm; print(os.path.dirname(litellm.__file__))")/proxy
-    echo "Prisma directory: $PRISMA_DIR"
+    echo "Prisma schema directory: $PRISMA_DIR"
     cd "$PRISMA_DIR"
     
     # Generate Prisma client
     echo "Generating Prisma client..."
     prisma generate
     
-    # Check where Prisma generated the client
-    # Prisma-client-py generates to ../../prisma relative to schema location
-    LITELLM_DIR=$(python -c "import os, litellm; print(os.path.dirname(litellm.__file__))")
-    PRISMA_CLIENT_DIR="$LITELLM_DIR/prisma"
-    
+    # Find where it actually generated to
     echo ""
-    echo "Checking for generated client at: $PRISMA_CLIENT_DIR"
-    if [ -d "$PRISMA_CLIENT_DIR" ]; then
-      echo "✓ Prisma client generated successfully"
-      ls -la "$PRISMA_CLIENT_DIR/" | head -20
+    echo "Searching for generated Prisma client..."
+    
+    # Check possible locations
+    SITE_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0])")
+    echo "Site packages: $SITE_PACKAGES"
+    
+    # Look for prisma directory
+    if [ -d "$SITE_PACKAGES/prisma" ]; then
+      echo "✓ Found at: $SITE_PACKAGES/prisma"
+      ls -la "$SITE_PACKAGES/prisma/" | head -10
+    elif [ -d "$SITE_PACKAGES/litellm/prisma" ]; then
+      echo "✓ Found at: $SITE_PACKAGES/litellm/prisma"
+      ls -la "$SITE_PACKAGES/litellm/prisma/" | head -10
     else
-      echo "ERROR: Prisma client not found at $PRISMA_CLIENT_DIR"
-      echo "Checking parent directories..."
-      ls -la "$LITELLM_DIR/" || true
+      echo "ERROR: Cannot find generated Prisma client"
+      echo "Searched:"
+      echo "  - $SITE_PACKAGES/prisma"
+      echo "  - $SITE_PACKAGES/litellm/prisma"
+      echo ""
+      echo "Finding all prisma directories in site-packages:"
+      find "$SITE_PACKAGES" -type d -name "prisma" 2>/dev/null || echo "  None found"
       exit 1
     fi
   args:
