@@ -34,7 +34,8 @@ log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # Host directory for shared model cache
-HUGGINGFACE_CACHE="/var/lib/huggingface-cache"
+# IMPORTANT: Must match the path created by setup-proxmox-host.sh
+HUGGINGFACE_CACHE="/var/lib/llm-models/huggingface"
 VENV_DIR="/opt/model-downloader"
 
 # Models to pre-download
@@ -138,9 +139,9 @@ log_info "2. Deploy vLLM containers with Ansible:"
 log_info "   cd provision/ansible"
 log_info "   ansible-playbook -i inventory/test/hosts.yml site.yml --tags vllm"
 echo ""
-log_info "3. Ansible will automatically mount this cache into containers:"
-log_info "   Host: ${HUGGINGFACE_CACHE}"
-log_info "   Container: /root/.cache/huggingface"
+log_info "3. Configure bind mount (run on Proxmox host):"
+log_info "   bash provision/pct/add-data-mounts.sh [test|production]"
+log_info "   This mounts: Host ${HUGGINGFACE_CACHE} -> Container ${HUGGINGFACE_CACHE}"
 echo ""
 log_info "4. vLLM will use these pre-downloaded models (no re-download needed)"
 echo ""
