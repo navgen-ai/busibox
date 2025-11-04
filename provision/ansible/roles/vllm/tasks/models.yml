@@ -22,13 +22,13 @@
 
 - name: Download model to cache (may take 30+ minutes for large models)
   shell: |
-    source {{ vllm_venv_dir }}/bin/activate
     export HF_HOME={{ vllm_cache_dir }}
     {% if vllm_hf_token is defined and vllm_hf_token != "" %}
     export HF_TOKEN={{ vllm_hf_token }}
     {% endif %}
-    python -c "from huggingface_hub import snapshot_download; snapshot_download('{{ vllm_default_model }}', cache_dir='{{ vllm_cache_dir }}')"
+    {{ vllm_venv_dir }}/bin/python3 -c "from huggingface_hub import snapshot_download; snapshot_download('{{ vllm_default_model }}', cache_dir='{{ vllm_cache_dir }}')"
   args:
+    executable: /bin/bash
     creates: "{{ vllm_cache_dir }}/hub/models--{{ vllm_default_model | replace('/', '--') }}"
   become: true
   become_user: "{{ vllm_user }}"

@@ -88,8 +88,9 @@ ollama_initial_models:
   - name: "gemma:2b"
     description: "Lightweight test model"
 
-# vLLM Model Configuration (TEST - smaller model)
-vllm_default_model: "meta-llama/Meta-Llama-3-8B-Instruct"
+# vLLM Model Configuration (TEST)
+# Use model pre-cached by setup-llm-models.sh
+vllm_default_model: "Qwen/Qwen3-VL-8B-Instruct"
 
 # LiteLLM Database Configuration
 litellm_enable_database: true
