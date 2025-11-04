@@ -26,21 +26,21 @@ vllm_port: 8000
 
 # Model Configuration
 # Default model should match one pre-cached by setup-llm-models.sh
+# Optimized for 24GB GPUs (RTX 3090/4090, A5000/A6000)
 vllm_default_model: "microsoft/Phi-4-multimodal-instruct"  # Multimodal model (6B parameters)
 vllm_download_dir: "{{ vllm_cache_dir }}/hub"
 vllm_tensor_parallel_size: 1  # Number of GPUs to use for tensor parallelism
-vllm_gpu_memory_utilization: 0.7  # 70% of GPU memory (reduced for multimodal models)
-vllm_max_model_len: 2048  # Max sequence length (reduced to fit in memory)
-vllm_max_num_seqs: 64  # Max concurrent sequences (reduced from default 256)
+vllm_gpu_memory_utilization: 0.9  # 90% of GPU memory (24GB * 0.9 = ~21.6GB available)
+vllm_max_model_len: 8192  # Max sequence length (long context for 24GB GPU)
+vllm_max_num_seqs: 256  # Max concurrent sequences (high throughput)
 vllm_trust_remote_code: true  # Required for Phi-4
 
 # HuggingFace Configuration
 vllm_hf_token: ""  # Set via secrets or environment for gated models
 
 # Performance Configuration
-vllm_max_num_seqs: 256  # Maximum number of sequences to process
 vllm_max_num_batched_tokens: null  # Auto-calculate based on model
-vllm_enable_prefix_caching: true
+vllm_enable_prefix_caching: true  # Enable KV cache sharing for repeated prompts
 vllm_disable_log_stats: false
 
 # API Configuration
