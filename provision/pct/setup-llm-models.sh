@@ -38,9 +38,8 @@ HUGGINGFACE_CACHE="/var/lib/huggingface-cache"
 
 # Models to pre-download
 MODELS=(
-    "Qwen/Qwen2.5-0.5B-Instruct"      # Small test model (0.5B parameters)
-    "Qwen/Qwen2.5-3B-Instruct"        # Production model (3B parameters)
-    "THUDM/glm-4-9b-chat"             # GLM-4 model (9B parameters)
+    "Qwen/Qwen3-VL-8B-Instruct"      # Small test model (8B parameters)
+    "microsoft/Phi-4-multimodal-instruct"  # Phi-4 model (6B parameters)
 )
 
 echo "=========================================="
