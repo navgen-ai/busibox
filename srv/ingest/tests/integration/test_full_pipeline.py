@@ -169,14 +169,14 @@ async def test_stage_2_parsing(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_stage_3_classification(
-    worker_process,
     config: Config,
     test_user_id: str,
     client: TestClient,
     test_document_content: bytes,
+    worker_process,
 ):
     """Test Stage 3: Document classification."""
-    logger.info("Testing Stage 3: Classification")
+    logger.info("Testing Stage 3: Classification", worker_pid=worker_process.pid)
     
     # Upload and wait for classification
     response = client.post(
@@ -219,14 +219,14 @@ async def test_stage_3_classification(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_stage_4_chunking(
-    worker_process,
     config: Config,
     test_user_id: str,
     client: TestClient,
     test_document_content: bytes,
+    worker_process,
 ):
     """Test Stage 4: Document chunking."""
-    logger.info("Testing Stage 4: Chunking")
+    logger.info("Testing Stage 4: Chunking", worker_pid=worker_process.pid)
     
     # Upload and wait for chunking
     response = client.post(
@@ -278,14 +278,14 @@ async def test_stage_4_chunking(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_stage_5_embedding(
-    worker_process,
     config: Config,
     test_user_id: str,
     client: TestClient,
     test_document_content: bytes,
+    worker_process,
 ):
     """Test Stage 5: Embedding generation."""
-    logger.info("Testing Stage 5: Embedding")
+    logger.info("Testing Stage 5: Embedding", worker_pid=worker_process.pid)
     
     # Upload and wait for embedding
     response = client.post(
@@ -327,14 +327,14 @@ async def test_stage_5_embedding(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_stage_6_indexing(
-    worker_process,
     config: Config,
     test_user_id: str,
     client: TestClient,
     test_document_content: bytes,
+    worker_process,
 ):
     """Test Stage 6: Vector indexing in Milvus."""
-    logger.info("Testing Stage 6: Indexing")
+    logger.info("Testing Stage 6: Indexing", worker_pid=worker_process.pid)
     
     # Upload and wait for completion
     response = client.post(
@@ -391,11 +391,11 @@ async def test_stage_6_indexing(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_full_pipeline_with_search(
-    worker_process,
     config: Config,
     test_user_id: str,
     client: TestClient,
     test_document_content: bytes,
+    worker_process,
 ):
     """
     Test complete pipeline: upload → process → search → retrieve.
@@ -404,6 +404,7 @@ async def test_full_pipeline_with_search(
     """
     logger.info("=" * 80)
     logger.info("FULL PIPELINE TEST WITH SEARCH/RETRIEVAL")
+    logger.info(f"Worker PID: {worker_process.pid}")
     logger.info("=" * 80)
     
     # ========================================================================
