@@ -1,4 +1,52 @@
-"""Text chunking with semantic boundaries (stub)."""
+"""
+Text chunking with semantic boundaries and language awareness.
+
+Chunks text into 400-800 token segments with 10-15% overlap,
+respecting semantic boundaries (sentences, paragraphs) and language boundaries.
+"""
+
+import re
+from typing import Dict, List, Optional
+
+import spacy
+import structlog
+import tiktoken
+
+logger = structlog.get_logger()
+
+
+class Chunk:
+    """Chunk metadata."""
+    
+    def __init__(
+        self,
+        text: str,
+        chunk_index: int,
+        token_count: int,
+        char_offset: int,
+        page_number: Optional[int] = None,
+        section_heading: Optional[str] = None,
+        language: Optional[str] = None,
+    ):
+        self.text = text
+        self.chunk_index = chunk_index
+        self.token_count = token_count
+        self.char_offset = char_offset
+        self.page_number = page_number
+        self.section_heading = section_heading
+        self.language = language
+    
+    def to_dict(self) -> Dict:
+        """Convert to dictionary."""
+        return {
+            "text": self.text,
+            "chunk_index": self.chunk_index,
+            "token_count": self.token_count,
+            "char_offset": self.char_offset,
+            "page_number": self.page_number,
+            "section_heading": self.section_heading,
+            "language": self.language,
+        }
 
 
 class Chunker:
@@ -9,24 +57,315 @@ class Chunker:
         Initialize chunker with configuration.
         
         Args:
-            config: Configuration dictionary with chunk_size and chunk_overlap
+            config: Configuration dictionary with chunk_size_min, chunk_size_max, chunk_overlap_pct
         """
         self.config = config
-        # TODO: Load spaCy model for sentence boundaries
+        self.min_tokens = config.get("chunk_size_min", 400)
+        self.max_tokens = config.get("chunk_size_max", 800)
+        self.overlap_pct = config.get("chunk_overlap_pct", 0.12)
+        
+        # Initialize tokenizer
+        try:
+            self.tokenizer = tiktoken.get_encoding("cl100k_base")
+        except Exception as e:
+            logger.warning("Failed to load tiktoken, using fallback", error=str(e))
+            self.tokenizer = None
+        
+        # Initialize spaCy (lazy loading)
+        self.nlp = None
+        self.nlp_lang = None
     
-    def chunk(self, text: str) -> list:
+    def _load_spacy_model(self, language: str = "en"):
+        """Load spaCy model for language (lazy loading)."""
+        if self.nlp and self.nlp_lang == language:
+            return self.nlp
+        
+        try:
+            # Try language-specific model
+            model_name = f"{language}_core_web_sm"
+            self.nlp = spacy.load(model_name)
+            self.nlp_lang = language
+            logger.info("Loaded spaCy model", language=language, model=model_name)
+        except OSError:
+            # Fallback to English
+            try:
+                self.nlp = spacy.load("en_core_web_sm")
+                self.nlp_lang = "en"
+                logger.warning("Fell back to English spaCy model", requested_language=language)
+            except OSError:
+                logger.error("Failed to load spaCy model - install with: python -m spacy download en_core_web_sm")
+                self.nlp = None
+        
+        return self.nlp
+    
+    def _count_tokens(self, text: str) -> int:
+        """Count tokens in text."""
+        if self.tokenizer:
+            return len(self.tokenizer.encode(text))
+        else:
+            # Fallback: rough estimate (4 chars per token)
+            return len(text) // 4
+    
+    def chunk(
+        self,
+        text: str,
+        page_number: Optional[int] = None,
+        detected_languages: Optional[List[str]] = None,
+    ) -> List[Chunk]:
         """
-        Chunk text into segments.
+        Chunk text into segments with semantic boundaries.
         
         Args:
             text: Input text
-            
+            page_number: PDF page number (if applicable)
+            detected_languages: List of detected languages for language-aware chunking
+        
         Returns:
-            List of chunk dictionaries with content, token_count, start_char, end_char
+            List of Chunk objects with metadata
         """
-        # TODO: Implement chunking
-        # - Use spaCy for sentence boundaries
-        # - Respect chunk_size and chunk_overlap from config
-        # - Return chunks with metadata
-        raise NotImplementedError("Text chunking not implemented")
-
+        if not text.strip():
+            return []
+        
+        # Load spaCy model (use primary language if provided)
+        primary_lang = detected_languages[0] if detected_languages else "en"
+        nlp = self._load_spacy_model(primary_lang)
+        
+        if not nlp:
+            # Fallback: simple sentence splitting
+            return self._chunk_simple(text, page_number)
+        
+        # Parse document
+        doc = nlp(text)
+        
+        # Group into paragraphs first (for better semantic boundaries)
+        paragraphs = self._extract_paragraphs(doc)
+        
+        chunks = []
+        current_chunk_sentences = []
+        current_tokens = 0
+        char_offset = 0
+        chunk_index = 0
+        
+        for para in paragraphs:
+            para_text = para["text"]
+            para_tokens = self._count_tokens(para_text)
+            para_sentences = para["sentences"]
+            
+            # Check if adding paragraph would exceed max tokens
+            if current_tokens + para_tokens > self.max_tokens and current_tokens >= self.min_tokens:
+                # Save current chunk
+                chunk_text = " ".join(current_chunk_sentences)
+                chunk = Chunk(
+                    text=chunk_text,
+                    chunk_index=chunk_index,
+                    token_count=current_tokens,
+                    char_offset=char_offset,
+                    page_number=page_number,
+                    section_heading=self._extract_section_heading(chunk_text),
+                    language=primary_lang,
+                )
+                chunks.append(chunk)
+                chunk_index += 1
+                
+                # Calculate overlap
+                overlap_tokens = int(current_tokens * self.overlap_pct)
+                current_chunk_sentences, current_tokens, char_offset = self._get_overlap(
+                    current_chunk_sentences,
+                    overlap_tokens,
+                    char_offset,
+                )
+            
+            # Add paragraph sentences
+            for sent_info in para_sentences:
+                current_chunk_sentences.append(sent_info["text"])
+                current_tokens += sent_info["tokens"]
+                char_offset = sent_info["end_char"]
+        
+        # Add final chunk
+        if current_chunk_sentences:
+            chunk_text = " ".join(current_chunk_sentences)
+            chunk = Chunk(
+                text=chunk_text,
+                chunk_index=chunk_index,
+                token_count=current_tokens,
+                char_offset=char_offset - len(chunk_text),
+                page_number=page_number,
+                section_heading=self._extract_section_heading(chunk_text),
+                language=primary_lang,
+            )
+            chunks.append(chunk)
+        
+        logger.info(
+            "Text chunked",
+            chunk_count=len(chunks),
+            total_tokens=sum(c.token_count for c in chunks),
+            avg_tokens=sum(c.token_count for c in chunks) / len(chunks) if chunks else 0,
+        )
+        
+        return chunks
+    
+    def _extract_paragraphs(self, doc) -> List[Dict]:
+        """Extract paragraphs with sentence boundaries."""
+        paragraphs = []
+        current_para = {"sentences": [], "text": ""}
+        
+        for sent in doc.sents:
+            sent_text = sent.text.strip()
+            if not sent_text:
+                continue
+            
+            # Check for paragraph break (double newline or heading)
+            if self._is_paragraph_break(sent):
+                if current_para["sentences"]:
+                    current_para["text"] = " ".join(s["text"] for s in current_para["sentences"])
+                    paragraphs.append(current_para)
+                    current_para = {"sentences": [], "text": ""}
+            
+            sent_tokens = self._count_tokens(sent_text)
+            current_para["sentences"].append({
+                "text": sent_text,
+                "tokens": sent_tokens,
+                "start_char": sent.start_char,
+                "end_char": sent.end_char,
+            })
+        
+        # Add final paragraph
+        if current_para["sentences"]:
+            current_para["text"] = " ".join(s["text"] for s in current_para["sentences"])
+            paragraphs.append(current_para)
+        
+        return paragraphs
+    
+    def _is_paragraph_break(self, sent) -> bool:
+        """Check if sentence indicates paragraph break."""
+        # Check for headings (all caps, short, ends with colon)
+        text = sent.text.strip()
+        if len(text) < 100 and text.isupper() and text.endswith(":"):
+            return True
+        
+        # Check for section markers
+        if re.match(r"^(chapter|section|part)\s+\d+", text, re.IGNORECASE):
+            return True
+        
+        return False
+    
+    def _get_overlap(
+        self,
+        sentences: List[Dict],
+        overlap_tokens: int,
+        current_char_offset: int,
+    ) -> tuple:
+        """Get overlap sentences for next chunk."""
+        overlap_sentences = []
+        overlap_token_count = 0
+        
+        # Take sentences from end until we reach overlap token count
+        for sent in reversed(sentences):
+            if overlap_token_count >= overlap_tokens:
+                break
+            overlap_sentences.insert(0, sent)
+            overlap_token_count += sent["tokens"]
+        
+        # Recalculate char offset
+        if overlap_sentences:
+            new_char_offset = overlap_sentences[0]["start_char"]
+        else:
+            new_char_offset = current_char_offset
+        
+        return overlap_sentences, overlap_token_count, new_char_offset
+    
+    def _extract_section_heading(self, text: str) -> Optional[str]:
+        """Extract section heading from chunk text."""
+        lines = text.split("\n")
+        for line in lines[:3]:  # Check first 3 lines
+            line_stripped = line.strip()
+            if (
+                len(line_stripped) < 100
+                and line_stripped.isupper()
+                and line_stripped.endswith(":")
+            ):
+                return line_stripped
+        
+        # Check for numbered sections
+        match = re.match(r"^(chapter|section|part)\s+\d+[:\s]+(.+)", text, re.IGNORECASE)
+        if match:
+            return match.group(0)
+        
+        return None
+    
+    def _chunk_simple(self, text: str, page_number: Optional[int]) -> List[Chunk]:
+        """Simple chunking fallback (when spaCy not available)."""
+        # Split by paragraphs
+        paragraphs = re.split(r"\n\s*\n", text)
+        
+        chunks = []
+        current_chunk = []
+        current_tokens = 0
+        char_offset = 0
+        chunk_index = 0
+        
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+            
+            para_tokens = self._count_tokens(para)
+            
+            if current_tokens + para_tokens > self.max_tokens and current_tokens >= self.min_tokens:
+                # Save chunk
+                chunk_text = "\n\n".join(current_chunk)
+                chunk = Chunk(
+                    text=chunk_text,
+                    chunk_index=chunk_index,
+                    token_count=current_tokens,
+                    char_offset=char_offset,
+                    page_number=page_number,
+                )
+                chunks.append(chunk)
+                chunk_index += 1
+                
+                # Overlap
+                overlap_tokens = int(current_tokens * self.overlap_pct)
+                current_chunk, current_tokens, char_offset = self._get_overlap_simple(
+                    current_chunk,
+                    overlap_tokens,
+                    char_offset,
+                )
+            
+            current_chunk.append(para)
+            current_tokens += para_tokens
+            char_offset += len(para) + 2  # +2 for paragraph separator
+        
+        # Final chunk
+        if current_chunk:
+            chunk_text = "\n\n".join(current_chunk)
+            chunk = Chunk(
+                text=chunk_text,
+                chunk_index=chunk_index,
+                token_count=current_tokens,
+                char_offset=char_offset - len(chunk_text),
+                page_number=page_number,
+            )
+            chunks.append(chunk)
+        
+        return chunks
+    
+    def _get_overlap_simple(
+        self,
+        paragraphs: List[str],
+        overlap_tokens: int,
+        current_char_offset: int,
+    ) -> tuple:
+        """Get overlap paragraphs for simple chunking."""
+        overlap_paras = []
+        overlap_token_count = 0
+        
+        for para in reversed(paragraphs):
+            if overlap_token_count >= overlap_tokens:
+                break
+            overlap_paras.insert(0, para)
+            overlap_token_count += self._count_tokens(para)
+        
+        new_char_offset = current_char_offset - sum(len(p) + 2 for p in overlap_paras)
+        
+        return overlap_paras, overlap_token_count, new_char_offset

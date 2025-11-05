@@ -130,13 +130,14 @@ check_host_configured() {
 check_containers_exist() {
   local mode=$1
   local exists=true
+  local missing=()
   
   if [[ "$mode" == "test" ]]; then
-    # Check test containers (300-310)
+    # Check test containers (300-308)
     for ctid in 300 301 302 303 304 305 306 307 308; do
       if ! pct status "$ctid" &>/dev/null; then
         exists=false
-        break
+        missing+=("$ctid")
       fi
     done
   else
@@ -144,18 +145,71 @@ check_containers_exist() {
     for ctid in 200 201 202 203 204 205 206 207 208; do
       if ! pct status "$ctid" &>/dev/null; then
         exists=false
-        break
+        missing+=("$ctid")
       fi
     done
   fi
   
   if $exists; then
-    print_success "Containers already exist for $mode environment"
+    print_success "All containers exist for $mode environment"
     return 0
   else
-    print_info "Containers not found for $mode environment"
+    print_info "Some containers missing for $mode environment: ${missing[*]}"
     return 1
   fi
+}
+
+# List existing containers for an environment
+list_existing_containers() {
+  local mode=$1
+  local existing=()
+  
+  if [[ "$mode" == "test" ]]; then
+    # Check test containers (300-308)
+    for ctid in 300 301 302 303 304 305 306 307 308; do
+      if pct status "$ctid" &>/dev/null; then
+        local name=$(pct config "$ctid" | grep "hostname:" | awk '{print $2}')
+        existing+=("$ctid:$name")
+      fi
+    done
+  else
+    # Check production containers (200-208)
+    for ctid in 200 201 202 203 204 205 206 207 208; do
+      if pct status "$ctid" &>/dev/null; then
+        local name=$(pct config "$ctid" | grep "hostname:" | awk '{print $2}')
+        existing+=("$ctid:$name")
+      fi
+    done
+  fi
+  
+  if [[ ${#existing[@]} -eq 0 ]]; then
+    return 1
+  fi
+  
+  echo ""
+  echo "Existing containers:"
+  for container in "${existing[@]}"; do
+    local ctid="${container%%:*}"
+    local name="${container##*:}"
+    echo "  - $ctid: $name"
+  done
+  return 0
+}
+
+# Check if vault file is encrypted
+check_vault_encrypted() {
+  local vault_file="${ANSIBLE_DIR}/roles/secrets/vars/vault.yml"
+  
+  if [[ ! -f "$vault_file" ]]; then
+    return 1
+  fi
+  
+  # Check if file starts with $ANSIBLE_VAULT
+  if head -1 "$vault_file" | grep -q '^\$ANSIBLE_VAULT'; then
+    return 0
+  fi
+  
+  return 1
 }
 
 # Step 1: Host Configuration
@@ -206,6 +260,172 @@ step_host_configuration() {
   fi
 }
 
+# Individual container management (create/recreate specific containers)
+step_individual_containers() {
+  print_header "Individual Container Management"
+  
+  # Select environment first
+  echo "Select environment:"
+  echo "  1) Production (200-208)"
+  echo "  2) Test (300-308)"
+  echo ""
+  read -p "Choose [1-2]: " -n 1 -r env_choice
+  echo ""
+  echo ""
+  
+  case "$env_choice" in
+    1)
+      MODE="production"
+      ;;
+    2)
+      MODE="test"
+      ;;
+    *)
+      print_error "Invalid choice"
+      return 1
+      ;;
+  esac
+  
+  # Show current container status
+  echo "Current container status for $MODE:"
+  list_existing_containers "$MODE" || print_info "No containers exist yet"
+  
+  # Loop for creating individual containers
+  while true; do
+    echo ""
+    echo "=========================================="
+    echo "Individual Container Creation - $MODE"
+    echo "=========================================="
+    echo ""
+    echo "Available container groups:"
+    echo "  1) Core services (proxy, apps, agent)"
+    echo "  2) Data services (postgres, milvus, minio)"
+    echo "  3) Worker services (ingest, litellm)"
+    echo "  4) vLLM (all GPUs)"
+    echo "  5) Ollama (optional, single GPU)"
+    echo "  6) Destroy specific container(s)"
+    echo "  7) Show container status"
+    echo "  8) Done with individual containers"
+    echo ""
+    read -p "Choose [1-8]: " -n 1 -r container_choice
+    echo ""
+    echo ""
+    
+    case "$container_choice" in
+      1)
+        print_info "Creating core services (proxy, apps, agent)..."
+        if bash "${PCT_DIR}/containers/create-core-services.sh" "$MODE"; then
+          print_success "Core services created!"
+        else
+          print_error "Core services creation failed"
+        fi
+        echo ""
+        read -p "Press Enter to continue..." -r
+        ;;
+      2)
+        print_info "Creating data services (postgres, milvus, minio)..."
+        if bash "${PCT_DIR}/containers/create-data-services.sh" "$MODE"; then
+          print_success "Data services created!"
+        else
+          print_error "Data services creation failed"
+        fi
+        echo ""
+        read -p "Press Enter to continue..." -r
+        ;;
+      3)
+        print_info "Creating worker services (ingest, litellm)..."
+        if bash "${PCT_DIR}/containers/create-worker-services.sh" "$MODE"; then
+          print_success "Worker services created!"
+        else
+          print_error "Worker services creation failed"
+        fi
+        echo ""
+        read -p "Press Enter to continue..." -r
+        ;;
+      4)
+        print_info "Creating vLLM container (all GPUs)..."
+        if bash "${PCT_DIR}/containers/create-vllm.sh" "$MODE"; then
+          print_success "vLLM container created!"
+        else
+          print_error "vLLM container creation failed"
+        fi
+        echo ""
+        read -p "Press Enter to continue..." -r
+        ;;
+      5)
+        echo "GPU number for Ollama (default: 0):"
+        read -p "Enter GPU number: " gpu_num
+        gpu_num=${gpu_num:-0}
+        echo ""
+        print_info "Creating Ollama container (GPU ${gpu_num})..."
+        if bash "${PCT_DIR}/containers/create-ollama.sh" "$MODE" "$gpu_num"; then
+          print_success "Ollama container created!"
+        else
+          print_error "Ollama container creation failed"
+        fi
+        echo ""
+        read -p "Press Enter to continue..." -r
+        ;;
+      6)
+        # Destroy specific containers
+        echo "Enter container IDs to destroy (space-separated):"
+        echo "Example: 200 203 208"
+        read -r ctids_to_destroy
+        
+        if [[ -z "$ctids_to_destroy" ]]; then
+          print_error "No container IDs provided"
+          read -p "Press Enter to continue..." -r
+          continue
+        fi
+        
+        echo ""
+        print_warning "Will destroy: $ctids_to_destroy"
+        read -p "Confirm? (y/N): " -n 1 -r
+        echo ""
+        
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+          print_info "Cancelled"
+          read -p "Press Enter to continue..." -r
+          continue
+        fi
+        
+        echo ""
+        for ctid in $ctids_to_destroy; do
+          if pct status "$ctid" &>/dev/null; then
+            print_info "Destroying container $ctid..."
+            pct stop "$ctid" 2>/dev/null || true
+            sleep 1
+            pct destroy "$ctid" --purge 2>/dev/null || true
+            print_success "Container $ctid destroyed"
+          else
+            print_warning "Container $ctid not found"
+          fi
+        done
+        echo ""
+        read -p "Press Enter to continue..." -r
+        ;;
+      7)
+        # Show status
+        echo "Container status for $MODE:"
+        list_existing_containers "$MODE" || print_info "No containers exist"
+        echo ""
+        read -p "Press Enter to continue..." -r
+        ;;
+      8)
+        print_info "Done with individual container management"
+        # Save mode for next step
+        echo "$MODE" > /tmp/busibox_setup_mode
+        return 0
+        ;;
+      *)
+        print_error "Invalid choice"
+        echo ""
+        read -p "Press Enter to continue..." -r
+        ;;
+    esac
+  done
+}
+
 # Step 2: Container Creation
 step_container_creation() {
   print_header "Step 2: LXC Container Creation"
@@ -213,10 +433,11 @@ step_container_creation() {
   # Select environment
   echo "Select deployment environment:"
   echo "  1) Production (containers 200-208)"
-  echo "  2) Test (containers 300-310)"
-  echo "  3) Skip container creation"
+  echo "  2) Test (containers 300-308)"
+  echo "  3) Individual container management (create/recreate specific)"
+  echo "  4) Skip container creation"
   echo ""
-  read -p "Choose [1-3]: " -n 1 -r env_choice
+  read -p "Choose [1-4]: " -n 1 -r env_choice
   echo ""
   echo ""
   
@@ -228,6 +449,11 @@ step_container_creation() {
       MODE="test"
       ;;
     3)
+      # Individual container management
+      step_individual_containers
+      return $?
+      ;;
+    4)
       print_info "Skipping container creation"
       return 0
       ;;
@@ -240,22 +466,98 @@ step_container_creation() {
   # Check if containers already exist
   if check_containers_exist "$MODE"; then
     echo ""
-    read -p "Containers exist. Recreate them? This will DESTROY existing containers! (y/N): " -n 1 -r
+    print_success "All containers already exist for $MODE environment"
+    list_existing_containers "$MODE"
     echo ""
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-      print_info "Skipping container creation"
-      return 0
-    fi
+    echo "What would you like to do?"
+    echo "  1) Skip - keep existing containers (will create any missing)"
+    echo "  2) Destroy specific containers and recreate"
+    echo "  3) Destroy ALL containers and recreate from scratch"
+    echo "  4) Cancel container creation"
+    echo ""
+    read -p "Choose [1-4]: " -n 1 -r container_action
+    echo ""
+    echo ""
     
-    # Destroy existing containers
-    echo ""
-    print_warning "Destroying existing $MODE containers..."
-    if [[ "$MODE" == "test" ]]; then
-      bash "${PCT_DIR}/diagnostic/destroy_test.sh" || true
+    case "$container_action" in
+      1)
+        print_info "Keeping existing containers, will create any missing ones"
+        ;;
+      2)
+        # Destroy specific containers
+        echo "Enter container IDs to destroy (space-separated, e.g., 200 203 208):"
+        read -r ctids_to_destroy
+        
+        if [[ -z "$ctids_to_destroy" ]]; then
+          print_error "No container IDs provided"
+          return 1
+        fi
+        
+        echo ""
+        print_warning "Will destroy: $ctids_to_destroy"
+        read -p "Confirm? (y/N): " -n 1 -r
+        echo ""
+        
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+          print_info "Cancelled"
+          return 0
+        fi
+        
+        echo ""
+        for ctid in $ctids_to_destroy; do
+          if pct status "$ctid" &>/dev/null; then
+            print_info "Destroying container $ctid..."
+            pct stop "$ctid" 2>/dev/null || true
+            sleep 1
+            pct destroy "$ctid" --purge 2>/dev/null || true
+          fi
+        done
+        print_success "Selected containers destroyed"
+        ;;
+      3)
+        # Destroy all containers
+        echo ""
+        print_warning "This will DESTROY ALL $MODE containers!"
+        read -p "Are you absolutely sure? (type 'yes' to confirm): " confirm
+        
+        if [[ "$confirm" != "yes" ]]; then
+          print_info "Cancelled"
+          return 0
+        fi
+        
+        echo ""
+        if [[ "$MODE" == "test" ]]; then
+          print_info "Destroying all test containers..."
+          bash "${PCT_DIR}/diagnostic/destroy_test.sh" || true
+        else
+          print_info "Destroying all production containers..."
+          for ctid in 200 201 202 203 204 205 206 207 208; do
+            if pct status "$ctid" &>/dev/null; then
+              print_info "Destroying container $ctid..."
+              pct stop "$ctid" 2>/dev/null || true
+              sleep 1
+              pct destroy "$ctid" --purge 2>/dev/null || true
+            fi
+          done
+        fi
+        print_success "All containers destroyed"
+        ;;
+      4)
+        print_info "Skipping container creation"
+        return 0
+        ;;
+      *)
+        print_error "Invalid choice"
+        return 1
+        ;;
+    esac
+  else
+    # Some containers missing
+    if list_existing_containers "$MODE"; then
+      echo ""
+      print_info "Some containers exist, missing containers will be created"
     else
-      echo "Please manually destroy production containers if needed"
-      echo "Use: pct stop <CTID> && pct destroy <CTID> --purge"
-      return 1
+      print_info "No existing containers found, will create all"
     fi
   fi
   
@@ -362,74 +664,135 @@ step_ansible_configuration() {
     return 1
   fi
   
-  # Tag selection
-  echo ""
-  echo "Ansible configuration options:"
-  echo "  1) Full deployment (all services)"
-  echo "  2) Specific services (use tags)"
-  echo "  3) Custom command"
-  echo "  4) Skip Ansible"
-  echo ""
-  read -p "Choose [1-4]: " -n 1 -r ansible_choice
-  echo ""
-  echo ""
+  # Check for encrypted vault
+  VAULT_PASS_FLAG=""
+  if check_vault_encrypted; then
+    print_warning "Encrypted Ansible vault detected"
+    echo "  File: roles/secrets/vars/vault.yml"
+    echo ""
+    echo "Vault password will be required for deployment"
+    VAULT_PASS_FLAG="--ask-vault-pass"
+    echo ""
+  fi
   
-  case "$ansible_choice" in
-    1)
-      # Full deployment
-      print_info "Running full Ansible deployment for $MODE..."
-      echo ""
-      cd "$ANSIBLE_DIR"
-      make "$MODE"
-      ;;
-    2)
-      # Tag-based deployment
-      echo "Available tags:"
-      echo "  - nginx (reverse proxy)"
-      echo "  - postgres (database)"
-      echo "  - milvus (vector database)"
-      echo "  - minio (object storage)"
-      echo "  - redis (queue)"
-      echo "  - ingest (worker service)"
-      echo "  - agent (API service)"
-      echo "  - apps (Next.js applications)"
-      echo "  - litellm (LLM gateway)"
-      echo "  - ollama (LLM runtime)"
-      echo "  - vllm (LLM runtime)"
-      echo ""
-      read -p "Enter tags (comma-separated, e.g., nginx,postgres): " tags
-      echo ""
-      
-      if [[ -z "$tags" ]]; then
-        print_error "No tags provided"
-        return 1
-      fi
-      
-      print_info "Running Ansible with tags: $tags"
-      echo ""
-      cd "$ANSIBLE_DIR"
-      ansible-playbook -i "inventory/${MODE}/hosts.yml" site.yml --tags "$tags"
-      ;;
-    3)
-      # Custom command
-      echo "Enter custom Ansible command (without 'ansible-playbook'):"
-      read -r custom_cmd
-      echo ""
-      
-      print_info "Running custom Ansible command..."
-      echo ""
-      cd "$ANSIBLE_DIR"
-      eval "ansible-playbook $custom_cmd"
-      ;;
-    4)
-      print_info "Skipping Ansible configuration"
-      return 0
-      ;;
-    *)
-      print_error "Invalid choice"
-      return 1
-      ;;
-  esac
+  # Ansible deployment loop (allows multiple tag-based deployments)
+  while true; do
+    echo ""
+    echo "Ansible configuration options:"
+    echo "  1) Full deployment (all services)"
+    echo "  2) Specific services (use tags)"
+    echo "  3) Custom command"
+    echo "  4) Done with Ansible configuration"
+    echo ""
+    read -p "Choose [1-4]: " -n 1 -r ansible_choice
+    echo ""
+    echo ""
+    
+    case "$ansible_choice" in
+      1)
+        # Full deployment
+        print_info "Running full Ansible deployment for $MODE..."
+        if [[ -n "$VAULT_PASS_FLAG" ]]; then
+          print_warning "You will be prompted for the vault password"
+        fi
+        echo ""
+        cd "$ANSIBLE_DIR"
+        
+        # Use make with vault password if needed
+        if [[ -n "$VAULT_PASS_FLAG" ]]; then
+          # Run ansible-playbook directly with vault password
+          ansible-playbook -i "inventory/${MODE}/hosts.yml" site.yml $VAULT_PASS_FLAG
+        else
+          make "$MODE"
+        fi
+        
+        echo ""
+        print_success "Full deployment complete!"
+        echo ""
+        read -p "Press Enter to continue..." -r
+        ;;
+      2)
+        # Tag-based deployment (can repeat)
+        echo "Available tags:"
+        echo "  - nginx (reverse proxy)"
+        echo "  - postgres (database)"
+        echo "  - milvus (vector database)"
+        echo "  - minio (object storage)"
+        echo "  - redis (queue)"
+        echo "  - ingest (worker service)"
+        echo "  - agent (API service)"
+        echo "  - apps (Next.js applications)"
+        echo "  - litellm (LLM gateway)"
+        echo "  - ollama (LLM runtime)"
+        echo "  - vllm (LLM runtime)"
+        echo ""
+        read -p "Enter tags (comma-separated, e.g., nginx,postgres): " tags
+        echo ""
+        
+        if [[ -z "$tags" ]]; then
+          print_error "No tags provided"
+          continue
+        fi
+        
+        print_info "Running Ansible with tags: $tags"
+        if [[ -n "$VAULT_PASS_FLAG" ]]; then
+          print_warning "You will be prompted for the vault password"
+        fi
+        echo ""
+        cd "$ANSIBLE_DIR"
+        
+        if ansible-playbook -i "inventory/${MODE}/hosts.yml" site.yml --tags "$tags" $VAULT_PASS_FLAG; then
+          echo ""
+          print_success "Tag deployment complete: $tags"
+        else
+          echo ""
+          print_error "Tag deployment failed: $tags"
+        fi
+        
+        echo ""
+        read -p "Press Enter to continue..." -r
+        ;;
+      3)
+        # Custom command
+        echo "Enter custom Ansible command (without 'ansible-playbook'):"
+        echo "Note: Script will automatically add $VAULT_PASS_FLAG if vault is encrypted"
+        read -r custom_cmd
+        echo ""
+        
+        if [[ -z "$custom_cmd" ]]; then
+          print_error "No command provided"
+          continue
+        fi
+        
+        print_info "Running custom Ansible command..."
+        if [[ -n "$VAULT_PASS_FLAG" ]]; then
+          print_warning "You will be prompted for the vault password"
+        fi
+        echo ""
+        cd "$ANSIBLE_DIR"
+        
+        if eval "ansible-playbook $custom_cmd $VAULT_PASS_FLAG"; then
+          echo ""
+          print_success "Custom command complete!"
+        else
+          echo ""
+          print_error "Custom command failed"
+        fi
+        
+        echo ""
+        read -p "Press Enter to continue..." -r
+        ;;
+      4)
+        print_info "Finished with Ansible configuration"
+        break
+        ;;
+      *)
+        print_error "Invalid choice"
+        echo ""
+        read -p "Press Enter to continue..." -r
+        ;;
+    esac
+  done
   
   echo ""
   print_success "Ansible configuration complete!"

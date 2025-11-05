@@ -9,6 +9,7 @@ Handles:
 - Job queuing in Redis Streams
 """
 
+import json
 import uuid
 from typing import Optional
 
@@ -146,6 +147,26 @@ async def upload_file(
                 }
             )
         
+        # Parse metadata if provided
+        parsed_metadata = {}
+        if metadata:
+            try:
+                parsed_metadata = json.loads(metadata)
+                if not isinstance(parsed_metadata, dict):
+                    logger.warning(
+                        "Metadata is not a JSON object, using empty dict",
+                        file_id=file_id,
+                        metadata_type=type(parsed_metadata).__name__,
+                    )
+                    parsed_metadata = {}
+            except json.JSONDecodeError as e:
+                logger.warning(
+                    "Failed to parse metadata JSON, using empty dict",
+                    file_id=file_id,
+                    error=str(e),
+                )
+                parsed_metadata = {}
+        
         # New file - create record and queue job
         await postgres_service.create_file_record(
             file_id=file_id,
@@ -156,7 +177,7 @@ async def upload_file(
             size_bytes=file.size or 0,  # Note: file.size may not be accurate for streaming
             storage_path=storage_path,
             content_hash=content_hash,
-            metadata={} if not metadata else {},  # TODO: Parse JSON metadata
+            metadata=parsed_metadata,
         )
         
         # Queue job in Redis

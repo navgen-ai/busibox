@@ -3,13 +3,16 @@
 Busibox File Ingestion Worker
 
 Consumes jobs from Redis Streams and processes uploaded files:
-1. Download file from MinIO
-2. Extract text (PDF, DOCX, TXT)
-3. Chunk text (spaCy, 512 tokens, 50 overlap)
-4. Generate embeddings (via liteLLM)
-5. Store embeddings in Milvus
-6. Store chunk metadata in PostgreSQL
-7. Update job status
+1. Check for duplicate content (content_hash)
+2. Download file from MinIO
+3. Extract text (Marker, TATR, page images)
+4. Classify document and detect languages
+5. Extract metadata
+6. Chunk text (400-800 tokens, semantic boundaries)
+7. Generate embeddings (dense via liteLLM, ColPali for pages)
+8. Store vectors in Milvus (dense, sparse BM25, multi-vector)
+9. Store metadata in PostgreSQL
+10. Update job status with NOTIFY
 
 Environment Variables:
     REDIS_HOST: Redis server host
@@ -22,12 +25,15 @@ Environment Variables:
     WORKER_ID: Unique worker identifier (default: hostname)
 """
 
+import asyncio
 import os
 import sys
 import time
 import signal
 import socket
-from typing import Optional
+import uuid
+from datetime import datetime
+from typing import List, Optional
 
 import structlog
 import redis
@@ -36,9 +42,12 @@ from redis.exceptions import RedisError
 from services.file_service import FileService
 from services.postgres_service import PostgresService
 from services.milvus_service import MilvusService
-from processors.text_extractor import TextExtractor
-from processors.chunker import Chunker
+from processors.text_extractor import TextExtractor, ExtractionResult
+from processors.chunker import Chunker, Chunk
 from processors.embedder import Embedder
+from processors.classifier import DocumentClassifier
+from processors.metadata_extractor import MetadataExtractor
+from processors.colpali import ColPaliEmbedder
 from utils.config import load_config
 
 # Configure structured logging
@@ -84,6 +93,9 @@ class IngestWorker:
         self.text_extractor: Optional[TextExtractor] = None
         self.chunker: Optional[Chunker] = None
         self.embedder: Optional[Embedder] = None
+        self.classifier: Optional[DocumentClassifier] = None
+        self.metadata_extractor: Optional[MetadataExtractor] = None
+        self.colpali: Optional[ColPaliEmbedder] = None
         
         logger.info(
             "Worker initialized",
@@ -122,12 +134,17 @@ class IngestWorker:
         # Initialize services
         self.file_service = FileService(self.config)
         self.postgres_service = PostgresService(self.config)
+        self.postgres_service.connect()
         self.milvus_service = MilvusService(self.config)
+        self.milvus_service.connect()
         
         # Initialize processors
-        self.text_extractor = TextExtractor()
+        self.text_extractor = TextExtractor(self.config)
         self.chunker = Chunker(self.config)
         self.embedder = Embedder(self.config)
+        self.classifier = DocumentClassifier(self.config)
+        self.metadata_extractor = MetadataExtractor(self.config)
+        self.colpali = ColPaliEmbedder(self.config)
         
         logger.info("All services connected")
     
@@ -146,6 +163,71 @@ class IngestWorker:
         
         logger.info("All services disconnected")
     
+    def _get_timeout_seconds(self, page_count: int) -> int:
+        """Calculate timeout based on document size."""
+        if page_count < 10:
+            return self.config.get("timeout_small", 300)  # 5 minutes
+        elif page_count <= 50:
+            return self.config.get("timeout_medium", 600)  # 10 minutes
+        else:
+            return self.config.get("timeout_large", 1200)  # 20 minutes
+    
+    def _check_duplicate(self, file_id: str, content_hash: str) -> bool:
+        """Check if file with same content_hash already processed."""
+        try:
+            conn = self.postgres_service._get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT file_id, chunk_count, vector_count
+                        FROM ingestion_files
+                        WHERE content_hash = %s
+                        AND file_id IN (
+                            SELECT file_id FROM ingestion_status
+                            WHERE stage = 'completed'
+                        )
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                    """, (content_hash,))
+                    
+                    existing = cur.fetchone()
+                    if existing:
+                        existing_file_id, chunk_count, vector_count = existing
+                        
+                        # Update current file to completed status
+                        self.postgres_service.update_status(
+                            file_id=file_id,
+                            stage="completed",
+                            progress=100,
+                            chunks_processed=chunk_count,
+                            total_chunks=chunk_count,
+                        )
+                        
+                        # Update file metadata
+                        self.postgres_service.update_file_metadata(
+                            file_id=file_id,
+                            chunk_count=chunk_count,
+                            vector_count=vector_count,
+                            processing_duration_seconds=0,  # Instant for duplicates
+                        )
+                        
+                        logger.info(
+                            "Duplicate detected, vectors reused",
+                            file_id=file_id,
+                            existing_file_id=existing_file_id,
+                            content_hash=content_hash,
+                        )
+                        
+                        return True
+            finally:
+                self.postgres_service._return_connection(conn)
+        
+        except Exception as e:
+            logger.error("Duplicate check failed", file_id=file_id, error=str(e), exc_info=True)
+            # Continue processing even if duplicate check fails
+        
+        return False
+    
     def process_job(self, job_id: str, job_data: dict, trace_id: str):
         """
         Process a single ingestion job.
@@ -156,29 +238,322 @@ class IngestWorker:
             trace_id: Trace ID for observability
         """
         file_id = job_data.get("file_id")
+        user_id = job_data.get("user_id")
+        storage_path = job_data.get("storage_path")
+        mime_type = job_data.get("mime_type")
+        original_filename = job_data.get("original_filename", "unknown")
         
-        logger.info(
-            "Processing job",
-            job_id=job_id,
-            file_id=file_id,
-            trace_id=trace_id,
-        )
+        start_time = time.time()
+        temp_file_path = None
         
-        # TODO: Implement job processing logic
-        # 1. Download file from MinIO (file_service.download)
-        # 2. Extract text (text_extractor.extract)
-        # 3. Chunk text (chunker.chunk)
-        # 4. Generate embeddings (embedder.embed_chunks)
-        # 5. Store in Milvus (milvus_service.insert)
-        # 6. Store metadata in PostgreSQL (postgres_service.insert_chunks)
-        # 7. Update job status (postgres_service.update_job_status)
+        try:
+            logger.info(
+                "Processing job",
+                job_id=job_id,
+                file_id=file_id,
+                user_id=user_id,
+                trace_id=trace_id,
+            )
+            
+            # Get content_hash from database
+            conn = self.postgres_service._get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT content_hash FROM ingestion_files WHERE file_id = %s",
+                        (uuid.UUID(file_id),),
+                    )
+                    result = cur.fetchone()
+                    if not result:
+                        raise ValueError(f"File {file_id} not found in database")
+                    content_hash = result[0]
+            finally:
+                self.postgres_service._return_connection(conn)
+            
+            # Check for duplicate
+            if self._check_duplicate(file_id, content_hash):
+                logger.info(
+                    "Job completed (duplicate)",
+                    file_id=file_id,
+                    processing_time_seconds=time.time() - start_time,
+                )
+                return
+            
+            # Stage 1: Parsing
+            self.postgres_service.update_status(
+                file_id=file_id,
+                stage="parsing",
+                progress=10,
+            )
+            
+            temp_file_path = self.file_service.download(storage_path)
+            
+            extraction_result: ExtractionResult = self.text_extractor.extract(
+                temp_file_path,
+                mime_type,
+            )
+            
+            page_count = extraction_result.page_count or 1
+            
+            # Calculate timeout based on page count
+            timeout_seconds = self._get_timeout_seconds(page_count)
+            logger.info(
+                "Processing with timeout",
+                file_id=file_id,
+                page_count=page_count,
+                timeout_seconds=timeout_seconds,
+            )
+            
+            # Stage 2: Classifying
+            self.postgres_service.update_status(
+                file_id=file_id,
+                stage="classifying",
+                progress=20,
+                total_pages=page_count,
+            )
+            
+            document_type, confidence = self.classifier.classify(
+                extraction_result.text,
+                original_filename,
+                mime_type,
+            )
+            
+            primary_language, detected_languages = self.classifier.detect_languages(
+                extraction_result.text,
+            )
+            
+            # Stage 3: Extracting Metadata
+            self.postgres_service.update_status(
+                file_id=file_id,
+                stage="extracting_metadata",
+                progress=30,
+            )
+            
+            metadata = self.metadata_extractor.extract(
+                temp_file_path,
+                mime_type,
+                extraction_result.text,
+            )
+            
+            # Update file metadata
+            self.postgres_service.update_file_metadata(
+                file_id=file_id,
+                document_type=document_type,
+                primary_language=primary_language,
+                detected_languages=detected_languages,
+                extracted_title=metadata.get("title"),
+                extracted_author=metadata.get("author"),
+                extracted_date=metadata.get("date"),
+                extracted_keywords=metadata.get("keywords", []),
+            )
+            
+            # Stage 4: Chunking
+            self.postgres_service.update_status(
+                file_id=file_id,
+                stage="chunking",
+                progress=40,
+            )
+            
+            chunks: List[Chunk] = self.chunker.chunk(
+                extraction_result.text,
+                page_number=None,  # Will be set per chunk if available
+                detected_languages=detected_languages,
+            )
+            
+            total_chunks = len(chunks)
+            
+            self.postgres_service.update_status(
+                file_id=file_id,
+                stage="chunking",
+                progress=50,
+                chunks_processed=total_chunks,
+                total_chunks=total_chunks,
+            )
+            
+            # Store chunks in PostgreSQL
+            chunk_dicts = [c.to_dict() for c in chunks]
+            self.postgres_service.insert_chunks(file_id, chunk_dicts)
+            
+            # Stage 5: Embedding
+            self.postgres_service.update_status(
+                file_id=file_id,
+                stage="embedding",
+                progress=60,
+                chunks_processed=0,
+                total_chunks=total_chunks,
+            )
+            
+            # Generate dense embeddings
+            chunk_texts = [c.text for c in chunks]
+            
+            # Run async embedding in sync context
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                embeddings = loop.run_until_complete(
+                    self.embedder.embed_chunks(chunk_texts)
+                )
+            finally:
+                loop.close()
+            
+            self.postgres_service.update_status(
+                file_id=file_id,
+                stage="embedding",
+                progress=80,
+                chunks_processed=total_chunks,
+                total_chunks=total_chunks,
+            )
+            
+            # Generate ColPali embeddings for PDF pages (if available)
+            page_embeddings = None
+            if extraction_result.page_images and mime_type == "application/pdf":
+                try:
+                    page_image_dicts = [
+                        {"page_number": i + 1, "image_path": path}
+                        for i, path in enumerate(extraction_result.page_images)
+                    ]
+                    
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        page_embeddings = loop.run_until_complete(
+                            self.colpali.embed_pages(extraction_result.page_images)
+                        )
+                    finally:
+                        loop.close()
+                    
+                    if page_embeddings:
+                        logger.info(
+                            "ColPali embeddings generated",
+                            file_id=file_id,
+                            page_count=len(page_embeddings),
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "ColPali embedding generation failed",
+                        file_id=file_id,
+                        error=str(e),
+                    )
+            
+            # Stage 6: Indexing
+            self.postgres_service.update_status(
+                file_id=file_id,
+                stage="indexing",
+                progress=90,
+                chunks_processed=total_chunks,
+                total_chunks=total_chunks,
+            )
+            
+            # Insert text chunks into Milvus
+            chunk_dicts_for_milvus = [
+                {
+                    "text": c.text,
+                    "chunk_index": c.chunk_index,
+                    "page_number": c.page_number,
+                    "char_offset": c.char_offset,
+                    "section_heading": c.section_heading,
+                    "language": c.language,
+                }
+                for c in chunks
+            ]
+            
+            vector_count = self.milvus_service.insert_text_chunks(
+                file_id=file_id,
+                user_id=user_id,
+                chunks=chunk_dicts_for_milvus,
+                embeddings=embeddings,
+                content_hash=content_hash,
+            )
+            
+            # Insert page images if available
+            if page_embeddings and extraction_result.page_images:
+                page_image_dicts = [
+                    {"page_number": i + 1, "image_path": path}
+                    for i, path in enumerate(extraction_result.page_images)
+                ]
+                
+                page_vector_count = self.milvus_service.insert_page_images(
+                    file_id=file_id,
+                    user_id=user_id,
+                    page_images=page_image_dicts,
+                    page_embeddings=page_embeddings,
+                    content_hash=content_hash,
+                )
+                
+                vector_count += page_vector_count
+            
+            # Update final metadata
+            processing_duration = int(time.time() - start_time)
+            
+            self.postgres_service.update_file_metadata(
+                file_id=file_id,
+                chunk_count=total_chunks,
+                vector_count=vector_count,
+                processing_duration_seconds=processing_duration,
+            )
+            
+            # Stage 7: Completed
+            self.postgres_service.update_status(
+                file_id=file_id,
+                stage="completed",
+                progress=100,
+                chunks_processed=total_chunks,
+                total_chunks=total_chunks,
+                pages_processed=page_count,
+                total_pages=page_count,
+            )
+            
+            logger.info(
+                "Job processing complete",
+                job_id=job_id,
+                file_id=file_id,
+                processing_time_seconds=processing_duration,
+                chunk_count=total_chunks,
+                vector_count=vector_count,
+            )
         
-        logger.info(
-            "Job processing complete (stub)",
-            job_id=job_id,
-            file_id=file_id,
-            trace_id=trace_id,
-        )
+        except asyncio.TimeoutError:
+            processing_duration = int(time.time() - start_time)
+            error_msg = f"Processing exceeded {timeout_seconds}s timeout for {page_count}-page document"
+            
+            self.postgres_service.update_status(
+                file_id=file_id,
+                stage="failed",
+                progress=0,
+                error_message=error_msg,
+            )
+            
+            logger.error(
+                "Job processing timeout",
+                file_id=file_id,
+                timeout_seconds=timeout_seconds,
+                processing_time_seconds=processing_duration,
+            )
+            raise
+        
+        except Exception as e:
+            error_msg = str(e)
+            
+            self.postgres_service.update_status(
+                file_id=file_id,
+                stage="failed",
+                progress=0,
+                error_message=error_msg,
+            )
+            
+            logger.error(
+                "Job processing failed",
+                job_id=job_id,
+                file_id=file_id,
+                error=error_msg,
+                exc_info=True,
+            )
+            raise
+        
+        finally:
+            # Cleanup temporary file
+            if temp_file_path:
+                self.file_service.cleanup_temp_file(temp_file_path)
     
     def run(self):
         """Main worker loop - consume and process jobs."""
@@ -203,7 +578,7 @@ class IngestWorker:
                 for stream, message_list in messages:
                     for message_id, message_data in message_list:
                         job_id = message_data.get("job_id")
-                        trace_id = message_data.get("trace_id", "unknown")
+                        trace_id = message_data.get("trace_id", f"trace-{uuid.uuid4()}")
                         
                         try:
                             self.process_job(job_id, message_data, trace_id)
@@ -223,7 +598,7 @@ class IngestWorker:
                                 error=str(e),
                                 exc_info=True,
                             )
-                            # Don't ack - message will be retried
+                            # Don't ack - message will be retried by Redis
                 
             except RedisError as e:
                 logger.error("Redis error", error=str(e), exc_info=True)
@@ -275,4 +650,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
