@@ -33,8 +33,8 @@ ingest_ip: "{{ network_base_octets }}.206"
 
 # LLM Service IPs: .30-.39 (to allow room for more infrastructure)
 litellm_ip: "{{ network_base_octets }}.207"
-ollama_ip: "{{ network_base_octets }}.208"
-vllm_ip: "{{ network_base_octets }}.209"
+vllm_ip: "{{ network_base_octets }}.208"
+ollama_ip: "{{ network_base_octets }}.210"
 
 # ============================================================================
 # Domain Configuration - Test
