@@ -6,19 +6,45 @@ Integration tests for the ingestion service that connect to real services.
 
 These tests require:
 - Access to PostgreSQL, Milvus, Redis, MinIO, and liteLLM services
-- Valid credentials in `busibox/.env` file
+- Valid credentials in `busibox/.env` file (or environment variables)
 - Network access to the service IP addresses
+- Ingestion API and worker services running (for full pipeline tests)
 
 ## Configuration
 
-Tests automatically load environment variables from `busibox/.env` file using `python-dotenv`.
+Tests automatically load environment variables from `busibox/.env` file using `python-dotenv`, or from the environment if `.env` is not available.
 
-Required environment variables:
-- `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`
-- `MILVUS_HOST`, `MILVUS_PORT`, `MILVUS_COLLECTION`
-- `REDIS_HOST`, `REDIS_PORT`
-- `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`
-- `LITELLM_BASE_URL`, `LITELLM_API_KEY`
+### Environment Variables
+
+Required environment variables (aligned with Ansible variable names):
+
+**PostgreSQL:**
+- `POSTGRES_HOST` - Database host (e.g., `10.96.201.203`)
+- `POSTGRES_PORT` - Database port (default: `5432`)
+- `POSTGRES_DB` - Database name (test: `busibox_test`, prod: `agent_server`)
+- `POSTGRES_USER` - Database user (test: `busibox_test_user`)
+- `POSTGRES_PASSWORD` - Database password (from vault)
+
+**Milvus:**
+- `MILVUS_HOST` - Milvus host (e.g., `10.96.201.204`)
+- `MILVUS_PORT` - Milvus port (default: `19530`)
+- `MILVUS_COLLECTION` - Collection name (default: `documents` or `document_embeddings`)
+
+**Redis:**
+- `REDIS_HOST` - Redis host (e.g., `10.96.201.206`)
+- `REDIS_PORT` - Redis port (default: `6379`)
+
+**MinIO:**
+- `MINIO_ENDPOINT` - MinIO endpoint (e.g., `10.96.201.205:9000`)
+- `MINIO_ACCESS_KEY` - Access key (default: `minioadmin`)
+- `MINIO_SECRET_KEY` - Secret key (default: `minioadminchange`)
+- `MINIO_BUCKET` - Bucket name (default: `documents`)
+
+**liteLLM:**
+- `LITELLM_BASE_URL` - liteLLM base URL (e.g., `http://10.96.201.207:4000`)
+- `LITELLM_API_KEY` - API key (from vault)
+
+See `CI_CD.md` for details on running tests in CI/CD pipelines with Ansible variables.
 
 ## Running Tests
 
