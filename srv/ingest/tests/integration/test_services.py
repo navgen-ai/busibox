@@ -257,11 +257,13 @@ async def test_service_integration(config: Config, test_user_id: str):
         await redis_service.connect()
         try:
             await redis_service.ensure_consumer_group()
-            job_id = await redis_service.add_job({
-                "file_id": test_file_id,
-                "user_id": test_user_id,
-                "storage_path": storage_path,
-            })
+            job_id = await redis_service.add_job(
+                file_id=test_file_id,
+                user_id=test_user_id,
+                storage_path=storage_path,
+                mime_type="text/plain",
+                original_filename="integration_test.txt",
+            )
             logger.info("Redis job queued", job_id=job_id)
         finally:
             await redis_service.disconnect()
