@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 
 from api.services.minio import MinIOService
 from api.services.postgres import PostgresService
-from utils.config import load_config
+from shared.config import Config
 
 logger = structlog.get_logger()
 
@@ -32,7 +32,7 @@ async def get_file_metadata(fileId: str, request: Request):
     """
     user_id = request.state.user_id
     
-    config = load_config()
+    config = Config().to_dict()
     postgres_service = PostgresService(config)
     await postgres_service.connect()
     
@@ -162,7 +162,7 @@ async def delete_file(fileId: str, request: Request):
     """
     user_id = request.state.user_id
     
-    config = load_config()
+    config = Config().to_dict()
     postgres_service = PostgresService(config)
     minio_service = MinIOService(config)
     

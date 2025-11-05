@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 
 from api.services.status import StatusService
-from utils.config import load_config
+from shared.config import Config
 
 logger = structlog.get_logger()
 
@@ -31,7 +31,7 @@ async def generate_status_stream(
     Yields:
         SSE-formatted event strings
     """
-    config = load_config()
+    config = Config().to_dict()
     status_service = StatusService(config)
     
     try:

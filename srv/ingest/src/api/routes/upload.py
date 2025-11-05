@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from api.services.minio import MinIOService
 from api.services.postgres import PostgresService
 from api.services.redis import RedisService
-from utils.config import load_config
+from shared.config import Config
 
 logger = structlog.get_logger()
 
@@ -90,7 +90,7 @@ async def upload_file(
     file_id = str(uuid.uuid4())
     
     # Load configuration
-    config = load_config()
+    config = Config().to_dict()
     
     # Initialize services
     minio_service = MinIOService(config)

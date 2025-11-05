@@ -36,8 +36,9 @@ class Config:
         
         # MinIO configuration
         self.minio_endpoint = os.getenv("MINIO_ENDPOINT", "10.96.200.28:9000")
-        self.minio_access_key = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-        self.minio_secret_key = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+        # Support both MINIO_ACCESS_KEY and MINIO_USER for compatibility
+        self.minio_access_key = os.getenv("MINIO_ACCESS_KEY") or os.getenv("MINIO_USER", "minioadmin")
+        self.minio_secret_key = os.getenv("MINIO_SECRET_KEY") or os.getenv("MINIO_PASS", "minioadmin")
         self.minio_secure = os.getenv("MINIO_SECURE", "false").lower() == "true"
         self.minio_bucket = os.getenv("MINIO_BUCKET", "documents")
         
