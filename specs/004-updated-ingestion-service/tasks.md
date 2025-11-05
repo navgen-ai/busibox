@@ -796,10 +796,10 @@ Write unit tests for all API endpoints using pytest.
 - Mock external dependencies (PostgreSQL, MinIO, Redis)
 
 **Acceptance Criteria**:
-- [ ] All endpoints have unit tests
-- [ ] Tests pass
-- [ ] Coverage >80% for API code
-- [ ] Mocks work correctly
+- [X] All endpoints have unit tests
+- [X] Tests pass
+- [X] Coverage >80% for API code
+- [X] Mocks work correctly
 
 **Files Created**:
 - `srv/ingest/tests/api/test_upload.py`
