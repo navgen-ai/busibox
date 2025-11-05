@@ -141,11 +141,13 @@ async def test_redis_service(config: Config, test_file_id: str):
         
         # Test job addition
         logger.info("Testing job addition", file_id=test_file_id)
-        job_id = await redis_service.add_job({
-            "file_id": test_file_id,
-            "user_id": "test-user-123",
-            "storage_path": f"test-user-123/{test_file_id}/test.txt",
-        })
+        job_id = await redis_service.add_job(
+            file_id=test_file_id,
+            user_id="test-user-123",
+            storage_path=f"test-user-123/{test_file_id}/test.txt",
+            mime_type="text/plain",
+            original_filename="test.txt",
+        )
         assert job_id is not None, "Job addition should return job ID"
         logger.info("Job added successfully", job_id=job_id)
         
