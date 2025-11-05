@@ -149,6 +149,24 @@
   when: app_databases is defined and app_databases | length > 0
   tags: [postgres]
 
+- name: Create migrations directory
+  file:
+    path: /var/lib/postgresql/migrations
+    state: directory
+    mode: "0755"
+    owner: postgres
+    group: postgres
+  tags: [postgres]
+
+- name: Copy migration files
+  copy:
+    src: "files/migrations/"
+    dest: /var/lib/postgresql/migrations/
+    mode: "0644"
+    owner: postgres
+    group: postgres
+  tags: [postgres]
+
 - name: Create migrations table in files database
   become_user: postgres
   postgresql_query:
@@ -235,22 +253,6 @@
       ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO {{ postgres_user }};
   when: "'files' in (app_databases | default([]))"
   tags: [postgres]
-
-- name: Create migrations directory
-  file:
-    path: /var/lib/postgresql/migrations
-    state: directory
-    mode: "0755"
-    owner: postgres
-    group: postgres
-
-- name: Copy migration files
-  copy:
-    src: "files/migrations/"
-    dest: /var/lib/postgresql/migrations/
-    mode: "0644"
-    owner: postgres
-    group: postgres
 
 - name: Apply database migrations (main database)
   become_user: postgres
