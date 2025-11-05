@@ -367,6 +367,130 @@ Per `.cursor/rules/001-documentation-organization.md`:
 - ✅ Kebab-case naming
 - ✅ Metadata headers
 
+## Follow-up Improvements
+
+After initial implementation, additional enhancements were made based on user feedback:
+
+### 1. Ansible Vault Detection
+**Issue**: Encrypted vault files require `--ask-vault-pass` flag  
+**Solution**: Added automatic detection of encrypted vault files
+- Checks if `roles/secrets/vars/vault.yml` starts with `$ANSIBLE_VAULT`
+- Automatically adds `--ask-vault-pass` flag when detected
+- Warns user that vault password will be required
+
+### 2. Fixed Test Container Range
+**Issue**: Documentation said 300-310 but should be 300-308  
+**Solution**: Corrected all references to test containers
+- Production: 200-208 (9 containers)
+- Test: 300-308 (9 containers, matching production)
+
+### 3. Enhanced Container Management Options
+**Issue**: When containers exist, only option was to destroy all or skip  
+**Solution**: Added flexible container management menu:
+1. **Skip** - Keep existing, create any missing (smart handling)
+2. **Destroy specific** - Enter container IDs to destroy and recreate
+3. **Destroy all** - Complete rebuild (requires 'yes' confirmation)
+4. **Cancel** - Skip container creation entirely
+
+**Features**:
+- Lists existing containers with names
+- Shows missing containers
+- Allows selective destruction
+- Safety confirmation for destructive operations
+
+### 4. Ansible Deployment Loop
+**Issue**: Could only run one tag-based deployment at a time  
+**Solution**: Added deployment loop that allows multiple operations
+- Choose deployment option
+- Execute deployment
+- Returns to menu for next deployment
+- Select "Done" when finished
+
+**Benefits**:
+- Deploy multiple services in sequence: nginx → postgres → agent
+- Test individual services iteratively
+- No need to restart script for each deployment
+- Better for incremental updates
+
+### 5. Individual Container Management Loop
+**Issue**: No way to create/recreate individual containers interactively  
+**Solution**: Added "Individual container management" option with loop
+- Select environment (production/test)
+- Shows current container status
+- Menu-driven container creation:
+  1. Core services (proxy, apps, agent)
+  2. Data services (postgres, milvus, minio)
+  3. Worker services (ingest, litellm)
+  4. vLLM (all GPUs)
+  5. Ollama (optional, with GPU selection)
+  6. Destroy specific container(s)
+  7. Show container status
+  8. Done
+
+**Benefits**:
+- Create containers one group at a time
+- Test each service before creating next
+- Destroy and recreate specific containers
+- Iterative development workflow
+- No need to run full deployment
+
+## Example Workflows
+
+### Incremental Deployment
+```bash
+bash provision/setup.sh
+
+# Step 3: Ansible Configuration
+# 1. Choose "Specific services"
+# 2. Deploy: nginx
+# 3. Test nginx...
+# 4. Choose "Specific services" again
+# 5. Deploy: postgres,milvus
+# 6. Test databases...
+# 7. Choose "Specific services" again
+# 8. Deploy: agent
+# 9. Choose "Done"
+```
+
+### Recreate Single Container
+```bash
+bash provision/setup.sh
+
+# Step 2: Container Creation
+# 1. Select environment: production
+# 2. Choose "Destroy specific containers"
+# 3. Enter: 208 (vLLM)
+# 4. Confirm: y
+# 5. Container recreated
+```
+
+### With Encrypted Vault
+```bash
+bash provision/setup.sh
+
+# Step 3: Ansible Configuration
+# > Warning: Encrypted Ansible vault detected
+# > You will be prompted for vault password
+# (Script automatically adds --ask-vault-pass)
+```
+
+### Individual Container Management
+```bash
+bash provision/setup.sh
+
+# Step 2: Container Creation
+# 1. Choose "Individual container management"
+# 2. Select environment: production
+# 3. Shows current container status
+# 4. Choose "Data services" → creates postgres, milvus, minio
+# 5. Test databases...
+# 6. Choose "vLLM" → creates vLLM with all GPUs
+# 7. Test vLLM...
+# 8. Choose "Destroy specific containers" → enter: 208
+# 9. Choose "vLLM" again → recreates with fresh config
+# 10. Choose "Done"
+```
+
 ## Next Steps
 
 1. Test interactive setup on fresh Proxmox host
