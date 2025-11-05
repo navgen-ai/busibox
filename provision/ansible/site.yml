@@ -6,10 +6,14 @@
 # 5. Ingest Worker (needs agent API + MinIO + Milvus + PostgreSQL)
 
 - hosts: pg
-  roles: [postgres]
+  roles:
+    - role: postgres
+      tags: [postgres]
 
 - hosts: milvus
-  roles: [milvus]
+  roles:
+    - role: milvus
+      tags: [milvus]
 
 - hosts: agent
   roles:
