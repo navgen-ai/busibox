@@ -55,6 +55,7 @@ litellm_models:
     litellm_params:
       model: "openai/microsoft/Phi-4-multimodal-instruct"
       api_base: "http://{{ vllm_ip }}:{{ vllm_port }}/v1"
+      api_key: "EMPTY"  # vLLM doesn't require authentication
   
   # Qwen3-VL (disabled - not loaded in vLLM)
   # To enable: Deploy a second vLLM instance with Qwen3-VL-8B-Instruct
