@@ -211,17 +211,19 @@
 - name: Apply files database schema (migration 010)
   become_user: postgres
   shell: |
+    set -e
+    
     # Create migrations table if it doesn't exist
-    psql -U postgres -d {{ files_db | default('files') }} -c "
+    psql -U postgres -d {{ files_db | default('files') }} <<'EOF'
       CREATE TABLE IF NOT EXISTS ansible_migrations (
         version INTEGER PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
         applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
-    "
+    EOF
     
     # Check if migration 10 has been applied
-    APPLIED=$(psql -U postgres -d {{ files_db | default('files') }} -t -c "SELECT COUNT(*) FROM ansible_migrations WHERE version = 10" 2>/dev/null || echo "0")
+    APPLIED=$(psql -U postgres -d {{ files_db | default('files') }} -t -c 'SELECT COUNT(*) FROM ansible_migrations WHERE version = 10' 2>/dev/null || echo "0")
     
     if [ "$APPLIED" -eq "0" ]; then
       echo "Applying ingestion schema to files database"
