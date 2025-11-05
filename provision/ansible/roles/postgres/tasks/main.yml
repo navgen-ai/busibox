@@ -149,6 +149,87 @@
   when: app_databases is defined and app_databases | length > 0
   tags: [postgres]
 
+- name: Create migrations table in files database
+  become_user: postgres
+  postgresql_query:
+    db: files
+    query: |
+      CREATE TABLE IF NOT EXISTS ansible_migrations (
+        version INTEGER PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+  when: "'files' in (app_databases | default([]))"
+
+- name: Check if ingestion schema migration has been applied
+  become_user: postgres
+  postgresql_query:
+    db: files
+    query: "SELECT COUNT(*) as count FROM ansible_migrations WHERE version = 10"
+  register: migration_check
+  failed_when: false
+  when: "'files' in (app_databases | default([]))"
+
+- name: Debug migration check result
+  debug:
+    msg: "Migration check: {{ migration_check }}"
+  when: "'files' in (app_databases | default([]))"
+
+- name: Apply ingestion schema to files database
+  become_user: postgres
+  command: psql -U postgres -d files -f /var/lib/postgresql/migrations/010_ingestion_schema.sql
+  when: >
+    'files' in (app_databases | default([])) and
+    (migration_check.query_result is not defined or 
+    (migration_check.query_result | length == 0) or
+    (migration_check.query_result[0].count | int == 0))
+  register: files_migration_result
+
+- name: Display migration result
+  debug:
+    msg: "Ingestion schema migration: {{ 'applied' if files_migration_result.changed else 'already exists' }}"
+  when: "'files' in (app_databases | default([]))"
+
+- name: Grant ownership of all tables to postgres user (files database)
+  become_user: postgres
+  postgresql_query:
+    db: files
+    query: |
+      -- Grant ownership of all tables in public schema
+      DO $$
+      DECLARE
+        tbl RECORD;
+      BEGIN
+        FOR tbl IN SELECT tablename FROM pg_tables WHERE schemaname = 'public'
+        LOOP
+          EXECUTE 'ALTER TABLE public.' || quote_ident(tbl.tablename) || ' OWNER TO {{ postgres_user }}';
+        END LOOP;
+      END $$;
+      
+      -- Grant ownership of all sequences
+      DO $$
+      DECLARE
+        seq RECORD;
+      BEGIN
+        FOR seq IN SELECT sequencename FROM pg_sequences WHERE schemaname = 'public'
+        LOOP
+          EXECUTE 'ALTER SEQUENCE public.' || quote_ident(seq.sequencename) || ' OWNER TO {{ postgres_user }}';
+        END LOOP;
+      END $$;
+      
+      -- Grant schema usage
+      GRANT USAGE ON SCHEMA public TO {{ postgres_user }};
+      GRANT CREATE ON SCHEMA public TO {{ postgres_user }};
+      
+      -- Grant all privileges on all tables
+      GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO {{ postgres_user }};
+      GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO {{ postgres_user }};
+      
+      -- Set default privileges for future objects
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO {{ postgres_user }};
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO {{ postgres_user }};
+  when: "'files' in (app_databases | default([]))"
+
 - name: Create migrations directory
   file:
     path: /var/lib/postgresql/migrations
@@ -189,42 +270,6 @@
     - { version: 3, name: "fix_schema_migrations", file: "003_fix_schema_migrations.sql" }
   register: migration_result
   changed_when: "'applied successfully' in migration_result.stdout"
-
-- name: Create migrations table in files database
-  become_user: postgres
-  postgresql_query:
-    db: "{{ files_db | default('files') }}"
-    query: |
-      CREATE TABLE IF NOT EXISTS ansible_migrations (
-        version INTEGER PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
-
-- name: Check if ingestion schema migration has been applied
-  become_user: postgres
-  postgresql_query:
-    db: "{{ files_db | default('files') }}"
-    query: "SELECT COUNT(*) as count FROM ansible_migrations WHERE version = 10"
-  register: migration_check
-  failed_when: false
-
-- name: Debug migration check result
-  debug:
-    msg: "Migration check: {{ migration_check }}"
-
-- name: Apply ingestion schema to files database
-  become_user: postgres
-  command: psql -U postgres -d {{ files_db | default('files') }} -f /var/lib/postgresql/migrations/010_ingestion_schema.sql
-  when: >
-    migration_check.query_result is not defined or 
-    (migration_check.query_result | length == 0) or
-    (migration_check.query_result[0].count | int == 0)
-  register: files_migration_result
-
-- name: Display migration result
-  debug:
-    msg: "Ingestion schema migration: {{ 'applied' if files_migration_result.changed else 'already exists' }}"
 
 - name: Grant ownership of all tables to application user (main database)
   become_user: postgres
