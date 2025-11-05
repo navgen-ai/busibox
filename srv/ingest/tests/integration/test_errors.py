@@ -78,9 +78,8 @@ async def test_invalid_user_id_format(client: TestClient):
     assert "UUID" in data["error"]
 
 
-@pytest.mark.asyncio
 @pytest.mark.integration
-async def test_file_not_found(config: Config, test_user_id: str, client: TestClient):
+def test_file_not_found(test_user_id: str, client: TestClient):
     """Test that requesting metadata for non-existent file returns 404."""
     fake_file_id = str(uuid.uuid4())
     
