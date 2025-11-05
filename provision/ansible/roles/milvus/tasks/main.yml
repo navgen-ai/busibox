@@ -78,10 +78,13 @@
   delay: 5
   until: milvus_running.rc == 0
   ignore_errors: yes
+  when: ansible_verbosity >= 1
 
 - name: Show Milvus logs if startup failed
   shell: docker logs --tail 50 milvus-standalone
-  when: milvus_running.failed | default(false)
+  when: 
+    - ansible_verbosity >= 1
+    - milvus_running.failed | default(false)
   ignore_errors: yes
 
 - name: Wait for Milvus port to be listening
@@ -133,13 +136,21 @@
     - name: Fail with helpful message
       fail:
         msg: |
-          Milvus failed to start properly. Check the diagnostic information above.
-          Common issues:
-          - Container crashed (check logs above)
-          - Port 19530 not binding (check port status above)
-          - Insufficient resources (check container status)
-          - Data corruption (try: rm -rf /srv/milvus/data/*)
-  when: milvus_health.failed | default(false) or milvus_port_check.failed | default(false)
+          Milvus failed to start properly. Run with -v for diagnostic information.
+          Quick checks:
+          - SSH to container and run: docker logs milvus-standalone
+          - Check port: netstat -tlnp | grep 19530
+          - Check container: docker ps -a | grep milvus
+  when: 
+    - milvus_health.failed | default(false) or milvus_port_check.failed | default(false)
+    - ansible_verbosity >= 1
+
+- name: Fail silently if health check failed (non-debug mode)
+  fail:
+    msg: "Milvus failed to start. Run with -v for detailed diagnostics."
+  when:
+    - milvus_health.failed | default(false) or milvus_port_check.failed | default(false)
+    - ansible_verbosity < 1
 
 - name: Install Python and dependencies for Milvus initialization
   apt:

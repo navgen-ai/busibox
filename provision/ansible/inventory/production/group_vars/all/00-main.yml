@@ -97,7 +97,8 @@ ollama_initial_models:
     description: "Lightweight tasks model"
 
 # vLLM Model Configuration
-vllm_default_model: "meta-llama/Meta-Llama-3-8B-Instruct"
+# Use model pre-cached by setup-llm-models.sh
+vllm_default_model: "microsoft/Phi-4-multimodal-instruct"
 
 # ============================================================================
 # Deployment Configuration
