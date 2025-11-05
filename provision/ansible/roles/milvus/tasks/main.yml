@@ -122,6 +122,7 @@
       - "protobuf>=3.20.0"
       - "environs>=9.5.0"
       - "ujson>=2.0.0"
+      - "orjson>=3.9.0"
       - "pandas>=1.2.4"
       - "numpy"
       - "requests>=2.20.0"
