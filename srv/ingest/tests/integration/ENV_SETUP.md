@@ -26,7 +26,12 @@ MINIO_BUCKET=documents
 # Milvus - REQUIRED for Milvus tests
 MILVUS_HOST=10.96.201.204
 MILVUS_PORT=19530
-MILVUS_COLLECTION=document_embeddings
+MILVUS_COLLECTION=documents
+
+# NOTE: The Milvus collection must be created with the correct hybrid schema.
+# Run: provision/ansible/roles/milvus/files/hybrid_schema.py
+# Or manually create a collection named 'documents' with the required fields:
+# id, file_id, chunk_index, page_number, text, text_dense, text_sparse, modality, etc.
 
 # liteLLM
 LITELLM_BASE_URL=http://10.96.201.207:4000

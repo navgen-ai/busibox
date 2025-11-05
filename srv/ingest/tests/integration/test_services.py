@@ -161,7 +161,12 @@ async def test_redis_service(config: Config, test_file_id: str):
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_milvus_service(config: Config, test_file_id: str, test_user_id: str):
-    """Test Milvus service operations."""
+    """Test Milvus service operations.
+    
+    NOTE: This test requires the correct Milvus schema to be created.
+    Run: provision/ansible/roles/milvus/files/hybrid_schema.py
+    The collection should be named 'document_embeddings' (or set MILVUS_COLLECTION env var).
+    """
     milvus_service = MilvusService(config.to_dict())
     
     try:
