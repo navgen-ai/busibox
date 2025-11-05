@@ -49,7 +49,7 @@ from processors.embedder import Embedder
 from processors.classifier import DocumentClassifier
 from processors.metadata_extractor import MetadataExtractor
 from processors.colpali import ColPaliEmbedder
-from utils.config import load_config
+from shared.config import Config
 
 # Configure structured logging
 structlog.configure(
@@ -75,8 +75,10 @@ logger = structlog.get_logger()
 class IngestWorker:
     """File ingestion worker that processes jobs from Redis Streams."""
     
-    def __init__(self, config: dict):
+    def __init__(self, config: dict = None):
         """Initialize worker with configuration."""
+        if config is None:
+            config = Config().to_dict()
         self.config = config
         self.worker_id = config.get("worker_id", socket.gethostname())
         self.stream_name = config.get("stream_name", "jobs:ingestion")

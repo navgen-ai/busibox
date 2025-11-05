@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 
 from api.services.minio import MinIOService
 from api.services.redis import RedisService
-from utils.config import load_config
+from shared.config import Config
 
 logger = structlog.get_logger()
 
@@ -31,7 +31,7 @@ async def check_postgres() -> Dict[str, any]:
     """Check PostgreSQL connectivity."""
     try:
         import asyncpg
-        config = load_config()
+        config = Config().to_dict()
         
         start = time.time()
         conn = await asyncpg.connect(
@@ -59,7 +59,7 @@ async def check_postgres() -> Dict[str, any]:
 async def check_minio() -> Dict[str, any]:
     """Check MinIO connectivity."""
     try:
-        config = load_config()
+        config = Config().to_dict()
         minio_service = MinIOService(config)
         
         start = time.time()
@@ -80,7 +80,7 @@ async def check_minio() -> Dict[str, any]:
 async def check_redis() -> Dict[str, any]:
     """Check Redis connectivity."""
     try:
-        config = load_config()
+        config = Config().to_dict()
         redis_service = RedisService(config)
         
         start = time.time()
@@ -103,7 +103,7 @@ async def check_milvus() -> Dict[str, any]:
     try:
         from pymilvus import connections, utility
         
-        config = load_config()
+        config = Config().to_dict()
         
         start = time.time()
         connections.connect(
@@ -136,7 +136,7 @@ async def check_litellm() -> Dict[str, any]:
     try:
         import httpx
         
-        config = load_config()
+        config = Config().to_dict()
         litellm_url = config.get("litellm_base_url", "http://10.96.200.30:4000")
         
         start = time.time()
