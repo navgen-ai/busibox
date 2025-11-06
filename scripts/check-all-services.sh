@@ -163,8 +163,17 @@ test_http "MinIO Health" "http://${MINIO_IP}:9000/minio/health/live" "200"
 
 echo ""
 
-# Redis (on ingest-lxc)
-test_port "Redis" "$INGEST_IP" "6379"
+# Redis (on ingest-lxc) - check from inside container since it may bind to localhost only
+TOTAL=$((TOTAL + 1))
+echo -n "Testing Redis (${INGEST_IP}:6379)... "
+if ssh root@${INGEST_IP} "redis-cli ping 2>/dev/null | grep -q PONG"; then
+    echo -e "${GREEN}✓${NC} (responding to PING)"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}✗${NC} (not responding)"
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("Redis: redis-cli ping failed")
+fi
 
 echo ""
 echo -e "${BLUE}=== LLM Services ===${NC}"
@@ -186,9 +195,21 @@ echo ""
 test_port "agent-server" "$AGENT_IP" "4111"
 test_http "agent-server Health" "http://${AGENT_IP}:4111/auth/health" "200"
 
-# Ingest Service
+# Ingest Services
 test_port "ingest-api" "$INGEST_IP" "8002"
 test_http "ingest-api Health" "http://${INGEST_IP}:8002/health" "200"
+
+# Ingest Worker (systemd service)
+TOTAL=$((TOTAL + 1))
+echo -n "Testing ingest-worker service... "
+if ssh root@${INGEST_IP} "systemctl is-active ingest-worker 2>/dev/null | grep -q active"; then
+    echo -e "${GREEN}✓${NC} (active)"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}✗${NC} (not active)"
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("ingest-worker: systemd service not active")
+fi
 
 echo ""
 echo -e "${BLUE}=== Web Applications (PM2) ===${NC}"
