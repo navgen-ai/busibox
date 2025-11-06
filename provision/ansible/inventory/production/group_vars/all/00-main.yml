@@ -183,6 +183,7 @@ applications:
       - resend_api_key
       - sso_jwt_secret
       - litellm_api_key
+      - openai_api_key
     env:
       NODE_ENV: production
       LITELLM_BASE_URL: "http://{{ litellm_ip }}:{{ litellm_port }}/v1"
