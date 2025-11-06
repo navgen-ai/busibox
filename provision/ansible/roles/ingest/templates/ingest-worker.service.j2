@@ -1,7 +1,8 @@
 [Unit]
 Description=Busibox Ingestion Worker
-After=network.target redis-server.service postgresql.service
+After=network.target redis-server.service
 Wants=redis-server.service
+Requires=redis-server.service
 
 [Service]
 Type=simple
