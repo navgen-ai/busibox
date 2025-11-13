@@ -1,8 +1,9 @@
 """
-File metadata and deletion endpoints.
+File metadata, download, and deletion endpoints.
 
 Handles:
 - GET /files/{fileId}: Retrieve file metadata
+- GET /files/{fileId}/download: Download original file from MinIO
 - DELETE /files/{fileId}: Delete file and all associated data
 """
 
@@ -11,7 +12,7 @@ from typing import Optional
 
 import structlog
 from fastapi import APIRouter, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from api.services.minio import MinIOService
 from api.services.postgres import PostgresService
@@ -141,6 +142,112 @@ async def get_file_metadata(fileId: str, request: Request):
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"error": "Failed to retrieve file metadata", "details": str(e)}
+        )
+    
+    finally:
+        await postgres_service.disconnect()
+
+
+@router.get("/{fileId}/download")
+async def download_file(fileId: str, request: Request):
+    """
+    Download original file from MinIO storage.
+    
+    Returns:
+        StreamingResponse with file content
+    """
+    user_id = request.state.user_id
+    
+    config = Config().to_dict()
+    postgres_service = PostgresService(config)
+    minio_service = MinIOService(config)
+    
+    await postgres_service.connect()
+    
+    try:
+        async with postgres_service.pool.acquire() as conn:
+            # Get file record
+            file_row = await conn.fetchrow("""
+                SELECT user_id, storage_path, original_filename, mime_type
+                FROM ingestion_files
+                WHERE file_id = $1
+            """, uuid.UUID(fileId))
+            
+            if not file_row:
+                return JSONResponse(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    content={"error": "File not found"}
+                )
+            
+            # Verify ownership
+            if str(file_row["user_id"]) != user_id:
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={"error": "Unauthorized access"}
+                )
+            
+            storage_path = file_row["storage_path"]
+            original_filename = file_row["original_filename"]
+            mime_type = file_row["mime_type"]
+            
+            # Get file from MinIO
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                
+                # Get file object from MinIO
+                file_data = await loop.run_in_executor(
+                    None,
+                    lambda: minio_service.client.get_object(
+                        minio_service.bucket,
+                        storage_path
+                    )
+                )
+                
+                # Read file content
+                content = await loop.run_in_executor(None, file_data.read)
+                
+                logger.info(
+                    "File downloaded",
+                    file_id=fileId,
+                    user_id=user_id,
+                    filename=original_filename,
+                    size_bytes=len(content),
+                )
+                
+                # Return file as streaming response
+                return StreamingResponse(
+                    iter([content]),
+                    media_type=mime_type,
+                    headers={
+                        'Content-Disposition': f'attachment; filename="{original_filename}"'
+                    }
+                )
+                
+            except Exception as e:
+                logger.error(
+                    "Failed to download file from MinIO",
+                    file_id=fileId,
+                    storage_path=storage_path,
+                    error=str(e),
+                    exc_info=True,
+                )
+                return JSONResponse(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    content={"error": "Failed to download file from storage", "details": str(e)}
+                )
+    
+    except Exception as e:
+        logger.error(
+            "Failed to process download request",
+            file_id=fileId,
+            user_id=user_id,
+            error=str(e),
+            exc_info=True,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"error": "Failed to process download request", "details": str(e)}
         )
     
     finally:
