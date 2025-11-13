@@ -4,6 +4,7 @@ PostgreSQL service for metadata operations.
 Handles file metadata, chunk storage, and status updates with NOTIFY for SSE.
 """
 
+import json
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -216,6 +217,7 @@ class PostgresService:
                 """
                 
                 for chunk in chunks:
+                    metadata = chunk.get("metadata", {})
                     cur.execute(
                         insert_query,
                         (
@@ -226,7 +228,7 @@ class PostgresService:
                             chunk.get("token_count", 0),
                             chunk.get("page_number"),
                             chunk.get("section_heading"),
-                            chunk.get("metadata", {}),
+                            json.dumps(metadata) if metadata else None,  # Convert dict to JSON string
                         ),
                     )
                 
