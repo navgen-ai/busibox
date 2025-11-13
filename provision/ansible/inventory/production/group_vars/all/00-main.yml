@@ -74,6 +74,9 @@ milvus_port: 19530
 minio_host: "{{ minio_ip }}"
 minio_port: 9000
 minio_console_port: 9001
+minio_bucket: documents
+minio_root_user: "{{ secrets.minio.root_user }}"
+minio_root_password: "{{ secrets.minio.root_password }}"
 
 redis_host: "{{ ingest_ip }}"
 redis_port: 6379
