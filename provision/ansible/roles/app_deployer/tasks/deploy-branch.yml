@@ -55,12 +55,31 @@
   delegate_to: "{{ app_to_deploy.container_ip }}"
   register: backup_result
 
-- name: Extract archive
+- name: Extract archive and get commit info
   shell: |
     cd /tmp/{{ app_to_deploy.name }}-{{ branch_to_deploy }}
     tar -xzf archive.tar.gz --strip-components=1
     rm archive.tar.gz
+    # Get the commit hash from the archive
+    if [ -d .git ]; then
+      COMMIT_HASH=$(git rev-parse HEAD)
+    else
+      # For GitHub archives, we need to fetch it separately
+      if [ -f ~/.github_token ]; then
+        TOKEN=$(cat ~/.github_token)
+        COMMIT_HASH=$(curl -s -H "Authorization: Bearer $TOKEN" \
+          "https://api.github.com/repos/{{ app_to_deploy.github_repo }}/commits/{{ branch_to_deploy }}" \
+          | grep -o '"sha": "[^"]*"' | head -1 | cut -d'"' -f4)
+      else
+        COMMIT_HASH=$(curl -s \
+          "https://api.github.com/repos/{{ app_to_deploy.github_repo }}/commits/{{ branch_to_deploy }}" \
+          | grep -o '"sha": "[^"]*"' | head -1 | cut -d'"' -f4)
+      fi
+    fi
+    echo "$COMMIT_HASH" > /tmp/{{ app_to_deploy.name }}-commit-hash
+    echo "Commit hash: $COMMIT_HASH"
   delegate_to: "{{ app_to_deploy.container_ip }}"
+  register: commit_info
 
 - name: Create deploy directory if it doesn't exist
   file:
@@ -115,6 +134,25 @@
   environment: "{{ app_to_deploy.env | default({}) }}"
   register: build_result
   failed_when: build_result.rc != 0
+
+- name: Write deployment version info
+  shell: |
+    cd {{ app_to_deploy.deploy_path }}
+    COMMIT_HASH=$(cat /tmp/{{ app_to_deploy.name }}-commit-hash 2>/dev/null || echo "unknown")
+    cat > .deployed-version << EOF
+    {
+      "type": "branch",
+      "branch": "{{ branch_to_deploy }}",
+      "commit": "$COMMIT_HASH",
+      "deployed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+      "deployed_by": "ansible"
+    }
+    EOF
+    rm -f /tmp/{{ app_to_deploy.name }}-commit-hash
+    echo "Version info written to .deployed-version"
+    cat .deployed-version
+  delegate_to: "{{ app_to_deploy.container_ip }}"
+  register: version_info
 
 - name: Check if PM2 is managing the application
   shell: pm2 list | grep -q "{{ app_to_deploy.name }}"
