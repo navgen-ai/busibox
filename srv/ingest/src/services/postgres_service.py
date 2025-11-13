@@ -82,6 +82,7 @@ class PostgresService:
         pages_processed: Optional[int] = None,
         total_pages: Optional[int] = None,
         error_message: Optional[str] = None,
+        retry_count: Optional[int] = None,
     ):
         """
         Update ingestion status and send NOTIFY for SSE.
@@ -95,50 +96,79 @@ class PostgresService:
             pages_processed: Pages processed so far
             total_pages: Total pages
             error_message: Error message if failed
+            retry_count: Number of retry attempts (optional)
         """
         conn = self._get_connection()
         try:
             with conn.cursor() as cur:
                 # Update status
-                update_query = """
-                    UPDATE ingestion_status
-                    SET stage = %s,
-                        progress = %s,
-                        chunks_processed = %s,
-                        total_chunks = %s,
-                        pages_processed = %s,
-                        total_pages = %s,
-                        error_message = %s,
-                        updated_at = NOW()
-                    WHERE file_id = %s
-                """
-                
-                cur.execute(
-                    update_query,
-                    (
-                        stage,
-                        progress,
-                        chunks_processed,
-                        total_chunks,
-                        pages_processed,
-                        total_pages,
-                        error_message,
-                        uuid.UUID(file_id),
-                    ),
-                )
+                if retry_count is not None:
+                    update_query = """
+                        UPDATE ingestion_status
+                        SET stage = %s,
+                            progress = %s,
+                            chunks_processed = %s,
+                            total_chunks = %s,
+                            pages_processed = %s,
+                            total_pages = %s,
+                            error_message = %s,
+                            retry_count = %s,
+                            updated_at = NOW()
+                        WHERE file_id = %s
+                    """
+                    cur.execute(
+                        update_query,
+                        (
+                            stage,
+                            progress,
+                            chunks_processed,
+                            total_chunks,
+                            pages_processed,
+                            total_pages,
+                            error_message,
+                            retry_count,
+                            file_id,  # Pass string directly, not UUID object
+                        ),
+                    )
+                else:
+                    update_query = """
+                        UPDATE ingestion_status
+                        SET stage = %s,
+                            progress = %s,
+                            chunks_processed = %s,
+                            total_chunks = %s,
+                            pages_processed = %s,
+                            total_pages = %s,
+                            error_message = %s,
+                            updated_at = NOW()
+                        WHERE file_id = %s
+                    """
+                    cur.execute(
+                        update_query,
+                        (
+                            stage,
+                            progress,
+                            chunks_processed,
+                            total_chunks,
+                            pages_processed,
+                            total_pages,
+                            error_message,
+                            file_id,  # Pass string directly, not UUID object
+                        ),
+                    )
                 
                 # Set started_at if queued -> parsing transition
                 if stage == "parsing":
                     cur.execute(
                         "UPDATE ingestion_status SET started_at = NOW() WHERE file_id = %s AND started_at IS NULL",
-                        (uuid.UUID(file_id),),
+                        (file_id,),  # Pass string directly, not UUID object
                     )
                 
                 # Set completed_at if completed or failed
                 if stage in ["completed", "failed"]:
                     cur.execute(
                         "UPDATE ingestion_status SET completed_at = NOW() WHERE file_id = %s",
-                        (uuid.UUID(file_id),),
+                        (file_id,),  # Pass string directly, not UUID object
                     )
                 
                 conn.commit()
@@ -189,7 +219,7 @@ class PostgresService:
                     cur.execute(
                         insert_query,
                         (
-                            uuid.UUID(file_id),
+                            file_id,  # Pass string directly, not UUID object
                             chunk.get("chunk_index", 0),
                             chunk.get("text", ""),
                             chunk.get("char_offset"),
@@ -283,7 +313,7 @@ class PostgresService:
                 
                 if update_fields:
                     update_fields.append("updated_at = NOW()")
-                    update_values.append(uuid.UUID(file_id))
+                    update_values.append(file_id)  # Pass string directly, not UUID object
                     
                     update_query = f"""
                         UPDATE ingestion_files
