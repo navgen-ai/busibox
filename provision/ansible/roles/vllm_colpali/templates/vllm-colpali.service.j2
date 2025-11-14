@@ -15,6 +15,7 @@ Environment="HF_HOME={{ vllm_colpali_cache_dir }}"
 Environment="VLLM_CACHE_ROOT={{ vllm_colpali_home }}/.cache/vllm"
 Environment="TRANSFORMERS_CACHE={{ vllm_colpali_cache_dir }}"
 Environment="HF_HUB_CACHE={{ vllm_colpali_cache_dir }}/hub"
+Environment="VLLM_USE_V1=0"
 {% if vllm_colpali_hf_token %}
 Environment="HF_TOKEN={{ vllm_colpali_hf_token }}"
 {% endif %}
