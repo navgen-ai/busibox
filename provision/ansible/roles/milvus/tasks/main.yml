@@ -30,6 +30,8 @@
           container_name: milvus-standalone
           image: milvusdb/milvus:v2.5.4
           restart: unless-stopped
+          # Give Milvus enough time to flush RocksDB and shutdown cleanly
+          stop_grace_period: 60s
           ports:
             - "19530:19530"
             - "9091:9091"
