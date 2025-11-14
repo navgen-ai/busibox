@@ -332,11 +332,10 @@ async def get_file_chunks(
                             "chunkIndex": chunk["chunk_index"],
                             "text": chunk["text"],
                             "pageNumber": chunk["page_number"],
-                            "chunkType": chunk["chunk_type"],
-                            "charCount": chunk["char_count"],
-                            "wordCount": chunk["word_count"],
+                            "charOffset": chunk["char_offset"],
                             "tokenCount": chunk["token_count"],
-                            "embeddingDenseId": chunk["embedding_dense_id"],
+                            "sectionHeading": chunk["section_heading"],
+                            "metadata": chunk["metadata"],
                             "createdAt": chunk["created_at"].isoformat(),
                         }
                         for chunk in chunks
