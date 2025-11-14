@@ -64,7 +64,7 @@ class Embedder:
         )
         
         try:
-            # Configure litellm
+            # Configure litellm to use proxy server (OpenAI-compatible API)
             litellm.api_base = self.litellm_base_url
             if self.api_key:
                 litellm.api_key = self.api_key
@@ -81,10 +81,14 @@ class Embedder:
                     batch_size=len(batch),
                 )
                 
-                # Generate embeddings via litellm
+                # Generate embeddings via litellm proxy
+                # When using liteLLM as a proxy, we use openai/ prefix to tell the SDK
+                # to use OpenAI-compatible API format (liteLLM handles the actual routing)
                 response = await litellm.aembedding(
-                    model=self.embedding_model,
+                    model=f"openai/{self.embedding_model}",
                     input=batch,
+                    api_base=self.litellm_base_url,
+                    api_key=self.api_key or "dummy-key",
                 )
                 
                 # Extract embeddings
