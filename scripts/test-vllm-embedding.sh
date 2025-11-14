@@ -10,6 +10,10 @@ VLLM_PORT="8001"
 LITELLM_HOST="10.96.200.207"  # liteLLM container
 LITELLM_PORT="4000"
 
+# liteLLM API key (set via environment variable or use default for testing)
+# To set: export LITELLM_API_KEY="your-key-here"
+LITELLM_API_KEY="${LITELLM_API_KEY:-}"
+
 echo "========================================"
 echo "vLLM Embedding Service Test"
 echo "========================================"
@@ -114,12 +118,25 @@ echo ""
 
 # Test 7: Test liteLLM proxy routing
 echo "7. Testing liteLLM proxy routing..."
-LITELLM_RESPONSE=$(curl -sf http://${LITELLM_HOST}:${LITELLM_PORT}/v1/embeddings \
-    -H "Content-Type: application/json" \
-    -d '{
-        "model": "qwen3-embedding",
-        "input": "Testing liteLLM proxy routing to vLLM embedding service."
-    }')
+
+# Build curl command with optional API key
+if [ -n "$LITELLM_API_KEY" ]; then
+    LITELLM_RESPONSE=$(curl -sf http://${LITELLM_HOST}:${LITELLM_PORT}/v1/embeddings \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${LITELLM_API_KEY}" \
+        -d '{
+            "model": "qwen3-embedding",
+            "input": "Testing liteLLM proxy routing to vLLM embedding service."
+        }')
+else
+    echo -e "${YELLOW}⚠ No LITELLM_API_KEY set, trying without authentication${NC}"
+    LITELLM_RESPONSE=$(curl -sf http://${LITELLM_HOST}:${LITELLM_PORT}/v1/embeddings \
+        -H "Content-Type: application/json" \
+        -d '{
+            "model": "qwen3-embedding",
+            "input": "Testing liteLLM proxy routing to vLLM embedding service."
+        }')
+fi
 
 if echo "$LITELLM_RESPONSE" | jq -e '.data[0].embedding' &>/dev/null; then
     LITELLM_DIM=$(echo "$LITELLM_RESPONSE" | jq '.data[0].embedding | length')
