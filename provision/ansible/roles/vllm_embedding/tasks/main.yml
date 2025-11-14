@@ -65,6 +65,15 @@
     group: "{{ vllm_embedding_group }}"
     mode: "0755"
 
+- name: Create vLLM embedding cache directory
+  file:
+    path: "{{ vllm_embedding_home }}/.cache/vllm"
+    state: directory
+    owner: "{{ vllm_embedding_user }}"
+    group: "{{ vllm_embedding_group }}"
+    mode: "0755"
+    recurse: yes
+
 - name: Deploy vLLM embedding systemd service
   template:
     src: vllm-embedding.service.j2
