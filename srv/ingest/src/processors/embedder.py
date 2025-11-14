@@ -68,15 +68,26 @@ class Embedder:
         Returns None if liteLLM is unavailable or fails.
         """
         if not self.litellm_base_url:
+            logger.debug("No liteLLM base URL configured, skipping vLLM")
+            return None
+        
+        if not self.litellm_api_key:
+            logger.warning(
+                "No liteLLM API key configured (LITELLM_API_KEY not set), falling back to FastEmbed",
+                litellm_url=self.litellm_base_url,
+            )
             return None
         
         try:
             import litellm
+            import os
             
             # Configure liteLLM to use proxy
             litellm.api_base = self.litellm_base_url
-            if self.litellm_api_key:
-                litellm.api_key = self.litellm_api_key
+            litellm.api_key = self.litellm_api_key
+            
+            # Also set as environment variable (liteLLM sometimes checks this)
+            os.environ["OPENAI_API_KEY"] = self.litellm_api_key
             
             all_embeddings = []
             
@@ -88,7 +99,7 @@ class Embedder:
                     model=f"openai/{self.primary_model}",
                     input=batch,
                     api_base=self.litellm_base_url,
-                    api_key=self.litellm_api_key or "dummy-key",
+                    api_key=self.litellm_api_key,
                     timeout=30.0,
                 )
                 
