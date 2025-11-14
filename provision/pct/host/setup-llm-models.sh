@@ -36,6 +36,8 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 # Host directory for shared model cache
 # IMPORTANT: Must match the path created by setup-proxmox-host.sh
 HUGGINGFACE_CACHE="/var/lib/llm-models/huggingface"
+# HuggingFace stores models in hub/ subdirectory
+MODELS_DIR="${HUGGINGFACE_CACHE}/hub"
 VENV_DIR="/opt/model-downloader"
 
 # Models to pre-download
@@ -90,7 +92,7 @@ echo ""
 
 for MODEL in "${MODELS[@]}"; do
     MODEL_DIR=$(echo "$MODEL" | sed 's/\//-/g')
-    MODEL_PATH="${HUGGINGFACE_CACHE}/models--${MODEL_DIR}"
+    MODEL_PATH="${MODELS_DIR}/models--${MODEL_DIR}"
     
     # Check if model exists by looking for any snapshots directory
     if [[ -d "${MODEL_PATH}/snapshots" ]] && [[ -n "$(ls -A ${MODEL_PATH}/snapshots 2>/dev/null)" ]]; then
@@ -143,7 +145,7 @@ echo ""
 log_info "Downloaded models (requested):"
 for MODEL in "${MODELS[@]}"; do
     MODEL_DIR=$(echo "$MODEL" | sed 's/\//-/g')
-    MODEL_PATH="${HUGGINGFACE_CACHE}/models--${MODEL_DIR}"
+    MODEL_PATH="${MODELS_DIR}/models--${MODEL_DIR}"
     
     if [[ -d "${MODEL_PATH}/snapshots" ]]; then
         # Count snapshots
@@ -164,8 +166,8 @@ echo ""
 # Step 6: List ALL cached models for verification
 log_info "Step 6: All cached model directories:"
 echo ""
-if ls -1d "${HUGGINGFACE_CACHE}"/models--* 2>/dev/null | grep -q .; then
-    ls -1d "${HUGGINGFACE_CACHE}"/models--* 2>/dev/null | while read -r dir; do
+if ls -1d "${MODELS_DIR}"/models--* 2>/dev/null | grep -q .; then
+    ls -1d "${MODELS_DIR}"/models--* 2>/dev/null | while read -r dir; do
         MODEL_NAME=$(basename "$dir" | sed 's/models--//g' | sed 's/--/\//g')
         # Get size of blobs directory if it exists, otherwise whole directory
         if [[ -d "${dir}/blobs" ]]; then
@@ -177,7 +179,7 @@ if ls -1d "${HUGGINGFACE_CACHE}"/models--* 2>/dev/null | grep -q .; then
         echo "  ✓ ${MODEL_NAME}: ${SIZE} (${SNAPSHOTS} snapshot(s))"
     done
 else
-    log_warning "No models found in ${HUGGINGFACE_CACHE}"
+    log_warning "No models found in ${MODELS_DIR}"
 fi
 echo ""
 
