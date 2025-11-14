@@ -68,7 +68,7 @@ litellm_models:
   # Using vLLM with Qwen3 embedding model
   - model_name: "qwen3-embedding"
     litellm_params:
-      model: "openai/Qwen/Qwen3-Embedding-8B"
+      model: "openai/qwen3-embedding"  # Use vLLM's served-model-name, not HF model path
       api_base: "http://{{ vllm_ip }}:8001/v1"
       api_key: "EMPTY"  # vLLM doesn't require auth, but OpenAI provider needs a key
     # Embedding dimension: 4096
