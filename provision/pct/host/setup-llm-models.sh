@@ -42,7 +42,8 @@ VENV_DIR="/opt/model-downloader"
 MODELS=(
     "microsoft/Phi-4-multimodal-instruct"  # Phi-4 chat model (6B parameters, GPU 0)
     "Qwen/Qwen3-Embedding-8B"              # Qwen3 embedding model (8B parameters, 4096 dims, GPU 1)
-    # "Qwen/Qwen3-VL-8B-Instruct"          # Optional: VL model for future use
+    "Qwen/Qwen3-VL-8B-Instruct"            # Qwen3 VL model (8B parameters, 4096 dims, GPU 1)
+    "Qwen/Qwen3-30B-A3B-Instruct-2507"    # Qwen3 30B model (30B parameters, 4096 dims, GPU 1)
 )
 
 echo "=========================================="
@@ -88,35 +89,45 @@ log_info "Step 4: Downloading models..."
 echo ""
 
 for MODEL in "${MODELS[@]}"; do
-    MODEL_DIR=$(echo "$MODEL" | sed 's/\//-/'g)
+    MODEL_DIR=$(echo "$MODEL" | sed 's/\//-/g')
     MODEL_PATH="${HUGGINGFACE_CACHE}/models--${MODEL_DIR}"
     
-    if [[ -d "${MODEL_PATH}" ]]; then
+    # Check if model exists by looking for any snapshots directory
+    if [[ -d "${MODEL_PATH}/snapshots" ]] && [[ -n "$(ls -A ${MODEL_PATH}/snapshots 2>/dev/null)" ]]; then
         log_success "✓ ${MODEL} (already cached)"
     else
         log_info "↓ Downloading ${MODEL}..."
         log_info "  This may take 10-30 minutes depending on model size..."
         
-        HF_HOME="${HUGGINGFACE_CACHE}" "${VENV_DIR}/bin/python3" << EOF
+        # Download and capture the actual cache directory
+        DOWNLOAD_OUTPUT=$(HF_HOME="${HUGGINGFACE_CACHE}" "${VENV_DIR}/bin/python3" << EOF
 from huggingface_hub import snapshot_download
 import os
 try:
     cache_dir = snapshot_download('${MODEL}', resume_download=True)
-    print(f"Download completed successfully")
-    print(f"Cached to: {cache_dir}")
-    # Show actual directory name
-    if os.path.exists(cache_dir):
-        parent_dir = os.path.dirname(cache_dir)
-        model_dir = os.path.basename(parent_dir)
-        print(f"Model directory: {model_dir}")
+    # Find the models-- directory (go up two levels from snapshot)
+    parent_dir = os.path.dirname(cache_dir)  # Remove snapshot hash
+    models_dir = os.path.dirname(parent_dir)  # Remove /snapshots
+    model_name = os.path.basename(models_dir)  # Get models--Org--ModelName
+    print(f"CACHE_DIR:{cache_dir}")
+    print(f"MODEL_DIR:{model_name}")
 except Exception as e:
-    print(f"Download failed: {e}")
+    print(f"ERROR:{e}")
     exit(1)
 EOF
+)
+        
         if [ $? -eq 0 ]; then
             log_success "✓ ${MODEL} downloaded"
+            # Extract and display the actual cache location
+            ACTUAL_CACHE=$(echo "$DOWNLOAD_OUTPUT" | grep "CACHE_DIR:" | cut -d: -f2-)
+            ACTUAL_MODEL=$(echo "$DOWNLOAD_OUTPUT" | grep "MODEL_DIR:" | cut -d: -f2-)
+            if [[ -n "$ACTUAL_MODEL" ]]; then
+                log_info "  Cached as: ${ACTUAL_MODEL}"
+            fi
         else
             log_error "✗ Failed to download ${MODEL}"
+            log_error "$DOWNLOAD_OUTPUT"
             exit 1
         fi
     fi
@@ -126,13 +137,31 @@ echo ""
 # Step 5: Show model sizes
 log_info "Step 5: Model storage summary..."
 echo ""
-du -sh "${HUGGINGFACE_CACHE}" 2>/dev/null | awk '{print "  Total cache size: " $1}'
+TOTAL_SIZE=$(du -sh "${HUGGINGFACE_CACHE}" 2>/dev/null | awk '{print $1}')
+echo "  Total cache size: ${TOTAL_SIZE}"
 echo ""
 log_info "Downloaded models:"
 for MODEL in "${MODELS[@]}"; do
-    MODEL_DIR=$(echo "$MODEL" | sed 's/\//-/'g)
-    SIZE=$(du -sh "${HUGGINGFACE_CACHE}/models--${MODEL_DIR}" 2>/dev/null | awk '{print $1}' || echo "N/A")
-    echo "  - ${MODEL}: ${SIZE}"
+    MODEL_DIR=$(echo "$MODEL" | sed 's/\//-/g')
+    MODEL_PATH="${HUGGINGFACE_CACHE}/models--${MODEL_DIR}"
+    
+    if [[ -d "${MODEL_PATH}" ]]; then
+        SIZE=$(du -sh "${MODEL_PATH}" 2>/dev/null | awk '{print $1}')
+        SNAPSHOTS=$(ls -1 "${MODEL_PATH}/snapshots" 2>/dev/null | wc -l | tr -d ' ')
+        echo "  - ${MODEL}: ${SIZE} (${SNAPSHOTS} snapshot(s))"
+    else
+        echo "  - ${MODEL}: NOT FOUND"
+    fi
+done
+echo ""
+
+# Step 6: List actual cached directories for verification
+log_info "Step 6: Actual cached model directories:"
+echo ""
+ls -1d "${HUGGINGFACE_CACHE}"/models--* 2>/dev/null | while read -r dir; do
+    MODEL_NAME=$(basename "$dir" | sed 's/models--//g' | sed 's/--/\//g')
+    SIZE=$(du -sh "$dir" 2>/dev/null | awk '{print $1}')
+    echo "  ✓ ${MODEL_NAME} (${SIZE})"
 done
 echo ""
 
