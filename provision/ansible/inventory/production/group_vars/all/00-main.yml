@@ -88,6 +88,10 @@ agent_api_port: 4111
 litellm_host: "{{ litellm_ip }}"
 litellm_port: 4000
 
+# Embedding Configuration (for ingest service)
+embedding_model: "qwen3-embedding"
+embedding_dimension: 4096
+
 ollama_host: "{{ ollama_ip }}"
 ollama_port: 11434
 
