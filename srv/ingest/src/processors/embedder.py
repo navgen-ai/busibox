@@ -142,6 +142,19 @@ class Embedder:
         
         return embeddings
     
+    async def embed_single(self, text: str) -> Optional[List[float]]:
+        """
+        Generate embedding for a single text string.
+        
+        Args:
+            text: Text to embed
+            
+        Returns:
+            Embedding vector or None if failed
+        """
+        embeddings = await self.embed_chunks([text])
+        return embeddings[0] if embeddings else None
+    
     async def embed_chunks(
         self,
         chunks: List[str],
