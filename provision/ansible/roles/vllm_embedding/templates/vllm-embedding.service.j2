@@ -12,6 +12,7 @@ WorkingDirectory={{ vllm_embedding_home }}
 # Environment configuration
 Environment="CUDA_VISIBLE_DEVICES={{ vllm_embedding_cuda_visible_devices }}"
 Environment="HF_HOME={{ vllm_embedding_cache_dir }}"
+Environment="VLLM_CACHE_ROOT={{ vllm_embedding_home }}/.cache/vllm"
 {% if vllm_embedding_hf_token %}
 Environment="HF_TOKEN={{ vllm_embedding_hf_token }}"
 {% endif %}
