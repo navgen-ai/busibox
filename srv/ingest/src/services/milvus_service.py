@@ -244,8 +244,10 @@ class MilvusService:
             # Generate zero/empty embeddings for text fields (required by Milvus schema)
             # Page images don't have text embeddings, so use zeros/empty
             zero_dense_embedding = [0.0] * 1536  # Match text embedding dimension
-            # Create empty sparse matrix (BM25) - must be csr_matrix, not dict
-            empty_sparse_embedding = csr_matrix((1, 1), dtype=float)
+            # Create empty sparse matrix (BM25) - must match format used for text chunks
+            # Text chunks use: csr_matrix(bm25_scores) where bm25_scores is a 1D array
+            # So we create an empty 1D array and convert to sparse
+            empty_sparse_embedding = csr_matrix([0.0])  # Minimal sparse vector
             
             entity = {
                 "id": vector_id,
