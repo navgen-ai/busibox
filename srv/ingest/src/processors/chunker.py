@@ -3,6 +3,11 @@ Text chunking with semantic boundaries and language awareness.
 
 Chunks text into 400-800 token segments with 10-15% overlap,
 respecting semantic boundaries (sentences, paragraphs) and language boundaries.
+
+Converts semantic structures to markdown:
+- Headings (ALL CAPS, numbered sections) → # Markdown headings
+- Lists → - Markdown lists
+- Preserves paragraph structure with blank lines
 """
 
 import re
@@ -153,12 +158,13 @@ class Chunker:
             
             # Check if adding paragraph would exceed max tokens
             if current_tokens + para_tokens > self.max_tokens and current_tokens >= self.min_tokens:
-                # Save current chunk
+                # Save current chunk with markdown formatting
                 chunk_text = " ".join(current_chunk_sentences)
+                markdown_text = self._convert_to_markdown(chunk_text)
                 chunk = Chunk(
-                    text=chunk_text,
+                    text=markdown_text,
                     chunk_index=chunk_index,
-                    token_count=current_tokens,
+                    token_count=self._count_tokens(markdown_text),
                     char_offset=char_offset,
                     page_number=page_number,
                     section_heading=self._extract_section_heading(chunk_text),
@@ -181,13 +187,14 @@ class Chunker:
                 current_tokens += sent_info["tokens"]
                 char_offset = sent_info["end_char"]
         
-        # Add final chunk
+        # Add final chunk with markdown formatting
         if current_chunk_sentences:
             chunk_text = " ".join(current_chunk_sentences)
+            markdown_text = self._convert_to_markdown(chunk_text)
             chunk = Chunk(
-                text=chunk_text,
+                text=markdown_text,
                 chunk_index=chunk_index,
-                token_count=current_tokens,
+                token_count=self._count_tokens(markdown_text),
                 char_offset=char_offset - len(chunk_text),
                 page_number=page_number,
                 section_heading=self._extract_section_heading(chunk_text),
@@ -293,6 +300,80 @@ class Chunker:
         
         return None
     
+    def _convert_to_markdown(self, text: str) -> str:
+        """
+        Convert semantic structures in text to markdown format.
+        
+        Converts:
+        - ALL CAPS HEADINGS: → # Heading
+        - Chapter/Section markers → ## Heading
+        - Numbered lists (1., 2.) → 1. Item
+        - Bullet points (•, -, *) → - Item
+        - Multiple blank lines → Single blank line
+        
+        Args:
+            text: Input text with semantic structures
+        
+        Returns:
+            Markdown-formatted text
+        """
+        lines = text.split("\n")
+        markdown_lines = []
+        
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            
+            if not stripped:
+                # Preserve single blank lines, remove multiple
+                if not markdown_lines or markdown_lines[-1] != "":
+                    markdown_lines.append("")
+                continue
+            
+            # Convert ALL CAPS headings to markdown
+            if len(stripped) < 100 and stripped.isupper():
+                # Remove trailing colon if present
+                heading_text = stripped.rstrip(":")
+                # Determine heading level based on context
+                if any(word in heading_text.lower() for word in ["chapter", "part"]):
+                    markdown_lines.append(f"# {heading_text}")
+                else:
+                    markdown_lines.append(f"## {heading_text}")
+                markdown_lines.append("")  # Blank line after heading
+                continue
+            
+            # Convert numbered section markers
+            section_match = re.match(r"^(chapter|section|part)\s+(\d+)[:\s]*(.*)$", stripped, re.IGNORECASE)
+            if section_match:
+                section_type = section_match.group(1).title()
+                section_num = section_match.group(2)
+                section_title = section_match.group(3).strip()
+                if section_title:
+                    markdown_lines.append(f"## {section_type} {section_num}: {section_title}")
+                else:
+                    markdown_lines.append(f"## {section_type} {section_num}")
+                markdown_lines.append("")
+                continue
+            
+            # Convert bullet points to markdown lists
+            bullet_match = re.match(r"^[•\-\*]\s+(.+)$", stripped)
+            if bullet_match:
+                markdown_lines.append(f"- {bullet_match.group(1)}")
+                continue
+            
+            # Numbered lists are already markdown-compatible
+            if re.match(r"^\d+\.\s+", stripped):
+                markdown_lines.append(stripped)
+                continue
+            
+            # Regular paragraph text
+            markdown_lines.append(stripped)
+        
+        # Join and clean up multiple blank lines
+        markdown_text = "\n".join(markdown_lines)
+        markdown_text = re.sub(r"\n{3,}", "\n\n", markdown_text)  # Max 2 newlines
+        
+        return markdown_text.strip()
+    
     def _chunk_simple(self, text: str, page_number: Optional[int]) -> List[Chunk]:
         """Simple chunking fallback (when spaCy not available)."""
         # Split by paragraphs
@@ -312,12 +393,13 @@ class Chunker:
             para_tokens = self._count_tokens(para)
             
             if current_tokens + para_tokens > self.max_tokens and current_tokens >= self.min_tokens:
-                # Save chunk
+                # Save chunk with markdown formatting
                 chunk_text = "\n\n".join(current_chunk)
+                markdown_text = self._convert_to_markdown(chunk_text)
                 chunk = Chunk(
-                    text=chunk_text,
+                    text=markdown_text,
                     chunk_index=chunk_index,
-                    token_count=current_tokens,
+                    token_count=self._count_tokens(markdown_text),
                     char_offset=char_offset,
                     page_number=page_number,
                 )
@@ -336,13 +418,14 @@ class Chunker:
             current_tokens += para_tokens
             char_offset += len(para) + 2  # +2 for paragraph separator
         
-        # Final chunk
+        # Final chunk with markdown formatting
         if current_chunk:
             chunk_text = "\n\n".join(current_chunk)
+            markdown_text = self._convert_to_markdown(chunk_text)
             chunk = Chunk(
-                text=chunk_text,
+                text=markdown_text,
                 chunk_index=chunk_index,
-                token_count=current_tokens,
+                token_count=self._count_tokens(markdown_text),
                 char_offset=char_offset - len(chunk_text),
                 page_number=page_number,
             )
