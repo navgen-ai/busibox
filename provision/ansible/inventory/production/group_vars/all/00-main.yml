@@ -182,8 +182,6 @@ applications:
     deploy_path: /srv/apps/ai-portal
     health_endpoint: /api/health
     build_command: "npm run build"
-    env:
-      INGEST_API_HOST: "{{ ingest_ip }}"
     routes:
       - type: domain
         domains:
@@ -232,6 +230,7 @@ applications:
       BETTER_AUTH_URL: "https://{{ domain }}"
       SSO_TOKEN_EXPIRY: "900"
       PORT: "3000"
+      INGEST_API_HOST: "{{ ingest_ip }}"
   
   - name: agent-client
     github_repo: jazzmind/agent-client
