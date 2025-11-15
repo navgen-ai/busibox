@@ -221,25 +221,29 @@ class MilvusService:
             target_dim = 4096
             original_length = len(flattened_embedding)
             
+            # CRITICAL: Create a new list to avoid reference issues
             if len(flattened_embedding) < target_dim:
-                # Pad with zeros
-                flattened_embedding.extend([0.0] * (target_dim - len(flattened_embedding)))
+                # Pad with zeros - create new list
+                flattened_embedding = flattened_embedding + ([0.0] * (target_dim - len(flattened_embedding)))
                 logger.debug(
                     "Padded page vector",
                     page_number=page_number,
                     original_length=original_length,
-                    padded_length=target_dim,
+                    padded_length=len(flattened_embedding),
                 )
             elif len(flattened_embedding) > target_dim:
-                # Truncate (should be rare - images are pre-scaled)
-                flattened_embedding = flattened_embedding[:target_dim]
+                # Truncate - create new list slice
+                flattened_embedding = list(flattened_embedding[:target_dim])
                 logger.warning(
                     "Truncated page vector - consider scaling image smaller",
                     page_number=page_number,
                     original_length=original_length,
-                    truncated_length=target_dim,
+                    truncated_length=len(flattened_embedding),
                     patches_lost=(original_length - target_dim) // 128,
                 )
+            else:
+                # Exact match - still create new list to avoid reference issues
+                flattened_embedding = list(flattened_embedding)
             
             # Generate zero/empty embeddings for text fields (required by Milvus schema)
             # Page images don't have text embeddings, so use zeros/empty
