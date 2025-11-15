@@ -15,11 +15,20 @@ The `ingest-test` command provides a convenient way to run tests on the ingest s
 ### Basic Commands
 
 ```bash
-# Run all tests
+# Run chunker tests (default - fast, validates core fixes)
 ingest-test
 
-# Run chunker tests only
+# Run chunker tests explicitly
 ingest-test chunker
+
+# Run all tests (includes integration tests - may be slow)
+ingest-test all
+
+# Run integration tests only
+ingest-test integration
+
+# Run API tests only
+ingest-test api
 
 # Run with coverage report
 ingest-test coverage
@@ -55,30 +64,62 @@ ingest-test -k "milvus"
 
 ## Test Modes
 
-### 1. Standard Mode (default)
+### 1. Chunker Mode (default)
 
 ```bash
 ingest-test
-```
-
-**Output**: Verbose test results with short traceback
-
-**Use when**: Running all tests for validation
-
-### 2. Chunker Mode
-
-```bash
+# or explicitly:
 ingest-test chunker
 ```
 
-**Output**: Only chunker tests (fast, ~5 seconds)
+**Output**: Chunker test results (~5 seconds, 42 tests)
 
 **Use when**: 
+- Quick validation after deployment
 - Validating chunking fixes
+- Smoke testing core functionality
 - After updating chunker.py
-- Quick smoke test
 
-### 3. Coverage Mode
+### 2. All Tests Mode
+
+```bash
+ingest-test all
+```
+
+**Output**: All tests including integration tests (may be slow, 60+ seconds)
+
+**Use when**:
+- Full validation before release
+- Testing complete system
+- Integration tests needed
+
+### 3. Integration Tests Mode
+
+```bash
+ingest-test integration
+```
+
+**Output**: Integration tests only (requires full service stack)
+
+**Use when**:
+- Testing end-to-end workflows
+- Validating service connectivity
+- Full pipeline testing
+
+### 4. API Tests Mode
+
+```bash
+ingest-test api
+```
+
+**Output**: API endpoint tests only
+
+**Use when**:
+- Testing API routes
+- Validating request/response handling
+- Quick API validation
+
+### 5. Coverage Mode
 
 ```bash
 ingest-test coverage
@@ -94,13 +135,13 @@ ingest-test coverage
 - Identifying untested code
 - Generating coverage reports
 
-### 4. Quick Mode
+### 6. Quick Mode
 
 ```bash
 ingest-test quick
 ```
 
-**Output**: Minimal traceback, fast execution
+**Output**: Chunker tests with minimal traceback
 
 **Use when**:
 - Quick validation
@@ -388,8 +429,11 @@ open ingest-coverage/index.html
 ```
 Command                     Description
 --------------------------  ----------------------------------
-ingest-test                 Run all tests
-ingest-test chunker         Run chunker tests only
+ingest-test                 Run chunker tests (default, fast)
+ingest-test chunker         Run chunker tests explicitly
+ingest-test all             Run all tests (slow, includes integration)
+ingest-test integration     Run integration tests only
+ingest-test api             Run API tests only
 ingest-test coverage        Run with coverage report
 ingest-test quick           Run with short traceback
 ingest-test -k "milvus"     Run tests matching "milvus"
