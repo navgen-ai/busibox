@@ -36,7 +36,7 @@
     - role: node_common
       tags: [ingest, node_common]
     - role: ingest
-      tags: [ingest, ingest_worker]
+      tags: [ingest, ingest_api, ingest_worker]
 
 - hosts: proxy
   roles:
