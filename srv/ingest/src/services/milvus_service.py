@@ -216,9 +216,10 @@ class MilvusService:
             for patch in page_embedding:
                 flattened_embedding.extend(patch)
             
-            # Generate zero embedding for text_dense (required by Milvus schema)
-            # Page images don't have text embeddings, so use zeros
-            zero_embedding = [0.0] * 1536  # Match text embedding dimension
+            # Generate zero/empty embeddings for text fields (required by Milvus schema)
+            # Page images don't have text embeddings, so use zeros/empty
+            zero_dense_embedding = [0.0] * 1536  # Match text embedding dimension
+            empty_sparse_embedding = {}  # Empty sparse vector (BM25)
             
             entity = {
                 "id": vector_id,
@@ -227,8 +228,8 @@ class MilvusService:
                 "page_number": page_number,
                 "modality": "page_image",
                 "text": f"Page {page_number}",  # Placeholder text
-                "text_dense": zero_embedding,  # Zero vector (page images don't have text embeddings)
-                "text_sparse": None,
+                "text_dense": zero_dense_embedding,  # Zero vector (page images don't have text embeddings)
+                "text_sparse": empty_sparse_embedding,  # Empty sparse vector (no BM25 for images)
                 "page_vectors": flattened_embedding,
                 "user_id": user_id,
                 "metadata": {
