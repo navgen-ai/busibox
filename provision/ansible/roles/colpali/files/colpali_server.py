@@ -93,8 +93,8 @@ def load_model(model_path: str, device_name: str, dtype: str = "bfloat16"):
         device_map=device,
     ).eval()
     
-    # Load processor
-    processor = ColPaliProcessor.from_pretrained(model_name)
+    # Load processor (use fast processor for better performance)
+    processor = ColPaliProcessor.from_pretrained(model_name, use_fast=True)
     
     print(f"✓ ColPali model loaded successfully")
 
