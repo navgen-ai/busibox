@@ -1,4 +1,4 @@
-.PHONY: ping all files pg milvus agent ingest apps openwebui deploy-apps verify verify-health verify-smoke
+.PHONY: ping all files pg milvus agent ingest ingest-api ingest-worker apps openwebui deploy-apps verify verify-health verify-smoke
 # Default to production inventory (can override with: make all INV=inventory/test)
 INV=inventory/production
 
@@ -42,6 +42,12 @@ agent:
 
 ingest:
 	ansible-playbook -i $(INV) -l ingest site.yml $(VAULT_FLAGS)
+
+ingest-api:
+	ansible-playbook -i $(INV) -l ingest site.yml --tags ingest_api $(VAULT_FLAGS)
+
+ingest-worker:
+	ansible-playbook -i $(INV) -l ingest site.yml --tags ingest_worker $(VAULT_FLAGS)
 
 apps:
 	ansible-playbook -i $(INV) -l apps site.yml $(VAULT_FLAGS)

@@ -105,7 +105,7 @@
     dest: /etc/systemd/system/ingest-api.service
   register: ingest_api_service_file
   notify: Restart ingest API
-  tags: [ingest, ingest_configure]
+  tags: [ingest, ingest_api, ingest_configure]
 
 - name: Enable and start ingest API service
   systemd:
@@ -113,7 +113,7 @@
     enabled: yes
     state: started
     daemon_reload: yes
-  tags: [ingest, ingest_start]
+  tags: [ingest, ingest_api, ingest_start]
 
 # ============================================================================
 # Worker Service (Background job processor)
@@ -124,7 +124,7 @@
     dest: /etc/systemd/system/ingest-worker.service
   register: ingest_worker_service_file
   notify: Restart ingest worker
-  tags: [ingest, ingest_configure]
+  tags: [ingest, ingest_worker, ingest_configure]
 
 - name: Enable and start ingest worker service
   systemd:
@@ -132,7 +132,7 @@
     enabled: yes
     state: started
     daemon_reload: yes
-  tags: [ingest, ingest_start]
+  tags: [ingest, ingest_worker, ingest_start]
 
 # ============================================================================
 # Nginx Configuration (Port 80 for API docs)
