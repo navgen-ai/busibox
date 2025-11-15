@@ -642,7 +642,7 @@ async def reprocess_file(fileId: str, request: Request):
         async with postgres_service.pool.acquire() as conn:
             # Get file record
             file_row = await conn.fetchrow("""
-                SELECT user_id, filename, storage_path
+                SELECT user_id, filename, storage_path, mime_type, original_filename
                 FROM ingestion_files
                 WHERE file_id = $1
             """, uuid.UUID(fileId))
@@ -662,11 +662,14 @@ async def reprocess_file(fileId: str, request: Request):
             
             filename = file_row["filename"]
             storage_path = file_row["storage_path"]
+            mime_type = file_row["mime_type"]
+            original_filename = file_row["original_filename"]
             
             logger.info(
                 "Starting document reprocessing",
                 file_id=fileId,
                 filename=filename,
+                mime_type=mime_type,
                 user_id=user_id,
             )
             
@@ -722,7 +725,8 @@ async def reprocess_file(fileId: str, request: Request):
                     "file_id": fileId,
                     "user_id": user_id,
                     "storage_path": storage_path,
-                    "original_filename": filename,
+                    "original_filename": original_filename or filename,
+                    "mime_type": mime_type,  # Required for text extraction
                     "reprocess": "true",  # Flag to indicate this is a reprocess
                 }
                 
