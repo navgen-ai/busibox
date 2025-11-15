@@ -68,8 +68,6 @@
     chmod -R g+rwX {{ colpali_cache_dir }} 2>/dev/null || true
     # Remove any stale lock files
     find {{ colpali_cache_dir }} -name "*.lock" -exec rm -f {} \; 2>/dev/null || true
-  args:
-    warn: false
   changed_when: false
   ignore_errors: yes
 
