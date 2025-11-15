@@ -153,22 +153,32 @@ async def search_documents(
             # Get unique file IDs
             file_ids = list(set(result["file_id"] for result in paginated_results))
             
-            # Fetch filenames for all files
+            # Fetch filenames for all files (only existing files)
+            # This filters out deleted documents from search results
             file_rows = await conn.fetch("""
                 SELECT file_id, filename
                 FROM ingestion_files
                 WHERE file_id = ANY($1::uuid[])
             """, file_ids)
             
-            # Build filename lookup
+            # Build filename lookup (only includes existing files)
             filename_lookup = {str(row["file_id"]): row["filename"] for row in file_rows}
             
-            # Enrich results with filenames
+            # Enrich results with filenames, filtering out deleted documents
             enriched_results = []
             for result in paginated_results:
+                # Skip results for deleted documents
+                if result["file_id"] not in filename_lookup:
+                    logger.debug(
+                        "Skipping result for deleted document",
+                        file_id=result["file_id"],
+                        user_id=user_id,
+                    )
+                    continue
+                
                 enriched_result = SearchResult(
                     file_id=result["file_id"],
-                    filename=filename_lookup.get(result["file_id"], "unknown"),
+                    filename=filename_lookup[result["file_id"]],
                     chunk_index=result["chunk_index"],
                     page_number=result.get("page_number") or -1,  # Default to -1 for non-PDF
                     text=result["text"],
