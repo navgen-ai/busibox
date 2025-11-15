@@ -14,6 +14,9 @@ module.exports = {
     env: {
       NODE_ENV: 'production',
       PORT: {{ port }},
+{% if app_name == 'ai-portal' %}
+      INGEST_API_HOST: '{{ ingest_ip }}',
+{% endif %}
     },
     error_file: '/var/log/pm2/{{ app_name }}-error.log',
     out_file: '/var/log/pm2/{{ app_name }}-out.log',
