@@ -31,7 +31,11 @@ MemoryMax={{ colpali_memory_limit }}
 CPUQuota={{ colpali_cpu_limit | int * 100 }}%
 
 # Restart Configuration
-Restart={% if colpali_restart_on_failure %}on-failure{% else %}no{% endif %}
+{% if colpali_restart_on_failure %}
+Restart=on-failure
+{% else %}
+Restart=no
+{% endif %}
 RestartSec={{ colpali_restart_sec }}
 TimeoutStartSec={{ colpali_startup_timeout }}
 TimeoutStopSec=60
