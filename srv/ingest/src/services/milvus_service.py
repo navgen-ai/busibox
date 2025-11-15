@@ -210,11 +210,28 @@ class MilvusService:
             page_number = page_info.get("page_number", 1)
             vector_id = f"{file_id}-page-{page_number}"
             
-            # Flatten multi-vector (128 patches × 128 dims = 16,384 dims)
+            # Flatten multi-vector (variable patches × 128 dims)
             # Note: Milvus expects single vector, so we flatten
             flattened_embedding = []
             for patch in page_embedding:
                 flattened_embedding.extend(patch)
+            
+            # Pad or truncate to match Milvus schema dimension (4096)
+            # ColPali returns variable-sized vectors based on image size
+            target_dim = 4096
+            if len(flattened_embedding) < target_dim:
+                # Pad with zeros
+                flattened_embedding.extend([0.0] * (target_dim - len(flattened_embedding)))
+            elif len(flattened_embedding) > target_dim:
+                # Truncate (shouldn't happen often, but handle it)
+                flattened_embedding = flattened_embedding[:target_dim]
+            
+            logger.debug(
+                "Prepared page vector",
+                page_number=page_number,
+                original_length=len(page_embedding) * 128,
+                padded_length=len(flattened_embedding),
+            )
             
             # Generate zero/empty embeddings for text fields (required by Milvus schema)
             # Page images don't have text embeddings, so use zeros/empty
