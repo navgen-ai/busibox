@@ -98,8 +98,12 @@ class TextExtractor:
                     
                     logger.info("Using Marker v1.x for PDF extraction", file_path=file_path)
                     
-                    # Create converter with default models
-                    converter = PdfConverter()
+                    # Create model dict with default models
+                    # This downloads models on first use (cached after)
+                    artifact_dict = create_model_dict()
+                    
+                    # Create converter with models
+                    converter = PdfConverter(artifact_dict=artifact_dict)
                     
                     # Convert PDF to markdown
                     result = converter(file_path)

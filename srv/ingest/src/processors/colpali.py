@@ -123,22 +123,35 @@ class ColPaliEmbedder:
                 for item in sorted(result.get("data", []), key=lambda x: x["index"]):
                     embedding = item["embedding"]
                     # ColPali returns flattened multi-vector embeddings
-                    # Reshape to [128 patches, 128 dims]
-                    num_patches = 128
+                    # Each patch has 128 dimensions
+                    # Number of patches varies based on image size (typically 128-1024+)
                     patch_dim = 128
-                    if len(embedding) == num_patches * patch_dim:
-                        reshaped = [
-                            embedding[i * patch_dim : (i + 1) * patch_dim]
-                            for i in range(num_patches)
-                        ]
-                        embeddings.append(reshaped)
-                    else:
+                    
+                    # Check if embedding length is divisible by patch_dim
+                    if len(embedding) % patch_dim != 0:
                         logger.warning(
-                            "Unexpected embedding dimension",
-                            expected=num_patches * patch_dim,
-                            actual=len(embedding),
+                            "Embedding length not divisible by patch dimension",
+                            embedding_length=len(embedding),
+                            patch_dim=patch_dim,
                         )
                         return None
+                    
+                    # Calculate actual number of patches
+                    num_patches = len(embedding) // patch_dim
+                    
+                    # Reshape to [num_patches, patch_dim]
+                    reshaped = [
+                        embedding[i * patch_dim : (i + 1) * patch_dim]
+                        for i in range(num_patches)
+                    ]
+                    embeddings.append(reshaped)
+                    
+                    logger.debug(
+                        "Reshaped ColPali embedding",
+                        num_patches=num_patches,
+                        patch_dim=patch_dim,
+                        total_values=len(embedding),
+                    )
                 
                 logger.info(
                     "ColPali embeddings generated successfully",
