@@ -70,7 +70,7 @@
     virtualenv: /srv/ingest/venv
 
 - name: Check if spaCy model is already installed
-  shell: /srv/ingest/venv/bin/python -c "import en_core_web_sm"
+  shell: /srv/ingest/venv/bin/python -c "import en_core_web_sm; print('OK')"
   register: spacy_model_check
   changed_when: false
   failed_when: false
@@ -78,14 +78,20 @@
 - name: Download spaCy English model
   shell: |
     set -e
-    cd /tmp
     /srv/ingest/venv/bin/python -m spacy download en_core_web_sm --no-cache-dir
   when: 
     - not ansible_check_mode
     - spacy_model_check.rc != 0
   register: spacy_download
-  failed_when: false
-  ignore_errors: yes
+  retries: 3
+  delay: 5
+  until: spacy_download.rc == 0
+
+- name: Verify spaCy model installation
+  shell: /srv/ingest/venv/bin/python -c "import en_core_web_sm; nlp = en_core_web_sm.load(); print('spaCy model loaded successfully')"
+  register: spacy_verify
+  changed_when: false
+  when: not ansible_check_mode
 
 - name: Create ingest worker environment file
   copy:
