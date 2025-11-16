@@ -1,4 +1,4 @@
-.PHONY: ping all files pg milvus agent ingest ingest-api ingest-worker apps openwebui deploy-apps verify verify-health verify-smoke
+.PHONY: ping all files pg milvus agent ingest ingest-api ingest-worker apps openwebui deploy-apps verify verify-health verify-smoke test test-ingest test-ingest-all test-ingest-coverage test-agent test-apps test-all
 # Default to production inventory (can override with: make all INV=inventory/test)
 INV=inventory/production
 
@@ -9,6 +9,11 @@ VAULT_FLAGS=$(shell [ -f $(VAULT_PASS_FILE) ] && echo "--vault-password-file $(V
 
 # Extra arguments (can override with: make vllm-embedding EXTRA_ARGS="-e skip_model_check=true")
 EXTRA_ARGS=
+
+# Get container IPs from inventory
+INGEST_IP=$(shell ansible-inventory -i $(INV) --host ingest-lxc 2>/dev/null | grep -o '"ansible_host": "[^"]*"' | cut -d'"' -f4 || echo "10.96.200.30")
+AGENT_IP=$(shell ansible-inventory -i $(INV) --host agent-lxc 2>/dev/null | grep -o '"ansible_host": "[^"]*"' | cut -d'"' -f4 || echo "10.96.200.31")
+APPS_IP=$(shell ansible-inventory -i $(INV) --host apps-lxc 2>/dev/null | grep -o '"ansible_host": "[^"]*"' | cut -d'"' -f4 || echo "10.96.200.25")
 
 ping:
 	ansible -i $(INV) all -m ping
@@ -96,3 +101,59 @@ verify-smoke:
 	@psql -h 10.96.200.26 -U busibox_user -d busibox -c "SELECT version, name, applied_at FROM schema_migrations ORDER BY version;" || (echo "Migration verification FAILED" && exit 1)
 	@echo "✓ Database migrations verified"
 	@echo ""
+
+# Test targets - run tests on remote containers
+test: test-ingest
+	@echo "================================"
+	@echo "All tests passed!"
+	@echo "================================"
+
+test-ingest:
+	@echo "Running ingest service tests..."
+	@echo "Container: ingest-lxc ($(INGEST_IP))"
+	@echo ""
+	@echo "=== Ingest Chunker Tests ==="
+	@ssh root@$(INGEST_IP) 'ingest-test' || (echo "Ingest tests FAILED" && exit 1)
+	@echo "✓ Ingest tests passed"
+	@echo ""
+
+test-ingest-all:
+	@echo "Running all ingest service tests (including integration)..."
+	@echo "Container: ingest-lxc ($(INGEST_IP))"
+	@echo ""
+	@ssh root@$(INGEST_IP) 'ingest-test all' || (echo "Ingest integration tests FAILED" && exit 1)
+	@echo "✓ All ingest tests passed"
+	@echo ""
+
+test-ingest-coverage:
+	@echo "Running ingest tests with coverage..."
+	@echo "Container: ingest-lxc ($(INGEST_IP))"
+	@echo ""
+	@ssh root@$(INGEST_IP) 'ingest-test coverage' || (echo "Ingest tests FAILED" && exit 1)
+	@echo "✓ Ingest tests passed with coverage"
+	@echo ""
+	@echo "Coverage report: ssh root@$(INGEST_IP) and view /srv/ingest/htmlcov/index.html"
+	@echo ""
+
+test-agent:
+	@echo "Running agent service tests..."
+	@echo "Container: agent-lxc ($(AGENT_IP))"
+	@echo ""
+	@echo "=== Agent API Tests ==="
+	@ssh root@$(AGENT_IP) 'cd /srv/agent && source venv/bin/activate && npm test' || (echo "Agent tests FAILED" && exit 1)
+	@echo "✓ Agent tests passed"
+	@echo ""
+
+test-apps:
+	@echo "Running app tests..."
+	@echo "Container: apps-lxc ($(APPS_IP))"
+	@echo ""
+	@echo "=== AI Portal Tests ==="
+	@ssh root@$(APPS_IP) 'cd /srv/apps/ai-portal && npm test' || (echo "AI Portal tests FAILED" && exit 1)
+	@echo "✓ AI Portal tests passed"
+	@echo ""
+
+test-all: test-ingest test-agent test-apps
+	@echo "================================"
+	@echo "All service tests passed!"
+	@echo "================================"
