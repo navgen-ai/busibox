@@ -24,20 +24,32 @@ class LLMCleanup:
     Fixes spacing, line breaks, and formatting issues while preserving content.
     """
     
-    CLEANUP_PROMPT = """You are a text cleanup assistant. Fix spacing, line breaks, and formatting issues in the following text.
+    SYSTEM_PROMPT = """You are an expert text editor specializing in document cleanup and formatting.
 
-Rules:
-1. Fix smashed words by adding spaces where needed (e.g., "actuallyunderstood" → "actually understood")
-2. Fix missing spaces between sentences
-3. Fix incorrect line breaks
-4. Preserve ALL content - don't summarize or remove anything
-5. Preserve markdown formatting (# headings, *italic*, **bold**, etc.)
-6. Output clean, properly formatted markdown
+Your task is to fix formatting and spacing issues in text extracted from documents (PDFs, Word docs, etc.).
 
-Text to clean:
-{text}
+WHAT TO FIX:
+1. Smashed words: "actuallyunderstood" → "actually understood"
+2. Missing spaces: "word.Another" → "word. Another"  
+3. Incorrect line breaks: Fix awkward mid-sentence breaks
+4. Poor paragraph spacing: Add proper paragraph breaks
+5. Inconsistent markdown: Standardize heading levels, list formatting
 
-Cleaned text:"""
+WHAT TO PRESERVE:
+1. All original content and meaning - DO NOT summarize or remove content
+2. Markdown formatting (# headings, *emphasis*, **bold**, lists)
+3. Technical terms and proper nouns
+4. Numbers, dates, and citations
+5. Document structure and flow
+
+RULES:
+- Only return the cleaned text, no explanations or meta-commentary
+- Do not add or remove content
+- Do not change technical terminology
+- Maintain the document's original voice and style
+- If text is already clean, return it unchanged
+
+Output clean, well-formatted markdown."""
     
     def __init__(self, config: dict):
         """
@@ -65,7 +77,7 @@ Cleaned text:"""
             )
         except Exception as e:
             logger.error("Failed to get cleanup model from registry", error=str(e))
-            self.model = "qwen-2.5-32b"  # Fallback
+            self.model = "qwen3-30b-instruct"  # Fallback to our actual deployed model
             self.model_config = {"temperature": 0.1, "max_tokens": 32768}
             logger.warning("Using fallback cleanup model", model=self.model)
     
@@ -82,14 +94,16 @@ Cleaned text:"""
         if not self.enabled:
             return text
         
+        # Skip empty or very short text
+        if not text or len(text.strip()) < 10:
+            return text
+        
         # Skip if text looks clean (no long words)
         if not self._needs_cleanup(text):
             logger.debug("Chunk looks clean, skipping LLM cleanup")
             return text
         
         try:
-            prompt = self.CLEANUP_PROMPT.format(text=text)
-            
             logger.debug(
                 "Cleaning chunk with LLM",
                 text_length=len(text),
@@ -101,7 +115,10 @@ Cleaned text:"""
                     f"{self.litellm_base_url}/chat/completions",
                     json={
                         "model": self.model,
-                        "messages": [{"role": "user", "content": prompt}],
+                        "messages": [
+                            {"role": "system", "content": self.SYSTEM_PROMPT},
+                            {"role": "user", "content": text}
+                        ],
                         "temperature": self.model_config.get("temperature", 0.1),
                         "max_tokens": self.model_config.get("max_tokens", 32768),
                     }
@@ -116,7 +133,22 @@ Cleaned text:"""
                     return text  # Return original on error
                 
                 result = response.json()
-                cleaned_text = result["choices"][0]["message"]["content"]
+                cleaned_text = result["choices"][0]["message"]["content"].strip()
+                
+                # Validate cleaned text isn't empty or drastically different length
+                if not cleaned_text:
+                    logger.warning("LLM returned empty text, using original")
+                    return text
+                
+                length_ratio = len(cleaned_text) / len(text)
+                if length_ratio < 0.5 or length_ratio > 2.0:
+                    logger.warning(
+                        "Cleaned text length suspicious, using original",
+                        original_length=len(text),
+                        cleaned_length=len(cleaned_text),
+                        ratio=length_ratio
+                    )
+                    return text
                 
                 logger.info(
                     "Chunk cleaned successfully",
