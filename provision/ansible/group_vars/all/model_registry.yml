@@ -11,14 +11,16 @@
 
 model_purposes:
   # Text embedding generation
+  # Actual model: Qwen/Qwen3-Embedding-8B (8B parameters, 4096 dims, GPU 1)
   embedding:
-    model: "qwen-3-embedding"
+    model: "qwen3-embedding"
     description: "Text embedding generation"
     max_tokens: 8192
     provider: "litellm"
     endpoint: "/embeddings"
     
   # Visual document embedding
+  # Actual model: vidore/colpali-v1.3 (LoRA adapters on PaliGemma-3B, GPU 2)
   visual:
     model: "colpali-v1.3"
     description: "Visual document embedding"
@@ -26,9 +28,39 @@ model_purposes:
     provider: "colpali"
     endpoint: "/v1/embeddings"
     
+  # Vision-language model for image understanding
+  # Actual model: Qwen/Qwen3-VL-8B-Instruct (8B parameters, GPU 1)
+  vision:
+    model: "qwen3-vl-8b"
+    description: "Vision-language model for image understanding"
+    max_tokens: 4096
+    temperature: 0.7
+    provider: "litellm"
+    endpoint: "/chat/completions"
+    
+  # Fast model for quick operations
+  # Actual model: microsoft/Phi-4-multimodal-instruct (6B parameters, GPU 0)
+  fast:
+    model: "phi-4"
+    description: "Fast model for quick operations"
+    max_tokens: 4096
+    temperature: 0.7
+    provider: "litellm"
+    endpoint: "/chat/completions"
+    
+  # General purpose agent model (default for most tasks)
+  # Actual model: Qwen/Qwen3-30B-A3B-Instruct-2507 (30B parameters, GPU 1)
+  default:
+    model: "qwen3-30b-instruct"
+    description: "General purpose agent model"
+    max_tokens: 32768
+    temperature: 0.7
+    provider: "litellm"
+    endpoint: "/chat/completions"
+    
   # Text cleanup and formatting
   cleanup:
-    model: "qwen-2.5-32b"
+    model: "qwen3-30b-instruct"
     description: "Text cleanup and formatting"
     max_tokens: 32768
     temperature: 0.1
@@ -37,7 +69,7 @@ model_purposes:
     
   # General chat and Q&A
   chat:
-    model: "qwen-2.5-72b"
+    model: "qwen3-30b-instruct"
     description: "General chat and Q&A"
     max_tokens: 32768
     temperature: 0.7
@@ -53,35 +85,18 @@ model_purposes:
     provider: "litellm"
     endpoint: "/chat/completions"
     
-  # Search result reranking
-  reranking:
-    model: "bge-reranker-v2-m3"
-    description: "Search result reranking"
-    max_tokens: 512
-    provider: "litellm"
-    endpoint: "/rerank"
-    
   # Research and analysis
   research:
-    model: "qwen-2.5-72b"
+    model: "qwen3-30b-instruct"
     description: "Research and analysis"
     max_tokens: 32768
     temperature: 0.7
     provider: "litellm"
     endpoint: "/chat/completions"
     
-  # Mathematical reasoning
-  calculation:
-    model: "deepseek-r1"
-    description: "Mathematical reasoning"
-    max_tokens: 8192
-    temperature: 0.1
-    provider: "litellm"
-    endpoint: "/chat/completions"
-    
   # Data analysis
   analysis:
-    model: "qwen-2.5-72b"
+    model: "qwen3-30b-instruct"
     description: "Data analysis"
     max_tokens: 32768
     temperature: 0.5
