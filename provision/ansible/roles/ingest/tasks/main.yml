@@ -134,6 +134,10 @@
 # ============================================================================
 # Configuration
 # ============================================================================
+- name: Deploy model registry configuration
+  include_tasks: model_registry.yml
+  tags: [ingest, ingest_configure, model_registry]
+
 - name: Create ingest service environment file
   template:
     src: ingest.env.j2
