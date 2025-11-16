@@ -50,6 +50,7 @@ from processors.embedder import Embedder
 from processors.classifier import DocumentClassifier
 from processors.metadata_extractor import MetadataExtractor
 from processors.colpali import ColPaliEmbedder
+from processors.llm_cleanup import LLMCleanup
 
 # Configure structured logging
 structlog.configure(
@@ -99,6 +100,7 @@ class IngestWorker:
         self.classifier: Optional[DocumentClassifier] = None
         self.metadata_extractor: Optional[MetadataExtractor] = None
         self.colpali: Optional[ColPaliEmbedder] = None
+        self.llm_cleanup: Optional[LLMCleanup] = None
         
         logger.info(
             "Worker initialized",
@@ -148,6 +150,7 @@ class IngestWorker:
         self.classifier = DocumentClassifier(self.config)
         self.metadata_extractor = MetadataExtractor(self.config)
         self.colpali = ColPaliEmbedder(self.config)
+        self.llm_cleanup = LLMCleanup(self.config)
         
         logger.info("All services connected")
     
@@ -468,12 +471,59 @@ class IngestWorker:
             self.postgres_service.update_status(
                 file_id=file_id,
                 stage="chunking",
-                progress=50,
+                progress=45,
                 chunks_processed=total_chunks,
                 total_chunks=total_chunks,
             )
             
-            # Store chunks in PostgreSQL
+            # Stage 4.5: LLM Cleanup (optional)
+            if self.llm_cleanup and self.llm_cleanup.enabled:
+                logger.info(
+                    "Stage 4.5: Starting LLM cleanup",
+                    file_id=file_id,
+                    chunk_count=total_chunks,
+                )
+                self.postgres_service.update_status(
+                    file_id=file_id,
+                    stage="cleanup",
+                    progress=47,
+                    chunks_processed=0,
+                    total_chunks=total_chunks,
+                )
+                
+                # Run async cleanup in sync context
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    chunks = loop.run_until_complete(
+                        self.llm_cleanup.cleanup_chunks(chunks)
+                    )
+                    logger.info(
+                        "LLM cleanup complete",
+                        file_id=file_id,
+                        chunk_count=len(chunks),
+                    )
+                finally:
+                    loop.close()
+                
+                self.postgres_service.update_status(
+                    file_id=file_id,
+                    stage="cleanup",
+                    progress=50,
+                    chunks_processed=total_chunks,
+                    total_chunks=total_chunks,
+                )
+            else:
+                logger.debug("LLM cleanup disabled, skipping", file_id=file_id)
+                self.postgres_service.update_status(
+                    file_id=file_id,
+                    stage="chunking",
+                    progress=50,
+                    chunks_processed=total_chunks,
+                    total_chunks=total_chunks,
+                )
+            
+            # Store chunks in PostgreSQL (after cleanup)
             chunk_dicts = [c.to_dict() for c in chunks]
             self.postgres_service.insert_chunks(file_id, chunk_dicts)
             
