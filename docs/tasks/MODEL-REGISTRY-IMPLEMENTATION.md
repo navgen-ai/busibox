@@ -55,7 +55,7 @@ interface ModelPurposeConfig {
 // Load from environment or fallback to defaults
 const MODEL_PURPOSES: Record<ModelPurpose, ModelPurposeConfig> = {
   chat: {
-    model: process.env.MODEL_CHAT || 'qwen-2.5-72b',
+    model: process.env.MODEL_CHAT || 'qwen3-30b',
     temperature: 0.7,
     max_tokens: 4096,
     description: 'General chat and Q&A'
@@ -67,7 +67,7 @@ const MODEL_PURPOSES: Record<ModelPurpose, ModelPurposeConfig> = {
     description: 'Title generation'
   },
   analysis: {
-    model: process.env.MODEL_ANALYSIS || 'qwen-2.5-72b',
+    model: process.env.MODEL_ANALYSIS || 'qwen-3',
     temperature: 0.5,
     max_tokens: 8192,
     description: 'Data analysis'
