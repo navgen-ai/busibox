@@ -173,11 +173,17 @@ class TextExtractor:
                 text_parts = []
                 
                 for page in pdf.pages:
-                    page_text = page.extract_text()
+                    # Use layout=True to preserve spacing and structure
+                    # x_tolerance and y_tolerance help with word/line detection
+                    page_text = page.extract_text(
+                        layout=True,
+                        x_tolerance=3,
+                        y_tolerance=3,
+                    )
                     if page_text:
                         text_parts.append(page_text)
                 
-                text_content = "\n".join(text_parts)
+                text_content = "\n\n".join(text_parts)  # Double newline between pages
                 
                 # Extract page images if not already done
                 if not page_images:
