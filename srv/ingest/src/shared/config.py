@@ -55,6 +55,10 @@ class Config:
         # Marker configuration (optional - can disable to save memory)
         self.marker_enabled = os.getenv("MARKER_ENABLED", "false").lower() == "true"
         
+        # Multi-flow processing (optional - enables parallel strategy comparison)
+        self.multi_flow_enabled = os.getenv("MULTI_FLOW_ENABLED", "false").lower() == "true"
+        self.max_parallel_strategies = int(os.getenv("MAX_PARALLEL_STRATEGIES", "3"))
+        
         # Processing configuration
         self.chunk_size_min = int(os.getenv("CHUNK_SIZE_MIN", "400"))
         self.chunk_size_max = int(os.getenv("CHUNK_SIZE_MAX", "800"))
@@ -93,7 +97,13 @@ class Config:
             "colpali_api_key": self.colpali_api_key,
             "colpali_enabled": self.colpali_enabled,
             "marker_enabled": self.marker_enabled,
+            "multi_flow_enabled": self.multi_flow_enabled,
+            "max_parallel_strategies": self.max_parallel_strategies,
             "chunk_size": self.chunk_size_max,  # For backward compatibility
             "chunk_overlap": int(self.chunk_size_max * self.chunk_overlap_pct),
+            "chunk_size_min": self.chunk_size_min,
+            "chunk_size_max": self.chunk_size_max,
+            "chunk_overlap_pct": self.chunk_overlap_pct,
+            "temp_dir": "/tmp/ingest",
         }
 
