@@ -128,6 +128,113 @@ ssh root@<INGEST_IP>
 
 ---
 
+### Search API Tests
+
+#### 1. Quick Unit Tests (Default)
+
+```bash
+make test-search
+```
+
+**What it does**: Runs search API unit tests (~10 seconds, 21+ tests)
+
+**Container**: milvus-lxc
+
+**Command executed**: `ssh root@<MILVUS_IP> 'search-test'`
+
+**Use when**:
+- After deploying search API
+- Validating search functionality
+- Quick smoke test
+
+**Tests covered**:
+- Milvus search operations (keyword, semantic, hybrid)
+- RRF fusion algorithm
+- Search term highlighting
+- Cross-encoder reranking
+- Semantic alignment
+
+**Expected output**: All unit tests passing
+
+---
+
+#### 2. Unit Tests Only
+
+```bash
+make test-search-unit
+```
+
+**What it does**: Runs search API unit tests explicitly (~10 seconds)
+
+**Container**: milvus-lxc
+
+**Command executed**: `ssh root@<MILVUS_IP> 'search-test unit'`
+
+**Use when**:
+- Testing core search logic
+- Validating algorithms
+- Quick validation without external dependencies
+
+---
+
+#### 3. Integration Tests
+
+```bash
+make test-search-integration
+```
+
+**What it does**: Runs search API integration tests (~30 seconds)
+
+**Container**: milvus-lxc
+
+**Command executed**: `ssh root@<MILVUS_IP> 'search-test integration'`
+
+**Use when**:
+- Full validation before release
+- Testing complete search pipeline
+- Integration testing with Milvus, PostgreSQL, embedding service
+
+**Warning**: Requires all services (Milvus, PostgreSQL, liteLLM/embedding) to be running
+
+**Tests covered**:
+- Full API endpoints
+- Authentication and authorization
+- File filtering
+- Complete search flow
+- Error handling
+
+---
+
+#### 4. Tests with Coverage
+
+```bash
+make test-search-coverage
+```
+
+**What it does**: Runs search tests with code coverage report
+
+**Container**: milvus-lxc
+
+**Command executed**: `ssh root@<MILVUS_IP> 'search-test coverage'`
+
+**Use when**:
+- Measuring test coverage
+- Identifying untested code
+- Generating coverage reports
+
+**Output**: 
+- Test results
+- Coverage percentage
+- HTML report location
+
+**View coverage**:
+```bash
+ssh root@<MILVUS_IP>
+# View /opt/search/htmlcov/index.html
+```
+
+---
+
 ### Agent Service Tests
 
 ```bash
@@ -176,7 +283,7 @@ make test-apps
 make test-all
 ```
 
-**What it does**: Runs tests for all services (ingest, agent, apps)
+**What it does**: Runs tests for all services (ingest, search, agent, apps)
 
 **Use when**:
 - Full system validation
@@ -184,6 +291,12 @@ make test-all
 - Comprehensive testing
 
 **Duration**: ~2-5 minutes (depending on test suites)
+
+**Services tested**:
+- Ingest API (chunking, processing)
+- Search API (search, reranking, highlighting)
+- Agent API (endpoints, auth)
+- AI Portal (frontend, components)
 
 ---
 
@@ -422,12 +535,17 @@ make test                        Run default tests (ingest)
 make test-ingest                 Run ingest chunker tests (fast)
 make test-ingest-all             Run all ingest tests (slow)
 make test-ingest-coverage        Run with coverage report
+make test-search                 Run search API unit tests (fast)
+make test-search-unit            Run search unit tests only
+make test-search-integration     Run search integration tests
+make test-search-coverage        Run search tests with coverage
 make test-agent                  Run agent API tests
 make test-apps                   Run AI Portal tests
 make test-all                    Run all service tests
 
 # With environment selection
 make test-ingest INV=inventory/test
+make test-search INV=inventory/test
 
 # After deployment
 make ingest && make test-ingest

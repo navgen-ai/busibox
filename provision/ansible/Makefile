@@ -1,4 +1,4 @@
-.PHONY: ping all files pg milvus agent ingest ingest-api ingest-worker apps openwebui deploy-apps verify verify-health verify-smoke test test-ingest test-ingest-all test-ingest-coverage test-agent test-apps test-all
+.PHONY: ping all files pg milvus agent ingest ingest-api ingest-worker apps openwebui deploy-apps search_api verify verify-health verify-smoke test test-ingest test-ingest-all test-ingest-coverage test-search test-search-unit test-search-integration test-search-coverage test-agent test-apps test-all
 # Default to production inventory (can override with: make all INV=inventory/test)
 INV=inventory/production
 
@@ -15,6 +15,7 @@ EXTRA_ARGS=
 INGEST_IP ?= 10.96.200.206
 AGENT_IP ?= 10.96.200.202
 APPS_IP ?= 10.96.200.201
+MILVUS_IP ?= 10.96.200.204
 
 ping:
 	ansible -i $(INV) all -m ping
@@ -42,6 +43,9 @@ colpali:
 
 milvus:
 	ansible-playbook -i $(INV) -l milvus site.yml $(VAULT_FLAGS)
+
+search_api:
+	ansible-playbook -i $(INV) -l milvus site.yml --tags search_api $(VAULT_FLAGS)
 
 agent:
 	ansible-playbook -i $(INV) -l agent site.yml $(VAULT_FLAGS)
@@ -159,7 +163,49 @@ test-apps:
 	@echo "✓ AI Portal tests passed"
 	@echo ""
 
-test-all: test-ingest test-agent test-apps
+test-search:
+	@echo "Running search service tests..."
+	@echo "Container: milvus-lxc ($(MILVUS_IP))"
+	@echo ""
+	@if [ -z "$(MILVUS_IP)" ] || [ "$(MILVUS_IP)" = " " ]; then \
+		echo "ERROR: Could not resolve milvus-lxc IP address"; \
+		echo "Check inventory: $(INV)/hosts.yml"; \
+		exit 1; \
+	fi
+	@echo "=== Search API Unit Tests ==="
+	@ssh root@$(MILVUS_IP) 'search-test' || (echo "Search tests FAILED" && exit 1)
+	@echo "✓ Search tests passed"
+	@echo ""
+
+test-search-unit:
+	@echo "Running search unit tests only..."
+	@echo "Container: milvus-lxc ($(MILVUS_IP))"
+	@echo ""
+	@ssh root@$(MILVUS_IP) 'search-test unit' || (echo "Search unit tests FAILED" && exit 1)
+	@echo "✓ Search unit tests passed"
+	@echo ""
+
+test-search-integration:
+	@echo "Running search integration tests..."
+	@echo "Container: milvus-lxc ($(MILVUS_IP))"
+	@echo ""
+	@echo "⚠️  Warning: Requires Milvus, PostgreSQL, and embedding service running"
+	@echo ""
+	@ssh root@$(MILVUS_IP) 'search-test integration' || (echo "Search integration tests FAILED" && exit 1)
+	@echo "✓ Search integration tests passed"
+	@echo ""
+
+test-search-coverage:
+	@echo "Running search tests with coverage..."
+	@echo "Container: milvus-lxc ($(MILVUS_IP))"
+	@echo ""
+	@ssh root@$(MILVUS_IP) 'search-test coverage' || (echo "Search tests FAILED" && exit 1)
+	@echo "✓ Search tests passed with coverage"
+	@echo ""
+	@echo "Coverage report: ssh root@$(MILVUS_IP) and view /opt/search/htmlcov/index.html"
+	@echo ""
+
+test-all: test-ingest test-search test-agent test-apps
 	@echo "================================"
 	@echo "All service tests passed!"
 	@echo "================================"
