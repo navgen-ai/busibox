@@ -252,7 +252,7 @@ make test-search INV=inventory/test
 
 ```bash
 # Deploy search API
-make search_api
+make search-api
 
 # Run quick tests
 make test-search
@@ -286,13 +286,13 @@ vim srv/search/src/services/highlighter.py
 git commit -am "fix: Improve highlighting algorithm"
 
 # 3. Deploy to test
-make search_api INV=inventory/test
+make search-api INV=inventory/test
 
 # 4. Run tests
 make test-search INV=inventory/test
 
 # 5. If passing, deploy to production
-make search_api
+make search-api
 make test-search
 ```
 
@@ -352,12 +352,12 @@ test:
 
 1. **Always test after deployment**
    ```bash
-   make search_api && make test-search
+   make search-api && make test-search
    ```
 
 2. **Use test environment first**
    ```bash
-   make search_api INV=inventory/test
+   make search-api INV=inventory/test
    make test-search INV=inventory/test
    ```
 

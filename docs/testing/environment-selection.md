@@ -17,7 +17,7 @@ All test targets in the Ansible Makefile are now **environment-aware**. They aut
 cd /root/busibox/provision/ansible
 
 # Deploy and test in production
-make search_api              # Deploy to production
+make search-api              # Deploy to production
 make test-search             # Test in production
 
 make ingest                  # Deploy ingest to production  
@@ -32,7 +32,7 @@ make test-all                # Test all services in production
 cd /root/busibox/provision/ansible
 
 # Deploy and test in test environment
-make search_api INV=inventory/test
+make search-api INV=inventory/test
 make test-search INV=inventory/test
 
 make ingest INV=inventory/test
@@ -181,13 +181,13 @@ vim srv/search/src/services/highlighter.py
 git commit -am "fix: Improve highlighting"
 
 # 2. Deploy to test
-make search_api INV=inventory/test
+make search-api INV=inventory/test
 
 # 3. Run quick tests
 make test-search INV=inventory/test
 
 # 4. If passing, deploy to production
-make search_api
+make search-api
 make test-search
 ```
 
@@ -305,10 +305,10 @@ ansible-inventory -i inventory/test --host TEST-milvus-lxc | grep ansible_host
 
 2. **Test in test environment first**:
    ```bash
-   make search_api INV=inventory/test
+   make search-api INV=inventory/test
    make test-search INV=inventory/test
    # If passing:
-   make search_api
+   make search-api
    make test-search
    ```
 

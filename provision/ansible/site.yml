@@ -16,6 +16,8 @@
   roles:
     - role: milvus
       tags: [milvus]
+    - role: search_api
+      tags: [search, search_api, search-api]
 
 - hosts: agent
   roles:

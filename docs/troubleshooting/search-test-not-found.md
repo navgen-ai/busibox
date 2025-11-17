@@ -17,7 +17,7 @@ make: *** [Makefile:179: test-search] Error 1
 
 ## Root Cause
 
-The `search-test` script hasn't been deployed to the target milvus-lxc container yet. This script is installed by the `search_api` Ansible role.
+The `search-test` script hasn't been deployed to the target milvus-lxc container yet. This script is installed by the `search_api` Ansible role (deployed via `make search-api`).
 
 ## Solution
 
@@ -32,7 +32,7 @@ cd /root/busibox/provision/ansible
 make search INV=inventory/test
 
 # Or just deploy Search API if Milvus already deployed
-make search_api INV=inventory/test
+make search-api INV=inventory/test
 
 # Now tests will work
 make test-search INV=inventory/test
@@ -47,7 +47,7 @@ cd /root/busibox/provision/ansible
 make search
 
 # Or just Search API
-make search_api
+make search-api
 
 # Now tests will work
 make test-search
@@ -77,7 +77,7 @@ cd /root/busibox/provision/ansible
 make milvus INV=inventory/test
 
 # 2. Deploy Search API (includes test script)
-make search_api INV=inventory/test
+make search-api INV=inventory/test
 
 # 3. Now you can run tests
 make test-search INV=inventory/test
@@ -89,7 +89,7 @@ make search INV=inventory/test  # Does steps 1-2
 
 ## What Gets Deployed
 
-When you run `make search_api`, Ansible:
+When you run `make search-api`, Ansible:
 
 1. Creates search user and directories
 2. Copies search service source code
@@ -129,7 +129,7 @@ ERROR: Virtual environment not found at /opt/search/venv
 
 **Solution**: Deploy the full search_api role:
 ```bash
-make search_api INV=inventory/test
+make search-api INV=inventory/test
 ```
 
 ### "Search service not found at /opt/search"
@@ -152,7 +152,7 @@ Always deploy services before running tests:
 make test-search INV=inventory/test
 
 # Good (deploy first)
-make search_api INV=inventory/test
+make search-api INV=inventory/test
 make test-search INV=inventory/test
 
 # Or use the combined search target
@@ -175,7 +175,7 @@ echo "Deploying search_api to ${ENV} environment..."
 cd /root/busibox/provision/ansible
 
 # Deploy search API
-make search_api INV=inventory/${ENV}
+make search-api INV=inventory/${ENV}
 
 echo ""
 echo "✓ Search API deployed"

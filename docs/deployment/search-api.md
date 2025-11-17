@@ -78,11 +78,11 @@ cd provision/ansible
 make search
 
 # Or deploy just Search API (if Milvus already deployed)
-make search_api
+make search-api
 
 # With test environment
 make search INV=inventory/test
-make search_api INV=inventory/test
+make search-api INV=inventory/test
 ```
 
 Alternative: using ansible-playbook directly:

@@ -1,4 +1,4 @@
-.PHONY: ping all files pg milvus search search_api agent ingest ingest-api ingest-worker apps openwebui deploy-apps verify verify-health verify-smoke test test-ingest test-ingest-all test-ingest-coverage test-search test-search-unit test-search-integration test-search-coverage test-agent test-apps test-all
+.PHONY: ping all files pg milvus search search-api agent ingest ingest-api ingest-worker apps openwebui deploy-apps verify verify-health verify-smoke test test-ingest test-ingest-all test-ingest-coverage test-search test-search-unit test-search-integration test-search-coverage test-agent test-apps test-all
 # Default to production inventory (can override with: make all INV=inventory/test)
 INV=inventory/production
 
@@ -52,15 +52,15 @@ colpali:
 milvus:
 	ansible-playbook -i $(INV) -l milvus site.yml $(VAULT_FLAGS)
 
-search: milvus search_api
+search: milvus search-api
 	@echo "================================"
 	@echo "Search services deployed!"
 	@echo "  - Milvus (vector database)"
 	@echo "  - Search API (hybrid search)"
 	@echo "================================"
 
-search_api:
-	ansible-playbook -i $(INV) -l milvus site.yml --tags search_api $(VAULT_FLAGS)
+search-api:
+	ansible-playbook -i $(INV) -l milvus site.yml --tags search-api $(VAULT_FLAGS)
 
 agent:
 	ansible-playbook -i $(INV) -l agent site.yml $(VAULT_FLAGS)
