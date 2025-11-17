@@ -61,6 +61,28 @@
   become_user: "{{ search_api_user }}"
   notify: Restart search-api
 
+- name: Copy search service tests
+  synchronize:
+    src: "{{ playbook_dir }}/../../srv/search/tests/"
+    dest: /opt/search/tests/
+    delete: yes
+    rsync_opts:
+      - "--exclude=__pycache__"
+      - "--exclude=*.pyc"
+      - "--exclude=.pytest_cache"
+      - "--exclude=htmlcov"
+      - "--exclude=.coverage"
+  become: yes
+  become_user: "{{ search_api_user }}"
+
+- name: Copy pytest configuration
+  copy:
+    src: "{{ playbook_dir }}/../../srv/search/pytest.ini"
+    dest: /opt/search/pytest.ini
+    owner: "{{ search_api_user }}"
+    group: "{{ search_api_user }}"
+    mode: "0644"
+
 - name: Copy requirements.txt
   copy:
     src: "{{ playbook_dir }}/../../srv/search/requirements.txt"
@@ -77,6 +99,18 @@
   become: yes
   become_user: "{{ search_api_user }}"
   notify: Restart search-api
+
+- name: Install test dependencies
+  pip:
+    name:
+      - pytest
+      - pytest-asyncio
+      - pytest-mock
+      - pytest-cov
+    virtualenv: "{{ search_api_venv_path }}"
+    state: present
+  become: yes
+  become_user: "{{ search_api_user }}"
 
 - name: Download NLTK data
   shell: |
@@ -121,6 +155,14 @@
     enabled: yes
     state: started
     daemon_reload: yes
+
+- name: Deploy search-test script
+  copy:
+    src: search-test
+    dest: /usr/local/bin/search-test
+    mode: "0755"
+    owner: root
+    group: root
 
 - name: Wait for search service to be ready
   uri:
