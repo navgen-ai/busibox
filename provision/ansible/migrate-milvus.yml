@@ -14,16 +14,17 @@
 #
 # What it does:
 #   1. Detects data version (or uses force_data_version)
-#   2. Rolls back to data version (if needed to read existing data)
-#   3. Starts Milvus at data version and waits for it to be healthy
-#   4. Backs up current Milvus data using milvus-backup
-#   5. Stops Milvus at data version
-#   6. Upgrades to target version
-#   7. Starts Milvus at target version and waits for it to be healthy
-#   8. Restores data from backup
+#   2. Rolls back to data version (if needed to verify existing data)
+#   3. Starts Milvus at data version and verifies it's healthy
+#   4. Stops Milvus and archives old data
+#   5. Deploys target version with fresh data directory
+#   6. Starts Milvus at target version
+#
+# Note: This does NOT migrate data/collections. You'll need to re-ingest.
+#       Old data is archived for manual recovery if needed.
 #
 # Recovery:
-#   If migration fails, backup is at /srv/milvus/backup-{timestamp}
+#   Old data archived at /srv/milvus/data.{version}-{timestamp}
 
 - name: Migrate Milvus from 2.5 to 2.6
   hosts: milvus
@@ -191,15 +192,16 @@
                  Migration:       {{ data_version }} → {{ target_version }}
               
               📋 Steps:
-              Step 1: Roll back to {{ data_version }} (to read existing data)
+              Step 1: Roll back to {{ data_version }} (to verify data)
               Step 2: Start Milvus {{ data_version }} and verify healthy
-              Step 3: Backup all collections using milvus-backup
-              Step 4: Stop Milvus {{ data_version }}
-              Step 5: Deploy Milvus {{ target_version }}
-              Step 6: Start Milvus {{ target_version }} and verify healthy
-              Step 7: Restore collections from backup
+              Step 3: Stop Milvus and archive old data
+              Step 4: Deploy Milvus {{ target_version }} with fresh data dir
+              Step 5: Start Milvus {{ target_version }} and verify healthy
               
-              🔒 Your data is safe - backup will be at: {{ backup_dir }}
+              ⚠️  Old data will be archived (not migrated):
+                  /srv/milvus/data.{{ data_version }}-{timestamp}
+              
+              📝 You'll need to re-ingest documents after upgrade
               
         - name: Create backup directory
           file:
@@ -267,65 +269,21 @@
           debug:
             msg: "Milvus {{ data_version }} is running: {{ data_version_running.stdout }}"
             
-        # STEP 3: Backup
-        - name: Install milvus-backup tool
-          block:
-            - name: Download milvus-backup
-              get_url:
-                url: https://github.com/zilliztech/milvus-backup/releases/latest/download/milvus-backup_Linux_x86_64.tar.gz
-                dest: /tmp/milvus-backup.tar.gz
-                mode: "0644"
-                
-            - name: Extract milvus-backup
-              unarchive:
-                src: /tmp/milvus-backup.tar.gz
-                dest: /usr/local/bin/
-                remote_src: yes
-                
-            - name: Make milvus-backup executable
-              file:
-                path: /usr/local/bin/milvus-backup
-                mode: "0755"
-                
-        - name: Create milvus-backup configuration
-          copy:
-            dest: /tmp/backup.yaml
-            content: |
-              # Milvus Backup Configuration
-              milvus:
-                address: {{ milvus_host }}
-                port: {{ milvus_port }}
-                authorizationEnabled: false
-                
-              minio:
-                # Use embedded MinIO (same as Milvus standalone)
-                address: {{ milvus_host }}
-                port: 9000
-                accessKeyID: minioadmin
-                secretAccessKey: minioadmin
-                useSSL: false
-                bucketName: milvus-bucket
-                
-              backup:
-                maxSegmentGroupSize: 2G
-                parallelism:
-                  backupCollection: 4
-                  copyData: 128
-                  
-        - name: Create backup of all collections
-          shell: |
-            /usr/local/bin/milvus-backup create \
-              --config /tmp/backup.yaml \
-              --backup-name migration-{{ ansible_date_time.iso8601_basic_short }} \
-              --backup-dir {{ backup_dir }}
-          register: backup_result
-          failed_when: backup_result.rc != 0
-          
-        - name: Display backup result
+        - name: Note about data migration
           debug:
-            var: backup_result.stdout_lines
+            msg: |
+              ⚠️  NOTE: This migration will archive old data and start fresh.
+              
+              If you have collections that need to be preserved:
+              1. Abort this playbook (Ctrl+C)
+              2. Use pymilvus to export your collections first
+              3. Re-run this playbook
+              4. Import collections to new version
+              
+              Old data will be archived to:
+              /srv/milvus/data.{{ data_version }}-{{ ansible_date_time.iso8601_basic_short }}
             
-        # STEP 4: Stop data version
+        # STEP 3: Stop data version
         - name: Stop Milvus {{ data_version }}
           shell: docker compose down
           args:
@@ -374,7 +332,7 @@
                     retries: 3
                     start_period: 90s
                     
-        # STEP 6: Start target version and verify
+        # STEP 5: Start target version and verify
         - name: Start Milvus {{ target_version }}
           shell: docker compose up -d
           args:
@@ -397,20 +355,6 @@
           debug:
             msg: "Milvus {{ target_version }} is running: {{ target_version_running.stdout }}"
             
-        # STEP 7: Restore data
-        - name: Restore data from backup
-          shell: |
-            /usr/local/bin/milvus-backup restore \
-              --config /tmp/backup.yaml \
-              --backup-name migration-{{ ansible_date_time.iso8601_basic_short }} \
-              --backup-dir {{ backup_dir }}
-          register: restore_result
-          failed_when: restore_result.rc != 0
-          
-        - name: Display restore result
-          debug:
-            var: restore_result.stdout_lines
-            
         - name: Final verification
           shell: docker exec milvus-standalone milvus version
           register: final_version
@@ -424,8 +368,10 @@
               
               ✅ Successfully upgraded from {{ data_version }} to {{ final_version.stdout }}
               
-              📦 Backup location: {{ backup_dir }}
               📁 Old data archived: /srv/milvus/data.{{ data_version }}-{{ ansible_date_time.iso8601_basic_short }}
+              
+              ⚠️  IMPORTANT: Milvus is starting fresh with no collections.
+                 You'll need to re-ingest your documents.
               
               🔄 To rollback if needed:
                 1. cd /srv/milvus && docker compose down
@@ -436,7 +382,7 @@
               
               💡 Next steps:
                  - Run: make search-api (to deploy search API with updated pymilvus)
-                 - Verify your collections are intact
+                 - Re-ingest your documents through the ingest service
                  - Test search functionality
                 
       rescue:
@@ -455,8 +401,8 @@
               ❌ Migration failed but your data is SAFE.
               
               📊 Migration attempted: {{ data_version }} → {{ target_version }}
-              📦 Backup: {{ backup_dir }}
               📁 Old data: /srv/milvus/data.{{ data_version }}-{{ ansible_date_time.iso8601_basic_short }}
+                   (may or may not exist depending on where it failed)
               
               🔍 Troubleshooting:
                 1. Check logs: docker logs milvus-standalone
