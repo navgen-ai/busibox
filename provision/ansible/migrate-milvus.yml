@@ -32,8 +32,6 @@
     backup_dir: "/srv/milvus/backup-{{ ansible_date_time.iso8601_basic_short }}"
     milvus_host: "localhost"
     milvus_port: "19530"
-    force_migration: "{{ force_migration | default(false) }}"
-    force_data_version: "{{ force_data_version | default('') }}"
     
   tasks:
     # Determine target version from milvus role
@@ -110,12 +108,12 @@
     - name: Determine data version (version that created the data)
       set_fact:
         data_version: >-
-          {% if force_data_version != '' %}{{ force_data_version }}
+          {% if force_data_version is defined and force_data_version != '' %}{{ force_data_version }}
           {% elif data_version_check.stdout not in ['unknown', 'none', ''] %}v{{ data_version_check.stdout }}
           {% elif compose_version.stdout not in ['none', ''] %}{{ compose_version.stdout }}
           {% else %}v2.5.4{% endif %}
         data_version_method: >-
-          {% if force_data_version != '' %}manually_specified
+          {% if force_data_version is defined and force_data_version != '' %}manually_specified
           {% elif data_version_check.stdout not in ['unknown', 'none', ''] %}detected_from_data
           {% elif compose_version.stdout not in ['none', ''] %}from_docker_compose
           {% else %}assumed_default{% endif %}
@@ -130,7 +128,7 @@
           Running version:     {{ running_version.stdout | default('not_running') }}
           Data version:        {{ data_version }} ({{ data_version_method }})
           Target version:      {{ target_version }}
-          Force migration:     {{ force_migration }}
+          Force migration:     {{ force_migration | default(false) }}
           
           {% if data_version_method == 'from_docker_compose' %}
           ⚠️  WARNING: Could not detect data version from data directory.
@@ -155,7 +153,7 @@
     - name: Check if upgrade is needed
       set_fact:
         needs_migration: "{{ 
-          force_migration | bool or
+          (force_migration | default(false) | bool) or
           (data_version_major|int < target_version_major|int) or
           (data_version_major|int == target_version_major|int and data_version_minor|int < target_version_minor|int)
         }}"
