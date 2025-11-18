@@ -1,4 +1,4 @@
-.PHONY: ping all files pg milvus search search-api agent ingest ingest-api ingest-worker apps openwebui deploy-apps verify verify-health verify-smoke test test-ingest test-ingest-all test-ingest-coverage test-search test-search-unit test-search-integration test-search-coverage test-agent test-apps test-all
+.PHONY: ping all files pg milvus search search-api agent ingest ingest-api ingest-worker apps openwebui deploy-apps verify verify-health verify-smoke test test-ingest test-ingest-all test-ingest-coverage test-extraction-simple test-extraction-llm test-extraction-marker test-extraction-colpali test-search test-search-unit test-search-integration test-search-coverage test-agent test-apps test-all
 # Default to production inventory (can override with: make all INV=inventory/test)
 INV=inventory/production
 
@@ -158,6 +158,72 @@ test-ingest-coverage:
 	@echo "✓ Ingest tests passed with coverage"
 	@echo ""
 	@echo "Coverage report: ssh root@$(INGEST_IP) and view /srv/ingest/htmlcov/index.html"
+	@echo ""
+
+# Extraction strategy tests
+test-extraction-simple:
+	@echo "=== Testing SIMPLE Extraction Strategy ==="
+	@echo "Running basic PDF extraction without LLM cleanup"
+	@echo "Container: ingest-lxc ($(INGEST_IP))"
+	@echo ""
+	@if [ -z "$(INGEST_IP)" ] || [ "$(INGEST_IP)" = " " ]; then \
+		echo "ERROR: Could not resolve ingest-lxc IP address"; \
+		echo "Check inventory: $(INV)/hosts.yml"; \
+		exit 1; \
+	fi
+	@ssh root@$(INGEST_IP) 'cd /srv/ingest && source venv/bin/activate && python -m pytest tests/test_pdf_extraction_simple.py -v --tb=short' || (echo "SIMPLE extraction tests FAILED" && exit 1)
+	@echo "✓ SIMPLE extraction tests passed"
+	@echo ""
+
+test-extraction-llm:
+	@echo "=== Testing SIMPLE + LLM Cleanup ==="
+	@echo "Running PDF extraction WITH LLM cleanup"
+	@echo "Container: ingest-lxc ($(INGEST_IP))"
+	@echo ""
+	@echo "⚠️  Requires: LiteLLM service running on agent-lxc"
+	@echo ""
+	@if [ -z "$(INGEST_IP)" ] || [ "$(INGEST_IP)" = " " ]; then \
+		echo "ERROR: Could not resolve ingest-lxc IP address"; \
+		echo "Check inventory: $(INV)/hosts.yml"; \
+		exit 1; \
+	fi
+	@ssh root@$(INGEST_IP) 'cd /srv/ingest && source venv/bin/activate && python -m pytest tests/test_pdf_extraction_llm.py -v --tb=short' || (echo "LLM cleanup tests FAILED" && exit 1)
+	@echo "✓ LLM cleanup tests passed"
+	@echo ""
+
+test-extraction-marker:
+	@echo "=== Testing MARKER Extraction Strategy ==="
+	@echo "Running Marker PDF extraction (requires GPU/CPU resources)"
+	@echo "Container: ingest-lxc ($(INGEST_IP))"
+	@echo ""
+	@echo "⚠️  Warning: Marker requires significant resources"
+	@echo "   - 3.2GB model cache"
+	@echo "   - High memory/CPU during processing"
+	@echo "   - May fail on resource-constrained environments"
+	@echo ""
+	@if [ -z "$(INGEST_IP)" ] || [ "$(INGEST_IP)" = " " ]; then \
+		echo "ERROR: Could not resolve ingest-lxc IP address"; \
+		echo "Check inventory: $(INV)/hosts.yml"; \
+		exit 1; \
+	fi
+	@ssh root@$(INGEST_IP) 'cd /srv/ingest && source venv/bin/activate && python -m pytest tests/test_pdf_extraction_marker.py -v --tb=short' || (echo "Marker extraction tests FAILED (may be expected on low-resource systems)" && exit 1)
+	@echo "✓ Marker extraction tests passed"
+	@echo ""
+
+test-extraction-colpali:
+	@echo "=== Testing ColPali Visual Extraction ==="
+	@echo "Running ColPali visual embeddings extraction"
+	@echo "Container: ingest-lxc ($(INGEST_IP))"
+	@echo ""
+	@echo "⚠️  Requires: ColPali service running on vllm-lxc (GPU required)"
+	@echo ""
+	@if [ -z "$(INGEST_IP)" ] || [ "$(INGEST_IP)" = " " ]; then \
+		echo "ERROR: Could not resolve ingest-lxc IP address"; \
+		echo "Check inventory: $(INV)/hosts.yml"; \
+		exit 1; \
+	fi
+	@ssh root@$(INGEST_IP) 'cd /srv/ingest && source venv/bin/activate && python -m pytest tests/test_colpali_extraction.py -v --tb=short' || (echo "ColPali extraction tests FAILED" && exit 1)
+	@echo "✓ ColPali extraction tests passed"
 	@echo ""
 
 test-agent:
