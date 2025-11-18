@@ -28,16 +28,14 @@
     
   tasks:
     # Determine target version from milvus role
-    - name: Get target Milvus version from role vars
-      include_vars:
-        file: "{{ playbook_dir }}/roles/milvus/defaults/main.yml"
-      when: false  # Just to get the structure, won't actually run
-      
-    - name: Extract target version from milvus role template
+    - name: Extract target version from milvus role
       shell: |
-        grep "image: milvusdb/milvus:" "{{ playbook_dir }}/roles/milvus/tasks/main.yml" | head -1 | sed 's/.*milvusdb\/milvus://' | tr -d '"'
+        grep "milvusdb/milvus:" "{{ playbook_dir }}/roles/milvus/tasks/main.yml" | head -1 | sed -E 's/.*milvusdb\/milvus:([v0-9.]+).*/\1/'
       register: target_version_extract
+      delegate_to: localhost
+      run_once: true
       changed_when: false
+      failed_when: target_version_extract.stdout == ""
       
     - name: Set target version
       set_fact:
