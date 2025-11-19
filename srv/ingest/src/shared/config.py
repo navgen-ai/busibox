@@ -54,6 +54,10 @@ class Config:
         
         # Marker configuration (optional - can disable to save memory)
         self.marker_enabled = os.getenv("MARKER_ENABLED", "false").lower() == "true"
+        self.marker_use_gpu = os.getenv("MARKER_USE_GPU", "true").lower() == "true"
+        self.marker_gpu_device = os.getenv("MARKER_GPU_DEVICE", "cuda")  # cuda, cpu, or auto
+        self.marker_inference_ram = os.getenv("MARKER_INFERENCE_RAM", "16")  # GB of VRAM
+        self.marker_vram_per_task = os.getenv("MARKER_VRAM_PER_TASK", "3.5")  # GB per task
         
         # Multi-flow processing (optional - enables parallel strategy comparison)
         self.multi_flow_enabled = os.getenv("MULTI_FLOW_ENABLED", "false").lower() == "true"
@@ -97,6 +101,10 @@ class Config:
             "colpali_api_key": self.colpali_api_key,
             "colpali_enabled": self.colpali_enabled,
             "marker_enabled": self.marker_enabled,
+            "marker_use_gpu": self.marker_use_gpu,
+            "marker_gpu_device": self.marker_gpu_device,
+            "marker_inference_ram": self.marker_inference_ram,
+            "marker_vram_per_task": self.marker_vram_per_task,
             "multi_flow_enabled": self.multi_flow_enabled,
             "max_parallel_strategies": self.max_parallel_strategies,
             "chunk_size": self.chunk_size_max,  # For backward compatibility
