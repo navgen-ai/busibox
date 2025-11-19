@@ -10,12 +10,42 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Get inventory from environment or default to test
-INV="${INV:-inventory/test}"
+# Prompt for environment if not set
+if [[ -z "${INV:-}" ]]; then
+    echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║     Busibox Test Runner Menu          ║${NC}"
+    echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    echo "Select environment:"
+    echo "  1) Test"
+    echo "  2) Production"
+    echo ""
+    read -p "Choice [1-2]: " env_choice
+    echo ""
+    
+    case "$env_choice" in
+        1)
+            INV="inventory/test"
+            ;;
+        2)
+            INV="inventory/production"
+            ;;
+        *)
+            echo -e "${YELLOW}Invalid choice, defaulting to test${NC}"
+            INV="inventory/test"
+            ;;
+    esac
+else
+    echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║     Busibox Test Runner Menu          ║${NC}"
+    echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
+    echo ""
+fi
 
-echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║     Busibox Test Runner Menu          ║${NC}"
-echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
+# Export INV so test-llm.sh can use it
+export INV
+
+echo -e "${CYAN}Environment: ${INV}${NC}"
 echo ""
 
 # Source LLM test functions
