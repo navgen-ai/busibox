@@ -109,64 +109,107 @@ analyze_model() {
         quantization_config=$("${VENV_DIR}/bin/python3" << PYTHON_EOF
 import json
 import os
+import re
 
 config_file = "${config_file}"
 if os.path.exists(config_file):
     with open(config_file, 'r') as f:
         config = json.load(f)
     
-    # Check for quantization info
+    quant_method = ""
+    quant_bits = ""
+    
+    # Check for quantization_config section
     quantization = config.get('quantization_config', {})
     if quantization:
         quant_method = quantization.get('quant_method', '')
-        bits = quantization.get('bits', '')
-        print(f"{quant_method}|{bits}")
-    else:
-        # Check for other quantization indicators
-        if 'gptq' in str(config).lower():
-            print("gptq|")
-        elif 'awq' in str(config).lower():
-            print("awq|")
-        else:
-            print("none|")
+        quant_bits = str(quantization.get('bits', ''))
+    
+    # Check model_type for quantization hints
+    model_type = config.get('model_type', '').lower()
+    
+    # Check for GPTQ in various places
+    config_str = json.dumps(config).lower()
+    if 'gptq' in config_str or 'gptq' in model_type:
+        quant_method = 'gptq'
+        # Try to extract bits from config or filenames
+        if not quant_bits:
+            if '4bit' in config_str or 'int4' in config_str:
+                quant_bits = '4'
+            elif '8bit' in config_str or 'int8' in config_str:
+                quant_bits = '8'
+    
+    # Check for AWQ
+    if 'awq' in config_str or 'awq' in model_type:
+        quant_method = 'awq'
+        if not quant_bits:
+            if '4bit' in config_str or 'int4' in config_str:
+                quant_bits = '4'
+            elif '8bit' in config_str or 'int8' in config_str:
+                quant_bits = '8'
+    
+    # Check for BitsAndBytes
+    if 'bitsandbytes' in config_str or 'bnb' in config_str:
+        quant_method = 'bitsandbytes'
+        if not quant_bits:
+            if '4bit' in config_str or 'int4' in config_str:
+                quant_bits = '4'
+            elif '8bit' in config_str or 'int8' in config_str:
+                quant_bits = '8'
+    
+    print(f"{quant_method}|{quant_bits}")
     
     # Check for dtype
     dtype = config.get('torch_dtype', '')
+    if not dtype:
+        # Check in model config or other places
+        dtype = config.get('dtype', '')
     if dtype:
         print(f"dtype:{dtype}")
 PYTHON_EOF
 )
         
         # Parse quantization config
-        if echo "$quantization_config" | grep -q "gptq"; then
-            quantization="gptq"
-            # Try to detect bits from filename or config
-            if [ ${#gptq_files[@]} -gt 0 ]; then
-                local gptq_file="${gptq_files[0]}"
-                if echo "$gptq_file" | grep -qi "int4\|4bit\|4-bit"; then
-                    precision="int4"
-                elif echo "$gptq_file" | grep -qi "int8\|8bit\|8-bit"; then
-                    precision="int8"
-                fi
-            fi
-        elif echo "$quantization_config" | grep -q "awq"; then
-            quantization="awq"
-            if [ ${#awq_files[@]} -gt 0 ]; then
-                local awq_file="${awq_files[0]}"
-                if echo "$awq_file" | grep -qi "int4\|4bit\|4-bit"; then
-                    precision="int4"
-                elif echo "$awq_file" | grep -qi "int8\|8bit\|8-bit"; then
-                    precision="int8"
-                fi
-            fi
-        elif [ ${#gguf_files[@]} -gt 0 ]; then
-            quantization="gguf"
-            # GGUF files often have quantization in filename
-            local gguf_file="${gguf_files[0]}"
-            if echo "$gguf_file" | grep -qi "q4\|Q4\|int4"; then
+        local quant_method=$(echo "$quantization_config" | head -1 | cut -d'|' -f1)
+        local quant_bits=$(echo "$quantization_config" | head -1 | cut -d'|' -f2)
+        
+        if [ "$quant_method" != "none" ] && [ -n "$quant_method" ]; then
+            quantization="$quant_method"
+            
+            # Set precision based on quantization bits
+            if [ "$quant_bits" = "4" ]; then
                 precision="int4"
-            elif echo "$gguf_file" | grep -qi "q8\|Q8\|int8"; then
+            elif [ "$quant_bits" = "8" ]; then
                 precision="int8"
+            fi
+        fi
+        
+        # Also check filenames for quantization hints (backup detection)
+        if [ "$quantization" = "none" ] || [ -z "$quantization" ]; then
+            if [ ${#gptq_files[@]} -gt 0 ]; then
+                quantization="gptq"
+                local gptq_file="${gptq_files[0]}"
+                if echo "$gptq_file" | grep -qi "int4\|4bit\|4-bit\|q4"; then
+                    precision="int4"
+                elif echo "$gptq_file" | grep -qi "int8\|8bit\|8-bit\|q8"; then
+                    precision="int8"
+                fi
+            elif [ ${#awq_files[@]} -gt 0 ]; then
+                quantization="awq"
+                local awq_file="${awq_files[0]}"
+                if echo "$awq_file" | grep -qi "int4\|4bit\|4-bit\|q4"; then
+                    precision="int4"
+                elif echo "$awq_file" | grep -qi "int8\|8bit\|8-bit\|q8"; then
+                    precision="int8"
+                fi
+            elif [ ${#gguf_files[@]} -gt 0 ]; then
+                quantization="gguf"
+                local gguf_file="${gguf_files[0]}"
+                if echo "$gguf_file" | grep -qi "q4\|Q4\|int4"; then
+                    precision="int4"
+                elif echo "$gguf_file" | grep -qi "q8\|Q8\|int8"; then
+                    precision="int8"
+                fi
             fi
         fi
         
@@ -184,6 +227,35 @@ PYTHON_EOF
     # Estimate parameters from model size
     local model_size_gb=$(echo "scale=2; $model_size_bytes / 1024 / 1024 / 1024" | bc -l)
     
+    # Try to get parameters from config.json first
+    local params_from_config=0
+    if [ -f "$config_file" ]; then
+        params_from_config=$("${VENV_DIR}/bin/python3" << PYTHON_EOF
+import json
+import os
+
+config_file = "${config_file}"
+if os.path.exists(config_file):
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+    
+    # Try various parameter count fields
+    params = config.get('num_parameters', 0)
+    if not params:
+        params = config.get('num_parameters_total', 0)
+    if not params:
+        params = config.get('parameters', 0)
+    
+    # Convert to billions
+    if params:
+        params_billions = params / 1_000_000_000
+        print(f"{params_billions:.1f}")
+    else:
+        print("0")
+PYTHON_EOF
+)
+    fi
+    
     # Estimate parameters based on size and precision
     local params_billions=0
     local bytes_per_param=2  # Default to fp16
@@ -195,12 +267,17 @@ PYTHON_EOF
         int4) bytes_per_param=0.5 ;;
     esac
     
-    # Rough estimate: model_size_gb / bytes_per_param = params_billions
-    # But need to account for overhead (tokenizer, config, etc.) - assume 10% overhead
-    params_billions=$(echo "scale=1; ($model_size_gb / $bytes_per_param) * 0.9" | bc -l)
-    
-    # Round to nearest integer
-    params_billions=$(printf "%.0f" "$params_billions")
+    # Use config if available, otherwise estimate from size
+    if [ "$(echo "$params_from_config > 0" | bc -l)" -eq 1 ]; then
+        params_billions=$(printf "%.0f" "$params_from_config")
+        info "  Parameters from config.json: ${params_billions}B"
+    else
+        # Rough estimate: model_size_gb / bytes_per_param = params_billions
+        # Account for overhead (tokenizer, config, etc.) - assume 15% overhead
+        params_billions=$(echo "scale=1; ($model_size_gb / $bytes_per_param) * 0.85" | bc -l)
+        params_billions=$(printf "%.0f" "$params_billions")
+        info "  Estimated parameters from size: ${params_billions}B"
+    fi
     
     # Estimate GPU size (model weights + overhead)
     # For quantized models, use actual size; for FP16, add overhead
