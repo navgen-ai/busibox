@@ -677,8 +677,16 @@ step_ansible_configuration() {
     print_warning "Encrypted Ansible vault detected"
     echo "  File: roles/secrets/vars/vault.yml"
     echo ""
-    echo "Vault password will be required for deployment"
-    VAULT_PASS_FLAG="--ask-vault-pass"
+    
+    # Check if vault password file exists
+    if [[ -f ~/.vault_pass ]]; then
+      print_info "Found vault password file: ~/.vault_pass"
+      VAULT_PASS_FLAG="--vault-password-file ~/.vault_pass"
+    else
+      print_warning "Vault password file not found: ~/.vault_pass"
+      echo "  You will be prompted for the vault password"
+      VAULT_PASS_FLAG="--ask-vault-pass"
+    fi
     echo ""
   fi
   
@@ -699,7 +707,7 @@ step_ansible_configuration() {
       1)
         # Full deployment
         print_info "Running full Ansible deployment for $MODE..."
-        if [[ -n "$VAULT_PASS_FLAG" ]]; then
+        if [[ -n "$VAULT_PASS_FLAG" ]] && [[ "$VAULT_PASS_FLAG" == *"--ask-vault-pass"* ]]; then
           print_warning "You will be prompted for the vault password"
         fi
         echo ""
@@ -742,7 +750,7 @@ step_ansible_configuration() {
         fi
         
         print_info "Running Ansible with tags: $tags"
-        if [[ -n "$VAULT_PASS_FLAG" ]]; then
+        if [[ -n "$VAULT_PASS_FLAG" ]] && [[ "$VAULT_PASS_FLAG" == *"--ask-vault-pass"* ]]; then
           print_warning "You will be prompted for the vault password"
         fi
         echo ""
@@ -772,7 +780,7 @@ step_ansible_configuration() {
         fi
         
         print_info "Running custom Ansible command..."
-        if [[ -n "$VAULT_PASS_FLAG" ]]; then
+        if [[ -n "$VAULT_PASS_FLAG" ]] && [[ "$VAULT_PASS_FLAG" == *"--ask-vault-pass"* ]]; then
           print_warning "You will be prompted for the vault password"
         fi
         echo ""
