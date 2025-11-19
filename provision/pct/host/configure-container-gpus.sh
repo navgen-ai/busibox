@@ -147,23 +147,34 @@ fi
 
 # Check if GPU passthrough already configured
 if grep -q "# GPU Passthrough" "$CONFIG_FILE"; then
-    warn "GPU passthrough already configured for container $CONTAINER_ID"
-    read -p "Reconfigure GPUs? (y/N): " -n 1 -r
-    echo ""
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        info "Skipping GPU passthrough configuration"
+    # Count how many GPUs are currently configured
+    local configured_gpus=$(grep -c "^lxc.mount.entry: /dev/nvidia[0-9]" "$CONFIG_FILE" || echo "0")
+    
+    # Check if all GPUs are already configured
+    if [[ "$configured_gpus" -eq "$GPU_COUNT" ]]; then
+        success "All $GPU_COUNT GPU(s) already configured for container $CONTAINER_ID"
+        info "Skipping GPU passthrough configuration (already complete)"
     else
-        # Remove old GPU configuration
-        info "Removing old GPU configuration..."
-        backup_file="${CONFIG_FILE}.backup-$(date +%Y%m%d-%H%M%S)"
-        cp "$CONFIG_FILE" "$backup_file"
-        info "Backup saved: $backup_file"
-        
-        sed -i '/^# GPU Passthrough/d' "$CONFIG_FILE"
-        sed -i '/^lxc.cgroup2.devices.allow: c 195/d' "$CONFIG_FILE"
-        sed -i '/^lxc.cgroup2.devices.allow: c 234/d' "$CONFIG_FILE"
-        sed -i '/^lxc.cgroup2.devices.allow: c 508/d' "$CONFIG_FILE"
-        sed -i '/^lxc.mount.entry:.*nvidia/d' "$CONFIG_FILE"
+        warn "GPU passthrough partially configured ($configured_gpus/$GPU_COUNT GPUs)"
+        warn "Container currently has access to $configured_gpus GPU(s), but $GPU_COUNT are available"
+        echo ""
+        read -p "Reconfigure to add all GPUs? (Y/n): " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Nn]$ ]]; then
+            info "Skipping GPU passthrough reconfiguration"
+        else
+            # Remove old GPU configuration
+            info "Removing old GPU configuration..."
+            backup_file="${CONFIG_FILE}.backup-$(date +%Y%m%d-%H%M%S)"
+            cp "$CONFIG_FILE" "$backup_file"
+            info "Backup saved: $backup_file"
+            
+            sed -i '/^# GPU Passthrough/d' "$CONFIG_FILE"
+            sed -i '/^lxc.cgroup2.devices.allow: c 195/d' "$CONFIG_FILE"
+            sed -i '/^lxc.cgroup2.devices.allow: c 234/d' "$CONFIG_FILE"
+            sed -i '/^lxc.cgroup2.devices.allow: c 508/d' "$CONFIG_FILE"
+            sed -i '/^lxc.mount.entry:.*nvidia/d' "$CONFIG_FILE"
+        fi
     fi
 fi
 
