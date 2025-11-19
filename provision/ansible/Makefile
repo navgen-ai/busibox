@@ -12,17 +12,18 @@ EXTRA_ARGS=
 
 # Dynamically get container IPs from inventory based on environment
 # This allows tests to work in both production and test environments
-INGEST_IP = $(shell ansible-inventory -i $(INV) --host ingest-lxc 2>/dev/null | grep -oP '"ansible_host":\s*"\K[^"]+' || \
-	ansible-inventory -i $(INV) --host TEST-ingest-lxc 2>/dev/null | grep -oP '"ansible_host":\s*"\K[^"]+' || \
+# Using sed instead of grep -P for macOS compatibility
+INGEST_IP = $(shell ansible-inventory -i $(INV) --host ingest-lxc 2>/dev/null | sed -n 's/.*"ansible_host":[[:space:]]*"\([^"]*\)".*/\1/p' || \
+	ansible-inventory -i $(INV) --host TEST-ingest-lxc 2>/dev/null | sed -n 's/.*"ansible_host":[[:space:]]*"\([^"]*\)".*/\1/p' || \
 	echo "10.96.200.206")
-AGENT_IP = $(shell ansible-inventory -i $(INV) --host agent-lxc 2>/dev/null | grep -oP '"ansible_host":\s*"\K[^"]+' || \
-	ansible-inventory -i $(INV) --host TEST-agent-lxc 2>/dev/null | grep -oP '"ansible_host":\s*"\K[^"]+' || \
+AGENT_IP = $(shell ansible-inventory -i $(INV) --host agent-lxc 2>/dev/null | sed -n 's/.*"ansible_host":[[:space:]]*"\([^"]*\)".*/\1/p' || \
+	ansible-inventory -i $(INV) --host TEST-agent-lxc 2>/dev/null | sed -n 's/.*"ansible_host":[[:space:]]*"\([^"]*\)".*/\1/p' || \
 	echo "10.96.200.202")
-APPS_IP = $(shell ansible-inventory -i $(INV) --host apps-lxc 2>/dev/null | grep -oP '"ansible_host":\s*"\K[^"]+' || \
-	ansible-inventory -i $(INV) --host TEST-apps-lxc 2>/dev/null | grep -oP '"ansible_host":\s*"\K[^"]+' || \
+APPS_IP = $(shell ansible-inventory -i $(INV) --host apps-lxc 2>/dev/null | sed -n 's/.*"ansible_host":[[:space:]]*"\([^"]*\)".*/\1/p' || \
+	ansible-inventory -i $(INV) --host TEST-apps-lxc 2>/dev/null | sed -n 's/.*"ansible_host":[[:space:]]*"\([^"]*\)".*/\1/p' || \
 	echo "10.96.200.201")
-MILVUS_IP = $(shell ansible-inventory -i $(INV) --host milvus-lxc 2>/dev/null | grep -oP '"ansible_host":\s*"\K[^"]+' || \
-	ansible-inventory -i $(INV) --host TEST-milvus-lxc 2>/dev/null | grep -oP '"ansible_host":\s*"\K[^"]+' || \
+MILVUS_IP = $(shell ansible-inventory -i $(INV) --host milvus-lxc 2>/dev/null | sed -n 's/.*"ansible_host":[[:space:]]*"\([^"]*\)".*/\1/p' || \
+	ansible-inventory -i $(INV) --host TEST-milvus-lxc 2>/dev/null | sed -n 's/.*"ansible_host":[[:space:]]*"\([^"]*\)".*/\1/p' || \
 	echo "10.96.200.204")
 
 ping:
