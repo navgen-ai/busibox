@@ -79,6 +79,26 @@ CREATED_CONTAINERS+=("$CT_INGEST")
 pct set "$CT_INGEST" -memory "$MEM_MB_INGEST"
 echo "  Increased ${PREFIX}ingest-lxc memory to ${MEM_MB_INGEST}MB (32GB) for ML models"
 
+# Stop container to configure GPU passthrough
+echo "==> Stopping container to configure GPU passthrough"
+pct stop "$CT_INGEST" || true
+sleep 2
+
+# Add GPU 0 passthrough for Marker PDF extraction
+# GPU 0 is dedicated to ingest (Marker uses ~3.5GB per task, can handle multiple tasks)
+add_gpu_passthrough "$CT_INGEST" 0 || {
+  echo "WARNING: Failed to configure GPU passthrough for ingest container"
+  echo "  GPU passthrough can be configured manually later:"
+  echo "  bash provision/pct/host/configure-gpu-passthrough.sh $CT_INGEST 0"
+}
+
+# Restart container
+echo "==> Starting container with GPU access"
+pct start "$CT_INGEST" || {
+  echo "ERROR: Failed to start container"
+  exit 1
+}
+
 # Create liteLLM container
 create_ct "$CT_LITELLM" "$IP_LITELLM" "${PREFIX}litellm-lxc" unpriv || cleanup_on_error
 CREATED_CONTAINERS+=("$CT_LITELLM")
