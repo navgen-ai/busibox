@@ -107,17 +107,20 @@
 
 - name: Debug - Display model configuration details
   debug:
-    msg:
-      - "=========================================="
-      - "Model Configuration Details"
-      - "=========================================="
-      - "Number of models configured: {{ litellm_models | length }}"
-      - ""
-      - "{% for model in litellm_models %}Model: {{ model.model_name }}"
-      - "  Backend: {{ model.litellm_params.model }}"
-      - "  {% if model.litellm_params.api_base is defined %}API Base: {{ model.litellm_params.api_base }}{% endif %}"
-      - "{% endfor %}"
-      - "=========================================="
+    msg: |
+      ==========================================
+      Model Configuration Details
+      ==========================================
+      Number of models configured: {{ litellm_models | length }}
+      
+      {% for model in litellm_models %}
+      Model: {{ model.model_name }}
+        Backend: {{ model.litellm_params.model }}
+      {% if model.litellm_params.api_base is defined %}
+        API Base: {{ model.litellm_params.api_base }}
+      {% endif %}
+      {% endfor %}
+      ==========================================
   tags: [litellm_configure, litellm_debug]
 
 - name: Deploy LiteLLM configuration file
