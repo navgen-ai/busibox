@@ -45,7 +45,7 @@
 
 - name: Set model configuration from model_config.yml
   set_fact:
-    vllm_default_model: "{{ model_config_data.models[vllm_assigned_model].model_name | default(vllm_assigned_model) }}"
+    vllm_default_model: "{{ vllm_assigned_model }}"
     vllm_tensor_parallel_size: "{{ model_config_data.models[vllm_assigned_model].tensor_parallel | default(1) }}"
     vllm_cuda_visible_devices: "{{ model_config_data.models[vllm_assigned_model].gpu | default('') }}"
     vllm_max_model_len: "{{ model_config_data.models[vllm_assigned_model].max_tokens | default(8192) }}"
