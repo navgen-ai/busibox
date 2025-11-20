@@ -65,6 +65,13 @@ if [ ! -d "$VENV_DIR" ]; then
     exit 1
 fi
 
+# Check if huggingface_hub is installed (for API access)
+if ! "${VENV_DIR}/bin/python3" -c "import huggingface_hub" 2>/dev/null; then
+    warn "huggingface_hub not installed - API-based model info will be unavailable"
+    warn "Install with: ${VENV_DIR}/bin/pip install huggingface-hub"
+    warn "Continuing with local file analysis only..."
+fi
+
 # Analyze a single model
 analyze_model() {
     local model_name="$1"
@@ -112,9 +119,9 @@ analyze_model() {
         gguf_files=($(find "$snapshot_dir" -name "*.gguf" -type f 2>/dev/null))
         
         # Calculate total model size
-        # HuggingFace cache structure: models--org--model/snapshots/<hash>/ contains model files
-        # Use du -sb to get actual disk usage (follows symlinks if needed)
-        model_size_bytes=$(du -sb "$snapshot_dir" 2>/dev/null | awk '{print $1}')
+        # HuggingFace cache structure: models--org--model/snapshots/<hash>/ contains symlinks to blobs/
+        # Use du -sbL to follow symlinks and get actual disk usage
+        model_size_bytes=$(du -sbL "$snapshot_dir" 2>/dev/null | awk '{print $1}')
         
         # If du failed or returned 0/empty, try alternative methods
         if [ -z "$model_size_bytes" ] || [ "$model_size_bytes" = "0" ] || ! [[ "$model_size_bytes" =~ ^[0-9]+$ ]]; then
@@ -302,6 +309,7 @@ PYTHON_EOF
     
     # Check if huggingface_hub is available
     if "${VENV_DIR}/bin/python3" -c "import huggingface_hub" 2>/dev/null; then
+        info "  Fetching model info from HuggingFace API..." >&2
         params_from_hf=$("${VENV_DIR}/bin/python3" << PYTHON_EOF
 import json
 import os
@@ -355,17 +363,26 @@ try:
             print("0")
     except Exception as e:
         # API call failed, return 0 to fall back to other methods
+        print(f"ERROR: {e}", file=sys.stderr)
         print("0")
 except ImportError:
     # huggingface_hub not available
+    print("ERROR: huggingface_hub not available", file=sys.stderr)
     print("0")
 except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
     print("0")
 PYTHON_EOF
 )
         
+        # Check if we got a valid result
+        if [ -z "$params_from_hf" ] || ! [[ "$params_from_hf" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+            params_from_hf=0
+        fi
+        
         # Also try to get model size from HuggingFace
         if "${VENV_DIR}/bin/python3" -c "import huggingface_hub" 2>/dev/null; then
+            info "  Fetching model size from HuggingFace API..." >&2
             hf_model_size_gb=$("${VENV_DIR}/bin/python3" << PYTHON_EOF
 import os
 import sys
@@ -393,16 +410,28 @@ try:
             print(f"{size_gb:.2f}")
         else:
             print("0")
-    except Exception:
+    except Exception as e:
+        print(f"ERROR: {e}", file=sys.stderr)
         print("0")
-except Exception:
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
     print("0")
 PYTHON_EOF
 )
+            
+            # Validate the result
+            if [ -z "$hf_model_size_gb" ] || ! [[ "$hf_model_size_gb" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+                hf_model_size_gb=0
+            fi
+        else
+            warn "  huggingface_hub not available - install with: ${VENV_DIR}/bin/pip install huggingface-hub" >&2
         fi
         
         if [ -n "$params_from_hf" ] && [ "$(echo "$params_from_hf > 0" | bc -l)" -eq 1 ]; then
             info "  Parameters from HuggingFace API: ${params_from_hf}B" >&2
+        fi
+        if [ -n "$hf_model_size_gb" ] && [ "$(echo "$hf_model_size_gb > 0" | bc -l)" -eq 1 ]; then
+            info "  Model size from HuggingFace API: ${hf_model_size_gb}GB" >&2
         fi
     fi
     
