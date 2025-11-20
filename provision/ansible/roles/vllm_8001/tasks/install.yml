@@ -19,6 +19,8 @@
       - curl
       - wget
       - ca-certificates
+      - psmisc  # For fuser
+      - lsof    # For debugging open files
     state: present
   tags: [vllm_install]
 
