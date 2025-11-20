@@ -994,8 +994,12 @@ show_gpu_allocation_table() {
     printf "%-8s %-10s %-25s %-10s %-8s %-8s\n" "GPU" "Memory" "Model" "Size(GB)" "Port" "TP"
     echo "────────────────────────────────────────────────────────────────────────────────────"
     
-    # Show each GPU
-    for gpu_id in $(seq 0 $((${#GPU_MEMORY[@]} - 1))); do
+    # Show GPU 0 (reserved)
+    printf "%-8s %-10s %-25s %-10s %-8s %-8s\n" \
+        "GPU 0" "${GPU_MEMORY[0]:-0}GB" "RESERVED" "(colpali/marker)" "-" "-"
+    
+    # Show each GPU (starting from 1)
+    for gpu_id in $(seq 1 $((${#GPU_MEMORY[@]} - 1))); do
         local gpu_mem="${GPU_MEMORY[$gpu_id]:-0}"
         local gpu_used=0
         local models_on_gpu=""
@@ -1083,12 +1087,20 @@ assign_model_to_gpu() {
     info "Model: $selected_model (~${model_size}GB)"
     echo ""
     echo "Available GPUs:"
-    for gpu_id in $(seq 0 $((${#GPU_MEMORY[@]} - 1))); do
+    echo "  GPU 0: RESERVED (colpali/marker)"
+    for gpu_id in $(seq 1 $((${#GPU_MEMORY[@]} - 1))); do
         echo "  GPU $gpu_id: ${GPU_MEMORY[$gpu_id]}GB"
     done
     
     echo ""
-    read -p "GPU(s) for this model (e.g., '1' or '2,3' for tensor parallelism): " gpu_list
+    read -p "GPU(s) for this model (e.g., '1' or '2,3' for tensor parallelism, GPU 0 is reserved): " gpu_list
+    
+    # Validate GPU 0 is not selected
+    if [[ "$gpu_list" == *"0"* ]]; then
+        error "GPU 0 is reserved for colpali/marker. Please select GPU 1 or higher."
+        return 1
+    fi
+    
     read -p "vLLM port (e.g., 8000, 8001, 8002): " port
     
     # Calculate tensor parallelism from GPU list
@@ -1168,10 +1180,11 @@ auto_assign_all_models() {
         fi
     done
     
-    # Assign small models to GPU 1 (if available)
-    local small_gpu=0
-    if [ "${#GPU_MEMORY[@]}" -gt 1 ]; then
-        small_gpu=1
+    # Assign small models to GPU 1 (skip GPU 0 - reserved)
+    local small_gpu=1
+    if [ "${#GPU_MEMORY[@]}" -le 1 ]; then
+        warn "Only GPU 0 available (reserved). Cannot assign models. Need at least GPU 1."
+        return 1
     fi
     
     for model in "${small_models[@]}"; do
@@ -1179,29 +1192,28 @@ auto_assign_all_models() {
         MODEL_PORT_ASSIGNMENTS["$model"]="$port_counter"
         MODEL_TP_ASSIGNMENTS["$model"]="1"
         ((port_counter++))
-        success "Assigned $model to GPU $small_gpu (port $port_counter)"
+        success "Assigned $model to GPU $small_gpu (port $((port_counter - 1)))"
     done
     
-    # Assign large models with tensor parallelism
-    if [ "${#GPU_MEMORY[@]}" -ge 2 ]; then
-        local large_gpu_start=0
-        if [ "${#GPU_MEMORY[@]}" -gt 2 ]; then
-            large_gpu_start=2
-        fi
-        
+    # Assign large models with tensor parallelism (skip GPU 0)
+    if [ "${#GPU_MEMORY[@]}" -ge 3 ]; then
+        # Use GPUs 2,3 for large models with TP (skip GPU 0, GPU 1 for small models)
         for model in "${large_models[@]}"; do
-            if [ "${#GPU_MEMORY[@]}" -ge 3 ]; then
-                # Use GPUs 2,3 for large models with TP
-                MODEL_GPU_ASSIGNMENTS["$model"]="2,3"
-                MODEL_TP_ASSIGNMENTS["$model"]="2"
-            else
-                # Use remaining GPU
-                MODEL_GPU_ASSIGNMENTS["$model"]="$large_gpu_start"
-                MODEL_TP_ASSIGNMENTS["$model"]="1"
-            fi
+            MODEL_GPU_ASSIGNMENTS["$model"]="2,3"
+            MODEL_TP_ASSIGNMENTS["$model"]="2"
             MODEL_PORT_ASSIGNMENTS["$model"]="$port_counter"
             ((port_counter++))
-            success "Assigned $model to GPU(s) ${MODEL_GPU_ASSIGNMENTS[$model]} (port $port_counter, TP=${MODEL_TP_ASSIGNMENTS[$model]})"
+            success "Assigned $model to GPU(s) 2,3 (port $((port_counter - 1)), TP=2)"
+        done
+    elif [ "${#GPU_MEMORY[@]}" -ge 2 ]; then
+        # Only GPU 1 available (GPU 0 reserved)
+        warn "Only GPU 1 available for large models (GPU 0 reserved). Large models may not fit."
+        for model in "${large_models[@]}"; do
+            MODEL_GPU_ASSIGNMENTS["$model"]="1"
+            MODEL_TP_ASSIGNMENTS["$model"]="1"
+            MODEL_PORT_ASSIGNMENTS["$model"]="$port_counter"
+            ((port_counter++))
+            success "Assigned $model to GPU 1 (port $((port_counter - 1)), TP=1)"
         done
     fi
 }
