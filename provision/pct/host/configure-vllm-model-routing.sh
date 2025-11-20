@@ -317,6 +317,104 @@ declare -A MODEL_SIZES=()
 # Load model registry at script startup
 load_model_registry
 
+# Load existing assignments from model_config.yml
+load_existing_assignments() {
+    if [ ! -f "$MODEL_CONFIG" ]; then
+        # No existing config, nothing to load
+        return 0
+    fi
+    
+    # Use Python to parse existing assignments
+    local python_output
+    python_output=$("${VENV_DIR}/bin/python3" << PYTHON_EOF 2>&2
+import yaml
+import sys
+from pathlib import Path
+
+config_file = Path("${MODEL_CONFIG}")
+registry_file = Path("${MODEL_REGISTRY}")
+
+if not config_file.exists():
+    sys.exit(0)
+
+try:
+    # Read model_config.yml
+    with open(config_file, 'r') as f:
+        config_data = yaml.safe_load(f) or {}
+    
+    # Read model_registry.yml to get model_key mapping
+    with open(registry_file, 'r') as f:
+        registry_data = yaml.safe_load(f) or {}
+    
+    available_models = registry_data.get('available_models') or {}
+    
+    # Build mapping from model_name to model_key
+    model_name_to_key = {}
+    for model_key, model_config in available_models.items():
+        model_name = model_config.get('model_name')
+        if model_name:
+            model_name_to_key[model_name] = model_key
+    
+    # Load assignments
+    models = config_data.get('models') or {}
+    for model_name, config in models.items():
+        if config.get('assigned', False) and config.get('port'):
+            model_key = model_name_to_key.get(model_name, model_name)
+            gpu = config.get('gpu', '')
+            port = config.get('port', '')
+            tp = config.get('tensor_parallel', 1)
+            
+            # Output assignments
+            print(f'MODEL_GPU_ASSIGNMENTS["{model_key}"]="{gpu}"')
+            print(f'MODEL_PORT_ASSIGNMENTS["{model_key}"]="{port}"')
+            print(f'MODEL_TP_ASSIGNMENTS["{model_key}"]="{tp}"')
+    
+except Exception as e:
+    print(f"ERROR: Failed to load existing assignments: {e}", file=sys.stderr)
+    import traceback
+    traceback.print_exc()
+PYTHON_EOF
+    ) 2>&2
+    
+    # Evaluate the Python output to populate arrays
+    if [ -n "$python_output" ]; then
+        eval "$python_output"
+        info "Loaded existing model assignments from model_config.yml"
+    fi
+}
+
+# Get next available port starting from 8000
+get_next_available_port() {
+    local start_port=8000
+    local max_port=8005
+    
+    # Get all currently assigned ports
+    local used_ports=()
+    for port in "${MODEL_PORT_ASSIGNMENTS[@]}"; do
+        used_ports+=("$port")
+    done
+    
+    # Find first available port
+    for port in $(seq $start_port $max_port); do
+        local port_in_use=false
+        for used_port in "${used_ports[@]}"; do
+            if [ "$used_port" = "$port" ]; then
+                port_in_use=true
+                break
+            fi
+        done
+        
+        if [ "$port_in_use" = false ]; then
+            echo "$port"
+            return 0
+        fi
+    done
+    
+    # No available port found
+    echo ""
+    return 1
+}
+
 # GPU memory sizes
 declare -A GPU_MEMORY=()
 
@@ -932,6 +1030,9 @@ interactive_routing() {
     declare -A MODEL_PORT_ASSIGNMENTS
     declare -A MODEL_TP_ASSIGNMENTS
     
+    # Load existing assignments from model_config.yml
+    load_existing_assignments
+    
     # Interactive assignment loop
     local done=false
     while [ "$done" = false ]; do
@@ -1087,7 +1188,23 @@ assign_model_to_gpu() {
         return 1
     fi
     
-    read -p "vLLM port (e.g., 8000, 8001, 8002): " port
+    # Auto-assign next available port
+    local next_port=$(get_next_available_port)
+    if [ -z "$next_port" ]; then
+        error "No available ports (8000-8005 all in use)"
+        return 1
+    fi
+    
+    echo ""
+    info "Auto-assigning port: $next_port"
+    read -p "Use port $next_port? (Y/n or enter custom port): " port_input
+    
+    local port="$next_port"
+    if [[ "$port_input" =~ ^[0-9]+$ ]]; then
+        port="$port_input"
+    elif [[ "$port_input" =~ ^[Nn]$ ]]; then
+        read -p "Enter custom port: " port
+    fi
     
     # Calculate tensor parallelism from GPU list
     local tp=1
