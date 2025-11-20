@@ -67,15 +67,15 @@
   when: vllm_start_service
   tags: [vllm_configure]
 
-- name: Check vLLM service logs immediately
-  command: journalctl -u {{ vllm_service_name }} -n 50 --no-pager
+- name: Check vLLM service logs (last 2 minutes only)
+  command: journalctl -u {{ vllm_service_name }} --since "2 minutes ago" --no-pager
   register: vllm_logs_initial
   changed_when: false
   tags: [vllm_configure]
 
 - name: Display initial vLLM service logs
   debug:
-    msg: "{{ vllm_logs_initial.stdout_lines }}"
+    msg: "{{ vllm_logs_initial.stdout_lines if vllm_logs_initial.stdout_lines | length > 0 else ['No recent logs'] }}"
   tags: [vllm_configure]
 
 - name: Wait for vLLM service to be ready
