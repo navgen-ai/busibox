@@ -105,10 +105,9 @@ vllm_host: "{{ vllm_ip }}"
 # LLM Model Configuration
 # ============================================================================
 # vLLM Model Configuration
-# Use model pre-cached by setup-llm-models.sh
-# Reference model registry for default chat model
-# New structure: model_purposes.fast -> model key, lookup in available_models
-vllm_default_model: "{{ available_models[model_purposes.fast].model_name }}"
+# Note: vLLM configuration is now managed via model_config.yml
+# Port-based roles (vllm_8000, vllm_8001, etc.) read model assignments from model_config.yml
+# GPU assignments, ports, and tensor parallelism are configured via configure-vllm-model-routing.sh
 
 # ============================================================================
 # Deployment Configuration
