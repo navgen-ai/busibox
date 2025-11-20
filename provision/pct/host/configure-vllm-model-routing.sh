@@ -38,6 +38,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PCT_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(cd "${PCT_DIR}/../.." && pwd)"
 MODEL_REGISTRY="${REPO_ROOT}/provision/ansible/group_vars/all/model_registry.yml"
+MODEL_CONFIG="${REPO_ROOT}/provision/ansible/group_vars/all/model_config.yml"
 LITELLM_CONFIG="${REPO_ROOT}/provision/ansible/roles/litellm/defaults/main.yml"
 VENV_DIR="/opt/model-downloader"
 
@@ -51,18 +52,25 @@ else
     IP_VLLM="10.96.200.208"
 fi
 
-# Update model registry with GPU and port configuration
-update_model_registry_gpu_port() {
+# Update model_config.yml with GPU and port configuration
+update_model_config_gpu_port() {
     local model_key="$1"  # Model key in available_models (e.g., "phi-4")
     local gpu_list="$2"    # GPU(s) for model (e.g., "1" or "2,3")
     local port="$3"        # vLLM port (e.g., 8000)
+    local tensor_parallel="${4:-1}"  # Tensor parallelism (default: 1)
+    
+    if [ ! -f "$MODEL_CONFIG" ]; then
+        warn "Model config not found: $MODEL_CONFIG"
+        warn "Run update-model-config.sh first to initialize model_config.yml"
+        return 1
+    fi
     
     if [ ! -f "$MODEL_REGISTRY" ]; then
         warn "Model registry not found: $MODEL_REGISTRY"
         return 1
     fi
     
-    # Use Python to update YAML (preserves structure and comments)
+    # Use Python to update model_config.yml
     "${VENV_DIR}/bin/python3" << PYTHON_EOF
 import yaml
 import sys
@@ -70,66 +78,79 @@ import os
 from pathlib import Path
 
 registry_file = Path("${MODEL_REGISTRY}")
+config_file = Path("${MODEL_CONFIG}")
 model_key = "${model_key}"
 gpu_list = "${gpu_list}"
 port = ${port}
+tensor_parallel = ${tensor_parallel}
 
 try:
-    # Read existing YAML
+    # Read model_registry.yml to find model_name for this model_key
     with open(registry_file, 'r') as f:
-        content = f.read()
-        data = yaml.safe_load(content)
+        registry_data = yaml.safe_load(f) or {}
     
-    # Ensure data is a dict (handle None or empty file)
-    if data is None:
-        data = {}
+    available_models = registry_data.get('available_models') or {}
+    model_config_entry = available_models.get(model_key)
     
-    # Initialize available_models if it doesn't exist or is None
-    if 'available_models' not in data or data['available_models'] is None:
-        data['available_models'] = {}
+    if not model_config_entry:
+        print(f"ERROR: Model key '{model_key}' not found in model_registry.yml", file=sys.stderr)
+        sys.exit(1)
     
-    # Ensure available_models is a dict
-    if not isinstance(data['available_models'], dict):
-        data['available_models'] = {}
+    model_name = model_config_entry.get('model_name')
+    if not model_name:
+        print(f"ERROR: model_name not found for model_key '{model_key}'", file=sys.stderr)
+        sys.exit(1)
     
-    # Update or add model config
-    if model_key not in data['available_models']:
-        data['available_models'][model_key] = {}
+    # Read existing model_config.yml
+    if config_file.exists():
+        with open(config_file, 'r') as f:
+            config_data = yaml.safe_load(f) or {}
+    else:
+        config_data = {}
     
-    # Ensure model config entry is a dict
-    if not isinstance(data['available_models'][model_key], dict):
-        data['available_models'][model_key] = {}
+    if 'models' not in config_data:
+        config_data['models'] = {}
     
-    # Update GPU and port
-    data['available_models'][model_key]['gpu'] = gpu_list
-    data['available_models'][model_key]['port'] = port
+    if not isinstance(config_data['models'], dict):
+        config_data['models'] = {}
     
-    # Ensure provider is set if not already
-    if 'provider' not in data['available_models'][model_key]:
-        data['available_models'][model_key]['provider'] = 'vllm'
+    # Find or create entry for this model_name
+    if model_name not in config_data['models']:
+        config_data['models'][model_name] = {}
     
-    # Write back (preserve structure)
-    # Use ruamel.yaml if available for better comment preservation, otherwise use standard yaml
+    # Update GPU, port, tensor_parallel, and assigned status
+    config_data['models'][model_name]['gpu'] = gpu_list
+    config_data['models'][model_name]['port'] = port
+    config_data['models'][model_name]['tensor_parallel'] = tensor_parallel
+    config_data['models'][model_name]['assigned'] = True
+    
+    # Ensure provider and model_key are set
+    config_data['models'][model_name]['provider'] = model_config_entry.get('provider', 'vllm')
+    config_data['models'][model_name]['model_key'] = model_key
+    
+    # Write back
     try:
         from ruamel.yaml import YAML
         yaml_writer = YAML()
         yaml_writer.preserve_quotes = True
         yaml_writer.width = 4096
-        with open(registry_file, 'w') as f:
-            yaml_writer.dump(data, f)
+        yaml_writer.default_flow_style = False
+        with open(config_file, 'w') as f:
+            yaml_writer.dump(config_data, f)
     except ImportError:
-        # Fallback to standard yaml (may lose some formatting)
-        with open(registry_file, 'w') as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        with open(config_file, 'w') as f:
+            yaml.dump(config_data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
     
-    print(f"✓ Updated GPU and port for {model_key} in model registry")
+    print(f"✓ Updated GPU and port for {model_key} ({model_name}) in model_config.yml")
 except Exception as e:
-    print(f"ERROR: Failed to update registry: {e}", file=sys.stderr)
+    print(f"ERROR: Failed to update model_config.yml: {e}", file=sys.stderr)
+    import traceback
+    traceback.print_exc()
     sys.exit(1)
 PYTHON_EOF
     
     if [ $? -eq 0 ]; then
-        success "Updated GPU and port for $model_key in model registry"
+        success "Updated GPU and port for $model_key in model_config.yml"
         return 0
     else
         error "Failed to update GPU and port for $model_key"
@@ -137,22 +158,21 @@ PYTHON_EOF
     fi
 }
 
-# Load model configuration from model_registry.yml
+# Load model configuration from model_config.yml
 # This replaces hardcoded MODEL_CONFIG, MODEL_NAMES, and MODEL_SIZES arrays
 load_model_registry() {
-    if [ ! -f "$MODEL_REGISTRY" ]; then
-        echo "ERROR: Model registry not found: $MODEL_REGISTRY" >&2
-        echo "ERROR: Current directory: $(pwd)" >&2
-        echo "ERROR: REPO_ROOT: $REPO_ROOT" >&2
-        echo "ERROR: Run this script from the busibox repository root" >&2
+    if [ ! -f "$MODEL_CONFIG" ]; then
+        echo "ERROR: Model config not found: $MODEL_CONFIG" >&2
+        echo "ERROR: Run update-model-config.sh first to initialize model_config.yml" >&2
         exit 1
     fi
     
-    echo "[INFO] Loading model registry from: $MODEL_REGISTRY" >&2
+    if [ ! -f "$MODEL_REGISTRY" ]; then
+        echo "ERROR: Model registry not found: $MODEL_REGISTRY" >&2
+        exit 1
+    fi
     
-    # Ensure stderr (fd 2) goes to terminal for debug output
-    # Python will output debug to stderr, array definitions to stdout
-    exec 3>&2  # Save stderr to fd 3
+    echo "[INFO] Loading model configuration from: $MODEL_CONFIG" >&2
     
     # Check if Python venv exists (for YAML parsing)
     if [ ! -d "$VENV_DIR" ] || ! "${VENV_DIR}/bin/python3" -c "import yaml" 2>/dev/null; then
@@ -168,86 +188,86 @@ import yaml
 import sys
 import os
 
+config_file = "${MODEL_CONFIG}"
 registry_file = "${MODEL_REGISTRY}"
+
+if not os.path.exists(config_file):
+    print("ERROR: Model config file not found", file=sys.stderr)
+    sys.exit(1)
+
 if not os.path.exists(registry_file):
-    print("ERROR: Registry file not found", file=sys.stderr)
+    print("ERROR: Model registry file not found", file=sys.stderr)
     sys.exit(1)
 
 try:
-    with open(registry_file, 'r') as f:
-        data = yaml.safe_load(f)
+    # Read model_config.yml
+    with open(config_file, 'r') as f:
+        config_data = yaml.safe_load(f) or {}
     
-    # Ensure data is a dict (handle None or empty file)
-    if data is None:
-        data = {}
+    # Read model_registry.yml to get model_key mappings
+    with open(registry_file, 'r') as f:
+        registry_data = yaml.safe_load(f) or {}
+    
+    available_models = registry_data.get('available_models') or {}
+    
+    # Build mapping from model_name to model_key
+    model_name_to_key = {}
+    for model_key, model_config in available_models.items():
+        model_name = model_config.get('model_name')
+        if model_name:
+            model_name_to_key[model_name] = model_key
     
     # Initialize output
     output_lines = []
     
-    # Load available_models and model_purposes
-    available_models = data.get('available_models') or {}
-    purposes = data.get('model_purposes') or {}
+    # Load models from model_config.yml (only vLLM models)
+    models = config_data.get('models') or {}
+    if not isinstance(models, dict):
+        models = {}
+    
+    vllm_models_found = []
     api_providers = {'bedrock', 'openai', 'anthropic'}
     
-    # Ensure available_models is a dict
-    if not isinstance(available_models, dict):
-        available_models = {}
-    
-    # Build MODEL_NAMES from available_models (only vLLM models)
-    vllm_models_found = []
-    for model_key, model_config in available_models.items():
+    for model_name, model_config in models.items():
         # Ensure model_config is a dict
         if not isinstance(model_config, dict):
             continue
-            
-        provider = model_config.get('provider', '').lower()
-        model_name = model_config.get('model_name', '')
         
-        # Only include models that use vLLM (not API-based providers)
-        # Accept both 'vllm' and 'litellm' as providers for local models
-        if provider in ('vllm', 'litellm') and model_name:
+        provider = model_config.get('provider', '').lower()
+        
+        # Only include vLLM models (not API-based)
+        if provider not in api_providers:
+            # Get model_key from registry
+            model_key = model_name_to_key.get(model_name, model_name)
+            
+            # Get technical details
+            params = model_config.get('params_billions', 0)
+            precision = model_config.get('precision', 'fp16')
+            quantization = model_config.get('quantization', 'none')
+            gpu_size = model_config.get('gpu_size_gb', 0)
+            notes = model_config.get('notes', '')
+            
             # Escape quotes in values
             model_key_escaped = model_key.replace('"', '\\"')
             model_name_escaped = model_name.replace('"', '\\"')
+            precision_escaped = precision.replace('"', '\\"')
+            quantization_escaped = quantization.replace('"', '\\"')
+            notes_escaped = notes.replace('"', '\\"')
+            
+            # MODEL_NAMES uses model_key -> model_name mapping
             output_lines.append(f'MODEL_NAMES["{model_key_escaped}"]="{model_name_escaped}"')
+            
+            # MODEL_CONFIG uses model_name (full HuggingFace path) as key
+            # Format: params|precision|quantization|gpu_size|notes
+            config_line = f"{params}|{precision_escaped}|{quantization_escaped}|{gpu_size}|{notes_escaped}"
+            output_lines.append(f'MODEL_CONFIG["{model_name_escaped}"]="{config_line}"')
+            output_lines.append(f'MODEL_SIZES["{model_name_escaped}"]="{gpu_size}"')
+            
             vllm_models_found.append(model_key)
     
-    # Load model_configs (technical details)
-    # Ensure we always have a dict, not None
-    configs = data.get('model_configs') or {}
-    if not isinstance(configs, dict):
-        configs = {}
-    configs_empty = len(configs) == 0
-    
-    for model_name, config in configs.items():
-        # Ensure config is a dict
-        if not isinstance(config, dict):
-            continue
-        params = config.get('params_billions', 0)
-        precision = config.get('precision', 'fp16')
-        quantization = config.get('quantization', 'none')
-        gpu_size = config.get('gpu_size_gb', 0)
-        notes = config.get('notes', '')
-        
-        # Escape quotes in values
-        model_name_escaped = model_name.replace('"', '\\"')
-        precision_escaped = precision.replace('"', '\\"')
-        quantization_escaped = quantization.replace('"', '\\"')
-        notes_escaped = notes.replace('"', '\\"')
-        
-        # Format: params|precision|quantization|gpu_size|notes
-        config_line = f"{params}|{precision_escaped}|{quantization_escaped}|{gpu_size}|{notes_escaped}"
-        output_lines.append(f'MODEL_CONFIG["{model_name_escaped}"]="{config_line}"')
-        output_lines.append(f'MODEL_SIZES["{model_name_escaped}"]="{gpu_size}"')
-    
     # Output warnings if needed
-    if configs_empty:
-        print("WARNING: model_configs section is empty. Run update-model-config.sh to populate it.", file=sys.stderr)
-    
-    # Check model count
-    model_count = len(vllm_models_found)
-    if model_count == 0:
-        print("WARNING: No vLLM models found in available_models. Check provider field.", file=sys.stderr)
+    if len(vllm_models_found) == 0:
+        print("WARNING: No vLLM models found in model_config.yml. Run update-model-config.sh to populate it.", file=sys.stderr)
     
     # Output array assignments to stdout (will be captured and eval'd)
     for line in output_lines:
@@ -255,7 +275,7 @@ try:
     
 except Exception as e:
     import traceback
-    print(f"ERROR: Failed to parse registry: {e}", file=sys.stderr)
+    print(f"ERROR: Failed to parse model config: {e}", file=sys.stderr)
     print(f"Traceback: {traceback.format_exc()}", file=sys.stderr)
     sys.exit(1)
 PYTHON_EOF
@@ -263,7 +283,7 @@ PYTHON_EOF
     
     local python_exit=$?
     if [ $python_exit -ne 0 ]; then
-        echo "ERROR: Failed to load model registry (Python exit code: $python_exit)" >&2
+        echo "ERROR: Failed to load model config (Python exit code: $python_exit)" >&2
         exit 1
     fi
     
@@ -272,19 +292,17 @@ PYTHON_EOF
     
     # Check if any models were loaded
     if [ ${#MODEL_NAMES[@]} -eq 0 ]; then
-        echo "ERROR: No vLLM models found in model registry!" >&2
-        echo "ERROR: Check that available_models entries have provider: 'vllm'" >&2
-        echo "ERROR: Registry file: $MODEL_REGISTRY" >&2
-        echo "ERROR: Found ${#MODEL_NAMES[@]} models in MODEL_NAMES array" >&2
-        echo "ERROR: Run with bash -x to see debug output" >&2
+        echo "ERROR: No vLLM models found in model_config.yml!" >&2
+        echo "ERROR: Run update-model-config.sh first to initialize and analyze models" >&2
+        echo "ERROR: Config file: $MODEL_CONFIG" >&2
         exit 1
     fi
     
-    echo "[INFO] Loaded ${#MODEL_NAMES[@]} vLLM model(s) from registry" >&2
+    echo "[INFO] Loaded ${#MODEL_NAMES[@]} vLLM model(s) from model_config.yml" >&2
     
-    # Check if model_configs was empty (warning already printed by Python)
+    # Check if model configs were empty
     if [ ${#MODEL_CONFIG[@]} -eq 0 ]; then
-        warn "model_configs section is empty. Run update-model-config.sh to populate it."
+        warn "No model technical details found. Run update-model-config.sh to analyze models."
         warn "Script will use fallback estimates for model configurations."
     fi
 }
@@ -857,9 +875,9 @@ generate_routing_config() {
     
     local model_full="${MODEL_NAMES[$model_short]:-$model_short}"
     
-    # Update model registry with GPU and port if requested
+    # Update model_config.yml with GPU and port if requested
     if [ "$update_registry" = "true" ]; then
-        update_model_registry_gpu_port "$model_short" "$gpu_list" "$vllm_port"
+        update_model_config_gpu_port "$model_short" "$gpu_list" "$vllm_port" "$tensor_parallel"
     fi
     
     echo ""
