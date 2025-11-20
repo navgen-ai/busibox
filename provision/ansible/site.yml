@@ -75,11 +75,22 @@
         timeout: 10
       delegate_to: localhost
     
-    - name: Kill any remaining vLLM processes
+    - name: Force cleanup of GPU processes and shared memory
       shell: |
+        # Kill specific vLLM processes
         pkill -9 -f "vllm.entrypoints.openai.api_server" || true
-        sleep 2
+        pkill -9 -f "multiprocessing" || true
+        
+        # Kill anything using NVIDIA GPUs
+        fuser -k /dev/nvidia* || true
+        
+        # Clean shared memory (removes stale PyTorch/Ray segments)
+        rm -rf /dev/shm/*
+        
+        # Wait for cleanup
+        sleep 5
       failed_when: false
+      tags: [always]
   roles:
     # - role: ollama  # Temporarily disabled - using vLLM only
     #   when: "'ollama' in group_names"
