@@ -1354,17 +1354,21 @@ main() {
         echo ""
     fi
     
-    info "Next steps:"
-    echo "  1. Update Ansible variables (inventory/*/group_vars/all/00-main.yml)"
-    echo "     Set vLLM GPU allocation variables as shown above"
+    info "Configuration saved to: ${MODEL_CONFIG}"
     echo ""
-    echo "  2. Redeploy services:"
-    echo "     cd provision/ansible"
-    echo "     ansible-playbook -i inventory/production/hosts.yml site.yml --tags vllm,litellm"
+    echo "Next steps:"
+    echo "  1. Deploy to test:"
+    echo "     cd provision/ansible && make test"
+    echo ""
+    echo "  2. After testing, deploy to production:"
+    echo "     make production"
     echo ""
     echo "  3. Verify LiteLLM routing:"
     echo "     curl http://<litellm-ip>:4000/v1/models"
     echo "     # Should list all configured models"
+    echo ""
+    echo "Port-based vLLM roles will automatically read model assignments"
+    echo "from model_config.yml during deployment."
 }
 
 # Parse arguments
