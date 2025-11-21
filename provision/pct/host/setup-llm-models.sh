@@ -231,8 +231,19 @@ if [ "$CLEANUP_MODE" = true ]; then
     
     # Run cleanup and exit
     cleanup_orphaned_models() {
+        # Disable errexit temporarily for this function
+        set +e
+        
         log_info "Checking for orphaned models..."
         echo ""
+        
+        # Verify MODELS_DIR exists
+        if [ ! -d "${MODELS_DIR}" ]; then
+            log_error "Models directory does not exist: ${MODELS_DIR}"
+            log_info "No models have been downloaded yet."
+            set -e
+            return 1
+        fi
         
         # Get list of models in registry (already in MODELS array)
         declare -A registry_models
@@ -240,11 +251,16 @@ if [ "$CLEANUP_MODE" = true ]; then
             registry_models["$model"]=1
         done
         
+        log_info "Registry contains ${#MODELS[@]} model(s)"
+        log_info "Scanning ${MODELS_DIR} for cached models..."
+        echo ""
+        
         # Get list of cached models on disk
         if ! ls -1d "${MODELS_DIR}"/models--* 2>/dev/null | grep -q .; then
             log_info "No cached models found. Nothing to clean up."
             echo ""
-            return
+            set -e
+            return 0
         fi
         
         # Track orphaned models
@@ -324,10 +340,19 @@ if [ "$CLEANUP_MODE" = true ]; then
             log_info "No models were deleted."
         fi
         echo ""
+        
+        # Re-enable errexit
+        set -e
+        return 0
     }
     
-    cleanup_orphaned_models
-    exit 0
+    # Call cleanup with error handling
+    if cleanup_orphaned_models; then
+        exit 0
+    else
+        log_error "Cleanup failed. Check the error messages above."
+        exit 1
+    fi
 fi
 
 # Download mode - read models from registry
