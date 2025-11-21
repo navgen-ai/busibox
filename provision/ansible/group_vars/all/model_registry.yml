@@ -30,10 +30,10 @@ available_models:
     model_name: "microsoft/Phi-4-multimodal-instruct"
     description: "Fast model for quick operations"
     
-  "qwen3-30b-a3b-instruct":
+  "qwen3-30b-a3b-instruct-fp8":
     provider: "vllm"
-    model: "qwen3-30b-a3b-instruct"
-    model_name: "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    model: "qwen3-30b-a3b-instruct-fp8"
+    model_name: "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"
     description: "General purpose agent model"
 
 model_purposes:
