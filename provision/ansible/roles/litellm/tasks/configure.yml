@@ -409,29 +409,12 @@
   when: analysis_backend_health is defined
   tags: [litellm_configure, litellm_test]
 
-- name: Test embedding model
-  uri:
-    url: "http://{{ litellm_host if litellm_host != '0.0.0.0' else 'localhost' }}:{{ litellm_port }}/v1/embeddings"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ litellm_master_key }}"
-      Content-Type: "application/json"
-    body_format: json
-    body:
-      model: "embedding"
-      input: "This is a small test document for embedding generation."
-    status_code: 200
-  register: embedding_test
-  retries: 3
-  delay: 2
-  when: litellm_start_service and (model_purposes.embedding is defined)
-  failed_when: false
-  tags: [litellm_configure, litellm_test]
-
-- name: Display embedding test result
+- name: Skip embedding test (served by FastEmbed service, not LiteLLM)
   debug:
-    msg: "{{ 'Embedding test passed - generated ' + (embedding_test.json.data | length | string) + ' embeddings' if embedding_test.json is defined and embedding_test.json.data is defined else 'Embedding test skipped or failed: ' + (embedding_test.json.error.message | default('No embedding model configured')) }}"
-  when: embedding_test is defined
+    msg: |
+      ⏭️  Embedding test skipped
+      Reason: 'embedding' purpose is served by FastEmbed service (dedicated API)
+      Not routed through LiteLLM's chat completion API
   tags: [litellm_configure, litellm_test]
 
 - name: Test fast chat model
@@ -494,11 +477,13 @@
   debug:
     msg:
       - "=========================================="
-      - "LiteLLM Model Test Summary"
+      - "LiteLLM Chat Model Test Summary"
       - "=========================================="
-      - "Embedding model: {{ 'PASSED' if embedding_test is defined and embedding_test.status == 200 else 'SKIPPED/FAILED' }}"
       - "Fast model: {{ 'PASSED' if fast_test is defined and fast_test.status == 200 else 'SKIPPED/FAILED' }}"
       - "Analysis model: {{ 'PASSED' if analysis_test is defined and analysis_test.status == 200 else 'SKIPPED/FAILED' }}"
+      - ""
+      - "Note: Embedding, visual-embedding, and reranking"
+      - "      are served by dedicated services, not LiteLLM"
       - "=========================================="
   tags: [litellm_configure, litellm_test]
 
