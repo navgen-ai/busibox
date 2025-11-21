@@ -48,9 +48,6 @@ ExecStart={{ vllm_venv_dir }}/bin/python -m vllm.entrypoints.openai.api_server \
   --chat-template {{ vllm_tool_chat_template }} \
 {% endif %}
 {% endif %}
-
-  --api-key {{ vllm_api_key }} \
-{% endif %}
 {% if vllm_disable_log_stats %}
   --disable-log-stats
 {% endif %}
