@@ -83,7 +83,7 @@
     host: "{{ vllm_host if vllm_host != '0.0.0.0' else 'localhost' }}"
     port: "{{ vllm_port }}"
     delay: 10
-    timeout: 120
+    timeout: 600  # 10 minutes - large models take time to load
   when: vllm_start_service
   failed_when: false
   register: vllm_port_check
@@ -125,7 +125,7 @@
     method: GET
     status_code: 200
   register: vllm_health_test
-  retries: 12  # Increase retries to give vLLM more time to load model (2 minutes total)
+  retries: 30  # 30 retries × 10 seconds = 5 minutes for model to load
   delay: 10
   when: vllm_start_service
   tags: [vllm_configure, vllm_test]

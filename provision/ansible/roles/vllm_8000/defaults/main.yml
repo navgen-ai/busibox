@@ -57,5 +57,5 @@ vllm_memory_limit: "180G"
 vllm_cpu_limit: "8"
 vllm_health_check_enabled: true
 vllm_health_check_interval: 60
-vllm_startup_timeout: 600
+vllm_startup_timeout: 900  # 15 minutes - large models take time to load
 
