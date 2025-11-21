@@ -21,7 +21,23 @@ This guide shows you how to effectively use the Busibox MCP Server with AI codin
 
 ## Installation
 
-### Quick Setup
+### Quick Setup (Recommended)
+
+Using the interactive menu:
+
+```bash
+make mcp
+```
+
+This provides an interactive menu to:
+1. Build the MCP server
+2. Install dependencies
+3. Show Cursor configuration
+4. Clean build artifacts
+
+See [Interactive Commands Guide](interactive-commands.md) for details.
+
+### Direct Setup
 
 ```bash
 cd tools/mcp-server
