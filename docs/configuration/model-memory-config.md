@@ -171,12 +171,19 @@ Cold KV Cache = Total KV Cache × 85% (offloaded to RAM)
 
 After verifying your model quantization:
 
-1. **Update MODEL_CONFIG** in `configure-vllm-model-routing.sh`
-2. **Test memory estimation**:
+1. **Update model configuration** using the interactive menu:
    ```bash
-   bash configure-vllm-model-routing.sh --interactive
+   make configure
+   # Select: 1 (Model Configuration)
+   # Select: 1 (Update Model Config)
+   # Then: 2 (Configure vLLM Model Routing)
    ```
+
+2. **Or update manually** in `configure-vllm-model-routing.sh`
+
 3. **Verify estimates match actual GPU usage**
+
+See [Interactive Commands Guide](../guides/interactive-commands.md) for more details.
 
 ## References
 

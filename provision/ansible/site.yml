@@ -73,13 +73,6 @@
       failed_when: false
       tags: [always]
     
-    - name: Stop ColPali service to free GPU 0
-      systemd:
-        name: colpali
-        state: stopped
-      failed_when: false
-      tags: [always]
-    
     - name: Stop vLLM services one by one to ensure proper GPU memory release
       systemd:
         name: "vllm-{{ item }}"
