@@ -63,48 +63,106 @@
 - name: Deploy LLM Inference Backends (can run in parallel)
   hosts: vllm  # Ollama temporarily disabled
   pre_tasks:
-    - name: Install psmisc (for fuser) if not present
+    - name: Install required cleanup tools
       apt:
-        name: psmisc
+        name:
+          - psmisc  # Provides fuser
+          - lsof    # For debugging
         state: present
         update_cache: false
       failed_when: false
+      tags: [always]
     
     - name: Stop ColPali service to free GPU 0
       systemd:
         name: colpali
         state: stopped
       failed_when: false
+      tags: [always]
     
-    - name: Stop all existing vLLM services to free GPU memory
+    - name: Stop vLLM services one by one to ensure proper GPU memory release
       systemd:
         name: "vllm-{{ item }}"
         state: stopped
       loop: [8000, 8001, 8002, 8003, 8004, 8005]
       failed_when: false
+      tags: [always]
     
-    - name: Wait for services to fully terminate
-      wait_for:
-        timeout: 10
-      delegate_to: localhost
+    - name: Wait for systemd to process stop requests
+      pause:
+        seconds: 5
+      tags: [always]
     
-    - name: Force cleanup of GPU processes and shared memory
+    - name: Force kill any remaining vLLM processes
       shell: |
-        # Kill specific vLLM processes
-        pkill -9 -f "vllm.entrypoints.openai.api_server" || true
-        pkill -9 -f "multiprocessing" || true
+        # Find and kill vLLM API server processes
+        pgrep -f "vllm.entrypoints.openai.api_server" | xargs -r kill -9 2>/dev/null || true
         
-        # Kill anything using NVIDIA GPUs (requires psmisc/fuser)
+        # Find and kill any Python processes running vLLM
+        pgrep -f "python.*vllm" | xargs -r kill -9 2>/dev/null || true
+        
+        # Kill Ray processes (vLLM uses Ray for distributed inference)
+        pgrep -f "ray::" | xargs -r kill -9 2>/dev/null || true
+        
+        echo "Killed remaining vLLM processes"
+      register: kill_result
+      changed_when: false
+      failed_when: false
+      tags: [always]
+    
+    - name: Force release GPU memory
+      shell: |
+        # Kill anything using NVIDIA GPUs
         if command -v fuser &> /dev/null; then
-          fuser -k /dev/nvidia* 2>/dev/null || true
+          for device in /dev/nvidia*; do
+            if [ -e "$device" ]; then
+              fuser -k "$device" 2>/dev/null || true
+            fi
+          done
         fi
         
-        # Clean shared memory (removes stale PyTorch/Ray segments)
-        rm -rf /dev/shm/* 2>/dev/null || true
+        # Alternative: use lsof to find GPU users
+        if command -v lsof &> /dev/null; then
+          lsof /dev/nvidia* 2>/dev/null | awk 'NR>1 {print $2}' | xargs -r kill -9 2>/dev/null || true
+        fi
         
-        # Wait for cleanup
-        sleep 5
+        echo "Forced GPU memory release"
+      register: gpu_cleanup
+      changed_when: false
       failed_when: false
+      tags: [always]
+    
+    - name: Clean shared memory and temp files
+      shell: |
+        # Clean shared memory (PyTorch/Ray use this heavily)
+        find /dev/shm -type f -name "*torch*" -delete 2>/dev/null || true
+        find /dev/shm -type f -name "*ray*" -delete 2>/dev/null || true
+        
+        # Clean /tmp for vLLM temp files
+        find /tmp -type f -name "*vllm*" -mmin +5 -delete 2>/dev/null || true
+        
+        echo "Cleaned shared memory and temp files"
+      register: shm_cleanup
+      changed_when: false
+      failed_when: false
+      tags: [always]
+    
+    - name: Wait for GPU memory to be fully released
+      pause:
+        seconds: 10
+      tags: [always]
+    
+    - name: Verify GPU memory is free
+      shell: nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits
+      register: gpu_memory_check
+      changed_when: false
+      failed_when: false
+      tags: [always]
+    
+    - name: Display GPU memory status
+      debug:
+        msg: "GPU memory usage (MB): {{ gpu_memory_check.stdout_lines }}"
+      when: gpu_memory_check.stdout_lines is defined
       tags: [always]
   roles:
     # - role: ollama  # Temporarily disabled - using vLLM only
