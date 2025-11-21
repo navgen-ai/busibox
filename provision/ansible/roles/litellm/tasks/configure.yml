@@ -375,39 +375,7 @@
   when: litellm_models_test is defined
   tags: [litellm_configure, litellm_test]
 
-- name: Check vLLM backend health for fast model
-  uri:
-    url: "{{ litellm_models | selectattr('model_name', 'equalto', 'fast') | map(attribute='litellm_params.api_base') | first | default('') }}/health"
-    method: GET
-    status_code: 200
-    timeout: 5
-  register: fast_backend_health
-  failed_when: false
-  when: litellm_start_service and (litellm_models | selectattr('model_name', 'equalto', 'fast') | list | length > 0)
-  tags: [litellm_configure, litellm_test]
-
-- name: Display fast backend health
-  debug:
-    msg: "Fast model vLLM backend at {{ litellm_models | selectattr('model_name', 'equalto', 'fast') | map(attribute='litellm_params.api_base') | first | default('N/A') }}: {{ 'HEALTHY' if fast_backend_health.status == 200 else 'UNHEALTHY - Status: ' + (fast_backend_health.status | string) }}"
-  when: fast_backend_health is defined
-  tags: [litellm_configure, litellm_test]
-
-- name: Check vLLM backend health for analysis model
-  uri:
-    url: "{{ litellm_models | selectattr('model_name', 'equalto', 'analysis') | map(attribute='litellm_params.api_base') | first | default('') }}/health"
-    method: GET
-    status_code: 200
-    timeout: 5
-  register: analysis_backend_health
-  failed_when: false
-  when: litellm_start_service and (litellm_models | selectattr('model_name', 'equalto', 'analysis') | list | length > 0)
-  tags: [litellm_configure, litellm_test]
-
-- name: Display analysis backend health
-  debug:
-    msg: "Analysis model vLLM backend at {{ litellm_models | selectattr('model_name', 'equalto', 'analysis') | map(attribute='litellm_params.api_base') | first | default('N/A') }}: {{ 'HEALTHY' if analysis_backend_health.status == 200 else 'UNHEALTHY - Status: ' + (analysis_backend_health.status | string) }}"
-  when: analysis_backend_health is defined
-  tags: [litellm_configure, litellm_test]
+# Backend health checks removed - redundant with actual chat completion tests below
 
 - name: Skip embedding test (served by FastEmbed service, not LiteLLM)
   debug:
