@@ -87,7 +87,7 @@
                 models.append({
                     'model_name': purpose,
                     'litellm_params': {
-                        'model': f"openai/{model_entry.get('model', model_key)}",
+                        'model': f"openai/{model_name}",
                         'api_base': f"http://{{ vllm_ip }}:{config['port']}/v1",
                         'api_key': 'EMPTY'
                     }
