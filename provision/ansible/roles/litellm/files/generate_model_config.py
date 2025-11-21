@@ -32,7 +32,19 @@ def main():
     # Debug: Show what's in model_configs
     print("DEBUG: model_configs keys: {}".format(list(model_configs.keys())), file=sys.stderr)
     
+    # Purposes that should NOT be served through LiteLLM
+    # These have dedicated services with specialized APIs
+    excluded_purposes = {
+        'embedding',         # FastEmbed service (dedicated embedding endpoint)
+        'visual-embedding',  # ColPali service (dedicated visual embedding endpoint)
+        'reranking'          # Search service calls reranker directly
+    }
+    
     for purpose, model_key in model_purposes.items():
+        # Skip non-chat purposes
+        if purpose in excluded_purposes:
+            print("INFO: Skipping purpose '{}' - served by dedicated service, not LiteLLM".format(purpose), file=sys.stderr)
+            continue
         model_entry = available_models.get(model_key, {})
         if not model_entry:
             print("WARNING: No model entry for purpose '{}' with key '{}'".format(purpose, model_key), file=sys.stderr)
@@ -43,11 +55,8 @@ def main():
         config = model_configs.get(model_name, {})
         config_provider = config.get('provider', '').lower()
         
-        # Debug logging
-        if purpose == 'reranking':
-            print("DEBUG reranking: model_key={}, model_name={}, provider={}".format(model_key, model_name, provider), file=sys.stderr)
-            print("DEBUG reranking: config={}".format(config), file=sys.stderr)
-            print("DEBUG reranking: assigned={}, port={}".format(config.get('assigned'), config.get('port')), file=sys.stderr)
+        # Debug logging for chat purposes
+        print("DEBUG: Processing purpose '{}' -> model_key='{}', provider='{}'".format(purpose, model_key, provider), file=sys.stderr)
         
         # Use provider from registry as source of truth
         # But skip if config has a conflicting provider (stale data)
