@@ -188,7 +188,6 @@ applications:
       - better_auth_secret
       - better_auth_url
       - email_from
-      - openai_api_key
       - sso_jwt_secret
       - litellm_api_key
       - admin_email
@@ -263,9 +262,9 @@ applications:
         strip_path: false
     secrets:
       - database_url
-      - openai_api_key
       - better_auth_secret
       - jwt_secret
+      - litellm_api_key
     env:
       NODE_ENV: development
       MILVUS_HOST: "{{ milvus_ip }}"
