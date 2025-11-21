@@ -27,7 +27,7 @@ available_models:
   "qwen3-30b":
     provider: "vllm"
     model: "qwen3-30b-a3b-instruct-awq-4bit"
-    model_name: "Qwen/Qwen3-30B-A3B-Instruct-2507-AWQ-4bit"
+    model_name: "cpatonn/Qwen3-30B-A3B-Instruct-2507-AWQ-4bit"
     description: "General purpose agent model"
 
   "qwen3-reranker":
