@@ -82,6 +82,10 @@ agent_api_port: 4111
 litellm_host: "{{ litellm_ip }}"
 litellm_port: 4000
 
+# LiteLLM Settings - Enable tool/function calling support
+litellm_drop_params: false  # CRITICAL: Must be false to pass tools to vLLM
+litellm_add_function_to_prompt: true  # Add function definitions to prompt for models that need it
+
 ollama_host: "{{ ollama_ip }}"
 ollama_port: 11434
 
