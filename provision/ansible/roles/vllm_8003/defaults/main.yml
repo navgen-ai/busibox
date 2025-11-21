@@ -3,7 +3,7 @@
 # Port-based vLLM role that checks model_config.yml for assigned models
 
 # Port configuration
-vllm_port: 8003
+vllm_port: 8000
 vllm_service_name: "vllm-{{ vllm_port }}"
 
 # Check if model is assigned to this port
@@ -57,5 +57,5 @@ vllm_memory_limit: "180G"
 vllm_cpu_limit: "8"
 vllm_health_check_enabled: true
 vllm_health_check_interval: 60
-vllm_startup_timeout: 600
+vllm_startup_timeout: 900  # 15 minutes - large models take time to load
 
