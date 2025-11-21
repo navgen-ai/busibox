@@ -692,7 +692,8 @@ EXAMPLES:
     $0 --model=phi-4 --gpu=1 --auto-update
 
 MODEL ROUTING STRATEGY:
-    Small models (phi-4, qwen3-embedding): GPU 1 (single GPU)
+    Small models (reranker, phi-4, qwen3-embedding): GPU 0 or GPU 1 (single GPU)
+      Note: GPU 0 may also have ColPali service running
     Medium models (qwen3-30b): GPUs 2,3 (tensor parallelism)
     Large models (70B+): GPUs 2,3,4,5 (4+ GPUs)
 
@@ -964,16 +965,45 @@ show_gpu_allocation_table() {
     printf "%-8s %-10s %-25s %-10s %-8s %-8s\n" "GPU" "Memory" "Model" "Size(GB)" "Port" "TP"
     echo "────────────────────────────────────────────────────────────────────────────────────"
     
-    # Show GPU 0 (reserved for ColPali - separate service, not vLLM)
-    local gpu0_model="RESERVED (ColPali)"
-    local gpu0_size="~15GB"
-    local gpu0_port="9006"
-    local gpu0_tp="-"
+    # Show GPU 0 (may have ColPali service + small vLLM models)
+    local gpu0_models=""
+    local gpu0_has_vllm=false
     
-    # Note: ColPali runs as dedicated service on port 9006, not managed by vLLM
+    # Check if any vLLM models are assigned to GPU 0
+    for model in "${!MODEL_GPU_ASSIGNMENTS[@]}"; do
+        local assigned_gpus="${MODEL_GPU_ASSIGNMENTS[$model]}"
+        if [[ ",$assigned_gpus," == *",0,"* ]] || [[ "$assigned_gpus" == "0" ]]; then
+            local model_full="${MODEL_NAMES[$model]}"
+            local model_size=$(calculate_model_size "$model_full")
+            local port="${MODEL_PORT_ASSIGNMENTS[$model]:-unset}"
+            local tp="${MODEL_TP_ASSIGNMENTS[$model]:-1}"
+            
+            if [ -z "$gpu0_models" ]; then
+                printf "%-8s %-10s %-25s %-10s %-8s %-8s\n" \
+                    "GPU 0" "${GPU_MEMORY[0]:-0}GB" "$model" "${model_size}GB" "$port" "$tp"
+                gpu0_models="$model"
+                gpu0_has_vllm=true
+            else
+                printf "%-8s %-10s %-25s %-10s %-8s %-8s\n" \
+                    "" "" "$model" "${model_size}GB" "$port" "$tp"
+                gpu0_models="$gpu0_models,$model"
+            fi
+        fi
+    done
     
-    printf "%-8s %-10s %-25s %-10s %-8s %-8s\n" \
-        "GPU 0" "${GPU_MEMORY[0]:-0}GB" "$gpu0_model" "$gpu0_size" "$gpu0_port" "$gpu0_tp"
+    # Show ColPali note if no vLLM models on GPU 0
+    if [ "$gpu0_has_vllm" = false ]; then
+        local gpu0_model="ColPali (dedicated)"
+        local gpu0_size="~15GB"
+        local gpu0_port="9006"
+        local gpu0_tp="-"
+        printf "%-8s %-10s %-25s %-10s %-8s %-8s\n" \
+            "GPU 0" "${GPU_MEMORY[0]:-0}GB" "$gpu0_model" "$gpu0_size" "$gpu0_port" "$gpu0_tp"
+    else
+        # Show note that ColPali may also be running
+        printf "%-8s %-10s %-25s\n" \
+            "" "" "  └─ (ColPali may also run here)"
+    fi
     
     # Show each GPU (starting from 1)
     for gpu_id in $(seq 1 $((${#GPU_MEMORY[@]} - 1))); do
@@ -1062,21 +1092,44 @@ assign_model_to_gpu() {
     
     echo ""
     info "Model: $selected_model (~${model_size}GB)"
+    
+    # Check if this is a small model (< 10B params)
+    local params=$(get_model_params "$model_full")
+    local is_small_model=false
+    if [ "$(echo "$params < 10" | bc -l)" -eq 1 ]; then
+        is_small_model=true
+    fi
+    
     echo ""
     echo "Available GPUs:"
-    echo "  GPU 0: ${GPU_MEMORY[0]:-0}GB (reserved for ColPali service)"
+    if [ "$is_small_model" = true ]; then
+        echo "  GPU 0: ${GPU_MEMORY[0]:-0}GB (available for small models, note: ColPali may also run here)"
+    else
+        echo "  GPU 0: ${GPU_MEMORY[0]:-0}GB (not recommended - reserved for ColPali/small models)"
+    fi
     for gpu_id in $(seq 1 $((${#GPU_MEMORY[@]} - 1))); do
         echo "  GPU $gpu_id: ${GPU_MEMORY[$gpu_id]:-0}GB"
     done
     
     echo ""
     
-    read -p "GPU(s) for this model (e.g., '1' or '2,3' for tensor parallelism, GPU 0 reserved): " gpu_list
+    read -p "GPU(s) for this model (e.g., '1' or '2,3' for tensor parallelism): " gpu_list
     
-    # Validate GPU 0 is not selected
-    if [[ "$gpu_list" == *"0"* ]]; then
-        error "GPU 0 is reserved for ColPali service (separate, not vLLM). Please select GPU 1 or higher."
-        return 1
+    # Warn if large model is assigned to GPU 0
+    if [[ "$gpu_list" == *"0"* ]] && [ "$is_small_model" = false ]; then
+        warn "GPU 0 is typically reserved for ColPali and small models (like reranker)."
+        warn "Large models should use GPU 1 or higher."
+        read -p "Continue with GPU 0 assignment? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            info "Assignment cancelled"
+            return 1
+        fi
+    fi
+    
+    # Warn if small model is assigned to GPU 0 (informational)
+    if [[ "$gpu_list" == *"0"* ]] && [ "$is_small_model" = true ]; then
+        info "Note: GPU 0 may also have ColPali service running. Ensure sufficient memory."
     fi
     
     # Auto-assign next available port
@@ -1256,12 +1309,12 @@ auto_assign_all_models() {
     MODEL_PORT_ASSIGNMENTS=()
     MODEL_TP_ASSIGNMENTS=()
     
-    # Note: GPU 0 is reserved for ColPali service (separate, not managed here)
+    # Note: GPU 0 can be used for small models (like reranker) alongside ColPali
     # Start port counter at 8000 for vLLM models
     local port_counter=8000
     
-    # Strategy: Put small models on GPU 1, large models on remaining GPUs with TP
-    # Sort models by size (GPU 0 is reserved for ColPali service)
+    # Strategy: Put small models on GPU 0 or GPU 1, large models on remaining GPUs with TP
+    # Sort models by size
     local small_models=()
     local large_models=()
     
@@ -1276,24 +1329,38 @@ auto_assign_all_models() {
         fi
     done
     
-    # Assign small models to GPU 1
-    local small_gpu=1
+    # Assign small models to GPU 0 (if available) or GPU 1
+    # GPU 0 can handle small models like reranker alongside ColPali
+    local small_gpu=0
     if [ "${#GPU_MEMORY[@]}" -le 1 ]; then
-        warn "Only GPU 0 available (reserved). Cannot assign models. Need at least GPU 1."
-        return 1
+        warn "Only GPU 0 available. Assigning small models to GPU 0 (ColPali may also run here)."
     fi
     
+    # Use GPU 0 for first small model, then alternate if multiple small models
+    local gpu_counter=0
     for model in "${small_models[@]}"; do
-        MODEL_GPU_ASSIGNMENTS["$model"]="$small_gpu"
+        if [ "$gpu_counter" -eq 0 ] && [ "${#GPU_MEMORY[@]}" -gt 0 ]; then
+            # First small model goes to GPU 0
+            MODEL_GPU_ASSIGNMENTS["$model"]="0"
+            success "Assigned $model to GPU 0 (port $port_counter, note: ColPali may also run here)"
+        elif [ "${#GPU_MEMORY[@]}" -gt 1 ]; then
+            # Additional small models go to GPU 1
+            MODEL_GPU_ASSIGNMENTS["$model"]="1"
+            success "Assigned $model to GPU 1 (port $port_counter)"
+        else
+            # Only GPU 0 available, put all small models there
+            MODEL_GPU_ASSIGNMENTS["$model"]="0"
+            warn "Assigned $model to GPU 0 (port $port_counter, multiple models may share GPU 0)"
+        fi
         MODEL_PORT_ASSIGNMENTS["$model"]="$port_counter"
         MODEL_TP_ASSIGNMENTS["$model"]="1"
         ((port_counter++))
-        success "Assigned $model to GPU $small_gpu (port $((port_counter - 1)))"
+        ((gpu_counter++))
     done
     
-    # Assign large models with tensor parallelism (skip GPU 0)
+    # Assign large models with tensor parallelism (skip GPU 0 - reserved for small models/ColPali)
     if [ "${#GPU_MEMORY[@]}" -ge 3 ]; then
-        # Use GPUs 2,3 for large models with TP (skip GPU 0, GPU 1 for small models)
+        # Use GPUs 2,3 for large models with TP (skip GPU 0 for small models, GPU 1 may have small models)
         for model in "${large_models[@]}"; do
             MODEL_GPU_ASSIGNMENTS["$model"]="2,3"
             MODEL_TP_ASSIGNMENTS["$model"]="2"
@@ -1302,14 +1369,20 @@ auto_assign_all_models() {
             success "Assigned $model to GPU(s) 2,3 (port $((port_counter - 1)), TP=2)"
         done
     elif [ "${#GPU_MEMORY[@]}" -ge 2 ]; then
-        # Only GPU 1 available (GPU 0 reserved)
-        warn "Only GPU 1 available for large models (GPU 0 reserved). Large models may not fit."
+        # Only GPU 1 available (GPU 0 for small models/ColPali)
+        warn "Only GPU 1 available for large models (GPU 0 reserved for small models/ColPali). Large models may not fit."
         for model in "${large_models[@]}"; do
             MODEL_GPU_ASSIGNMENTS["$model"]="1"
             MODEL_TP_ASSIGNMENTS["$model"]="1"
             MODEL_PORT_ASSIGNMENTS["$model"]="$port_counter"
             ((port_counter++))
             success "Assigned $model to GPU 1 (port $((port_counter - 1)), TP=1)"
+        done
+    else
+        # Only GPU 0 available - cannot assign large models
+        warn "Only GPU 0 available. Large models cannot be assigned (GPU 0 reserved for small models/ColPali)."
+        for model in "${large_models[@]}"; do
+            warn "Skipping $model - needs GPU 1+ for large models"
         done
     fi
 }
