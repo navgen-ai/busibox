@@ -187,7 +187,9 @@ applications:
     secrets:
       - database_url
       - litellm_api_key
-      - better_auth_secret
+      - sso_jwt_secret  # For JWT authentication from ai-portal
+    optional_secrets:
+      # Email secrets are optional - only needed if not using JWT auth from ai-portal
       - allowed_email_domains
       - email_from
       - smtp_host
@@ -195,12 +197,12 @@ applications:
       - smtp_user
       - smtp_password
       - smtp_secure
-    optional_secrets:
       - resend_api_key
     env:
       NODE_ENV: "{{ node_env }}"
       LITELLM_BASE_URL: "http://{{ litellm_ip }}:{{ litellm_port }}/v1"
       NEXT_PUBLIC_APP_URL: "https://{{ full_domain }}/foundation"
+      AI_PORTAL_URL: "https://{{ full_domain }}"
       PORT: "3003"
       DEPLOYMENT_MODE: "busibox"
   
@@ -222,6 +224,9 @@ applications:
     secrets:
       - database_url
       - litellm_api_key
+      - sso_jwt_secret  # For JWT authentication from ai-portal
+    optional_secrets:
+      # Email secrets are optional - only needed if not using JWT auth from ai-portal
       - allowed_email_domains
       - email_from
       - smtp_host
@@ -229,12 +234,12 @@ applications:
       - smtp_user
       - smtp_password
       - smtp_secure
-    optional_secrets:
       - resend_api_key
     env:
       NODE_ENV: "{{ node_env }}"
       LITELLM_BASE_URL: "http://{{ litellm_ip }}:{{ litellm_port }}/v1"
       NEXT_PUBLIC_APP_URL: "https://{{ full_domain }}/projects"
+      AI_PORTAL_URL: "https://{{ full_domain }}"
       PORT: "3004"
       DEPLOYMENT_MODE: "busibox"
 
