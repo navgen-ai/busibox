@@ -413,7 +413,7 @@
   when: fast_test is defined
   tags: [litellm_configure, litellm_test]
 
-- name: Test analysis chat model
+- name: Test agent chat model
   uri:
     url: "http://{{ litellm_host if litellm_host != '0.0.0.0' else 'localhost' }}:{{ litellm_port }}/v1/chat/completions"
     method: POST
@@ -422,33 +422,81 @@
       Content-Type: "application/json"
     body_format: json
     body:
-      model: "analysis"
+      model: "agent"
       messages:
         - role: "user"
           content: "What is 2+2? Answer with just the number."
       max_tokens: 10
     status_code: 200
-  register: analysis_test
+  register: agent_test
   retries: 3
   delay: 2
-  when: litellm_start_service and (model_purposes.analysis is defined)
+  when: litellm_start_service and (model_purposes.agent is defined)
   failed_when: false
   tags: [litellm_configure, litellm_test]
 
-- name: Display analysis model test result
+- name: Display agent model test result
   debug:
-    msg: "{{ 'Analysis model test passed - response: ' + analysis_test.json.choices[0].message.content if analysis_test.json is defined and analysis_test.json.choices is defined else 'Analysis model test skipped or failed: ' + (analysis_test.json.error.message | default('No analysis model configured')) }}"
-  when: analysis_test is defined
+    msg: "{{ 'Agent model test passed - response: ' + agent_test.json.choices[0].message.content if agent_test.json is defined and agent_test.json.choices is defined else 'Agent model test skipped or failed: ' + (agent_test.json.error.message | default('No agent model configured')) }}"
+  when: agent_test is defined
+  tags: [litellm_configure, litellm_test]
+
+- name: Test frontier (Bedrock Claude 4.5) model
+  uri:
+    url: "http://{{ litellm_host if litellm_host != '0.0.0.0' else 'localhost' }}:{{ litellm_port }}/v1/chat/completions"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ litellm_master_key }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      model: "frontier"
+      messages:
+        - role: "user"
+          content: "Say 'hello' in one word."
+      max_tokens: 10
+    status_code: 200
+  register: frontier_test
+  retries: 3
+  delay: 2
+  when: litellm_start_service and (model_purposes.frontier is defined)
+  failed_when: false
+  tags: [litellm_configure, litellm_test]
+
+- name: Display frontier model test result
+  debug:
+    msg: "{{ 'Frontier (Bedrock) model test passed - response: ' + frontier_test.json.choices[0].message.content if frontier_test.json is defined and frontier_test.json.choices is defined else 'Frontier model test FAILED: ' + (frontier_test.json.error.message | default(frontier_test.msg | default('Unknown error - check Bedrock credentials'))) }}"
+  when: frontier_test is defined
+  tags: [litellm_configure, litellm_test]
+
+- name: Display Bedrock authentication warning if frontier test failed
+  debug:
+    msg:
+      - "⚠️  WARNING: Bedrock (frontier) model test failed!"
+      - "This likely means AWS Bedrock credentials are not configured correctly."
+      - ""
+      - "To fix:"
+      - "1. Check vault has bedrock_api_key: ansible-vault edit roles/secrets/vars/vault.yml"
+      - "2. Verify /etc/default/litellm has AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"
+      - "3. Check logs: journalctl -u litellm -n 50"
+      - ""
+      - "Expected vault format:"
+      - "  secrets:"
+      - "    bedrock_api_key: 'YOUR_KEY_HERE'"
+      - "    litellm:"
+      - "      bedrock_api_key: 'YOUR_KEY_HERE'"
+  when: frontier_test is defined and (frontier_test.json is not defined or frontier_test.json.choices is not defined)
   tags: [litellm_configure, litellm_test]
 
 - name: Summary of model tests
   debug:
     msg:
       - "=========================================="
-      - "LiteLLM Chat Model Test Summary"
+      - "LiteLLM Chat Model Test Summary" 
       - "=========================================="
       - "Fast model: {{ 'PASSED' if fast_test is defined and fast_test.json is defined and fast_test.json.choices is defined else 'SKIPPED/FAILED' }}"
-      - "Analysis model: {{ 'PASSED' if analysis_test is defined and analysis_test.json is defined and analysis_test.json.choices is defined else 'SKIPPED/FAILED' }}"
+      - "Agent model: {{ 'PASSED' if agent_test is defined and agent_test.json is defined and agent_test.json.choices is defined else 'SKIPPED/FAILED' }}"
+      - "Frontier (Bedrock Claude 4.5): {{ 'PASSED ✓' if frontier_test is defined and frontier_test.json is defined and frontier_test.json.choices is defined else 'FAILED ✗ (check Bedrock credentials)' }}"
       - ""
       - "Note: Embedding, visual-embedding, and reranking"
       - "      are served by dedicated services, not LiteLLM"
