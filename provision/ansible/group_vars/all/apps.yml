@@ -207,7 +207,7 @@ applications:
       DEPLOYMENT_MODE: "busibox"
   
   - name: project-analysis
-    github_repo: jazzmind/project-analysis
+    github_repo: jazzmind/tabular-bells
     container: apps-lxc
     container_ip: "{{ apps_ip }}"
     port: 3004
