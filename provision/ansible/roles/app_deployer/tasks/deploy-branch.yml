@@ -275,7 +275,7 @@
       {% for key, value in app_to_deploy.env.items() %}
       --update-env {{ key }}="{{ value }}" \
       {% endfor %}
-      -- start
+      -- start -- -p {{ app_to_deploy.port }}
     pm2 save
   delegate_to: "{{ app_to_deploy.container_ip }}"
   register: start_result
