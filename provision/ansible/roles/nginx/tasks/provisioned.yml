@@ -45,21 +45,32 @@
   set_fact:
     cert_domain: "{{ full_domain | default(domain) }}"
 
-- name: Deploy SSL certificate
-  copy:
-    content: "{{ secrets.ssl_certificates.certificate }}"
-    dest: "/etc/ssl/busibox/{{ cert_domain }}.crt.tmp"
-    mode: "0644"
-    owner: root
-    group: root
-  no_log: true
-
-- name: Format SSL certificate to proper PEM format
+- name: Deploy and format SSL certificate
   shell: |
-    # Reformat certificate to ensure proper line breaks (64 chars per line)
-    openssl x509 -in "/etc/ssl/busibox/{{ cert_domain }}.crt.tmp" -out "/etc/ssl/busibox/{{ cert_domain }}.crt"
+    # Deploy certificate content
+    cat > "/etc/ssl/busibox/{{ cert_domain }}.crt.tmp" << 'CERTEOF'
+    {{ secrets.ssl_certificates.certificate }}
+    CERTEOF
+    
+    # Remove any extra whitespace and reformat to proper PEM
+    # This handles cases where YAML collapses multiline strings
+    sed -e 's/[[:space:]]*$//' -e '/^$/d' "/etc/ssl/busibox/{{ cert_domain }}.crt.tmp" | \
+    awk '
+      /-----BEGIN CERTIFICATE-----/ { print; in_cert=1; next }
+      /-----END CERTIFICATE-----/ { print; in_cert=0; next }
+      in_cert { gsub(/[[:space:]]/, ""); buf = buf $0 }
+      END {
+        if (length(buf) > 0) {
+          # Split buffer into 64-char lines
+          for (i=1; i<=length(buf); i+=64) {
+            print substr(buf, i, 64)
+          }
+        }
+      }
+    ' > "/etc/ssl/busibox/{{ cert_domain }}.crt"
+    
     rm -f "/etc/ssl/busibox/{{ cert_domain }}.crt.tmp"
-  no_log: false
+  no_log: true
 
 - name: Deploy SSL private key
   copy:
@@ -70,33 +81,49 @@
     group: root
   no_log: true
 
-- name: Deploy SSL certificate chain
-  copy:
-    content: "{{ secrets.ssl_certificates.chain }}"
-    dest: "/etc/ssl/busibox/{{ cert_domain }}-chain.crt.tmp"
-    mode: "0644"
-    owner: root
-    group: root
+- name: Deploy and format SSL certificate chain
+  shell: |
+    # Deploy chain content
+    cat > "/etc/ssl/busibox/{{ cert_domain }}-chain.crt.tmp" << 'CHAINEOF'
+    {{ secrets.ssl_certificates.chain }}
+    CHAINEOF
+    
+    # Process potentially multiple certificates in the chain
+    awk '
+      /-----BEGIN CERTIFICATE-----/ { 
+        if (in_cert) { process_cert() }
+        print
+        in_cert=1
+        buf=""
+        next
+      }
+      /-----END CERTIFICATE-----/ {
+        process_cert()
+        print
+        in_cert=0
+        buf=""
+        next
+      }
+      in_cert {
+        gsub(/[[:space:]]/, "")
+        buf = buf $0
+      }
+      !in_cert && NF > 0 { print }
+      
+      function process_cert() {
+        if (length(buf) > 0) {
+          for (i=1; i<=length(buf); i+=64) {
+            print substr(buf, i, 64)
+          }
+        }
+      }
+    ' "/etc/ssl/busibox/{{ cert_domain }}-chain.crt.tmp" > "/etc/ssl/busibox/{{ cert_domain }}-chain.crt"
+    
+    rm -f "/etc/ssl/busibox/{{ cert_domain }}-chain.crt.tmp"
   when: 
     - secrets.ssl_certificates.chain is defined
     - secrets.ssl_certificates.chain | length > 0
   no_log: true
-
-- name: Format SSL certificate chain to proper PEM format
-  shell: |
-    # Split and reformat each certificate in the chain
-    csplit -s -z -f "/tmp/chain-" "/etc/ssl/busibox/{{ cert_domain }}-chain.crt.tmp" '/-----BEGIN CERTIFICATE-----/' '{*}'
-    rm -f "/etc/ssl/busibox/{{ cert_domain }}-chain.crt"
-    for cert in /tmp/chain-*; do
-      if [ -s "$cert" ] && grep -q "BEGIN CERTIFICATE" "$cert"; then
-        openssl x509 -in "$cert" >> "/etc/ssl/busibox/{{ cert_domain }}-chain.crt"
-      fi
-    done
-    rm -f /tmp/chain-* "/etc/ssl/busibox/{{ cert_domain }}-chain.crt.tmp"
-  when: 
-    - secrets.ssl_certificates.chain is defined
-    - secrets.ssl_certificates.chain | length > 0
-  no_log: false
 
 - name: Check if chain file exists and has content
   stat:
