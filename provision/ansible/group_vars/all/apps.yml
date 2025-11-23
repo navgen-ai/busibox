@@ -60,12 +60,8 @@ applications:
     routes:
       - type: path
         domain: "{{ full_domain }}"
-        path: /home
-        strip_path: false  # Keep /home path for Next.js routing
-      - type: path
-        domain: "{{ full_domain }}"
         path: /portal
-        strip_path: true  # Strip /portal prefix so Next.js receives requests at root
+        strip_path: false  # Keep /portal path - ai-portal will use basePath
     secrets:
       - database_url
       - better_auth_secret
@@ -96,11 +92,12 @@ applications:
     env:
       NODE_ENV: "{{ node_env }}"
       LITELLM_BASE_URL: "http://{{ litellm_ip }}:{{ litellm_port }}/v1"
-      BETTER_AUTH_URL: "https://{{ full_domain }}"
+      BETTER_AUTH_URL: "https://{{ full_domain }}/portal"
       SSO_TOKEN_EXPIRY: "900"
       PORT: "3000"
       INGEST_API_HOST: "{{ ingest_ip }}"
       DEPLOYMENT_MODE: "busibox"
+      NEXT_PUBLIC_BASE_PATH: "/portal"
   
   - name: agent-client
     github_repo: jazzmind/agent-client
