@@ -177,19 +177,19 @@
     echo "Connecting via: ${POSTGRES_URL:0:30}...${POSTGRES_URL: -20}"
     
     # Use Node.js with pg library to create database
-    cat > /tmp/create-db.js << 'SCRIPT'
+    cat > /tmp/create-db.js << 'ENDOFSCRIPT'
     const { Client } = require('pg');
     
     async function createDatabase() {
       const dbName = process.env.DB_NAME;
       const postgresUrl = process.env.POSTGRES_URL;
       
-      console.log(`Connecting to PostgreSQL...`);
+      console.log('Connecting to PostgreSQL...');
       const client = new Client({ connectionString: postgresUrl });
       
       try {
         await client.connect();
-        console.log('✓ Connected to PostgreSQL');
+        console.log('Connected to PostgreSQL');
         
         // Check if database exists
         const result = await client.query(
@@ -198,18 +198,18 @@
         );
         
         if (result.rows.length > 0) {
-          console.log(`✓ Database '${dbName}' already exists`);
+          console.log('Database already exists: ' + dbName);
         } else {
-          console.log(`Creating database '${dbName}'...`);
-          // CREATE DATABASE can't use parameterized queries
-          await client.query(`CREATE DATABASE "${dbName}"`);
-          console.log(`✓ Database '${dbName}' created successfully`);
+          console.log('Creating database: ' + dbName);
+          // CREATE DATABASE cannot use parameterized queries
+          await client.query('CREATE DATABASE "' + dbName + '"');
+          console.log('Database created successfully: ' + dbName);
         }
       } catch (error) {
         if (error.message.includes('already exists')) {
-          console.log(`✓ Database '${dbName}' already exists (concurrent creation)`);
+          console.log('Database already exists (concurrent creation): ' + dbName);
         } else {
-          console.error('✗ Error:', error.message);
+          console.error('Error:', error.message);
           process.exit(1);
         }
       } finally {
@@ -221,7 +221,7 @@
       console.error('Fatal error:', error);
       process.exit(1);
     });
-    SCRIPT
+    ENDOFSCRIPT
     
     # Run the Node.js script
     DB_NAME="$DB_NAME" POSTGRES_URL="$POSTGRES_URL" node /tmp/create-db.js
