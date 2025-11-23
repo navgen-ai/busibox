@@ -81,38 +81,41 @@
     cat << 'KEYEOF' | awk '
     BEGIN { RS=""; ORS="" }
     {
-      # Remove ALL whitespace
+      # Remove ALL whitespace to get continuous string
       gsub(/[[:space:]]/, "")
       
-      # Detect key type and find markers
-      if (index($0, "-----BEGINPRIVATEKEY-----") > 0) {
-        begin_marker = "-----BEGINPRIVATEKEY-----"
-        end_marker = "-----ENDPRIVATEKEY-----"
+      # Detect key type and set proper markers (with spaces restored)
+      if (index($0, "BEGINPRIVATEKEY") > 0) {
+        begin_out = "-----BEGIN PRIVATE KEY-----"
+        end_out = "-----END PRIVATE KEY-----"
+        begin_search = "-----BEGINPRIVATEKEY-----"
+        end_search = "-----ENDPRIVATEKEY-----"
         begin_len = 25
-      } else if (index($0, "-----BEGINRSAPRIVATEKEY-----") > 0) {
-        begin_marker = "-----BEGINRSAPRIVATEKEY-----"
-        end_marker = "-----ENDRSAPRIVATEKEY-----"
+      } else if (index($0, "BEGINRSAPRIVATEKEY") > 0) {
+        begin_out = "-----BEGIN RSA PRIVATE KEY-----"
+        end_out = "-----END RSA PRIVATE KEY-----"
+        begin_search = "-----BEGINRSAPRIVATEKEY-----"
+        end_search = "-----ENDRSAPRIVATEKEY-----"
         begin_len = 28
       } else {
         print "ERROR: Unknown private key format" > "/dev/stderr"
         exit 1
       }
       
-      begin_pos = index($0, begin_marker)
-      end_pos = index($0, end_marker)
+      begin_pos = index($0, begin_search)
+      end_pos = index($0, end_search)
       
       if (begin_pos > 0 && end_pos > 0) {
         # Extract base64 between markers
+        end_len = length(end_search)
         base64 = substr($0, begin_pos + begin_len, end_pos - begin_pos - begin_len)
         
-        # Output properly formatted
-        gsub(/-----/,"-----", begin_marker)
-        gsub(/-----/,"-----", end_marker)
-        print begin_marker "\n"
+        # Output properly formatted with correct markers
+        print begin_out "\n"
         for (i=1; i<=length(base64); i+=64) {
           print substr(base64, i, 64) "\n"
         }
-        print end_marker "\n"
+        print end_out "\n"
       }
     }
     ' > "/etc/ssl/busibox/{{ cert_domain }}.key"
