@@ -177,7 +177,8 @@
     echo "Connecting via: ${POSTGRES_URL:0:30}...${POSTGRES_URL: -20}"
     
     # Use Node.js with pg library to create database
-    cat > /tmp/create-db.js << 'ENDOFSCRIPT'
+    # Note: Running from app directory so node_modules/pg is accessible
+    cat > create-db-temp.js << 'ENDOFSCRIPT'
     const { Client } = require('pg');
     
     async function createDatabase() {
@@ -223,11 +224,11 @@
     });
     ENDOFSCRIPT
     
-    # Run the Node.js script
-    DB_NAME="$DB_NAME" POSTGRES_URL="$POSTGRES_URL" node /tmp/create-db.js
+    # Run the Node.js script from app directory (so it can find node_modules/pg)
+    DB_NAME="$DB_NAME" POSTGRES_URL="$POSTGRES_URL" node create-db-temp.js
     CREATE_STATUS=$?
     
-    rm -f /tmp/create-db.js
+    rm -f create-db-temp.js
     
     echo "========================================"
     echo "DATABASE CREATION COMPLETE"
