@@ -82,7 +82,10 @@
 
 - name: Create fullchain certificate (certificate + chain)
   shell: |
-    cat /etc/ssl/busibox/{{ cert_domain }}.crt /etc/ssl/busibox/{{ cert_domain }}-chain.crt > /etc/ssl/busibox/{{ cert_domain }}-fullchain.crt
+    # Ensure proper line breaks between certificates
+    cat /etc/ssl/busibox/{{ cert_domain }}.crt > /etc/ssl/busibox/{{ cert_domain }}-fullchain.crt
+    echo "" >> /etc/ssl/busibox/{{ cert_domain }}-fullchain.crt
+    cat /etc/ssl/busibox/{{ cert_domain }}-chain.crt >> /etc/ssl/busibox/{{ cert_domain }}-fullchain.crt
   when: 
     - chain_file_stat.stat.exists
     - chain_file_stat.stat.size > 0
