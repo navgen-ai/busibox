@@ -146,98 +146,94 @@
   register: prisma_result
   failed_when: false  # Don't fail if Prisma isn't used
 
-- name: Create database if it doesn't exist (Prisma apps)
+- name: Create database if it doesn't exist (Prisma apps) using Node.js
   shell: |
-    set -x  # Enable debug output
     cd {{ app_to_deploy.deploy_path }}
-    
-    echo "========================================"
-    echo "DATABASE CREATION DEBUG"
-    echo "========================================"
     
     if [ ! -f "prisma/schema.prisma" ]; then
       echo "No Prisma schema found, skipping database creation"
       exit 0
     fi
     
-    echo "Found Prisma schema, proceeding with database setup"
+    echo "========================================"
+    echo "DATABASE CREATION (using Node.js pg)"
+    echo "========================================"
     
     # Load DATABASE_URL from .env
     if [ -f .env ]; then
-      echo "Loading DATABASE_URL from .env..."
       export $(grep -v '^#' .env | grep DATABASE_URL | xargs)
     fi
     
     if [ -z "$DATABASE_URL" ]; then
       echo "ERROR: DATABASE_URL not set in .env"
-      cat .env | grep -i database || echo "No database entries in .env"
       exit 1
     fi
     
-    echo "DATABASE_URL is set"
-    echo "URL (masked): ${DATABASE_URL:0:20}...${DATABASE_URL: -20}"
-    
-    # Parse DATABASE_URL: postgresql://user:pass@host:port/dbname
-    echo "Parsing DATABASE_URL components..."
+    # Parse DATABASE_URL to create postgres connection URL
     DB_NAME=$(echo "$DATABASE_URL" | sed -n 's|.*/\([^?]*\).*|\1|p')
-    DB_HOST=$(echo "$DATABASE_URL" | sed -n 's|.*@\([^:/]*\).*|\1|p')
-    DB_PORT=$(echo "$DATABASE_URL" | sed -n 's|.*:\([0-9]*\)/.*|\1|p')
-    DB_USER=$(echo "$DATABASE_URL" | sed -n 's|.*://\([^:]*\):.*|\1|p')
-    DB_PASS=$(echo "$DATABASE_URL" | sed -n 's|.*://[^:]*:\([^@]*\)@.*|\1|p')
+    POSTGRES_URL=$(echo "$DATABASE_URL" | sed "s|/$DB_NAME|/postgres|")
     
-    # Default port if not specified
-    DB_PORT=${DB_PORT:-5432}
+    echo "Target database: $DB_NAME"
+    echo "Connecting via: ${POSTGRES_URL:0:30}...${POSTGRES_URL: -20}"
     
-    echo "Database Name: $DB_NAME"
-    echo "Host: $DB_HOST"
-    echo "Port: $DB_PORT"
-    echo "User: $DB_USER"
-    echo "Password: ${DB_PASS:+*****}"
+    # Use Node.js with pg library to create database
+    cat > /tmp/create-db.js << 'SCRIPT'
+    const { Client } = require('pg');
     
-    # Test PostgreSQL connection to postgres database
-    echo "Testing connection to PostgreSQL server..."
-    if PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d postgres -c "SELECT version();" 2>&1; then
-      echo "✓ Connection to PostgreSQL successful"
-    else
-      echo "✗ Failed to connect to PostgreSQL"
-      echo "Connection string: postgresql://$DB_USER:****@$DB_HOST:$DB_PORT/postgres"
-      exit 1
-    fi
-    
-    # Check if database exists
-    echo "Checking if database '$DB_NAME' exists..."
-    DB_EXISTS=$(PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>&1)
-    echo "Query result: '$DB_EXISTS'"
-    
-    if [ "$DB_EXISTS" = "1" ]; then
-      echo "✓ Database '$DB_NAME' already exists"
-    else
-      echo "Database '$DB_NAME' does not exist, creating..."
-      CREATE_OUTPUT=$(PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d postgres -c "CREATE DATABASE \"$DB_NAME\";" 2>&1)
-      CREATE_STATUS=$?
-      echo "Create output: $CREATE_OUTPUT"
-      echo "Create status: $CREATE_STATUS"
+    async function createDatabase() {
+      const dbName = process.env.DB_NAME;
+      const postgresUrl = process.env.POSTGRES_URL;
       
-      if [ $CREATE_STATUS -eq 0 ]; then
-        echo "✓ Database '$DB_NAME' created successfully"
-      else
-        echo "✗ Failed to create database"
-        echo "This may be OK if the database was created by another process"
-      fi
-    fi
+      console.log(`Connecting to PostgreSQL...`);
+      const client = new Client({ connectionString: postgresUrl });
+      
+      try {
+        await client.connect();
+        console.log('✓ Connected to PostgreSQL');
+        
+        // Check if database exists
+        const result = await client.query(
+          'SELECT 1 FROM pg_database WHERE datname = $1',
+          [dbName]
+        );
+        
+        if (result.rows.length > 0) {
+          console.log(`✓ Database '${dbName}' already exists`);
+        } else {
+          console.log(`Creating database '${dbName}'...`);
+          // CREATE DATABASE can't use parameterized queries
+          await client.query(`CREATE DATABASE "${dbName}"`);
+          console.log(`✓ Database '${dbName}' created successfully`);
+        }
+      } catch (error) {
+        if (error.message.includes('already exists')) {
+          console.log(`✓ Database '${dbName}' already exists (concurrent creation)`);
+        } else {
+          console.error('✗ Error:', error.message);
+          process.exit(1);
+        }
+      } finally {
+        await client.end();
+      }
+    }
     
-    # Verify database exists now
-    echo "Verifying database exists..."
-    if PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" 2>&1; then
-      echo "✓ Successfully connected to database '$DB_NAME'"
-    else
-      echo "✗ Cannot connect to database '$DB_NAME'"
-      exit 1
-    fi
+    createDatabase().catch(error => {
+      console.error('Fatal error:', error);
+      process.exit(1);
+    });
+    SCRIPT
+    
+    # Run the Node.js script
+    DB_NAME="$DB_NAME" POSTGRES_URL="$POSTGRES_URL" node /tmp/create-db.js
+    CREATE_STATUS=$?
+    
+    rm -f /tmp/create-db.js
     
     echo "========================================"
     echo "DATABASE CREATION COMPLETE"
     echo "========================================"
+    
+    exit $CREATE_STATUS
   args:
     executable: /bin/bash
   delegate_to: "{{ app_to_deploy.container_ip }}"
