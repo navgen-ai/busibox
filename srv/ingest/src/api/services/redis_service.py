@@ -8,7 +8,7 @@ import json
 from datetime import datetime
 from typing import Dict, Optional
 
-import redis.asyncio as redis
+import redis.asyncio as redis_async
 from redis.exceptions import ResponseError
 import structlog
 
@@ -26,12 +26,12 @@ class RedisService:
         self.stream_name = config.get("redis_stream", "jobs:ingestion")
         self.consumer_group = config.get("redis_consumer_group", "workers")
         
-        self.client: Optional[redis.Redis] = None
+        self.client: Optional[redis_async.Redis] = None
     
     async def connect(self):
         """Connect to Redis."""
         if not self.client:
-            self.client = await redis.Redis(
+            self.client = await redis_async.Redis(
                 host=self.host,
                 port=self.port,
                 decode_responses=True,
