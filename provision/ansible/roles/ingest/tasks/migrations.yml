@@ -76,3 +76,23 @@
     msg: "{{ 'Processing history migration applied successfully' if history_migration_result.changed else 'Processing history table already exists' }}"
   tags: [ingest, ingest_migrations]
 
+- name: Check if markdown storage columns exist
+  shell: |
+    PGPASSWORD='{{ secrets.postgresql.password }}' psql -h {{ postgres_host }} -U {{ postgres_user }} -d {{ files_db }} -tAc \
+    "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='ingestion_files' AND column_name='markdown_path');"
+  register: markdown_storage_check
+  changed_when: false
+  tags: [ingest, ingest_migrations]
+
+- name: Apply markdown storage migration
+  shell: |
+    PGPASSWORD='{{ secrets.postgresql.password }}' psql -h {{ postgres_host }} -U {{ postgres_user }} -d {{ files_db }} -f /srv/ingest/migrations/add_markdown_storage.sql
+  when: markdown_storage_check.stdout == 'f'
+  register: markdown_storage_result
+  tags: [ingest, ingest_migrations]
+
+- name: Display markdown storage migration status
+  debug:
+    msg: "{{ 'Markdown storage migration applied successfully' if markdown_storage_result.changed else 'Markdown storage migration already applied' }}"
+  tags: [ingest, ingest_migrations]
+

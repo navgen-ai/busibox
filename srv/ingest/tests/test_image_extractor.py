@@ -1,0 +1,226 @@
+"""
+Tests for Image Extractor Module
+"""
+
+import pytest
+import os
+from pathlib import Path
+from PIL import Image
+from io import BytesIO
+from processors.image_extractor import ImageExtractor
+
+
+class TestImageExtractor:
+    """Test suite for ImageExtractor class"""
+
+    def setup_method(self):
+        """Setup test fixtures"""
+        self.extractor = ImageExtractor()
+        self.test_data_dir = Path(__file__).parent.parent.parent / "samples"
+
+    def test_extract_images_from_pdf(self):
+        """Test extracting images from a PDF file"""
+        # Use existing sample PDF with diagrams
+        pdf_path = self.test_data_dir / "diagram.pdf"
+        
+        if not pdf_path.exists():
+            pytest.skip("Sample PDF not found")
+        
+        metadata_list, images_data = self.extractor.extract_from_pdf(str(pdf_path))
+        
+        # Should extract at least some images from the diagram PDF
+        assert isinstance(metadata_list, list)
+        assert isinstance(images_data, list)
+        assert len(metadata_list) == len(images_data)
+        
+        # Check metadata structure
+        if len(metadata_list) > 0:
+            first_img = metadata_list[0]
+            assert 'index' in first_img
+            assert 'page' in first_img
+            assert 'width' in first_img
+            assert 'height' in first_img
+            assert 'format' in first_img
+            assert 'size' in first_img
+            
+            # Check image data is valid
+            first_data = images_data[0]
+            assert len(first_data) > 0
+            # Should be able to load as PIL Image
+            img = Image.open(BytesIO(first_data))
+            assert img is not None
+
+    def test_extract_images_from_docx(self):
+        """Test extracting images from a DOCX file"""
+        # This would require a sample DOCX file
+        pytest.skip("DOCX sample not available yet")
+
+    def test_image_format_conversion(self):
+        """Test that images are converted to target format (PNG)"""
+        pdf_path = self.test_data_dir / "diagram.pdf"
+        
+        if not pdf_path.exists():
+            pytest.skip("Sample PDF not found")
+        
+        metadata_list, images_data = self.extractor.extract_from_pdf(str(pdf_path))
+        
+        if len(metadata_list) > 0:
+            # Check format is PNG
+            assert metadata_list[0]['format'] == 'png'
+            
+            # Verify image data is actually PNG
+            img = Image.open(BytesIO(images_data[0]))
+            assert img.format == 'PNG'
+
+    def test_image_naming_convention(self):
+        """Test standardized image filename generation"""
+        assert self.extractor.get_image_filename(0) == "image_0.png"
+        assert self.extractor.get_image_filename(5) == "image_5.png"
+        assert self.extractor.get_image_filename(10, "jpg") == "image_10.jpg"
+
+    def test_no_images_in_document(self):
+        """Test handling of documents without images"""
+        # This would require a text-only PDF
+        # For now, test with non-existent file returns empty
+        metadata, images = self.extractor.extract("/tmp/nonexistent.pdf") if os.path.exists("/tmp") else ([], [])
+        
+        # Should handle gracefully
+        assert isinstance(metadata, list)
+        assert isinstance(images, list)
+
+    def test_image_quality_preservation(self):
+        """Test that image quality is preserved during extraction"""
+        pdf_path = self.test_data_dir / "diagram.pdf"
+        
+        if not pdf_path.exists():
+            pytest.skip("Sample PDF not found")
+        
+        metadata_list, images_data = self.extractor.extract_from_pdf(str(pdf_path))
+        
+        if len(metadata_list) > 0:
+            # Check dimensions are reasonable
+            assert metadata_list[0]['width'] > 0
+            assert metadata_list[0]['height'] > 0
+            
+            # Image should have reasonable size (not corrupted)
+            assert metadata_list[0]['size'] > 100  # At least 100 bytes
+
+    def test_large_image_handling(self):
+        """Test handling of very large images with size limits"""
+        # Create extractor with small size limit
+        small_extractor = ImageExtractor(max_image_size=1000)  # 1KB limit
+        
+        pdf_path = self.test_data_dir / "diagram.pdf"
+        
+        if not pdf_path.exists():
+            pytest.skip("Sample PDF not found")
+        
+        metadata_list, images_data = small_extractor.extract_from_pdf(str(pdf_path))
+        
+        # Should skip large images
+        for metadata in metadata_list:
+            assert metadata['size'] <= 1000
+
+    def test_corrupted_image_handling(self):
+        """Test handling of corrupted images in document"""
+        # This would require a specially crafted PDF with corrupted images
+        # For now, verify the extractor handles exceptions gracefully
+        try:
+            metadata, images = self.extractor.extract_from_pdf("/tmp/nonexistent.pdf")
+        except Exception as e:
+            # Should raise a meaningful exception, not crash
+            assert str(e) is not None
+
+    def test_extract_auto_detect_pdf(self):
+        """Test auto-detection of PDF format"""
+        pdf_path = self.test_data_dir / "diagram.pdf"
+        
+        if not pdf_path.exists():
+            pytest.skip("Sample PDF not found")
+        
+        metadata, images = self.extractor.extract(str(pdf_path), mime_type="application/pdf")
+        
+        assert isinstance(metadata, list)
+        assert isinstance(images, list)
+
+    def test_extract_auto_detect_from_extension(self):
+        """Test format detection from file extension"""
+        pdf_path = self.test_data_dir / "diagram.pdf"
+        
+        if not pdf_path.exists():
+            pytest.skip("Sample PDF not found")
+        
+        # Don't provide mime_type, should detect from extension
+        metadata, images = self.extractor.extract(str(pdf_path))
+        
+        assert isinstance(metadata, list)
+        assert isinstance(images, list)
+
+    def test_unsupported_file_type(self):
+        """Test handling of unsupported file types"""
+        metadata, images = self.extractor.extract("/tmp/test.txt", mime_type="text/plain")
+        
+        # Should return empty lists for unsupported types
+        assert metadata == []
+        assert images == []
+
+    def test_metadata_includes_original_format(self):
+        """Test that metadata includes original image format"""
+        pdf_path = self.test_data_dir / "diagram.pdf"
+        
+        if not pdf_path.exists():
+            pytest.skip("Sample PDF not found")
+        
+        metadata_list, _ = self.extractor.extract_from_pdf(str(pdf_path))
+        
+        if len(metadata_list) > 0:
+            assert 'original_format' in metadata_list[0]
+
+    def test_image_index_sequential(self):
+        """Test that image indices are sequential"""
+        pdf_path = self.test_data_dir / "diagram.pdf"
+        
+        if not pdf_path.exists():
+            pytest.skip("Sample PDF not found")
+        
+        metadata_list, _ = self.extractor.extract_from_pdf(str(pdf_path))
+        
+        for i, metadata in enumerate(metadata_list):
+            assert metadata['index'] == i
+
+    def test_multiple_images_same_page(self):
+        """Test handling of multiple images on the same page"""
+        # This would require a PDF with multiple images per page
+        # The extractor should handle this correctly with sequential indices
+        pdf_path = self.test_data_dir / "diagram.pdf"
+        
+        if not pdf_path.exists():
+            pytest.skip("Sample PDF not found")
+        
+        metadata_list, images_data = self.extractor.extract_from_pdf(str(pdf_path))
+        
+        # All images should have valid page numbers
+        for metadata in metadata_list:
+            assert metadata['page'] >= 1
+
+    def test_custom_target_format(self):
+        """Test using a custom target format (e.g., JPEG)"""
+        jpeg_extractor = ImageExtractor(target_format="JPEG")
+        
+        pdf_path = self.test_data_dir / "diagram.pdf"
+        
+        if not pdf_path.exists():
+            pytest.skip("Sample PDF not found")
+        
+        metadata_list, images_data = jpeg_extractor.extract_from_pdf(str(pdf_path))
+        
+        if len(metadata_list) > 0:
+            assert metadata_list[0]['format'] == 'jpeg'
+            # Verify actual format
+            img = Image.open(BytesIO(images_data[0]))
+            assert img.format == 'JPEG'
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
+

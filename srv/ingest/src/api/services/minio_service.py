@@ -166,4 +166,108 @@ class MinIOService:
             return True
         except S3Error:
             return False
+    
+    def get_file_content(self, object_path: str) -> str:
+        """
+        Get file content as string (for text files like markdown).
+        
+        Args:
+            object_path: S3 object path
+            
+        Returns:
+            File content as string
+        """
+        try:
+            response = self.client.get_object(self.bucket, object_path)
+            content = response.read().decode('utf-8')
+            response.close()
+            response.release_conn()
+            return content
+        except S3Error as e:
+            logger.error("Failed to get file from MinIO", error=str(e), object_path=object_path)
+            raise
+    
+    def get_file_bytes(self, object_path: str) -> bytes:
+        """
+        Get file content as bytes (for binary files like images).
+        
+        Args:
+            object_path: S3 object path
+            
+        Returns:
+            File content as bytes
+        """
+        try:
+            response = self.client.get_object(self.bucket, object_path)
+            content = response.read()
+            response.close()
+            response.release_conn()
+            return content
+        except S3Error as e:
+            logger.error("Failed to get file from MinIO", error=str(e), object_path=object_path)
+            raise
+    
+    async def upload_text(self, content: str, object_path: str) -> None:
+        """
+        Upload text content to MinIO.
+        
+        Args:
+            content: Text content to upload
+            object_path: S3 object path
+        """
+        import asyncio
+        from io import BytesIO
+        
+        try:
+            data = content.encode('utf-8')
+            data_stream = BytesIO(data)
+            
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: self.client.put_object(
+                    self.bucket,
+                    object_path,
+                    data_stream,
+                    length=len(data),
+                    content_type='text/markdown'
+                )
+            )
+            
+            logger.info("Text uploaded to MinIO", object_path=object_path, size=len(data))
+        except S3Error as e:
+            logger.error("Failed to upload text to MinIO", error=str(e), object_path=object_path)
+            raise
+    
+    async def upload_bytes(self, data: bytes, object_path: str, content_type: str = 'application/octet-stream') -> None:
+        """
+        Upload binary data to MinIO.
+        
+        Args:
+            data: Binary data to upload
+            object_path: S3 object path
+            content_type: MIME type of the content
+        """
+        import asyncio
+        from io import BytesIO
+        
+        try:
+            data_stream = BytesIO(data)
+            
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: self.client.put_object(
+                    self.bucket,
+                    object_path,
+                    data_stream,
+                    length=len(data),
+                    content_type=content_type
+                )
+            )
+            
+            logger.info("Bytes uploaded to MinIO", object_path=object_path, size=len(data))
+        except S3Error as e:
+            logger.error("Failed to upload bytes to MinIO", error=str(e), object_path=object_path)
+            raise
 

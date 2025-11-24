@@ -41,7 +41,10 @@ beautifulsoup4>=4.12.2,<5.0.0  # HTML parsing
 
 # Document Export
 markdown>=3.5.0,<4.0.0  # Markdown to HTML conversion
+bleach>=6.0.0,<7.0.0  # HTML sanitization
 reportlab>=4.0.0,<5.0.0  # PDF generation
+Pillow>=10.0.0,<11.0.0  # Image processing
+PyMuPDF>=1.23.0,<2.0.0  # PDF image extraction (fitz)
 
 # Text Processing & Chunking
 spacy>=3.7.2,<4.0.0
