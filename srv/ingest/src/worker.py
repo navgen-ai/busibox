@@ -37,7 +37,7 @@ from datetime import datetime
 from typing import List, Optional
 
 import structlog
-import redis
+import redis as redis_sync
 from redis.exceptions import RedisError
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
@@ -89,7 +89,7 @@ class IngestWorker:
         self.running = False
         
         # Services (initialized in connect())
-        self.redis_client: Optional[redis.Redis] = None
+        self.redis_client: Optional[redis_sync.Redis] = None
         self.file_service: Optional[FileService] = None
         self.postgres_service: Optional[PostgresService] = None
         self.milvus_service: Optional[MilvusService] = None
@@ -115,7 +115,7 @@ class IngestWorker:
         logger.info("Connecting to services")
         
         # Redis
-        self.redis_client = redis.Redis(
+        self.redis_client = redis_sync.Redis(
             host=self.config["redis_host"],
             port=self.config["redis_port"],
             decode_responses=True,
@@ -131,7 +131,7 @@ class IngestWorker:
                 mkstream=True
             )
             logger.info("Consumer group created", group=self.consumer_group)
-        except redis.ResponseError as e:
+        except redis_sync.ResponseError as e:
             if "BUSYGROUP" in str(e):
                 logger.info("Consumer group already exists", group=self.consumer_group)
             else:
@@ -243,8 +243,8 @@ class IngestWorker:
             ConnectionError,
             TimeoutError,
             asyncio.TimeoutError,
-            redis.ConnectionError,
-            redis.TimeoutError,
+            redis_sync.ConnectionError,
+            redis_sync.TimeoutError,
         )
         
         if isinstance(error, transient_types):
