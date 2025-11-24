@@ -106,6 +106,8 @@ ollama_port: 11434
 vllm_host: "{{ vllm_ip }}"
 # Note: vLLM ports are now configured via model_config.yml
 # Port-based roles (vllm_8000, vllm_8001, etc.) read assignments from model_config.yml
+# Production environment always uses its own vLLM service (no override)
+# Test environment may optionally use production vLLM via use_production_vllm flag
 
 # ============================================================================
 # LLM Model Configuration
