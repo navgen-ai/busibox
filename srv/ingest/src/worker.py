@@ -622,7 +622,7 @@ class IngestWorker:
                         "Extracting images from document"
                     )
                     images_metadata, images_data = self.image_extractor.extract(
-                        local_path, 
+                        temp_file_path, 
                         mime_type=mime_type
                     )
                     logger.info(
@@ -696,10 +696,18 @@ class IngestWorker:
                             "Uploading markdown to MinIO"
                         )
                         markdown_path = f"{user_id}/{file_id}/content.md"
-                        asyncio.run(self.file_service.minio_service.upload_text(
-                            markdown_content,
-                            markdown_path
-                        ))
+                        
+                        # Upload markdown to MinIO
+                        import io
+                        markdown_bytes = markdown_content.encode('utf-8')
+                        self.file_service.client.put_object(
+                            bucket_name=self.file_service.bucket,
+                            object_name=markdown_path,
+                            data=io.BytesIO(markdown_bytes),
+                            length=len(markdown_bytes),
+                            content_type='text/markdown'
+                        )
+                        
                         logger.info(
                             "Markdown uploaded to MinIO",
                             file_id=file_id,
@@ -723,13 +731,16 @@ class IngestWorker:
                         )
                         images_path = f"{user_id}/{file_id}/images"
                         
+                        import io
                         for i, (img_data, img_meta) in enumerate(zip(images_data, images_metadata)):
                             image_path = f"{images_path}/image_{i}.png"
-                            asyncio.run(self.file_service.minio_service.upload_bytes(
-                                img_data,
-                                image_path,
+                            self.file_service.client.put_object(
+                                bucket_name=self.file_service.bucket,
+                                object_name=image_path,
+                                data=io.BytesIO(img_data),
+                                length=len(img_data),
                                 content_type='image/png'
-                            ))
+                            )
                         
                         image_count = len(images_data)
                         logger.info(
@@ -791,9 +802,10 @@ class IngestWorker:
                         exc_info=True
                     )
                 
-                self.history.log_success(
-                    file_id, "markdown_generation", "markdown_generation_complete",
-                    f"Markdown and image generation complete",
+                self.history.log_stage_complete(
+                    file_id=file_id,
+                    stage="markdown_generation",
+                    message="Markdown and image generation complete",
                     metadata={
                         "has_markdown": markdown_path is not None,
                         "image_count": image_count,
@@ -814,10 +826,9 @@ class IngestWorker:
                     stage="markdown_generation",
                     step_name="markdown_generation_error",
                     status="failed",
-                    message=f"Markdown/image generation failed: {str(e)}",
+                    error_message=f"Markdown/image generation failed: {str(e)}",
                     metadata={"error": str(e), "stack_trace": traceback.format_exc()},
-                    started_at=markdown_start,
-                    completed_at=datetime.utcnow()
+                    started_at=markdown_start
                 )
             
             # Stage 5: Embedding
