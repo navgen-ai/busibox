@@ -8,10 +8,14 @@ from pathlib import Path
 from unittest.mock import Mock, AsyncMock
 from httpx import AsyncClient
 from fastapi.testclient import TestClient
+from dotenv import load_dotenv
 
 from api.services.minio_service import MinIOService
 from api.services.postgres import PostgresService
 from shared.config import Config
+
+# Load environment variables from .env file before running tests
+load_dotenv()
 
 
 # Sample files paths
