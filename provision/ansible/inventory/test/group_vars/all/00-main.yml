@@ -34,7 +34,11 @@ ingest_ip: "{{ network_base_octets }}.206"
 
 # LLM Service IPs: .30-.39 (to allow room for more infrastructure)
 litellm_ip: "{{ network_base_octets }}.207"
-vllm_ip: "{{ network_base_octets }}.208"
+# vLLM IP Configuration - Test environment can use production vLLM by default
+# Set use_production_vllm: true to use production vLLM (default, saves GPU memory)
+# Set use_production_vllm: false to use test vLLM container (requires manual deployment)
+use_production_vllm: true
+vllm_ip: "{{ (use_production_vllm | default(true)) | ternary(network_base_octets_production + '.208', network_base_octets + '.208') }}"
 ollama_ip: "{{ network_base_octets }}.210"
 
 # ============================================================================
@@ -95,6 +99,8 @@ ollama_port: 11434
 vllm_host: "{{ vllm_ip }}"
 # Note: vLLM ports are now configured via model_config.yml
 # Port-based roles (vllm_8000, vllm_8001, etc.) read assignments from model_config.yml
+# When use_production_vllm is true, test services connect to production vLLM (10.96.200.208)
+# When use_production_vllm is false, test services connect to test vLLM (10.96.201.208)
 
 # ============================================================================
 # LLM Model Configuration

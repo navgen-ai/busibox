@@ -753,20 +753,33 @@ class IngestWorker:
                 
                 # Update database with markdown/image paths
                 try:
-                    async with self.postgres_service.pool.acquire() as conn:
-                        await conn.execute(
+                    import psycopg2
+                    conn = psycopg2.connect(
+                        host=self.config["postgres_host"],
+                        port=self.config["postgres_port"],
+                        database=self.config["postgres_db"],
+                        user=self.config["postgres_user"],
+                        password=self.config["postgres_password"]
+                    )
+                    try:
+                        cur = conn.cursor()
+                        cur.execute(
                             """UPDATE ingestion_files 
-                               SET markdown_path = $1, 
-                                   has_markdown = $2, 
-                                   images_path = $3, 
-                                   image_count = $4
-                               WHERE file_id = $5""",
-                            markdown_path,
-                            markdown_path is not None,
-                            images_path,
-                            image_count,
-                            uuid.UUID(file_id)
+                               SET markdown_path = %s, 
+                                   has_markdown = %s, 
+                                   images_path = %s, 
+                                   image_count = %s
+                               WHERE file_id = %s""",
+                            (markdown_path,
+                             markdown_path is not None,
+                             images_path,
+                             image_count,
+                             file_id)
                         )
+                        conn.commit()
+                        cur.close()
+                    finally:
+                        conn.close()
                     logger.info(
                         "Database updated with markdown/image paths",
                         file_id=file_id,
