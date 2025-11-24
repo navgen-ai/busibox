@@ -163,7 +163,10 @@
     # Load environment variables (DATABASE_URL, etc.)
     if [ -f .env ]; then
       echo "Loading environment variables from .env"
-      export $(grep -v '^#' .env | xargs)
+      # Use set -a to automatically export all variables
+      set -a
+      source .env
+      set +a
     else
       echo "WARNING: No .env file found"
     fi
