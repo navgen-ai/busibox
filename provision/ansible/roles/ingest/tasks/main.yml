@@ -314,22 +314,10 @@
     mode: "0755"
   tags: [ingest, ingest_configure, ingest_tests]
 
-- name: Create pytest configuration
+- name: Copy pytest configuration from source
   copy:
+    src: "{{ playbook_dir }}/../../srv/ingest/pytest.ini"
     dest: /srv/ingest/pytest.ini
-    content: |
-      [pytest]
-      testpaths = tests
-      python_files = test_*.py
-      python_classes = Test*
-      python_functions = test_*
-      addopts = 
-          -v
-          --tb=short
-          --strict-markers
-      markers =
-          slow: marks tests as slow (deselect with '-m "not slow"')
-          integration: marks tests as integration tests
     mode: "0644"
-  tags: [ingest, ingest_configure, ingest_tests]
+  tags: [ingest, ingest_configure, ingest_tests, ingest_deploy, ingest_update_tests]
 

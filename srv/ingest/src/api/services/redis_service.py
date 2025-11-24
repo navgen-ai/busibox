@@ -8,31 +8,8 @@ import json
 from datetime import datetime
 from typing import Dict, Optional
 
-try:
-    import redis.asyncio as redis
-except ImportError:
-    # Fallback for older redis versions
-    import redis
-    import asyncio
-    
-    # Wrap sync redis in async
-    class AsyncRedisWrapper:
-        def __init__(self, *args, **kwargs):
-            self._client = redis.Redis(*args, **kwargs)
-        
-        async def ping(self):
-            return self._client.ping()
-        
-        async def xadd(self, *args, **kwargs):
-            return self._client.xadd(*args, **kwargs)
-        
-        async def xgroup_create(self, *args, **kwargs):
-            return self._client.xgroup_create(*args, **kwargs)
-        
-        async def close(self):
-            self._client.close()
-    
-    redis = type('redis', (), {'Redis': AsyncRedisWrapper})()
+import redis.asyncio as redis
+from redis.exceptions import ResponseError
 import structlog
 
 logger = structlog.get_logger()
@@ -165,7 +142,7 @@ class RedisService:
                 stream=self.stream_name,
                 group=self.consumer_group,
             )
-        except redis.ResponseError as e:
+        except ResponseError as e:
             if "BUSYGROUP" in str(e):
                 # Group already exists - this is fine
                 logger.debug(
