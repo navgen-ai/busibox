@@ -179,8 +179,8 @@
     
     echo "Database URL configured: ${DATABASE_URL%%@*}@***"
     
-    # Check if migrations directory exists
-    if [ -d "prisma/migrations" ] && [ "$(ls -A prisma/migrations)" ]; then
+    # Check if migrations directory exists and has migrations
+    if [ -d "prisma/migrations" ] && [ "$(ls -A prisma/migrations 2>/dev/null)" ]; then
       echo "Found migrations directory, attempting to deploy migrations..."
       
       # Try to run migrations
@@ -195,13 +195,20 @@
         echo ""
         echo "Attempting db push as fallback (will sync schema without migrations)..."
         
-        # Use db push without --accept-data-loss for initial setup
-        # This will create the database and schema if they don't exist
+        # Try db push without data loss first
         if npx prisma db push --skip-generate 2>&1; then
           echo "✓ Database schema pushed successfully"
         else
-          echo "✗ Failed to push database schema"
-          exit 1
+          echo "⚠ Schema push failed, trying with --accept-data-loss..."
+          echo "WARNING: This may remove unused enum values or columns"
+          
+          # Last resort: accept data loss for schema changes like removed enum values
+          if npx prisma db push --skip-generate --accept-data-loss 2>&1; then
+            echo "✓ Database schema pushed with data loss accepted"
+          else
+            echo "✗ Failed to push database schema"
+            exit 1
+          fi
         fi
       fi
     else
@@ -212,8 +219,15 @@
       if npx prisma db push --skip-generate 2>&1; then
         echo "✓ Database schema created successfully"
       else
-        echo "✗ Failed to create database schema"
-        exit 1
+        echo "⚠ Schema push failed, trying with --accept-data-loss..."
+        
+        # Try with accept-data-loss for existing databases with schema drift
+        if npx prisma db push --skip-generate --accept-data-loss 2>&1; then
+          echo "✓ Database schema pushed with data loss accepted"
+        else
+          echo "✗ Failed to create database schema"
+          exit 1
+        fi
       fi
     fi
     
