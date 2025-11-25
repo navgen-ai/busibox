@@ -225,13 +225,15 @@
 - name: Build application
   shell: |
     cd {{ app_to_deploy.deploy_path }}
+    # Clean old build artifacts to prevent cache issues
+    rm -rf .next
     {% if app_to_deploy.build_command is defined %}
     {{ app_to_deploy.build_command }}
     {% else %}
     npm run build
     {% endif %}
   delegate_to: "{{ app_to_deploy.container_ip }}"
-  environment: "{{ app_to_deploy.env | default({}) }}"
+  environment: "{{ app_to_deploy.env | default({}) | combine({'NODE_ENV': 'production'}) }}"
   register: build_result
   failed_when: build_result.rc != 0
 
