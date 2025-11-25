@@ -97,7 +97,7 @@ litellm_add_function_to_prompt: true  # Add function definitions to prompt for m
 ollama_host: "{{ ollama_ip }}"
 ollama_port: 11434
 
-vllm_host: "{{ vllm_ip }}"
+vllm_host: "0.0.0.0"  # Listen on all interfaces for IP aliasing support
 # Note: vLLM ports are now configured via model_config.yml
 # Port-based roles (vllm_8000, vllm_8001, etc.) read assignments from model_config.yml
 # When use_production_vllm is true, test services connect to production vLLM (10.96.200.208)
