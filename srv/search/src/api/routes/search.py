@@ -119,7 +119,7 @@ async def search(
                     detail="Failed to generate query embedding"
                 )
             
-            results = milvus_service.hybrid_search(
+            results = await milvus_service.hybrid_search(
                 query_embedding=query_embedding,
                 query_text=search_request.query,
                 user_id=user_id,
