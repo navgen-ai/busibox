@@ -1314,6 +1314,21 @@ class IngestWorker:
                                 message_id
                             )
                             
+                            # Trim stream to keep only last 10000 messages (prevent memory bloat)
+                            # MAXLEN ~ 10000 uses approximate trimming for better performance
+                            try:
+                                self.redis_client.xtrim(
+                                    self.stream_name,
+                                    maxlen=10000,
+                                    approximate=True
+                                )
+                            except Exception as trim_err:
+                                logger.warning(
+                                    "Failed to trim Redis stream",
+                                    stream=self.stream_name,
+                                    error=str(trim_err)
+                                )
+                            
                         except Exception as e:
                             logger.error(
                                 "Job processing failed",
