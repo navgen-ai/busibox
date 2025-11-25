@@ -113,14 +113,15 @@ verify_inventory_vars() {
     echo ""
     
     local errors=0
+    # Use correct variable names from inventory
     local required_vars=(
         "network_base_octets"
-        "pg_ip"
+        "postgres_ip"
         "milvus_ip"
         "ingest_ip"
         "agent_ip"
         "apps_ip"
-        "files_ip"
+        "minio_ip"
         "proxy_ip"
     )
     
@@ -130,10 +131,11 @@ verify_inventory_vars() {
     cd "${REPO_ROOT}/provision/ansible"
     
     for var in "${required_vars[@]}"; do
-        local result=$(ansible -i "inventory/${inv}" localhost -m debug -a "var=$var" $vault_flags 2>/dev/null)
+        local result
+        result=$(ansible -i "inventory/${inv}" localhost -m debug -a "var=$var" $vault_flags 2>/dev/null) || true
         if echo "$result" | grep -q "VARIABLE IS NOT DEFINED"; then
             list_item "error" "Missing variable: $var"
-            ((errors++))
+            errors=$((errors + 1))
         else
             list_item "done" "$var defined"
         fi
@@ -163,21 +165,21 @@ verify_service_health() {
     
     cd "${REPO_ROOT}/provision/ansible"
     
-    # Helper to extract IP from ansible output
-    # Format: localhost | SUCCESS => { "var_name": "10.96.200.x" }
-    extract_ip() {
+    # Use ansible to evaluate variables (handles Jinja2 templates)
+    # Returns just the IP address value
+    get_var() {
         local var_name="$1"
-        local output
-        output=$(ansible -i "inventory/${inv}" localhost -m debug -a "var=$var_name" $vault_flags 2>/dev/null) || true
-        # Extract the IP address (looks for pattern like "10.x.x.x")
-        echo "$output" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1
+        # Use ansible to evaluate the variable and extract just the value
+        ansible -i "inventory/${inv}" localhost -m debug -a "var=$var_name" $vault_flags 2>/dev/null | \
+            grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo ""
     }
     
-    # Get IPs from inventory
-    local pg_ip=$(extract_ip "pg_ip")
-    local milvus_ip=$(extract_ip "milvus_ip")
-    local files_ip=$(extract_ip "files_ip")
-    local ingest_ip=$(extract_ip "ingest_ip")
+    # Get IPs from inventory (using correct variable names)
+    local postgres_ip=$(get_var "postgres_ip")
+    local milvus_ip=$(get_var "milvus_ip")
+    local minio_ip=$(get_var "minio_ip")
+    local ingest_ip=$(get_var "ingest_ip")
+    local agent_ip=$(get_var "agent_ip")
     
     cd "${REPO_ROOT}"
     
@@ -208,11 +210,12 @@ verify_service_health() {
     }
     
     # Check each service (use || true to prevent set -e from exiting)
-    check_service "PostgreSQL" "$pg_ip" "ssh -o ConnectTimeout=5 -o BatchMode=yes root@$pg_ip 'systemctl is-active postgresql'" || true
+    check_service "PostgreSQL" "$postgres_ip" "ssh -o ConnectTimeout=5 -o BatchMode=yes root@$postgres_ip 'systemctl is-active postgresql'" || true
     check_service "Milvus" "$milvus_ip" "curl -sf --connect-timeout 5 'http://$milvus_ip:9091/healthz'" || true
-    check_service "MinIO" "$files_ip" "curl -sf --connect-timeout 5 'http://$files_ip:9000/minio/health/live'" || true
+    check_service "MinIO" "$minio_ip" "curl -sf --connect-timeout 5 'http://$minio_ip:9000/minio/health/live'" || true
     check_service "Ingest API" "$ingest_ip" "curl -sf --connect-timeout 5 'http://$ingest_ip:8000/health'" || true
     check_service "Search API" "$milvus_ip" "curl -sf --connect-timeout 5 'http://$milvus_ip:8001/health'" || true
+    check_service "Agent API" "$agent_ip" "curl -sf --connect-timeout 5 'http://$agent_ip:4111/health'" || true
     
     echo ""
     if [ "$not_running" -gt 0 ]; then
