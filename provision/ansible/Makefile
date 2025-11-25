@@ -51,7 +51,7 @@ colpali:
 	ansible-playbook -i $(INV) -l vllm site.yml --tags colpali $(VAULT_FLAGS) $(EXTRA_ARGS)
 
 milvus:
-	ansible-playbook -i $(INV) -l milvus site.yml $(VAULT_FLAGS)
+	ansible-playbook -i $(INV) -l milvus site.yml --tags milvus $(VAULT_FLAGS)
 
 nginx:
 	ansible-playbook -i $(INV) -l proxy site.yml --tags nginx $(VAULT_FLAGS)
