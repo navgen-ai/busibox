@@ -74,3 +74,6 @@ testcontainers>=3.7.1,<4.0.0  # For integration tests with containers
 # Utilities
 python-dotenv>=1.0.0,<2.0.0
 
+# JWT Authentication
+PyJWT>=2.8.0,<3.0.0
+

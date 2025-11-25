@@ -45,13 +45,14 @@ async def search(
     request: Request,
 ):
     """
-    Main search endpoint with multiple modes.
+    Main search endpoint with multiple modes and role-based partition filtering.
     
     Supports:
     - keyword: Pure BM25 keyword search
     - semantic: Pure dense vector search
     - hybrid: Combined dense + BM25 with RRF fusion (recommended)
     
+    Access control: Only searches partitions the user has read permission on.
     Optional reranking with cross-encoder for improved accuracy.
     Optional highlighting and semantic alignment visualization.
     """
@@ -59,6 +60,8 @@ async def search(
     user_id = request.state.user_id
     # Get authorization header for JWT passthrough to downstream services
     authorization = getattr(request.state, 'authorization', None)
+    # Get readable role IDs from JWT (set by JWTAuthMiddleware)
+    readable_role_ids = getattr(request.state, 'readable_role_ids', [])
     
     try:
         logger.info(
@@ -67,6 +70,7 @@ async def search(
             query=search_request.query,
             mode=search_request.mode,
             limit=search_request.limit,
+            readable_roles=len(readable_role_ids),
         )
         
         # Prepare filters (exclude None values)
@@ -74,18 +78,19 @@ async def search(
         if search_request.filters:
             filters = search_request.filters.dict(exclude_none=True)
         
-        # Execute search based on mode
+        # Execute search based on mode (with partition filtering)
         if search_request.mode == "keyword":
-            # Pure keyword search
+            # Pure keyword search with role-based partitions
             results = milvus_service.keyword_search(
                 query=search_request.query,
                 user_id=user_id,
                 top_k=search_request.rerank_k if search_request.rerank else search_request.limit,
                 filters=filters,
+                readable_role_ids=readable_role_ids,
             )
         
         elif search_request.mode == "semantic":
-            # Pure semantic search
+            # Pure semantic search with role-based partitions
             query_embedding = await embedding_service.embed_query(
                 search_request.query, 
                 user_id=user_id,
@@ -103,10 +108,11 @@ async def search(
                 user_id=user_id,
                 top_k=search_request.rerank_k if search_request.rerank else search_request.limit,
                 filters=filters,
+                readable_role_ids=readable_role_ids,
             )
         
         elif search_request.mode == "hybrid":
-            # Hybrid search (dense + sparse)
+            # Hybrid search (dense + sparse) with role-based partitions
             query_embedding = await embedding_service.embed_query(
                 search_request.query, 
                 user_id=user_id,
@@ -128,6 +134,7 @@ async def search(
                 dense_weight=search_request.dense_weight,
                 sparse_weight=search_request.sparse_weight,
                 filters=filters,
+                readable_role_ids=readable_role_ids,
             )
         
         else:
@@ -334,16 +341,19 @@ async def explain_result(
     Explain why a specific document was retrieved for a query.
     
     Provides detailed scoring breakdown and semantic matches.
+    Uses role-based partition filtering to ensure user has access to the document.
     """
     user_id = request.state.user_id
     authorization = getattr(request.state, 'authorization', None)
+    readable_role_ids = getattr(request.state, 'readable_role_ids', [])
     
     try:
-        # Get the document
+        # Get the document (with role-based access control)
         document = milvus_service.get_document(
             file_id=explain_request.file_id,
             chunk_index=explain_request.chunk_index,
             user_id=user_id,
+            readable_role_ids=readable_role_ids,
         )
         
         if not document:
