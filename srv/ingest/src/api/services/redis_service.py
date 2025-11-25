@@ -66,6 +66,8 @@ class RedisService:
         original_filename: str,
         metadata: Optional[Dict] = None,
         processing_config: Optional[Dict] = None,
+        visibility: str = "personal",
+        role_ids: Optional[list] = None,
     ) -> str:
         """
         Add job to Redis Streams queue.
@@ -78,6 +80,8 @@ class RedisService:
             original_filename: Original filename
             metadata: Optional metadata dict
             processing_config: Optional processing configuration dict
+            visibility: Document visibility ('personal' or 'shared')
+            role_ids: List of role UUIDs for shared documents
         
         Returns:
             Message ID (stream entry ID)
@@ -93,6 +97,7 @@ class RedisService:
             "mime_type": mime_type,
             "original_filename": original_filename,
             "created_at": datetime.utcnow().isoformat(),
+            "visibility": visibility,
         }
         
         if metadata:
@@ -100,6 +105,9 @@ class RedisService:
         
         if processing_config:
             job_data["processing_config"] = json.dumps(processing_config)
+        
+        if role_ids:
+            job_data["role_ids"] = json.dumps(role_ids)
         
         try:
             message_id = await self.client.xadd(

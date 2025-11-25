@@ -269,6 +269,20 @@ class IngestWorker:
         mime_type = job_data.get("mime_type")
         original_filename = job_data.get("original_filename", "unknown")
         
+        # Extract visibility and role_ids for partition routing
+        visibility = job_data.get("visibility", "personal")
+        role_ids_str = job_data.get("role_ids")
+        role_ids: Optional[List[str]] = None
+        if role_ids_str:
+            try:
+                role_ids = json.loads(role_ids_str)
+            except json.JSONDecodeError:
+                logger.warning(
+                    "Failed to parse role_ids, using None",
+                    file_id=file_id,
+                    role_ids_str=role_ids_str,
+                )
+        
         # Parse processing configuration if provided
         processing_config = {}
         processing_config_str = job_data.get("processing_config")
@@ -300,6 +314,8 @@ class IngestWorker:
                 file_id=file_id,
                 user_id=user_id,
                 trace_id=trace_id,
+                visibility=visibility,
+                role_count=len(role_ids) if role_ids else 0,
             )
             
             # Get content_hash from database
@@ -1039,6 +1055,8 @@ class IngestWorker:
                 chunks=chunk_dicts_for_milvus,
                 embeddings=embeddings,
                 content_hash=content_hash,
+                visibility=visibility,
+                role_ids=role_ids,
             )
             self.history.log_substep(
                 file_id, "indexing", "milvus_text_insert",
@@ -1061,6 +1079,8 @@ class IngestWorker:
                     page_images=page_image_dicts,
                     page_embeddings=page_embeddings,
                     content_hash=content_hash,
+                    visibility=visibility,
+                    role_ids=role_ids,
                 )
                 
                 vector_count += page_vector_count
