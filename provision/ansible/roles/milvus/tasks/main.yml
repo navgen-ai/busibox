@@ -399,15 +399,33 @@
     MILVUS_HOST: localhost
     MILVUS_PORT: "19530"
   register: hybrid_schema_init
-  retries: 3
-  delay: 5
-  until: hybrid_schema_init.rc == 0
+  failed_when: false  # Don't fail - we'll check result and advise user
   when: milvus_health.status is defined and milvus_health.status == 200
 
 - name: Display hybrid schema initialization result
   debug:
-    var: hybrid_schema_init
-  when: hybrid_schema_init is defined
+    var: hybrid_schema_init.stdout_lines
+  when: hybrid_schema_init.stdout_lines is defined
+
+- name: Check if schema needs manual migration
+  debug:
+    msg: |
+      ⚠️  COLLECTION EXISTS WITHOUT BM25 FUNCTION
+      
+      The 'documents' collection exists but may not have the Milvus 2.6 BM25 Function
+      configured for full-text search. To enable full-text search:
+      
+      1. SSH to milvus-lxc: ssh root@{{ milvus_ip }}
+      2. Run with --drop flag (WARNING: deletes all data!):
+         /opt/milvus-tools/bin/python /root/hybrid_schema.py --drop
+      3. Re-ingest all documents
+      
+      Or, if you want to keep existing data, the collection will work but
+      keyword/BM25 search will return empty results (semantic search still works).
+  when: 
+    - hybrid_schema_init is defined
+    - hybrid_schema_init.rc is defined
+    - hybrid_schema_init.rc != 0
 
 - name: Copy Milvus partition initialization script
   copy:

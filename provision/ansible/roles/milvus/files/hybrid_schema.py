@@ -322,12 +322,31 @@ def verify_setup(collection):
     print("\n============================================================")
 
 
+def drop_collection(collection_name):
+    """Drop collection if it exists."""
+    if utility.has_collection(collection_name):
+        print(f"Dropping existing collection '{collection_name}'...")
+        try:
+            utility.drop_collection(collection_name)
+            print(f"✓ Collection '{collection_name}' dropped")
+            return True
+        except Exception as e:
+            print(f"✗ Failed to drop collection: {e}")
+            return False
+    else:
+        print(f"Collection '{collection_name}' does not exist (nothing to drop)")
+        return True
+
+
 def main():
     """Main execution function."""
     print("=" * 60)
     print("Busibox Milvus Hybrid Search Schema Initialization")
     print("=" * 60)
     print()
+    
+    # Check for --drop flag
+    drop_existing = "--drop" in sys.argv
     
     # Get configuration
     config = get_config()
@@ -336,6 +355,7 @@ def main():
     print(f"  Host: {config['host']}")
     print(f"  Port: {config['port']}")
     print(f"  Collection Name: {config['collection_name']}")
+    print(f"  Drop Existing: {drop_existing}")
     print()
     
     # Connect to Milvus
@@ -343,6 +363,12 @@ def main():
         sys.exit(1)
     
     print()
+    
+    # Drop existing collection if requested
+    if drop_existing:
+        if not drop_collection(config["collection_name"]):
+            sys.exit(1)
+        print()
     
     # Create collection
     collection = create_collection(config["collection_name"])
