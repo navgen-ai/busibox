@@ -104,7 +104,7 @@ embedding_dimension: 4096  # Qwen3-Embedding-8B output dimension
 ollama_host: "{{ ollama_ip }}"
 ollama_port: 11434
 
-vllm_host: "{{ vllm_ip }}"
+vllm_host: "0.0.0.0"  # Listen on all interfaces for IP aliasing support
 # Note: vLLM ports are now configured via model_config.yml
 # Port-based roles (vllm_8000, vllm_8001, etc.) read assignments from model_config.yml
 # Production environment always uses its own vLLM service (no override)
