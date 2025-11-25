@@ -14,7 +14,8 @@
 - name: Set deployment variables
   set_fact:
     app_to_deploy: "{{ applications | selectattr('name', 'equalto', deploy_app) | first }}"
-    branch_to_deploy: "{{ deploy_branch | default('main') }}"
+    # Default branch: use environment name for test/staging, 'main' for production
+    branch_to_deploy: "{{ deploy_branch | default(busibox_env if busibox_env in ['test', 'staging'] else 'main') }}"
 
 - name: Verify app exists in applications list
   assert:
