@@ -163,11 +163,21 @@ verify_service_health() {
     
     cd "${REPO_ROOT}/provision/ansible"
     
-    # Get IPs from inventory (with fallback to empty string)
-    local pg_ip=$(ansible -i "inventory/${inv}" localhost -m debug -a "var=pg_ip" $vault_flags 2>/dev/null | grep "pg_ip" | awk -F'"' '{print $2}' || echo "")
-    local milvus_ip=$(ansible -i "inventory/${inv}" localhost -m debug -a "var=milvus_ip" $vault_flags 2>/dev/null | grep "milvus_ip" | awk -F'"' '{print $2}' || echo "")
-    local files_ip=$(ansible -i "inventory/${inv}" localhost -m debug -a "var=files_ip" $vault_flags 2>/dev/null | grep "files_ip" | awk -F'"' '{print $2}' || echo "")
-    local ingest_ip=$(ansible -i "inventory/${inv}" localhost -m debug -a "var=ingest_ip" $vault_flags 2>/dev/null | grep "ingest_ip" | awk -F'"' '{print $2}' || echo "")
+    # Helper to extract IP from ansible output
+    # Format: localhost | SUCCESS => { "var_name": "10.96.200.x" }
+    extract_ip() {
+        local var_name="$1"
+        local output
+        output=$(ansible -i "inventory/${inv}" localhost -m debug -a "var=$var_name" $vault_flags 2>/dev/null) || true
+        # Extract the IP address (looks for pattern like "10.x.x.x")
+        echo "$output" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1
+    }
+    
+    # Get IPs from inventory
+    local pg_ip=$(extract_ip "pg_ip")
+    local milvus_ip=$(extract_ip "milvus_ip")
+    local files_ip=$(extract_ip "files_ip")
+    local ingest_ip=$(extract_ip "ingest_ip")
     
     cd "${REPO_ROOT}"
     
@@ -182,26 +192,27 @@ verify_service_health() {
         
         if [ -z "$ip" ]; then
             echo -e "  $name: ${YELLOW}⚠ IP not configured${NC}"
-            ((not_running++))
-            return
+            not_running=$((not_running + 1))
+            return 0
         fi
         
         echo -n "  $name ($ip): "
         if eval "$check_cmd" > /dev/null 2>&1; then
             echo -e "${GREEN}✓ Running${NC}"
-            ((running++))
+            running=$((running + 1))
         else
             echo -e "${YELLOW}⚠ Not responding${NC}"
-            ((not_running++))
+            not_running=$((not_running + 1))
         fi
+        return 0
     }
     
-    # Check each service
-    check_service "PostgreSQL" "$pg_ip" "ssh -o ConnectTimeout=5 root@$pg_ip 'systemctl is-active postgresql'"
-    check_service "Milvus" "$milvus_ip" "curl -sf --connect-timeout 5 'http://$milvus_ip:9091/healthz'"
-    check_service "MinIO" "$files_ip" "curl -sf --connect-timeout 5 'http://$files_ip:9000/minio/health/live'"
-    check_service "Ingest API" "$ingest_ip" "curl -sf --connect-timeout 5 'http://$ingest_ip:8000/health'"
-    check_service "Search API" "$milvus_ip" "curl -sf --connect-timeout 5 'http://$milvus_ip:8001/health'"
+    # Check each service (use || true to prevent set -e from exiting)
+    check_service "PostgreSQL" "$pg_ip" "ssh -o ConnectTimeout=5 -o BatchMode=yes root@$pg_ip 'systemctl is-active postgresql'" || true
+    check_service "Milvus" "$milvus_ip" "curl -sf --connect-timeout 5 'http://$milvus_ip:9091/healthz'" || true
+    check_service "MinIO" "$files_ip" "curl -sf --connect-timeout 5 'http://$files_ip:9000/minio/health/live'" || true
+    check_service "Ingest API" "$ingest_ip" "curl -sf --connect-timeout 5 'http://$ingest_ip:8000/health'" || true
+    check_service "Search API" "$milvus_ip" "curl -sf --connect-timeout 5 'http://$milvus_ip:8001/health'" || true
     
     echo ""
     if [ "$not_running" -gt 0 ]; then
