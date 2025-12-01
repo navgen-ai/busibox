@@ -270,3 +270,41 @@ applications:
       # This is used in next.config.js: basePath: process.env.NEXT_PUBLIC_BASE_PATH || ''
       NEXT_PUBLIC_BASE_PATH: "/projects"
 
+  - name: innovation
+    github_repo: jazzmind/innovation
+    container: apps-lxc
+    container_ip: "{{ apps_ip }}"
+    port: 3005
+    deploy_path: /srv/apps/innovation
+    health_endpoint: /api/health
+    build_command: "npm run build"
+    process_manager: systemd
+    routes:
+      - type: subdomain
+        subdomain: "innovation{{ env_subdomain_suffix | default('') }}"
+      - type: path
+        domain: "{{ full_domain }}"
+        path: /innovation
+        strip_path: false  # Keep path so Next.js basePath works
+    secrets:
+      - database_url
+      - litellm_api_key
+      - sso_jwt_secret  # For JWT authentication from ai-portal
+    optional_secrets:
+      - allowed_email_domains
+      - email_from
+      - smtp_host
+      - smtp_port
+      - smtp_user
+      - smtp_password
+      - smtp_secure
+      - resend_api_key
+    env:
+      NODE_ENV: "{{ node_env }}"
+      LITELLM_BASE_URL: "http://{{ litellm_ip }}:{{ litellm_port }}/v1"
+      NEXT_PUBLIC_APP_URL: "https://{{ full_domain }}/innovation"
+      BASE_URL: "https://{{ full_domain }}/innovation"
+      AI_PORTAL_URL: "https://{{ full_domain }}"
+      PORT: "3005"
+      DEPLOYMENT_MODE: "busibox"
+      NEXT_PUBLIC_BASE_PATH: "/innovation"
