@@ -276,23 +276,22 @@ info "This will take 2-5 minutes, please wait..."
 echo ""
 
 # Install driver (this takes a few minutes)
-# Use --uninstall-first to remove any conflicting installations
 pct exec "$CONTAINER_ID" -- bash -c "
     cd /tmp
     
     # Run installer with options for container environment
     # --no-kernel-module: Don't install kernel module (use host's)
     # --silent: Non-interactive installation
-    # --no-drm: Skip DRM setup
+    # --no-drm: Skip DRM setup (not needed in container)
     # --install-libglvnd: Install GL vendor neutral dispatch library
-    # --uninstall-first: Remove any existing conflicting installations
+    # Note: --uninstall-first removed as it's not supported in newer drivers (580+)
+    # Cleanup is handled earlier in this script if needed
     
     ./'$DRIVER_FILENAME' \
         --no-kernel-module \
         --silent \
         --no-drm \
         --install-libglvnd \
-        --uninstall-first \
         2>&1
     
     # Check exit code
