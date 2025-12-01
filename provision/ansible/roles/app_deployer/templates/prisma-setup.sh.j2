@@ -74,6 +74,30 @@ echo "========================================"
 echo "DATABASE SETUP COMPLETE"
 echo "========================================"
 
+# Run any raw SQL migrations if they exist
+if [ -d "prisma/migrations" ]; then
+  SQL_FILES=$(find prisma/migrations -maxdepth 1 -name "*.sql" -type f 2>/dev/null | sort)
+  if [ -n "$SQL_FILES" ]; then
+    echo ""
+    echo "========================================"
+    echo "RUNNING RAW SQL MIGRATIONS"
+    echo "========================================"
+    
+    for sql_file in $SQL_FILES; do
+      echo "Running: $sql_file"
+      if npx prisma db execute --file "$sql_file" 2>&1; then
+        echo "✓ $sql_file executed successfully"
+      else
+        echo "⚠ $sql_file may have already been applied or failed (non-fatal)"
+      fi
+    done
+    
+    echo "========================================"
+    echo "RAW SQL MIGRATIONS COMPLETE"
+    echo "========================================"
+  fi
+fi
+
 {% if busibox_env == 'test' %}
 # Run database seeding in test environment
 if [ -f "package.json" ] && grep -q '"db:seed"' package.json; then
