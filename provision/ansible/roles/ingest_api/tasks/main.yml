@@ -7,7 +7,13 @@
       - python3-venv
       - python3-dev
       - build-essential
+      - postgresql-client  # For running migrations
     state: present
+
+# Database Migrations
+- name: Include database migrations
+  include_tasks: ../../ingest/tasks/migrations.yml
+  tags: [ingest_api, ingest_migrations]
 
 - name: Create ingest API directory
   file:
