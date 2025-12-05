@@ -148,8 +148,19 @@ async def get_file_metadata(fileId: str, request: Request):
             ]
             
             # Merge metadata with fallbacks for page_count and word_count
-            metadata = file_row["metadata"] or {}
-            history_meta = history_metadata_row["metadata"] if history_metadata_row else {}
+            # Handle case where metadata might be a JSON string instead of dict
+            def ensure_dict(val):
+                if val is None:
+                    return {}
+                if isinstance(val, str):
+                    try:
+                        return json.loads(val)
+                    except (json.JSONDecodeError, TypeError):
+                        return {}
+                return val if isinstance(val, dict) else {}
+            
+            metadata = ensure_dict(file_row["metadata"])
+            history_meta = ensure_dict(history_metadata_row["metadata"] if history_metadata_row else None)
             
             # Fallback for page_count from multiple sources
             if "page_count" not in metadata or metadata["page_count"] is None:
@@ -163,8 +174,8 @@ async def get_file_metadata(fileId: str, request: Request):
                 elif strategies:
                     for strategy in strategies:
                         if strategy.get("success") and strategy.get("metadata"):
-                            strat_meta = strategy["metadata"]
-                            if isinstance(strat_meta, dict) and strat_meta.get("page_count"):
+                            strat_meta = ensure_dict(strategy["metadata"])
+                            if strat_meta.get("page_count"):
                                 metadata["page_count"] = strat_meta["page_count"]
                                 break
             
