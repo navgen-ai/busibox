@@ -881,7 +881,7 @@ async def delete_file(fileId: str, request: Request):
 @router.post("/{fileId}/reprocess")
 async def reprocess_file(fileId: str, request: Request):
     """
-    Reprocess a document - delete existing chunks/vectors and re-run ingestion.
+    Reprocess a document - optionally from a specific stage.
     
     This is useful when:
     - Chunking strategy has been updated
@@ -891,13 +891,14 @@ async def reprocess_file(fileId: str, request: Request):
     
     Process:
     1. Verify file exists and user owns it
-    2. Delete existing chunks from PostgreSQL
-    3. Delete existing vectors from Milvus
-    4. Reset ingestion status to 'queued'
-    5. Add job back to Redis queue for reprocessing
+    2. Conditionally delete chunks/vectors based on start_stage
+    3. Reset ingestion status to 'queued'
+    4. Add job back to Redis queue for reprocessing
     
     Request Body (optional JSON):
-        processing_config: Processing configuration (llm_cleanup_enabled, marker_enabled, etc.)
+        processing_config: Processing configuration including:
+            - start_stage: Stage to start from (parsing, chunking, cleanup, markdown, embedding, indexing)
+            - llm_cleanup_enabled, marker_enabled, etc.
     
     Returns:
         Success message with file_id
@@ -918,6 +919,13 @@ async def reprocess_file(fileId: str, request: Request):
     except Exception:
         # No body or invalid JSON - use defaults
         pass
+    
+    # Determine start stage - affects what data to delete
+    start_stage = processing_config.get("start_stage", "parsing")
+    # Stages that require deleting chunks
+    stages_needing_chunk_delete = ["parsing", "chunking"]
+    # Stages that require deleting vectors
+    stages_needing_vector_delete = ["parsing", "chunking", "cleanup", "embedding", "indexing"]
     
     config = Config().to_dict()
     postgres_service = PostgresService(config)
@@ -958,20 +966,22 @@ async def reprocess_file(fileId: str, request: Request):
                 filename=filename,
                 mime_type=mime_type,
                 user_id=user_id,
+                start_stage=start_stage,
             )
             
-            # Delete existing chunks from PostgreSQL
-            deleted_chunks = await conn.execute("""
-                DELETE FROM ingestion_chunks WHERE file_id = $1
-            """, uuid.UUID(fileId))
+            # Only delete chunks if starting from early stages
+            if start_stage in stages_needing_chunk_delete:
+                deleted_chunks = await conn.execute("""
+                    DELETE FROM ingestion_chunks WHERE file_id = $1
+                """, uuid.UUID(fileId))
+                
+                logger.info(
+                    "Deleted existing chunks",
+                    file_id=fileId,
+                    chunks_deleted=deleted_chunks,
+                )
             
-            logger.info(
-                "Deleted existing chunks",
-                file_id=fileId,
-                chunks_deleted=deleted_chunks,
-            )
-            
-            # Delete existing processing history
+            # Always clear processing history for stages we're re-running
             await conn.execute("""
                 DELETE FROM processing_history WHERE file_id = $1
             """, uuid.UUID(fileId))
@@ -986,16 +996,17 @@ async def reprocess_file(fileId: str, request: Request):
                 file_id=fileId,
             )
             
-            # Delete existing vectors from Milvus
-            try:
-                milvus_service.delete_file_vectors(fileId)
-                logger.info("Deleted Milvus vectors", file_id=fileId)
-            except Exception as e:
-                logger.warning(
-                    "Failed to delete vectors from Milvus (may not exist)",
-                    file_id=fileId,
-                    error=str(e),
-                )
+            # Only delete vectors if needed for this stage
+            if start_stage in stages_needing_vector_delete:
+                try:
+                    milvus_service.delete_file_vectors(fileId)
+                    logger.info("Deleted Milvus vectors", file_id=fileId)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to delete vectors from Milvus (may not exist)",
+                        file_id=fileId,
+                        error=str(e),
+                    )
             
             # Reset ingestion status to 'queued'
             await conn.execute("""
@@ -1030,6 +1041,7 @@ async def reprocess_file(fileId: str, request: Request):
                     "original_filename": original_filename or filename,
                     "mime_type": mime_type,  # Required for text extraction
                     "reprocess": "true",  # Flag to indicate this is a reprocess
+                    "start_stage": start_stage,  # Stage to start processing from
                 }
                 
                 # Include processing config if provided
@@ -1057,10 +1069,11 @@ async def reprocess_file(fileId: str, request: Request):
             return JSONResponse(
                 status_code=status.HTTP_200_OK,
                 content={
-                    "message": "Document reprocessing initiated",
+                    "message": f"Document reprocessing initiated from {start_stage}",
                     "fileId": fileId,
                     "filename": filename,
                     "status": "queued",
+                    "start_stage": start_stage,
                 }
             )
     
