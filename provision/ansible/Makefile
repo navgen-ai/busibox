@@ -210,8 +210,17 @@ ensure-testdocs:
 		echo "📥 Cloning testdocs repository to server..."; \
 		echo "   Repo: $(TESTDOCS_REPO)"; \
 		echo "   Destination: $(TESTDOCS_DIR)"; \
-		ssh root@$(INGEST_IP) 'rm -rf $(TESTDOCS_DIR) && git clone --depth 1 $(TESTDOCS_REPO) $(TESTDOCS_DIR)' || \
-			(echo "ERROR: Failed to clone testdocs repository" && exit 1); \
+		if ! ssh root@$(INGEST_IP) 'rm -rf $(TESTDOCS_DIR) && git clone --depth 1 $(TESTDOCS_REPO) $(TESTDOCS_DIR)'; then \
+			echo ""; \
+			echo "ERROR: Failed to clone testdocs repository"; \
+			echo ""; \
+			echo "If the repo is private, options:"; \
+			echo "  1. Make jazzmind/busibox-testdocs public"; \
+			echo "  2. Add SSH key to server and use git@github.com:jazzmind/busibox-testdocs.git"; \
+			echo "  3. Use a GitHub personal access token"; \
+			echo ""; \
+			exit 1; \
+		fi; \
 		echo "✓ Test documents cloned successfully"; \
 	fi
 
