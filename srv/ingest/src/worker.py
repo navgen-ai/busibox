@@ -42,6 +42,26 @@ import redis as redis_sync
 from redis.exceptions import RedisError
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
+# IMPORTANT: Patch transformers before any marker/surya imports
+# This fixes "Cannot copy out of meta tensor" error with transformers 4.56+
+# by disabling lazy loading of model weights
+def _patch_transformers_loading():
+    """Patch transformers to disable low_cpu_mem_usage which causes meta tensor issues on GPU."""
+    try:
+        from transformers import PreTrainedModel
+        original_from_pretrained = PreTrainedModel.from_pretrained.__func__
+        
+        def patched_from_pretrained(cls, *args, **kwargs):
+            # Disable meta tensor loading - we have plenty of RAM
+            kwargs['low_cpu_mem_usage'] = False
+            return original_from_pretrained(cls, *args, **kwargs)
+        
+        PreTrainedModel.from_pretrained = classmethod(patched_from_pretrained)
+    except Exception:
+        pass  # If patch fails, continue anyway
+
+_patch_transformers_loading()
+
 from shared.config import Config
 from services.file_service import FileService
 from services.postgres_service import PostgresService
