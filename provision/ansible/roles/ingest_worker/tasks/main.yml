@@ -160,6 +160,10 @@
       RECOGNITION_BATCH_SIZE={{ recognition_batch_size | default('128') }}
       DETECTOR_BATCH_SIZE={{ detector_batch_size | default('32') }}
       LAYOUT_BATCH_SIZE={{ layout_batch_size | default('16') }}
+      # Table recognition - can fail on complex tables, lower batch size helps stability
+      TABLE_REC_BATCH_SIZE={{ table_rec_batch_size | default('4') }}
+      # Max boxes per table - reduce if getting tensor shape errors on complex tables
+      TABLE_REC_MAX_BOXES={{ table_rec_max_boxes | default('100') }}
       
       # Worker configuration
       WORKER_ID={{ ansible_hostname }}
