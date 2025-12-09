@@ -25,23 +25,51 @@ TEST_DOC_REPO_PATH = os.getenv("TEST_DOC_REPO_PATH", "/srv/test-docs")
 TEST_DOC_STATE_PATH = os.getenv("TEST_DOC_STATE_PATH", "/srv/ingest/test-docs-state.json")
 
 TEST_DOCS = [
+    # Simple text-based PDFs that work well with pdfplumber (no Marker/ColPali needed)
+    # These are research papers with clean text extraction for testing RAG search & roles
+    {
+        "id": "attention-paper",
+        "name": "Attention is All You Need (Transformer paper)",
+        "path": "pdf/1706.03762.pdf",
+        "mime": "application/pdf",
+        "role": "test-role-a",
+    },
+    {
+        "id": "retrieval-paper",
+        "name": "Retrieval-Augmented Generation paper",
+        "path": "pdf/2005.14165.pdf",
+        "mime": "application/pdf",
+        "role": "test-role-b",
+    },
+    {
+        "id": "ret-paper",
+        "name": "Retrieval-Enhanced Transformer paper",
+        "path": "pdf/2010.11929.pdf",
+        "mime": "application/pdf",
+        "role": "test-role-c",
+    },
+]
+
+# Complex documents requiring Marker/ColPali (for separate testing)
+# These should NOT be used in the default test suite
+TEST_DOCS_COMPLEX = [
     {
         "id": "cat-image",
-        "name": "Cat image (visual embedding)",
+        "name": "Cat image (visual embedding - requires ColPali)",
         "path": "image/cat.jpg",
         "mime": "image/jpeg",
         "role": "test-role-a",
     },
     {
         "id": "finance-charts",
-        "name": "US Bancorp Q4 2023 presentation",
+        "name": "US Bancorp Q4 2023 presentation (charts - requires Marker)",
         "path": "pdf/general/doc08_us_bancorp_q4_2023_presentation/source.pdf",
         "mime": "application/pdf",
         "role": "test-role-b",
     },
     {
         "id": "civil-plan",
-        "name": "NY Harbor plan set",
+        "name": "NY Harbor plan set (CAD drawings - requires ColPali)",
         "path": "pdf/plans/doc1_ny_harbor/W912DS-10-B-0004-Plans.pdf",
         "mime": "application/pdf",
         "role": "test-role-c",
@@ -220,7 +248,11 @@ async def get_test_docs_status(request: Request):
 @router.post("/test-docs/seed")
 async def seed_test_docs(request: Request):
     """
-    Seed all test documents using the existing upload pipeline.
+    Seed simple test documents (text-based PDFs) for RAG search & role testing.
+    
+    These documents work with basic pdfplumber extraction and don't require
+    GPU services (Marker/ColPali). Use /test-docs/seed-complex for documents
+    that require advanced extraction.
     """
     if not request.headers.get("Authorization"):
         return JSONResponse(
@@ -232,6 +264,42 @@ async def seed_test_docs(request: Request):
     results = []
 
     for doc in TEST_DOCS:
+        file_id, error = await _seed_doc(doc, request, state)
+        results.append(
+            {
+                "id": doc["id"],
+                "name": doc["name"],
+                "role": doc["role"],
+                "fileId": file_id,
+                "error": error,
+            }
+        )
+
+    return {"seeded": results}
+
+
+@router.post("/test-docs/seed-complex")
+async def seed_complex_test_docs(request: Request):
+    """
+    Seed complex test documents requiring Marker/ColPali (GPU services).
+    
+    These documents include:
+    - Images (require ColPali visual embeddings)
+    - Charts/presentations (require Marker for layout)
+    - CAD drawings/plans (require ColPali for visual understanding)
+    
+    Only use this endpoint when GPU services are available (production).
+    """
+    if not request.headers.get("Authorization"):
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"error": "Authorization header required"},
+        )
+
+    state = _load_state()
+    results = []
+
+    for doc in TEST_DOCS_COMPLEX:
         file_id, error = await _seed_doc(doc, request, state)
         results.append(
             {
