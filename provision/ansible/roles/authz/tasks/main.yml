@@ -46,6 +46,24 @@
     mode: "0644"
   tags: [authz]
 
+- name: Copy test requirements
+  copy:
+    src: "{{ authz_src_dir }}/requirements.test.txt"
+    dest: "{{ authz_app_dir }}/requirements.test.txt"
+    owner: "{{ authz_user }}"
+    group: "{{ authz_group }}"
+    mode: "0644"
+  tags: [authz]
+
+- name: Copy authz tests
+  copy:
+    src: "{{ authz_src_dir }}/tests/"
+    dest: "{{ authz_app_dir }}/tests/"
+    owner: "{{ authz_user }}"
+    group: "{{ authz_group }}"
+    mode: "0644"
+  tags: [authz]
+
 - name: Ensure Python venv deps are installed
   apt:
     name:
