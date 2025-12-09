@@ -1,5 +1,9 @@
 # Wes's Tasks
 
+1) Get role testing working - prove roles are working
+2) Get agent-client working - prove chat works with docs/agent server on test environment
+
+
 ## Busibox Tasks
 
 [x] Get document manager library working on live environment

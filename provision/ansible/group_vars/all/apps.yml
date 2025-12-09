@@ -37,6 +37,8 @@ applications:
       - litellm_api_key
       - management_client_id      # Admin OAuth credentials
       - management_client_secret  # Admin OAuth credentials
+      - token_service_private_key # Ed25519 JWK for signing tokens
+      - token_service_public_key  # Ed25519 JWK for verifying tokens
     env:
       LOG_LEVEL: "{{ log_level }}"
       MILVUS_HOST: "{{ milvus_ip }}"
