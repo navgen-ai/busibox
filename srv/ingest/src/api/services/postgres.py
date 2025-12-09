@@ -61,7 +61,16 @@ class PostgresService:
 
     @asynccontextmanager
     async def acquire(self, request=None):
-        async with self.acquire() as conn:
+        """
+        Get a connection from the pool and apply RLS context for the current request.
+
+        NOTE: The previous implementation mistakenly recursed into itself and
+        exhausted the call stack. This version correctly pulls from the pool.
+        """
+        if not self.pool:
+            await self.connect()
+
+        async with self.pool.acquire() as conn:
             await self._apply_rls(conn, request)
             yield conn
     
