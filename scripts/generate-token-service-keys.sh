@@ -94,14 +94,20 @@ generate_keys() {
         return 1
     }
     
-    # Parse JSON output
+    # Parse JSON output using Python
     local kid
     local private_key
     local public_key
     
-    kid=$(echo "$output" | grep -o '"kid":"[^"]*"' | head -1 | cut -d'"' -f4)
-    private_key=$(echo "$output" | grep -o '"privateKey":"[^"]*"' | cut -d'"' -f4 | sed 's/\\"/"/g')
-    public_key=$(echo "$output" | grep -o '"publicKey":"[^"]*"' | cut -d'"' -f4 | sed 's/\\"/"/g')
+    # Use Python to properly parse the nested JSON
+    read -r kid private_key public_key < <(echo "$output" | python3 -c "
+import json
+import sys
+data = json.load(sys.stdin)
+print(data['kid'])
+print(data['privateKey'])
+print(data['publicKey'])
+")
     
     if [ -z "$private_key" ] || [ -z "$public_key" ]; then
         error "Failed to extract keys from generator output"
