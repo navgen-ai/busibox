@@ -36,6 +36,7 @@ if [[ "$MODE" == "test" ]]; then
   CT_PROXY="$CT_PROXY_TEST"
   CT_APPS="$CT_APPS_TEST"
   CT_AGENT="$CT_AGENT_TEST"
+  CT_AUTHZ="$CT_AUTHZ_TEST"
   
   IP_PROXY="$IP_PROXY_TEST"
   IP_APPS="$IP_APPS_TEST"
@@ -45,6 +46,9 @@ else
   echo "==> Creating core services in PRODUCTION mode"
   source "${PCT_DIR}/vars.env"
   PREFIX=""
+
+  CT_AUTHZ="$CT_AUTHZ"
+  IP_AUTHZ="$IP_AUTHZ"
 fi
 
 # Source common functions
