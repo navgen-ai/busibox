@@ -10,14 +10,15 @@ VAULT_FLAGS=$(shell [ -f $(VAULT_PASS_FILE) ] && echo "--vault-password-file $(V
 # Extra arguments (can override with: make vllm-embedding EXTRA_ARGS="-e skip_model_check=true")
 EXTRA_ARGS=
 
-# Container IPs - production uses 10.96.200.x, test uses 10.96.200.x
+# Container IPs - production uses 10.96.200.x, test uses 10.96.201.x
 # For production, IPs are static and defined in group_vars
-# For test, they may be different - check inventory/test/group_vars
+# For test, they use the TEST network (10.96.201.x)
 ifeq ($(INV),inventory/test)
-  INGEST_IP = 10.96.200.206
-  AGENT_IP = 10.96.200.202
-  APPS_IP = 10.96.200.201
-  MILVUS_IP = 10.96.200.204
+  # Test IPs (10.96.201.0/21 network)
+  INGEST_IP = 10.96.201.206
+  AGENT_IP = 10.96.201.202
+  APPS_IP = 10.96.201.201
+  MILVUS_IP = 10.96.201.204
 else
   # Production IPs (10.96.200.0/21 network)
   INGEST_IP = 10.96.200.206
@@ -193,12 +194,47 @@ test-ingest-coverage:
 	@echo "Coverage report: ssh root@$(INGEST_IP) and view /srv/ingest/htmlcov/index.html"
 	@echo ""
 
-# Samples directory - relative to Makefile location (provision/ansible/)
-# Makefile is at provision/ansible/Makefile, so ../../samples/docs is busibox root
-SAMPLES_DIR = ../../samples/docs
+# Testdocs repository - cloned to server via git (more efficient than copying large files)
+# Uses GitHub token from ~/.github_token on the server (deployed by Ansible)
+TESTDOCS_REPO = jazzmind/busibox-testdocs
+TESTDOCS_DIR = /tmp/testdocs
+SAMPLES_DIR = $(TESTDOCS_DIR)/pdf/general
+
+# Helper target to ensure testdocs are available on ingest server
+.PHONY: ensure-testdocs
+ensure-testdocs:
+	@echo "📦 Checking test documents on server..."
+	@if ssh root@$(INGEST_IP) '[ -d $(SAMPLES_DIR) ] && [ -f $(SAMPLES_DIR)/doc01_rfp_project_management/source.pdf ]' 2>/dev/null; then \
+		echo "✓ Test documents already available, updating..."; \
+		ssh root@$(INGEST_IP) 'cd $(TESTDOCS_DIR) && git pull --quiet' || true; \
+	else \
+		echo "📥 Cloning testdocs repository to server..."; \
+		echo "   Repo: $(TESTDOCS_REPO)"; \
+		echo "   Destination: $(TESTDOCS_DIR)"; \
+		if ! ssh root@$(INGEST_IP) '\
+			TOKEN=""; \
+			if [ -f ~/.github_token ]; then \
+				TOKEN=$$(cat ~/.github_token); \
+				REPO_URL="https://$${TOKEN}@github.com/$(TESTDOCS_REPO).git"; \
+			else \
+				REPO_URL="https://github.com/$(TESTDOCS_REPO).git"; \
+			fi; \
+			rm -rf $(TESTDOCS_DIR) && git clone --depth 1 "$${REPO_URL}" $(TESTDOCS_DIR) \
+		'; then \
+			echo ""; \
+			echo "ERROR: Failed to clone testdocs repository"; \
+			echo ""; \
+			echo "Ensure GitHub token is deployed to ingest server:"; \
+			echo "  1. Run: make ingest  (deploys ~/.github_token from vault)"; \
+			echo "  2. Or manually: ssh root@$(INGEST_IP) and create ~/.github_token"; \
+			echo ""; \
+			exit 1; \
+		fi; \
+		echo "✓ Test documents cloned successfully"; \
+	fi
 
 # Extraction strategy tests
-test-extraction-simple:
+test-extraction-simple: ensure-testdocs
 	@echo "=== Testing SIMPLE Extraction Strategy ==="
 	@echo "Running basic PDF extraction without LLM cleanup"
 	@echo "Container: ingest-lxc ($(INGEST_IP))"
@@ -208,31 +244,12 @@ test-extraction-simple:
 		echo "Check inventory: $(INV)/hosts.yml"; \
 		exit 1; \
 	fi
-	@if [ ! -d "$(SAMPLES_DIR)" ]; then \
-		echo "ERROR: Samples directory not found: $(SAMPLES_DIR)"; \
-		echo "Expected samples/docs/ directory in busibox root (relative to provision/ansible/)"; \
-		echo "Current directory: $$(pwd)"; \
-		exit 1; \
-	fi
-	@echo "📦 Checking test samples on server..."
-	@if ssh root@$(INGEST_IP) '[ -d /tmp/test_samples ] && [ -f /tmp/test_samples/doc01_rfp_project_management/source.pdf ]' 2>/dev/null; then \
-		echo "✓ Samples already exist on server, skipping copy"; \
-	else \
-		echo "📦 Copying test samples from workstation to server..."; \
-		echo "   Source: $(SAMPLES_DIR)"; \
-		echo "   Destination: root@$(INGEST_IP):/tmp/test_samples/"; \
-		ssh root@$(INGEST_IP) 'rm -rf /tmp/test_samples && mkdir -p /tmp/test_samples'; \
-		scp -r -q "$(SAMPLES_DIR)"/* root@$(INGEST_IP):/tmp/test_samples/ || \
-			(echo "ERROR: Failed to copy samples to server" && exit 1); \
-		ssh root@$(INGEST_IP) 'chmod -R 755 /tmp/test_samples'; \
-		echo "✓ Samples copied successfully"; \
-	fi
 	@echo ""
-	@ssh root@$(INGEST_IP) 'cd /srv/ingest && source venv/bin/activate && SAMPLES_DIR=/tmp/test_samples python -m pytest tests/test_pdf_extraction_simple.py -v --tb=short --capture=no' || (echo "SIMPLE extraction tests FAILED" && exit 1)
+	@ssh root@$(INGEST_IP) 'cd /srv/ingest && source venv/bin/activate && SAMPLES_DIR=$(SAMPLES_DIR) python -m pytest tests/test_pdf_extraction_simple.py -v --tb=short --capture=no' || (echo "SIMPLE extraction tests FAILED" && exit 1)
 	@echo "✓ SIMPLE extraction tests passed"
 	@echo ""
 
-test-extraction-llm:
+test-extraction-llm: ensure-testdocs
 	@echo "=== Testing SIMPLE + LLM Cleanup ==="
 	@echo "Running PDF extraction WITH LLM cleanup"
 	@echo "Container: ingest-lxc ($(INGEST_IP))"
@@ -244,28 +261,11 @@ test-extraction-llm:
 		echo "Check inventory: $(INV)/hosts.yml"; \
 		exit 1; \
 	fi
-	@if [ ! -d "$(SAMPLES_DIR)" ]; then \
-		echo "ERROR: Samples directory not found: $(SAMPLES_DIR)"; \
-		exit 1; \
-	fi
-	@echo "📦 Checking test samples on server..."
-	@if ssh root@$(INGEST_IP) '[ -d /tmp/test_samples ] && [ -f /tmp/test_samples/doc01_rfp_project_management/source.pdf ]' 2>/dev/null; then \
-		echo "✓ Samples already exist on server, skipping copy"; \
-	else \
-		echo "📦 Copying test samples from workstation to server..."; \
-		echo "   Source: $(SAMPLES_DIR)"; \
-		echo "   Destination: root@$(INGEST_IP):/tmp/test_samples/"; \
-		ssh root@$(INGEST_IP) 'rm -rf /tmp/test_samples && mkdir -p /tmp/test_samples'; \
-		scp -r -q "$(SAMPLES_DIR)"/* root@$(INGEST_IP):/tmp/test_samples/ || \
-			(echo "ERROR: Failed to copy samples to server" && exit 1); \
-		ssh root@$(INGEST_IP) 'chmod -R 755 /tmp/test_samples'; \
-		echo "✓ Samples copied successfully"; \
-	fi
-	@ssh root@$(INGEST_IP) 'cd /srv/ingest && source venv/bin/activate && SAMPLES_DIR=/tmp/test_samples python -m pytest tests/test_llm_cleanup.py -v --tb=short --capture=no' || (echo "LLM cleanup tests FAILED" && exit 1)
+	@ssh root@$(INGEST_IP) 'cd /srv/ingest && source venv/bin/activate && SAMPLES_DIR=$(SAMPLES_DIR) python -m pytest tests/test_llm_cleanup.py -v --tb=short --capture=no' || (echo "LLM cleanup tests FAILED" && exit 1)
 	@echo "✓ LLM cleanup tests passed"
 	@echo ""
 
-test-extraction-marker:
+test-extraction-marker: ensure-testdocs
 	@echo "=== Testing MARKER Extraction Strategy ==="
 	@echo "Running Marker PDF extraction (requires GPU/CPU resources)"
 	@echo "Container: ingest-lxc ($(INGEST_IP))"
@@ -280,28 +280,11 @@ test-extraction-marker:
 		echo "Check inventory: $(INV)/hosts.yml"; \
 		exit 1; \
 	fi
-	@if [ ! -d "$(SAMPLES_DIR)" ]; then \
-		echo "ERROR: Samples directory not found: $(SAMPLES_DIR)"; \
-		exit 1; \
-	fi
-	@echo "📦 Checking test samples on server..."
-	@if ssh root@$(INGEST_IP) '[ -d /tmp/test_samples ] && [ -f /tmp/test_samples/doc01_rfp_project_management/source.pdf ]' 2>/dev/null; then \
-		echo "✓ Samples already exist on server, skipping copy"; \
-	else \
-		echo "📦 Copying test samples from workstation to server..."; \
-		echo "   Source: $(SAMPLES_DIR)"; \
-		echo "   Destination: root@$(INGEST_IP):/tmp/test_samples/"; \
-		ssh root@$(INGEST_IP) 'rm -rf /tmp/test_samples && mkdir -p /tmp/test_samples'; \
-		scp -r -q "$(SAMPLES_DIR)"/* root@$(INGEST_IP):/tmp/test_samples/ || \
-			(echo "ERROR: Failed to copy samples to server" && exit 1); \
-		ssh root@$(INGEST_IP) 'chmod -R 755 /tmp/test_samples'; \
-		echo "✓ Samples copied successfully"; \
-	fi
-	@ssh root@$(INGEST_IP) 'cd /srv/ingest && source venv/bin/activate && SAMPLES_DIR=/tmp/test_samples python -m pytest tests/test_pdf_extraction_marker.py -v --tb=short --capture=no' || (echo "Marker extraction tests FAILED (may be expected on low-resource systems)" && exit 1)
+	@ssh root@$(INGEST_IP) 'cd /srv/ingest && source venv/bin/activate && SAMPLES_DIR=$(SAMPLES_DIR) python -m pytest tests/test_pdf_extraction_marker.py -v --tb=short --capture=no' || (echo "Marker extraction tests FAILED (may be expected on low-resource systems)" && exit 1)
 	@echo "✓ Marker extraction tests passed"
 	@echo ""
 
-test-extraction-colpali:
+test-extraction-colpali: ensure-testdocs
 	@echo "=== Testing ColPali Visual Extraction ==="
 	@echo "Running ColPali visual embeddings extraction"
 	@echo "Container: ingest-lxc ($(INGEST_IP))"
@@ -313,24 +296,7 @@ test-extraction-colpali:
 		echo "Check inventory: $(INV)/hosts.yml"; \
 		exit 1; \
 	fi
-	@if [ ! -d "$(SAMPLES_DIR)" ]; then \
-		echo "ERROR: Samples directory not found: $(SAMPLES_DIR)"; \
-		exit 1; \
-	fi
-	@echo "📦 Checking test samples on server..."
-	@if ssh root@$(INGEST_IP) '[ -d /tmp/test_samples ] && [ -f /tmp/test_samples/doc01_rfp_project_management/source.pdf ]' 2>/dev/null; then \
-		echo "✓ Samples already exist on server, skipping copy"; \
-	else \
-		echo "📦 Copying test samples from workstation to server..."; \
-		echo "   Source: $(SAMPLES_DIR)"; \
-		echo "   Destination: root@$(INGEST_IP):/tmp/test_samples/"; \
-		ssh root@$(INGEST_IP) 'rm -rf /tmp/test_samples && mkdir -p /tmp/test_samples'; \
-		scp -r -q "$(SAMPLES_DIR)"/* root@$(INGEST_IP):/tmp/test_samples/ || \
-			(echo "ERROR: Failed to copy samples to server" && exit 1); \
-		ssh root@$(INGEST_IP) 'chmod -R 755 /tmp/test_samples'; \
-		echo "✓ Samples copied successfully"; \
-	fi
-	@ssh root@$(INGEST_IP) 'cd /srv/ingest && source venv/bin/activate && SAMPLES_DIR=/tmp/test_samples python -m pytest tests/test_colpali.py -v --tb=short --capture=no' || (echo "ColPali extraction tests FAILED" && exit 1)
+	@ssh root@$(INGEST_IP) 'cd /srv/ingest && source venv/bin/activate && SAMPLES_DIR=$(SAMPLES_DIR) python -m pytest tests/test_colpali.py -v --tb=short --capture=no' || (echo "ColPali extraction tests FAILED" && exit 1)
 	@echo "✓ ColPali extraction tests passed"
 	@echo ""
 

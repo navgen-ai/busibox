@@ -24,6 +24,66 @@ from docx import Document
 logger = structlog.get_logger()
 
 
+def _create_resilient_converter(artifact_dict):
+    """
+    Create a resilient PDF converter that doesn't fail the entire extraction
+    when individual processors (like table recognition) fail.
+    
+    This patches Marker's PdfConverter.build_document to wrap each processor
+    call in try/except, allowing text extraction to succeed even if
+    table processing fails.
+    """
+    from marker.converters.pdf import PdfConverter
+    
+    # Create a subclass that overrides build_document with resilient processing
+    class ResilientPdfConverter(PdfConverter):
+        def build_document(self, filepath: str):
+            """Build document with resilient processor handling."""
+            from marker.providers.registry import provider_from_filepath
+            from marker.builders.document import DocumentBuilder
+            from marker.builders.structure import StructureBuilder
+            from marker.builders.line import LineBuilder
+            from marker.builders.ocr import OcrBuilder
+            
+            provider_cls = provider_from_filepath(filepath)
+            layout_builder = self.resolve_dependencies(self.layout_builder_class)
+            line_builder = self.resolve_dependencies(LineBuilder)
+            ocr_builder = self.resolve_dependencies(OcrBuilder)
+            provider = provider_cls(filepath, self.config)
+            document = DocumentBuilder(self.config)(
+                provider, layout_builder, line_builder, ocr_builder
+            )
+            structure_builder_cls = self.resolve_dependencies(StructureBuilder)
+            structure_builder_cls(document)
+
+            # Run processors with individual error handling
+            failed_processors = []
+            for processor in self.processor_list:
+                processor_name = processor.__class__.__name__
+                try:
+                    processor(document)
+                except Exception as e:
+                    # Log the failure but continue with other processors
+                    logger.warning(
+                        "Marker processor failed, continuing without it",
+                        processor=processor_name,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    )
+                    failed_processors.append(processor_name)
+            
+            if failed_processors:
+                logger.info(
+                    "Marker completed with some processor failures",
+                    failed_processors=failed_processors,
+                    total_processors=len(self.processor_list),
+                )
+
+            return document
+    
+    return ResilientPdfConverter(artifact_dict=artifact_dict)
+
+
 class ExtractionResult:
     """Result of text extraction."""
     
@@ -47,11 +107,67 @@ class ExtractionResult:
 class TextExtractor:
     """Extract text from various file formats."""
     
+    # Class-level cache for Marker models to avoid reloading on every extraction
+    # This prevents OOM when processing multiple documents
+    _marker_models = None
+    _marker_converter = None
+    
+    @classmethod
+    def get_marker_models(cls):
+        """Get or create cached Marker models (singleton pattern).
+        
+        Uses ResilientPdfConverter which wraps individual processors in
+        try/except so that table recognition failures don't cause the
+        entire extraction to fall back to pdfplumber.
+        """
+        if cls._marker_models is None:
+            try:
+                from marker.models import create_model_dict
+                
+                logger.info("Loading Marker models (will be cached for reuse)...")
+                cls._marker_models = create_model_dict()
+                # Use resilient converter that handles processor failures gracefully
+                cls._marker_converter = _create_resilient_converter(cls._marker_models)
+                logger.info("Marker models loaded and cached (resilient mode)", models=list(cls._marker_models.keys()))
+            except Exception as e:
+                logger.error("Failed to load Marker models", error=str(e))
+                raise
+        return cls._marker_models, cls._marker_converter
+    
+    @classmethod
+    def cleanup_marker_models(cls):
+        """Clean up cached Marker models to free GPU memory."""
+        if cls._marker_models is not None:
+            logger.info("Cleaning up Marker models...")
+            del cls._marker_models
+            del cls._marker_converter
+            cls._marker_models = None
+            cls._marker_converter = None
+            
+            # Force GPU memory cleanup
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    logger.info("GPU memory cleared")
+            except Exception:
+                pass
+    
     def __init__(self, config: dict):
         """Initialize text extractor."""
         self.config = config
         self.temp_dir = config.get("temp_dir", "/tmp/ingest")
         self.marker_enabled = config.get("marker_enabled", True)  # Can disable to save memory
+        
+        # Remote Marker service URL - if set, calls remote service instead of local Marker
+        # This allows test environment to use production Marker service
+        self.marker_service_url = config.get("marker_service_url") or os.getenv("MARKER_SERVICE_URL")
+        if self.marker_service_url:
+            logger.info(
+                "Using remote Marker service",
+                url=self.marker_service_url,
+            )
+        
         os.makedirs(self.temp_dir, exist_ok=True)
     
     def extract(self, file_path: str, mime_type: str) -> ExtractionResult:
@@ -111,11 +227,19 @@ class TextExtractor:
         text_content = ""
         tables = []
         page_count = 0
+        extraction_method = "unknown"
         
         # Check if Marker is enabled (can be disabled to save memory)
         if not self.marker_enabled:
             logger.info("Marker disabled, using pdfplumber fallback", file_path=file_path)
             markdown_text = None  # Skip Marker, go straight to pdfplumber
+        elif self.marker_service_url:
+            # Use remote Marker service
+            markdown_text, page_count, extraction_method = self._extract_pdf_remote_marker(file_path)
+            if markdown_text:
+                text_content = markdown_text
+                # Extract page images locally for ColPali
+                page_images = self._extract_pdf_page_images(file_path)
         else:
             # Try Marker first (best quality)
             # Marker v1.x uses a different API than v0.x
@@ -167,12 +291,9 @@ class TextExtractor:
                     
                     logger.info("Using Marker v1.x for PDF extraction", file_path=file_path, device=device)
                     
-                    # Create model dict with default models
-                    # This downloads models on first use (cached after)
-                    artifact_dict = create_model_dict()
-                    
-                    # Create converter with models
-                    converter = PdfConverter(artifact_dict=artifact_dict)
+                    # Use cached models to avoid OOM on multiple extractions
+                    # Models are loaded once and reused across all extractions
+                    artifact_dict, converter = self.get_marker_models()
                     
                     # Convert PDF to markdown
                     result = converter(file_path)
@@ -206,11 +327,12 @@ class TextExtractor:
                 )
                 markdown_text = None
             except Exception as e:
-                logger.error(
-                    "Marker import succeeded but execution failed",
+                # Log as warning since we'll fall back to pdfplumber
+                # Common issues: table_rec tensor shape errors, memory issues
+                logger.warning(
+                    "Marker execution failed, falling back to pdfplumber",
                     error=str(e),
                     error_type=type(e).__name__,
-                    exc_info=True,
                 )
                 markdown_text = None
             
@@ -254,14 +376,83 @@ class TextExtractor:
             # Trigger OCR processing (implemented separately)
             text_content = self._ocr_pdf(file_path)
         
+        # Determine extraction method for metadata
+        if not extraction_method or extraction_method == "unknown":
+            extraction_method = "marker" if markdown_text else "pdfplumber"
+        
+        # Clear GPU memory after extraction to prevent accumulation
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.debug("Cleared CUDA cache after PDF extraction")
+        except Exception:
+            pass  # Not critical if this fails
+        
         return ExtractionResult(
             text=text_content,
             markdown=markdown_text,
             page_images=page_images,
             page_count=page_count,
             tables=tables,
-            metadata={"extraction_method": "marker" if markdown_text else "pdfplumber"},
+            metadata={"extraction_method": extraction_method},
         )
+    
+    def _extract_pdf_remote_marker(self, file_path: str) -> Tuple[Optional[str], int, str]:
+        """
+        Extract text from PDF using remote Marker service.
+        
+        Args:
+            file_path: Path to PDF file
+            
+        Returns:
+            Tuple of (markdown_text, page_count, extraction_method)
+        """
+        import httpx
+        
+        logger.info(
+            "Calling remote Marker service",
+            file_path=file_path,
+            service_url=self.marker_service_url,
+        )
+        
+        try:
+            with open(file_path, "rb") as f:
+                files = {"file": (Path(file_path).name, f, "application/pdf")}
+                
+                with httpx.Client(timeout=300.0) as client:  # 5 minute timeout for large PDFs
+                    response = client.post(
+                        f"{self.marker_service_url}/extract",
+                        files=files,
+                    )
+                    
+                    if response.status_code != 200:
+                        logger.warning(
+                            "Remote Marker service failed",
+                            status=response.status_code,
+                            response=response.text[:200],
+                        )
+                        return None, 0, "remote_marker_failed"
+                    
+                    result = response.json()
+                    markdown_text = result.get("text", "") or result.get("markdown", "")
+                    page_count = result.get("page_count", 0)
+                    
+                    logger.info(
+                        "Remote Marker extraction complete",
+                        text_length=len(markdown_text),
+                        page_count=page_count,
+                    )
+                    
+                    return markdown_text, page_count, "remote_marker"
+                    
+        except Exception as e:
+            logger.error(
+                "Remote Marker service error",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            return None, 0, "remote_marker_error"
     
     def _extract_pdf_page_images(self, file_path: str) -> List[str]:
         """Extract page images from PDF for ColPali.

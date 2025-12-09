@@ -104,6 +104,23 @@ vllm_host: "0.0.0.0"  # Listen on all interfaces for IP aliasing support
 # When use_production_vllm is false, test services connect to test vLLM (10.96.201.208)
 
 # ============================================================================
+# GPU-Heavy Features - Test Environment
+# ============================================================================
+# Test shares the same physical GPU with production, so GPU memory is limited.
+# These settings prevent test from competing with production for GPU resources.
+
+# Marker PDF extraction - use production Marker via remote service
+# Test calls production ingest API's /extract endpoint instead of running Marker locally
+# This allows test to get accurate Marker processing without GPU/memory issues
+marker_enabled: true  # Keep enabled so we use Marker results (via remote service)
+marker_use_gpu: false  # Not used when using remote service
+marker_gpu_device: cpu  # Not used when using remote service
+marker_service_url: "http://{{ network_base_octets_production }}.206:8002"  # Production ingest API
+
+# ColPali - use production service (already handled by use_production_vllm)
+# The colpali_base_url will point to production vllm_ip:9006
+
+# ============================================================================
 # LLM Model Configuration
 # ============================================================================
 # HuggingFace Authentication (for gated models like PaliGemma)

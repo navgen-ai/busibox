@@ -52,16 +52,26 @@ class Config:
         self.colpali_enabled = os.getenv("COLPALI_ENABLED", "true").lower() == "true"
         self.colpali_pooling_method = os.getenv("COLPALI_POOLING_METHOD", "mean")  # mean or max
         
-        # Marker configuration (optional - can disable to save memory)
-        self.marker_enabled = os.getenv("MARKER_ENABLED", "false").lower() == "true"
+        # Marker configuration (gold standard for PDF extraction, pdfplumber is fallback)
+        self.marker_enabled = os.getenv("MARKER_ENABLED", "true").lower() == "true"
         self.marker_use_gpu = os.getenv("MARKER_USE_GPU", "true").lower() == "true"
         self.marker_gpu_device = os.getenv("MARKER_GPU_DEVICE", "cuda")  # cuda, cpu, or auto
         self.marker_inference_ram = os.getenv("MARKER_INFERENCE_RAM", "16")  # GB of VRAM
         self.marker_vram_per_task = os.getenv("MARKER_VRAM_PER_TASK", "3.5")  # GB per task
+        # Remote Marker service URL - if set, calls remote API instead of local Marker
+        # Used by test environment to leverage production Marker
+        self.marker_service_url = os.getenv("MARKER_SERVICE_URL", "")
         
         # Multi-flow processing (optional - enables parallel strategy comparison)
         self.multi_flow_enabled = os.getenv("MULTI_FLOW_ENABLED", "false").lower() == "true"
         self.max_parallel_strategies = int(os.getenv("MAX_PARALLEL_STRATEGIES", "3"))
+        
+        # LLM cleanup configuration (fixes text quality issues)
+        self.llm_cleanup_enabled = os.getenv("LLM_CLEANUP_ENABLED", "true").lower() == "true"
+        
+        # LiteLLM configuration (for LLM cleanup)
+        self.litellm_base_url = os.getenv("LITELLM_BASE_URL", "http://10.96.200.207:4000")
+        self.litellm_api_key = os.getenv("LITELLM_API_KEY", "")
         
         # Processing configuration
         self.chunk_size_min = int(os.getenv("CHUNK_SIZE_MIN", "400"))
@@ -105,8 +115,12 @@ class Config:
             "marker_gpu_device": self.marker_gpu_device,
             "marker_inference_ram": self.marker_inference_ram,
             "marker_vram_per_task": self.marker_vram_per_task,
+            "marker_service_url": self.marker_service_url,
             "multi_flow_enabled": self.multi_flow_enabled,
             "max_parallel_strategies": self.max_parallel_strategies,
+            "llm_cleanup_enabled": self.llm_cleanup_enabled,
+            "litellm_base_url": self.litellm_base_url,
+            "litellm_api_key": self.litellm_api_key,
             "chunk_size": self.chunk_size_max,  # For backward compatibility
             "chunk_overlap": int(self.chunk_size_max * self.chunk_overlap_pct),
             "chunk_size_min": self.chunk_size_min,
