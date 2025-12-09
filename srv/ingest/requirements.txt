@@ -33,7 +33,13 @@ python-pptx>=1.0.2,<2.0.0  # PowerPoint extraction (updated for marker-pdf[full]
 openpyxl>=3.1.2,<4.0.0  # Excel extraction
 odfpy>=1.4.1,<2.0.0  # OpenDocument (ODT) extraction
 lxml>=4.9.3,<6.0.0  # XML parsing
-marker-pdf[full]==1.10.1  # High-quality document to markdown (PDF, DOCX, PPTX, XLSX, HTML, EPUB, images)
+# Marker PDF extraction - high-quality document to markdown
+# Note: transformers 4.56+ has low_cpu_mem_usage=True by default which causes
+# "Cannot copy out of meta tensor" errors on GPU. The worker patches this at startup.
+marker-pdf[full]>=1.10.0,<2.0.0
+surya-ocr>=0.17.0,<0.18.0
+transformers>=4.56.0,<5.0.0
+accelerate>=0.25.0,<2.0.0  # Required for GPU model loading
 # tatr - Table extraction (optional, not available on PyPI - would need manual install)
 pdf2image>=1.16.3,<2.0.0  # PDF page images for ColPali
 pytesseract>=0.3.10,<0.4.0  # OCR for scanned PDFs

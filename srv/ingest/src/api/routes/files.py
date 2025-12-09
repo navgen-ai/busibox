@@ -120,6 +120,17 @@ async def get_file_metadata(fileId: str, request: Request):
                 ORDER BY created_at ASC
             """, uuid.UUID(fileId))
             
+            # Get page_count and word_count from processing_history metadata (fallback)
+            history_metadata_row = await conn.fetchrow("""
+                SELECT metadata
+                FROM processing_history
+                WHERE file_id = $1 
+                  AND metadata IS NOT NULL 
+                  AND (metadata->>'page_count' IS NOT NULL OR metadata->>'text_length' IS NOT NULL)
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, uuid.UUID(fileId))
+            
             strategies = [
                 {
                     "strategy": row["processing_strategy"],
@@ -137,9 +148,53 @@ async def get_file_metadata(fileId: str, request: Request):
             ]
             
             # Merge metadata with fallbacks for page_count and word_count
-            metadata = file_row["metadata"] or {}
-            if "page_count" not in metadata and status_row and status_row["total_pages"]:
-                metadata["page_count"] = status_row["total_pages"]
+            # Handle case where metadata might be a JSON string instead of dict
+            def ensure_dict(val):
+                if val is None:
+                    return {}
+                if isinstance(val, str):
+                    try:
+                        return json.loads(val)
+                    except (json.JSONDecodeError, TypeError):
+                        return {}
+                return val if isinstance(val, dict) else {}
+            
+            metadata = ensure_dict(file_row["metadata"])
+            history_meta = ensure_dict(history_metadata_row["metadata"] if history_metadata_row else None)
+            
+            # Fallback for page_count from multiple sources
+            if "page_count" not in metadata or metadata["page_count"] is None:
+                # Try processing history first (most reliable)
+                if history_meta and history_meta.get("page_count"):
+                    metadata["page_count"] = history_meta["page_count"]
+                # Then try status table
+                elif status_row and status_row["total_pages"]:
+                    metadata["page_count"] = status_row["total_pages"]
+                # Finally try strategy metadata
+                elif strategies:
+                    for strategy in strategies:
+                        if strategy.get("success") and strategy.get("metadata"):
+                            strat_meta = ensure_dict(strategy["metadata"])
+                            if strat_meta.get("page_count"):
+                                metadata["page_count"] = strat_meta["page_count"]
+                                break
+            
+            # Fallback for word_count from multiple sources
+            if "word_count" not in metadata or metadata["word_count"] is None:
+                # Try processing history text_length first
+                if history_meta and history_meta.get("text_length"):
+                    # Estimate words from characters (average 5 chars per word)
+                    metadata["word_count"] = history_meta["text_length"] // 5
+                else:
+                    # Try to calculate from successful strategy text_length
+                    for strategy in strategies:
+                        if strategy.get("success") and strategy.get("textLength"):
+                            metadata["word_count"] = strategy["textLength"] // 5
+                            break
+                # If still no word_count, estimate from chunk_count
+                if ("word_count" not in metadata or metadata["word_count"] is None) and file_row["chunk_count"]:
+                    # Rough estimate: ~200 words per chunk on average
+                    metadata["word_count"] = file_row["chunk_count"] * 200
             
             return JSONResponse(
                 status_code=status.HTTP_200_OK,
@@ -909,7 +964,7 @@ async def move_file(fileId: str, request: Request):
 @router.post("/{fileId}/reprocess")
 async def reprocess_file(fileId: str, request: Request):
     """
-    Reprocess a document - delete existing chunks/vectors and re-run ingestion.
+    Reprocess a document - optionally from a specific stage.
     
     This is useful when:
     - Chunking strategy has been updated
@@ -919,15 +974,41 @@ async def reprocess_file(fileId: str, request: Request):
     
     Process:
     1. Verify file exists and user owns it
-    2. Delete existing chunks from PostgreSQL
-    3. Delete existing vectors from Milvus
-    4. Reset ingestion status to 'queued'
-    5. Add job back to Redis queue for reprocessing
+    2. Conditionally delete chunks/vectors based on start_stage
+    3. Reset ingestion status to 'queued'
+    4. Add job back to Redis queue for reprocessing
+    
+    Request Body (optional JSON):
+        processing_config: Processing configuration including:
+            - start_stage: Stage to start from (parsing, chunking, cleanup, markdown, embedding, indexing)
+            - llm_cleanup_enabled, marker_enabled, etc.
     
     Returns:
         Success message with file_id
     """
     user_id = request.state.user_id
+    
+    # Parse optional processing config from request body
+    processing_config = {}
+    try:
+        body = await request.json()
+        processing_config = body.get("processing_config", {})
+        if processing_config:
+            logger.info(
+                "Reprocess with custom processing config",
+                file_id=fileId,
+                config=processing_config,
+            )
+    except Exception:
+        # No body or invalid JSON - use defaults
+        pass
+    
+    # Determine start stage - affects what data to delete
+    start_stage = processing_config.get("start_stage", "parsing")
+    # Stages that require deleting chunks
+    stages_needing_chunk_delete = ["parsing", "chunking"]
+    # Stages that require deleting vectors
+    stages_needing_vector_delete = ["parsing", "chunking", "cleanup", "embedding", "indexing"]
     
     config = Config().to_dict()
     postgres_service = PostgresService(config, request)
@@ -968,29 +1049,47 @@ async def reprocess_file(fileId: str, request: Request):
                 filename=filename,
                 mime_type=mime_type,
                 user_id=user_id,
+                start_stage=start_stage,
             )
             
-            # Delete existing chunks from PostgreSQL
-            deleted_chunks = await conn.execute("""
-                DELETE FROM ingestion_chunks WHERE file_id = $1
+            # Only delete chunks if starting from early stages
+            if start_stage in stages_needing_chunk_delete:
+                deleted_chunks = await conn.execute("""
+                    DELETE FROM ingestion_chunks WHERE file_id = $1
+                """, uuid.UUID(fileId))
+                
+                logger.info(
+                    "Deleted existing chunks",
+                    file_id=fileId,
+                    chunks_deleted=deleted_chunks,
+                )
+            
+            # Always clear processing history for stages we're re-running
+            await conn.execute("""
+                DELETE FROM processing_history WHERE file_id = $1
+            """, uuid.UUID(fileId))
+            
+            # Delete existing processing strategy results
+            await conn.execute("""
+                DELETE FROM processing_strategy_results WHERE file_id = $1
             """, uuid.UUID(fileId))
             
             logger.info(
-                "Deleted existing chunks",
+                "Cleared processing history",
                 file_id=fileId,
-                chunks_deleted=deleted_chunks,
             )
             
-            # Delete existing vectors from Milvus
-            try:
-                milvus_service.delete_file_vectors(fileId)
-                logger.info("Deleted Milvus vectors", file_id=fileId)
-            except Exception as e:
-                logger.warning(
-                    "Failed to delete vectors from Milvus (may not exist)",
-                    file_id=fileId,
-                    error=str(e),
-                )
+            # Only delete vectors if needed for this stage
+            if start_stage in stages_needing_vector_delete:
+                try:
+                    milvus_service.delete_file_vectors(fileId)
+                    logger.info("Deleted Milvus vectors", file_id=fileId)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to delete vectors from Milvus (may not exist)",
+                        file_id=fileId,
+                        error=str(e),
+                    )
             
             # Reset ingestion status to 'queued'
             await conn.execute("""
@@ -1025,7 +1124,12 @@ async def reprocess_file(fileId: str, request: Request):
                     "original_filename": original_filename or filename,
                     "mime_type": mime_type,  # Required for text extraction
                     "reprocess": "true",  # Flag to indicate this is a reprocess
+                    "start_stage": start_stage,  # Stage to start processing from
                 }
+                
+                # Include processing config if provided
+                if processing_config:
+                    job_data["processing_config"] = json.dumps(processing_config)
                 
                 stream_name = config.get("redis_stream", "jobs:ingestion")
                 await redis_client.xadd(stream_name, job_data)
@@ -1048,10 +1152,11 @@ async def reprocess_file(fileId: str, request: Request):
             return JSONResponse(
                 status_code=status.HTTP_200_OK,
                 content={
-                    "message": "Document reprocessing initiated",
+                    "message": f"Document reprocessing initiated from {start_stage}",
                     "fileId": fileId,
                     "filename": filename,
                     "status": "queued",
+                    "start_stage": start_stage,
                 }
             )
     

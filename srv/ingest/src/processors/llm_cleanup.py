@@ -73,36 +73,47 @@ Output clean, well-formatted markdown."""
             or "http://10.96.200.207:4000"  # Fallback to litellm-lxc IP
         )
         
-        # Get model from registry - try "cleanup" first, then "parsing" as fallback
-        # Both map to phi-4 currently but can change via model registry
+        # Get LiteLLM API key (required for authenticated LiteLLM servers)
+        self.litellm_api_key = (
+            config.get("litellm_api_key")
+            or os.getenv("LITELLM_API_KEY")
+            or os.getenv("LITELLM_MASTER_KEY")  # Fallback to master key if set
+            or ""
+        )
+        
+        # Get model config from registry, but use PURPOSE NAME for LiteLLM
+        # LiteLLM is configured with model_name: cleanup, parsing, etc.
+        # The registry tells us config (temp, max_tokens), but we call LiteLLM with purpose name
         registry = get_registry()
         try:
-            self.model = registry.get_model("cleanup")
             self.model_config = registry.get_config("cleanup")
+            self.model = "cleanup"  # Use purpose name for LiteLLM, not underlying model
             logger.info(
                 "LLM cleanup initialized",
                 enabled=self.enabled,
-                model=self.model,
+                litellm_model=self.model,  # What we send to LiteLLM
+                underlying_model=self.model_config.get("model"),  # What LiteLLM routes to
                 base_url=self.litellm_base_url
             )
         except (ValueError, KeyError) as e:
             # Fallback to "parsing" model if "cleanup" not found
             try:
                 logger.warning("Cleanup model not found, trying parsing model", error=str(e))
-                self.model = registry.get_model("parsing")
                 self.model_config = registry.get_config("parsing")
+                self.model = "parsing"  # Use purpose name for LiteLLM
                 logger.info(
                     "LLM cleanup initialized with parsing model",
                     enabled=self.enabled,
-                    model=self.model,
+                    litellm_model=self.model,
+                    underlying_model=self.model_config.get("model"),
                     base_url=self.litellm_base_url
                 )
             except Exception as e2:
-                # Final fallback - should not happen if model registry is configured
+                # Final fallback - use cleanup as model name (should work with LiteLLM)
                 logger.error("Failed to get cleanup or parsing model from registry", error=str(e2))
-                self.model = "phi-4"  # Default model name (should match LiteLLM config)
+                self.model = "cleanup"  # LiteLLM model name (not underlying model)
                 self.model_config = {"temperature": 0.1, "max_tokens": 32768}
-                logger.warning("Using hardcoded fallback model", model=self.model)
+                logger.warning("Using fallback model config", model=self.model)
     
     async def cleanup_chunk(self, text: str) -> str:
         """
@@ -133,9 +144,35 @@ Output clean, well-formatted markdown."""
                 model=self.model
             )
             
+            # Prepare headers with API key if available
+            headers = {"Content-Type": "application/json"}
+            if self.litellm_api_key:
+                headers["Authorization"] = f"Bearer {self.litellm_api_key}"
+            
+            # Calculate max_tokens based on input - cleanup output should be similar length
+            # phi-4/cleanup model has ~12K context, so we need input + output < 12K tokens
+            # Rough estimate: 4 chars per token
+            estimated_input_tokens = len(text) // 4
+            system_prompt_tokens = len(self.SYSTEM_PROMPT) // 4
+            
+            # Cap output tokens to leave room for input + system prompt
+            # Model context: ~12000, leave buffer for safety
+            available_for_output = 10000 - estimated_input_tokens - system_prompt_tokens
+            max_output_tokens = min(max(available_for_output, 512), 4096)
+            
+            # Skip cleanup if input is too long for the model
+            if estimated_input_tokens + system_prompt_tokens > 9000:
+                logger.warning(
+                    "Input too long for cleanup model, skipping",
+                    estimated_tokens=estimated_input_tokens,
+                    text_length=len(text),
+                )
+                return text
+            
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
                     f"{self.litellm_base_url}/chat/completions",
+                    headers=headers,
                     json={
                         "model": self.model,
                         "messages": [
@@ -143,7 +180,7 @@ Output clean, well-formatted markdown."""
                             {"role": "user", "content": text}
                         ],
                         "temperature": self.model_config.get("temperature", 0.1),
-                        "max_tokens": self.model_config.get("max_tokens", 32768),
+                        "max_tokens": max_output_tokens,
                     }
                 )
                 
@@ -217,53 +254,116 @@ Output clean, well-formatted markdown."""
         
         return False
     
-    async def cleanup_chunks(self, chunks: List) -> List:
+    async def cleanup_chunks(
+        self, 
+        chunks: List, 
+        max_concurrent: int = None,
+        on_chunk_cleaned: callable = None,
+    ) -> List:
         """
-        Clean up multiple chunks.
+        Clean up multiple chunks in parallel with incremental progress.
         
         Args:
             chunks: List of Chunk objects
+            max_concurrent: Maximum concurrent LLM requests (default from env or 3)
+            on_chunk_cleaned: Optional callback(chunk_index, cleaned_text) called 
+                              as each chunk completes - use to save progress incrementally
             
         Returns:
             List of cleaned Chunk objects
         """
+        import asyncio
+        
         if not self.enabled:
             logger.info("LLM cleanup disabled, skipping")
             return chunks
         
+        # Get batch size from env or use sensible default
+        if max_concurrent is None:
+            max_concurrent = int(os.getenv("LLM_CLEANUP_BATCH_SIZE", "3"))
+        
         logger.info(
             "Starting LLM cleanup for chunks",
             chunk_count=len(chunks),
-            model=self.model
+            model=self.model,
+            max_concurrent=max_concurrent
         )
         
-        cleaned_chunks = []
-        cleaned_count = 0
+        # Create semaphore to limit concurrent requests
+        semaphore = asyncio.Semaphore(max_concurrent)
         
-        for i, chunk in enumerate(chunks):
-            cleaned_text = await self.cleanup_chunk(chunk.text)
+        # Track progress
+        cleaned_count = 0
+        failed_count = 0
+        completed_count = 0
+        
+        async def cleanup_with_semaphore(chunk, index):
+            """Clean a single chunk with concurrency limiting."""
+            nonlocal cleaned_count, failed_count, completed_count
             
-            # Update chunk text if it was cleaned
-            if cleaned_text != chunk.text:
-                chunk.text = cleaned_text
-                cleaned_count += 1
-            
-            cleaned_chunks.append(chunk)
-            
-            if (i + 1) % 10 == 0:
-                logger.info(
-                    "Cleanup progress",
-                    processed=i + 1,
-                    total=len(chunks),
-                    cleaned=cleaned_count
-                )
+            async with semaphore:
+                try:
+                    cleaned_text = await self.cleanup_chunk(chunk.text)
+                    
+                    # Update chunk immediately
+                    if cleaned_text != chunk.text:
+                        chunk.text = cleaned_text
+                        cleaned_count += 1
+                    
+                    # Call progress callback if provided (for incremental saves)
+                    if on_chunk_cleaned:
+                        try:
+                            await on_chunk_cleaned(index, cleaned_text)
+                        except Exception as cb_err:
+                            logger.warning(
+                                "Chunk cleaned callback failed",
+                                chunk_index=index,
+                                error=str(cb_err)
+                            )
+                    
+                    completed_count += 1
+                    
+                    # Log progress every 5 chunks
+                    if completed_count % 5 == 0:
+                        logger.info(
+                            "LLM cleanup progress",
+                            completed=completed_count,
+                            total=len(chunks),
+                            cleaned=cleaned_count,
+                            failed=failed_count
+                        )
+                    
+                    return index, cleaned_text, None
+                    
+                except Exception as e:
+                    failed_count += 1
+                    completed_count += 1
+                    logger.warning(
+                        "Chunk cleanup failed",
+                        chunk_index=index,
+                        error=str(e),
+                        completed=completed_count,
+                        total=len(chunks)
+                    )
+                    return index, chunk.text, e  # Return original on failure
+        
+        # Process all chunks in parallel (limited by semaphore)
+        # Use asyncio.as_completed to process results as they arrive
+        tasks = [
+            asyncio.create_task(cleanup_with_semaphore(chunk, i))
+            for i, chunk in enumerate(chunks)
+        ]
+        
+        # Wait for all tasks, but they update chunks in place as they complete
+        await asyncio.gather(*tasks, return_exceptions=True)
         
         logger.info(
             "LLM cleanup complete",
             total_chunks=len(chunks),
             cleaned_chunks=cleaned_count,
-            skipped_chunks=len(chunks) - cleaned_count
+            skipped_chunks=len(chunks) - cleaned_count - failed_count,
+            failed_chunks=failed_count
         )
         
-        return cleaned_chunks
+        return chunks
 

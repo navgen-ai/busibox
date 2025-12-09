@@ -42,6 +42,26 @@ import redis as redis_sync
 from redis.exceptions import RedisError
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
+# IMPORTANT: Patch transformers before any marker/surya imports
+# This fixes "Cannot copy out of meta tensor" error with transformers 4.56+
+# by disabling lazy loading of model weights
+def _patch_transformers_loading():
+    """Patch transformers to disable low_cpu_mem_usage which causes meta tensor issues on GPU."""
+    try:
+        from transformers import PreTrainedModel
+        original_from_pretrained = PreTrainedModel.from_pretrained.__func__
+        
+        def patched_from_pretrained(cls, *args, **kwargs):
+            # Disable meta tensor loading - we have plenty of RAM
+            kwargs['low_cpu_mem_usage'] = False
+            return original_from_pretrained(cls, *args, **kwargs)
+        
+        PreTrainedModel.from_pretrained = classmethod(patched_from_pretrained)
+    except Exception:
+        pass  # If patch fails, continue anyway
+
+_patch_transformers_loading()
+
 from shared.config import Config
 from services.file_service import FileService
 from services.postgres_service import PostgresService
@@ -254,6 +274,230 @@ class IngestWorker:
         
         return False
     
+    def _load_chunks_from_db(self, file_id: str) -> Optional[List]:
+        """Load existing chunks from database for partial reprocessing."""
+        try:
+            conn = self.postgres_service._get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT chunk_index, content, metadata, embedding
+                        FROM ingestion_chunks
+                        WHERE file_id = %s
+                        ORDER BY chunk_index
+                    """, (file_id,))
+                    
+                    rows = cur.fetchall()
+                    if not rows:
+                        return None
+                    
+                    # Convert to Chunk objects
+                    chunks = []
+                    for chunk_index, content, metadata, embedding in rows:
+                        chunk = Chunk(
+                            text=content,
+                            index=chunk_index,
+                            metadata=metadata or {},
+                        )
+                        # Store embedding if present
+                        if embedding:
+                            chunk.embedding = embedding
+                        chunks.append(chunk)
+                    
+                    return chunks
+            finally:
+                self.postgres_service._return_connection(conn)
+        
+        except Exception as e:
+            logger.error("Failed to load chunks from DB", file_id=file_id, error=str(e), exc_info=True)
+            return None
+    
+    def _fast_reprocess(
+        self,
+        file_id: str,
+        user_id: str,
+        chunks: List,
+        start_stage: str,
+        visibility: str,
+        role_ids: Optional[List[str]],
+        processing_config: dict,
+        start_time: float,
+    ):
+        """
+        Fast path for partial reprocessing - just re-embed and/or re-index.
+        
+        This is used when chunks already exist and we just need to regenerate
+        embeddings or re-index into Milvus.
+        """
+        total_chunks = len(chunks)
+        
+        logger.info(
+            "Fast reprocess starting",
+            file_id=file_id,
+            start_stage=start_stage,
+            chunk_count=total_chunks,
+        )
+        
+        self.history.log_stage_start(
+            file_id, start_stage,
+            f"Fast reprocess from {start_stage} with {total_chunks} existing chunks",
+            metadata={"chunk_count": total_chunks, "fast_path": True}
+        )
+        
+        # Stage: Embedding (if starting from embedding)
+        if start_stage == "embedding":
+            embedding_start = self.history.log_stage_start(
+                file_id, "embedding",
+                f"Starting embedding generation for {total_chunks} chunks",
+                metadata={"chunk_count": total_chunks}
+            )
+            
+            self.postgres_service.update_status(
+                file_id=file_id,
+                stage="embedding",
+                progress=60,
+            )
+            
+            # Generate text embeddings
+            text_embedding_start = time.time()
+            text_embeddings = self.embedding_service.generate_embeddings(
+                [chunk.text for chunk in chunks]
+            )
+            
+            # Assign embeddings to chunks
+            for i, chunk in enumerate(chunks):
+                if i < len(text_embeddings):
+                    chunk.embedding = text_embeddings[i]
+            
+            self.history.log_substep(
+                file_id, "embedding", "text_embeddings",
+                f"Generated {len(text_embeddings)} text embeddings",
+                metadata={"count": len(text_embeddings)},
+                started_at=text_embedding_start
+            )
+            
+            # Save embeddings to database
+            self._save_chunk_embeddings(file_id, chunks)
+            
+            self.history.log_stage_complete(
+                file_id, "embedding",
+                f"Completed embedding generation: {len(text_embeddings)} text",
+                metadata={"text_count": len(text_embeddings)},
+                started_at=embedding_start
+            )
+        
+        # Stage: Indexing (always runs in fast path)
+        indexing_start = self.history.log_stage_start(
+            file_id, "indexing",
+            f"Starting Milvus indexing for {total_chunks} chunks",
+            metadata={"chunk_count": total_chunks}
+        )
+        
+        self.postgres_service.update_status(
+            file_id=file_id,
+            stage="indexing",
+            progress=80,
+        )
+        
+        # Prepare vectors for Milvus
+        text_vectors = []
+        for chunk in chunks:
+            if hasattr(chunk, 'embedding') and chunk.embedding:
+                text_vectors.append({
+                    "file_id": file_id,
+                    "chunk_index": chunk.index,
+                    "embedding": chunk.embedding,
+                    "text": chunk.text[:1000],  # Truncate for storage
+                    "metadata": chunk.metadata,
+                })
+        
+        # Insert into Milvus
+        if text_vectors:
+            try:
+                self.milvus_service.insert_text_vectors(
+                    file_id=file_id,
+                    user_id=user_id,
+                    vectors=text_vectors,
+                    visibility=visibility,
+                    role_ids=role_ids,
+                )
+                self.history.log_substep(
+                    file_id, "indexing", "milvus_text_insert",
+                    f"Inserted {len(text_vectors)} text vectors into Milvus",
+                    metadata={"count": len(text_vectors)},
+                    started_at=indexing_start
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to insert text vectors",
+                    file_id=file_id,
+                    error=str(e),
+                    exc_info=True,
+                )
+        
+        self.history.log_stage_complete(
+            file_id, "indexing",
+            f"Completed Milvus indexing: {len(text_vectors)} total vectors",
+            metadata={"total_vectors": len(text_vectors)},
+            started_at=indexing_start
+        )
+        
+        # Mark as completed
+        processing_time = time.time() - start_time
+        self.postgres_service.update_status(
+            file_id=file_id,
+            stage="completed",
+            progress=100,
+            chunks_processed=total_chunks,
+            total_chunks=total_chunks,
+        )
+        
+        self.postgres_service.update_file_metadata(
+            file_id=file_id,
+            chunk_count=total_chunks,
+            vector_count=len(text_vectors),
+            processing_duration_seconds=int(processing_time),
+        )
+        
+        self.history.log_stage_complete(
+            file_id, "completed",
+            f"Fast reprocess complete: {total_chunks} chunks, {len(text_vectors)} vectors in {processing_time:.0f}s",
+            metadata={
+                "chunk_count": total_chunks,
+                "vector_count": len(text_vectors),
+                "processing_time_seconds": processing_time,
+                "fast_path": True,
+            },
+            started_at=start_time
+        )
+        
+        logger.info(
+            "Fast reprocess completed",
+            file_id=file_id,
+            chunk_count=total_chunks,
+            vector_count=len(text_vectors),
+            processing_time_seconds=processing_time,
+        )
+    
+    def _save_chunk_embeddings(self, file_id: str, chunks: List):
+        """Save chunk embeddings back to database."""
+        try:
+            conn = self.postgres_service._get_connection()
+            try:
+                with conn.cursor() as cur:
+                    for chunk in chunks:
+                        if hasattr(chunk, 'embedding') and chunk.embedding:
+                            cur.execute("""
+                                UPDATE ingestion_chunks
+                                SET embedding = %s
+                                WHERE file_id = %s AND chunk_index = %s
+                            """, (chunk.embedding, file_id, chunk.index))
+                    conn.commit()
+            finally:
+                self.postgres_service._return_connection(conn)
+        except Exception as e:
+            logger.error("Failed to save chunk embeddings", file_id=file_id, error=str(e), exc_info=True)
+    
     def process_job(self, job_id: str, job_data: dict, trace_id: str):
         """
         Process a single ingestion job.
@@ -304,6 +548,20 @@ class IngestWorker:
                     error=str(e),
                 )
         
+        # Get start_stage for partial reprocessing
+        # Stages in order: parsing, chunking, cleanup, markdown, embedding, indexing
+        start_stage = job_data.get("start_stage", "parsing")
+        stage_order = ["parsing", "chunking", "cleanup", "markdown", "embedding", "indexing"]
+        start_stage_idx = stage_order.index(start_stage) if start_stage in stage_order else 0
+        
+        if start_stage != "parsing":
+            logger.info(
+                "Partial reprocessing - starting from stage",
+                file_id=file_id,
+                start_stage=start_stage,
+                skipping_stages=stage_order[:start_stage_idx],
+            )
+        
         start_time = time.time()
         temp_file_path = None
         
@@ -341,6 +599,39 @@ class IngestWorker:
                     processing_time_seconds=time.time() - start_time,
                 )
                 return
+            
+            # For partial reprocessing, load existing data if starting from later stage
+            existing_chunks = None
+            if start_stage in ["embedding", "indexing"]:
+                # Fast path: just re-embed or re-index existing chunks
+                existing_chunks = self._load_chunks_from_db(file_id)
+                if existing_chunks:
+                    logger.info(
+                        "Fast path: partial reprocess from existing chunks",
+                        file_id=file_id,
+                        chunk_count=len(existing_chunks),
+                        start_stage=start_stage,
+                    )
+                    # Run the fast path and return
+                    self._fast_reprocess(
+                        file_id=file_id,
+                        user_id=user_id,
+                        chunks=existing_chunks,
+                        start_stage=start_stage,
+                        visibility=visibility,
+                        role_ids=role_ids,
+                        processing_config=processing_config,
+                        start_time=start_time,
+                    )
+                    return
+                else:
+                    logger.warning(
+                        "No existing chunks found, starting from parsing",
+                        file_id=file_id,
+                        requested_start_stage=start_stage,
+                    )
+                    start_stage = "parsing"
+                    start_stage_idx = 0
             
             # Stage 1: Parsing
             parsing_start = self.history.log_stage_start(
@@ -393,14 +684,24 @@ class IngestWorker:
             if processing_config and "marker_enabled" in processing_config:
                 self.text_extractor.marker_enabled = original_marker_enabled
             
+            extraction_method = extraction_result.metadata.get("extraction_method", "unknown")
+            method_display = {
+                "marker": "✓ Marker (high quality)",
+                "remote_marker": "✓ Remote Marker (production)",
+                "pdfplumber": "⚠ pdfplumber fallback",
+                "remote_marker_failed": "⚠ Remote Marker failed → pdfplumber",
+                "remote_marker_error": "⚠ Remote Marker error → pdfplumber",
+            }.get(extraction_method, extraction_method)
+            
             self.history.log_substep(
                 file_id, "parsing", "text_extraction",
-                f"Extracted {len(extraction_result.text)} chars, {extraction_result.page_count} pages",
+                f"Extracted {len(extraction_result.text)} chars, {extraction_result.page_count} pages ({method_display})",
                 metadata={
                     "text_length": len(extraction_result.text),
                     "page_count": extraction_result.page_count,
                     "table_count": len(extraction_result.tables) if extraction_result.tables else 0,
-                    "method": extraction_result.metadata.get("extraction_method", "unknown"),
+                    "method": extraction_method,
+                    "marker_used": extraction_method in ("marker", "remote_marker"),
                 },
                 started_at=extract_start
             )
@@ -721,7 +1022,7 @@ class IngestWorker:
                         
                         # Insert image references if we have images
                         if image_refs:
-                            markdown_content = self.markdown_generator._insert_image_references(
+                            markdown_content = self.markdown_generator._insert_images_by_position(
                                 markdown_content, 
                                 image_refs
                             )
@@ -1133,32 +1434,44 @@ class IngestWorker:
                 
                 try:
                     from processors.multi_flow_processor import MultiFlowProcessor
+                    # asyncio is already imported at module level
                     
-                    multi_flow = MultiFlowProcessor(config=self.config)
+                    # Build config with multi-flow settings
+                    multi_flow_config = {
+                        **self.config,
+                        "max_parallel_strategies": processing_config.get("max_parallel_strategies", 3),
+                        "marker_enabled": processing_config.get("marker_enabled", False),
+                        "colpali_enabled": processing_config.get("colpali_enabled", True),
+                    }
                     
-                    # Process with multiple strategies for comparison
-                    max_strategies = processing_config.get("max_parallel_strategies", 3)
-                    results = multi_flow.process_with_strategies(
-                        file_path=temp_file_path,
-                        mime_type=mime_type,
-                        file_id=file_id,
-                        user_id=user_id,
-                        max_strategies=max_strategies,
-                        marker_enabled=processing_config.get("marker_enabled", False),
-                        colpali_enabled=processing_config.get("colpali_enabled", True),
-                    )
+                    multi_flow = MultiFlowProcessor(config=multi_flow_config)
+                    
+                    # Process document with multiple strategies
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        results = loop.run_until_complete(
+                            multi_flow.process_document(
+                                file_path=temp_file_path,
+                                mime_type=mime_type,
+                                file_id=file_id,
+                                original_filename=original_filename,
+                            )
+                        )
+                    finally:
+                        loop.close()
                     
                     logger.info(
                         "Multi-flow comparison completed",
                         file_id=file_id,
                         strategies_run=len(results),
                         results_summary={
-                            strategy.value: {
+                            strategy_name: {
                                 "success": result.success,
-                                "chunk_count": len(result.chunks) if result.success else 0,
+                                "text_length": len(result.text) if result.text else 0,
                                 "processing_time": result.processing_time_seconds,
                             }
-                            for strategy, result in results.items()
+                            for strategy_name, result in results.items()
                         },
                     )
                     
@@ -1167,10 +1480,11 @@ class IngestWorker:
                         conn = self.postgres_service._get_connection()
                         try:
                             with conn.cursor() as cur:
-                                for strategy, result in results.items():
+                                for strategy_name, result in results.items():
                                     # Calculate metrics
                                     text_length = len(result.text) if result.text else 0
-                                    chunk_count = len(result.chunks) if result.chunks else 0
+                                    # Chunk count from metadata or embedding count
+                                    chunk_count = result.metadata.get("chunk_count", 0) if result.metadata else 0
                                     embedding_count = len(result.embeddings) if result.embeddings else 0
                                     visual_embedding_count = len(result.visual_embeddings) if result.visual_embeddings else 0
                                     
@@ -1196,7 +1510,7 @@ class IngestWorker:
                                             created_at = NOW()
                                     """, (
                                         file_id,
-                                        strategy.value,
+                                        strategy_name,  # Already a string
                                         result.success,
                                         text_length,
                                         chunk_count,
@@ -1411,8 +1725,22 @@ class IngestWorker:
 
 
 def signal_handler(signum, frame):
-    """Handle shutdown signals."""
-    logger.info("Received signal", signal=signum)
+    """Handle shutdown signals with GPU cleanup."""
+    logger.info("Received signal, cleaning up", signal=signum)
+    
+    # Clean up GPU memory before exiting
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            # Reset all CUDA memory
+            for i in range(torch.cuda.device_count()):
+                with torch.cuda.device(i):
+                    torch.cuda.empty_cache()
+            logger.info("Cleared CUDA cache on shutdown")
+    except Exception as e:
+        logger.warning("Failed to clear CUDA cache on shutdown", error=str(e))
+    
     sys.exit(0)
 
 

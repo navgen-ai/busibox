@@ -398,13 +398,14 @@ class PostgresService:
             # Create new file record with same content_hash
             await conn.execute("""
                 INSERT INTO ingestion_files (
-                    file_id, user_id, filename, original_filename,
+                    file_id, user_id, owner_id, filename, original_filename,
                     mime_type, size_bytes, storage_path, content_hash,
-                    metadata, permissions, chunk_count, vector_count
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    metadata, permissions, chunk_count, vector_count, visibility
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             """,
                 uuid.UUID(new_file_id),
                 uuid.UUID(user_id),
+                uuid.UUID(user_id),  # owner_id = user_id
                 existing["filename"],
                 existing["original_filename"],
                 existing["mime_type"],
@@ -412,9 +413,10 @@ class PostgresService:
                 existing["storage_path"],
                 existing["content_hash"],
                 existing["metadata"],
-                json.dumps({"visibility": "private"}),
+                json.dumps({"visibility": "personal"}),
                 existing.get("chunk_count", 0),
                 existing.get("vector_count", 0),
+                "personal",  # visibility
             )
             
             # Create completed status
