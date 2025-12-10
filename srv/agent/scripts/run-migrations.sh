@@ -28,6 +28,17 @@ if [ -d ".venv" ]; then
     source .venv/bin/activate
 fi
 
+# Check if alembic_version table exists
+if ! alembic current &> /dev/null; then
+    echo "No migration history found. Checking if tables already exist..."
+    
+    # Try to stamp the database with the current version if tables exist
+    if alembic stamp head 2>&1 | grep -q "Can't locate revision identified by"; then
+        echo "Stamping database at initial revision..."
+        alembic stamp 001
+    fi
+fi
+
 # Run Alembic migrations
 alembic upgrade head
 
