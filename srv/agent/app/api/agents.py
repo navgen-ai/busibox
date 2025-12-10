@@ -165,4 +165,6 @@ async def query_weather_agent(
     from app.agents.weather_agent import weather_agent
     
     result = await weather_agent.run(payload.query)
-    return WeatherResponse(response=str(result.data))
+    # Pydantic AI result has .output attribute, not .data
+    response_text = str(result.output) if hasattr(result, 'output') else str(result)
+    return WeatherResponse(response=response_text)
