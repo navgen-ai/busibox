@@ -125,8 +125,10 @@ marker_use_gpu: false
 marker_gpu_device: cpu
 marker_service_url: ""  # Empty - don't call production Marker (auth issues)
 
-# ColPali - use production service (already handled by use_production_vllm)
-# The colpali_base_url will point to production vllm_ip:9006
+# ColPali - DISABLED for test (requires GPU/ONNX not available)
+# Test environment doesn't have GPU for ColPali visual embeddings
+# Production has ColPali service with GPU support
+colpali_enabled: false  # Disabled - test doesn't have GPU for visual embeddings
 
 # ============================================================================
 # LLM Model Configuration
