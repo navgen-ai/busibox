@@ -1,4 +1,5 @@
 """Weather agent that provides weather information using tool calling."""
+import os
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIModel
 
@@ -7,11 +8,14 @@ from app.tools.weather_tool import weather_tool
 
 settings = get_settings()
 
-# Create OpenAI-compatible model pointing to LiteLLM
+# Set LiteLLM base URL via environment variable (required by Pydantic AI)
+os.environ["LITELLM_BASE_URL"] = str(settings.litellm_base_url)
+
+# Create OpenAI-compatible model using LiteLLM provider
 # LiteLLM will route to the appropriate model based on the model name
 model = OpenAIModel(
     model_name=settings.default_model,
-    base_url=str(settings.litellm_base_url),
+    provider="litellm",
 )
 
 # Create the weather agent with tool calling
