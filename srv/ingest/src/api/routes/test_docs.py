@@ -223,10 +223,24 @@ async def get_test_docs_status(request: Request):
     # Get user's roles
     user_roles = getattr(request.state, "user_roles", [])
     user_role_names = set(getattr(role, "name", "").lower() for role in user_roles)
+    
+    logger.info(
+        "Filtering test docs by roles",
+        user_role_count=len(user_roles),
+        user_role_names=list(user_role_names),
+    )
 
     for doc in TEST_DOCS:
         # Check if user has the required role for this document
-        doc_role = doc["role"].replace("test-role-", "")  # Extract 'a', 'b', 'c'
+        doc_role = doc["role"].lower()  # Use full role name like "test-role-a"
+        
+        logger.debug(
+            "Checking doc access",
+            doc_name=doc["name"],
+            doc_role=doc_role,
+            user_has_role=doc_role in user_role_names,
+        )
+        
         if doc_role not in user_role_names:
             # User doesn't have access to this document - skip it
             continue
