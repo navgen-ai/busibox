@@ -147,7 +147,7 @@ verify-health:
 	@echo "Running health checks on all services..."
 	@echo ""
 	@echo "=== Agent API ==="
-	@curl -f -s http://10.96.200.202:8000/health/live > /dev/null || (echo "Agent API health check FAILED (may not be deployed yet)" && exit 0)
+	@curl -f -s http://10.96.200.202:8000/health > /dev/null || (echo "Agent API health check FAILED (may not be deployed yet)" && exit 0)
 	@echo "✓ Agent API is healthy (or not deployed yet)"
 	@echo ""
 	@echo "=== PostgreSQL ==="
@@ -328,8 +328,8 @@ test-agent:
 	@echo "Running agent service tests..."
 	@echo "Container: agent-lxc ($(AGENT_IP))"
 	@echo ""
-	@echo "=== Agent API Tests ==="
-	@ssh root@$(AGENT_IP) 'cd /srv/agent && source venv/bin/activate && npm test' || (echo "Agent tests FAILED" && exit 1)
+	@echo "=== Agent API Tests (pytest) ==="
+	@ssh root@$(AGENT_IP) 'cd /srv/agent && source venv/bin/activate && pytest' || (echo "Agent tests FAILED" && exit 1)
 	@echo "✓ Agent tests passed"
 	@echo ""
 

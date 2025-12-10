@@ -18,8 +18,7 @@
       - item.name is defined
       - item.name | length > 0
       - item.name is match('^[a-zA-Z0-9-]+$')
-      - item.github_repo is defined
-      - item.github_repo is match('^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$')
+      - (item.github_repo is defined and item.github_repo is match('^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$')) or (item.local_src is defined and item.local_src | length > 0)
       - item.container is defined
       - item.container_ip is defined
       - item.container_ip | ansible.utils.ipaddr | length > 0
