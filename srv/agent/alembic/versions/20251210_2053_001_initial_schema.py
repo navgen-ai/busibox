@@ -29,7 +29,7 @@ def upgrade() -> None:
         sa.Column('model', sa.String(length=255), nullable=False),
         sa.Column('instructions', sa.Text(), nullable=False),
         sa.Column('tools', sa.JSON(), nullable=False),
-        sa.Column('workflow', sa.JSON(), nullable=True),
+        sa.Column('workflows', sa.JSON(), nullable=True),
         sa.Column('scopes', sa.JSON(), nullable=False),
         sa.Column('is_active', sa.Boolean(), nullable=False),
         sa.Column('version', sa.Integer(), nullable=False),
