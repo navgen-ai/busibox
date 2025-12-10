@@ -25,3 +25,6 @@
 1) Ability to add charts to a report
 2) Ability to add time series data - e.g. upload the same sheet for multiple months
 3) Ability to add a report to a dashboard
+
+
+$30/sq foot for floor, $35/sq foot for roof

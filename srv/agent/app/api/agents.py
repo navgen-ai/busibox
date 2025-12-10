@@ -1,0 +1,116 @@
+import uuid
+from typing import List
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth.dependencies import get_principal
+from app.db.session import get_session
+from app.models.domain import AgentDefinition, EvalDefinition, ToolDefinition, WorkflowDefinition
+from app.schemas.auth import Principal
+from app.schemas.definitions import (
+    AgentDefinitionCreate,
+    AgentDefinitionRead,
+    EvalDefinitionCreate,
+    EvalDefinitionRead,
+    ToolDefinitionCreate,
+    ToolDefinitionRead,
+    WorkflowDefinitionCreate,
+    WorkflowDefinitionRead,
+)
+from app.services.agent_registry import agent_registry
+
+router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+@router.get("", response_model=List[AgentDefinitionRead])
+async def list_agents(
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> List[AgentDefinitionRead]:
+    stmt = select(AgentDefinition).where(AgentDefinition.is_active.is_(True))
+    result = await session.execute(stmt)
+    return [AgentDefinitionRead.model_validate(a) for a in result.scalars().all()]
+
+
+@router.post("/definitions", response_model=AgentDefinitionRead, status_code=status.HTTP_201_CREATED)
+async def create_agent_definition(
+    payload: AgentDefinitionCreate,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> AgentDefinitionRead:
+    agent_id = await agent_registry.add(session, payload)
+    definition = await session.get(AgentDefinition, agent_id)
+    if not definition:
+        raise HTTPException(status_code=500, detail="failed to fetch saved definition")
+    return AgentDefinitionRead.model_validate(definition)
+
+
+@router.get("/tools", response_model=List[ToolDefinitionRead])
+async def list_tools(
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> List[ToolDefinitionRead]:
+    stmt = select(ToolDefinition).where(ToolDefinition.is_active.is_(True))
+    result = await session.execute(stmt)
+    return [ToolDefinitionRead.model_validate(t) for t in result.scalars().all()]
+
+
+@router.post("/tools", response_model=ToolDefinitionRead, status_code=status.HTTP_201_CREATED)
+async def create_tool(
+    payload: ToolDefinitionCreate,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> ToolDefinitionRead:
+    definition = ToolDefinition(**payload.model_dump())
+    session.add(definition)
+    await session.commit()
+    await session.refresh(definition)
+    return ToolDefinitionRead.model_validate(definition)
+
+
+@router.get("/workflows", response_model=List[WorkflowDefinitionRead])
+async def list_workflows(
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> List[WorkflowDefinitionRead]:
+    stmt = select(WorkflowDefinition).where(WorkflowDefinition.is_active.is_(True))
+    result = await session.execute(stmt)
+    return [WorkflowDefinitionRead.model_validate(w) for w in result.scalars().all()]
+
+
+@router.post("/workflows", response_model=WorkflowDefinitionRead, status_code=status.HTTP_201_CREATED)
+async def create_workflow(
+    payload: WorkflowDefinitionCreate,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> WorkflowDefinitionRead:
+    record = WorkflowDefinition(**payload.model_dump())
+    session.add(record)
+    await session.commit()
+    await session.refresh(record)
+    return WorkflowDefinitionRead.model_validate(record)
+
+
+@router.get("/evals", response_model=List[EvalDefinitionRead])
+async def list_evals(
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> List[EvalDefinitionRead]:
+    stmt = select(EvalDefinition).where(EvalDefinition.is_active.is_(True))
+    result = await session.execute(stmt)
+    return [EvalDefinitionRead.model_validate(e) for e in result.scalars().all()]
+
+
+@router.post("/evals", response_model=EvalDefinitionRead, status_code=status.HTTP_201_CREATED)
+async def create_eval(
+    payload: EvalDefinitionCreate,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+) -> EvalDefinitionRead:
+    record = EvalDefinition(**payload.model_dump())
+    session.add(record)
+    await session.commit()
+    await session.refresh(record)
+    return EvalDefinitionRead.model_validate(record)

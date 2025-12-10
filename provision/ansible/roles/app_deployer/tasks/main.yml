@@ -32,7 +32,7 @@
   tags:
     - always  # Always run for any app deployment
 
-- name: Generate deploywatch scripts for each application
+- name: Generate deploywatch scripts for each application (non-local)
   template:
     src: deploywatch-app.sh.j2
     dest: "{{ deploywatch_apps_dir }}/{{ item.name }}.sh"
@@ -44,7 +44,9 @@
     label: "{{ item.name }}"
   vars:
     app: "{{ item }}"
-  when: applications | length > 0
+  when: 
+    - applications | length > 0
+    - item.local_src is not defined
   tags:
     - always  # Always run for any app deployment
 
