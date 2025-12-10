@@ -1,4 +1,4 @@
-.PHONY: ping all files pg milvus nginx search search-api agent ingest ingest-api ingest-worker ingest-update-tests apps openwebui deploy-apps deploy-ai-portal deploy-agent-client deploy-doc-intel deploy-foundation deploy-project-analysis deploy-innovation verify verify-health verify-smoke test test-menu test-ingest test-ingest-all test-ingest-coverage test-extraction-simple test-extraction-llm test-extraction-marker test-extraction-colpali test-search test-search-unit test-search-integration test-search-coverage test-agent test-apps test-all configure generate-token-keys deploy-agent-server
+.PHONY: ping all files pg milvus nginx search search-api agent ingest ingest-api ingest-worker ingest-update-tests apps openwebui deploy-apps deploy-ai-portal deploy-agent-client deploy-doc-intel deploy-foundation deploy-project-analysis deploy-innovation verify verify-health verify-smoke test test-menu test-ingest test-ingest-all test-ingest-coverage test-extraction-simple test-extraction-llm test-extraction-marker test-extraction-colpali test-search test-search-unit test-search-integration test-search-coverage test-agent test-apps test-all configure generate-token-keys
 # Default to production inventory (can override with: make all INV=inventory/test)
 INV=inventory/production
 
@@ -118,17 +118,8 @@ deploy-innovation:
 
 # Deploy agent-server (internal API service)
 # Usage:
-#   make deploy-agent-server                    # Deploy from latest release (production)
-#   make deploy-agent-server BRANCH=main        # Deploy from branch (test/dev)
-#   make deploy-agent-server INV=inventory/test # Deploy to test environment
-deploy-agent-server:
-ifdef BRANCH
-	@echo "Deploying agent-server from branch: $(BRANCH)"
-	ansible-playbook -i $(INV) -l agent --tags app_deployer,secrets site.yml $(VAULT_FLAGS) --extra-vars "deploy_app=agent-server deploy_from_branch=true deploy_branch=$(BRANCH)"
-else
-	@echo "Deploying agent-server from latest release"
-	ansible-playbook -i $(INV) -l agent --tags app_deployer,secrets site.yml $(VAULT_FLAGS) --extra-vars "deploy_app=agent-server"
-endif
+# Note: agent-server (Python) now uses dedicated agent_api role
+# Deploy with: make agent INV=inventory/test
 
 # Configuration targets
 configure:

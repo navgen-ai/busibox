@@ -1,0 +1,25 @@
+---
+# Default variables for agent_api role
+
+agent_api_port: 8000
+agent_api_user: agent
+agent_api_venv_path: /srv/agent/.venv
+agent_api_src_path: /srv/agent
+agent_api_log_path: /var/log/agent
+
+# Default model
+default_model: "anthropic:claude-3-5-sonnet"
+
+# Service endpoints
+search_api_url: "http://{{ hostvars[groups['search'][0]]['ansible_host'] if 'search' in groups else '127.0.0.1' }}:8003"
+ingest_api_url: "http://{{ hostvars[groups['ingest'][0]]['ansible_host'] if 'ingest' in groups else '127.0.0.1' }}:8001"
+rag_api_url: "http://{{ hostvars[groups['milvus'][0]]['ansible_host'] if 'milvus' in groups else '127.0.0.1' }}:8004"
+
+# LiteLLM
+litellm_host: "{{ hostvars[groups['litellm'][0]]['ansible_host'] if 'litellm' in groups else '127.0.0.1' }}"
+litellm_port: 4000
+litellm_base_url: "http://{{ litellm_host }}:{{ litellm_port }}/v1"
+
+# Redis
+redis_host: "{{ hostvars[groups['ingest'][0]]['ansible_host'] if 'ingest' in groups else '127.0.0.1' }}"
+redis_port: 6379
