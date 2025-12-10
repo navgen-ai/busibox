@@ -182,7 +182,24 @@ class IngestWorker:
         self.embedder = Embedder(self.config)
         self.classifier = DocumentClassifier(self.config)
         self.metadata_extractor = MetadataExtractor(self.config)
-        self.colpali = ColPaliEmbedder(self.config)
+        
+        # Initialize ColPali only if enabled (requires GPU/ONNX)
+        # Wrap in try-except to handle missing GPU gracefully
+        try:
+            colpali_enabled = self.config.get("colpali_enabled", False)
+            if colpali_enabled:
+                self.colpali = ColPaliEmbedder(self.config)
+                logger.info("ColPali embedder initialized")
+            else:
+                logger.info("ColPali disabled, skipping initialization")
+        except Exception as e:
+            logger.warning(
+                "Failed to initialize ColPali (GPU/ONNX not available), visual embeddings disabled",
+                error=str(e),
+                error_type=type(e).__name__
+            )
+            self.colpali = None
+        
         self.llm_cleanup = LLMCleanup(self.config)
         self.markdown_generator = MarkdownGenerator()
         self.image_extractor = ImageExtractor()
@@ -1263,9 +1280,9 @@ class IngestWorker:
                 total_chunks=total_chunks,
             )
             
-            # Generate ColPali embeddings for PDF pages (if available)
+            # Generate ColPali embeddings for PDF pages (if available and enabled)
             page_embeddings = None
-            if extraction_result.page_images and mime_type == "application/pdf":
+            if extraction_result.page_images and mime_type == "application/pdf" and self.colpali is not None:
                 colpali_start = time.time()
                 logger.info(
                     "Generating ColPali visual embeddings",
