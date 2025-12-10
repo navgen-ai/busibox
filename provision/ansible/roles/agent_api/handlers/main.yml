@@ -1,0 +1,11 @@
+---
+# Handlers for agent_api role
+
+- name: Reload systemd
+  systemd:
+    daemon_reload: yes
+
+- name: Restart agent-api
+  systemd:
+    name: agent-api
+    state: restarted

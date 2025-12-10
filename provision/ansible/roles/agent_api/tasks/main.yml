@@ -1,0 +1,112 @@
+---
+# Main tasks for agent_api role
+
+- name: Create agent user
+  user:
+    name: "{{ agent_api_user }}"
+    system: yes
+    home: /srv/agent
+    shell: /bin/bash
+
+- name: Create agent directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ agent_api_user }}"
+    group: "{{ agent_api_user }}"
+    mode: "0755"
+  loop:
+    - /srv/agent
+    - "{{ agent_api_log_path }}"
+
+- name: Install system dependencies
+  apt:
+    name:
+      - python3
+      - python3-pip
+      - python3-venv
+      - python3-dev
+      - build-essential
+      - git
+      - rsync
+    state: present
+    update_cache: yes
+
+- name: Copy agent service source code
+  synchronize:
+    src: "{{ playbook_dir }}/../../srv/agent/"
+    dest: "{{ agent_api_src_path }}/"
+    delete: yes
+    rsync_opts:
+      - "--exclude=.git"
+      - "--exclude=.venv"
+      - "--exclude=__pycache__"
+      - "--exclude=*.pyc"
+      - "--exclude=.pytest_cache"
+      - "--exclude=.env"
+      - "--exclude=htmlcov"
+      - "--exclude=.coverage"
+  become: yes
+  become_user: "{{ agent_api_user }}"
+  notify: Restart agent-api
+
+- name: Create Python virtual environment
+  command: python3 -m venv "{{ agent_api_venv_path }}"
+  args:
+    creates: "{{ agent_api_venv_path }}/bin/python"
+  become: yes
+  become_user: "{{ agent_api_user }}"
+
+- name: Upgrade pip in venv
+  pip:
+    name: pip
+    state: latest
+    virtualenv: "{{ agent_api_venv_path }}"
+  become: yes
+  become_user: "{{ agent_api_user }}"
+
+- name: Install agent service dependencies
+  pip:
+    name: "."
+    state: present
+    virtualenv: "{{ agent_api_venv_path }}"
+    chdir: "{{ agent_api_src_path }}"
+    editable: yes
+  become: yes
+  become_user: "{{ agent_api_user }}"
+  notify: Restart agent-api
+
+- name: Deploy agent service environment file
+  template:
+    src: agent-api.env.j2
+    dest: /srv/agent/.env
+    owner: "{{ agent_api_user }}"
+    group: "{{ agent_api_user }}"
+    mode: "0600"
+  notify: Restart agent-api
+
+- name: Deploy agent service systemd unit
+  template:
+    src: agent-api.service.j2
+    dest: /etc/systemd/system/agent-api.service
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart agent-api
+
+- name: Enable and start agent service
+  systemd:
+    name: agent-api
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Wait for agent service to be ready
+  uri:
+    url: "http://localhost:{{ agent_api_port }}/health"
+    status_code: 200
+    timeout: 30
+  retries: 12
+  delay: 5
+  register: health_check
+  until: health_check is success

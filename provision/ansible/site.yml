@@ -21,10 +21,8 @@
 
 - hosts: agent
   roles:
-    - role: secrets
-      tags: [agent, secrets]
-    - role: app_deployer
-      tags: [agent, app_deployer]
+    - role: agent_api
+      tags: [agent, agent_api]
 
 - hosts: files
   roles:
