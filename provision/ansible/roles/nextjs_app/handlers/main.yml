@@ -2,8 +2,9 @@
 # Handlers for Next.js app
 
 - name: restart nextjs app
-  command: pm2 reload {{ app_name }}
-  become: yes
-  become_user: "{{ app_user }}"
+  systemd:
+    name: "{{ app_name }}"
+    state: restarted
+    daemon_reload: yes
   failed_when: false
 
