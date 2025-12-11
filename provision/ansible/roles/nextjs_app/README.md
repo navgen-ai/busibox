@@ -1,15 +1,17 @@
 # Next.js App Deployment Role
 
-Ansible role for deploying Next.js applications with PM2 process management.
+Ansible role for deploying Next.js applications with systemd service management.
 
 ## Features
 
 - Node.js installation via NodeSource
-- PM2 process manager with cluster mode
+- systemd service management
 - Git-based deployment
 - Environment variable management
 - Health check verification
 - Automatic restarts on failure
+
+**Note**: This role handles code deployment and building. Service management (systemd service creation and control) is handled by the `app_deployer` role.
 
 ## Requirements
 
@@ -35,10 +37,6 @@ app_home: "/opt/{{ app_name }}"    # Application directory
 app_port: 3000                     # Port to listen on
 nodejs_version: "20"               # Node.js major version
 app_git_branch: "main"             # Git branch to deploy
-
-# PM2 configuration
-pm2_instances: 2                   # Number of instances (cluster mode)
-pm2_max_memory_restart: "1G"       # Restart if memory exceeds limit
 
 # Build configuration
 app_build_command: "npm run build"

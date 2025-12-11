@@ -56,13 +56,6 @@
     msg: "Node.js version: {{ node_version.stdout }}"
   tags: [nextjs_install]
 
-- name: Install PM2 globally
-  npm:
-    name: pm2
-    global: yes
-    state: present
-  tags: [nextjs_install]
-
 - name: Create app group
   group:
     name: "{{ app_group }}"
