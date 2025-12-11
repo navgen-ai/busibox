@@ -147,7 +147,12 @@
     rm -rf node_modules
     rm -rf .next
     rm -rf .turbo
+    # Check for and remove any symlinks or cached directories
+    find . -maxdepth 1 -type l -ls -delete
+    # Clean user-level npm and Next.js caches
     npm cache clean --force
+    rm -rf ~/.npm/_cacache
+    rm -rf ~/.cache
   delegate_to: "{{ app_to_deploy.container_ip }}"
   register: clean_result
 
@@ -275,8 +280,13 @@
 - name: Build application
   shell: |
     cd {{ app_to_deploy.deploy_path }}
-    # Clean old build artifacts to prevent cache issues
+    # Clean ALL build artifacts and caches
     rm -rf .next
+    rm -rf .turbo
+    rm -rf ai-portal-deploy
+    rm -rf node_modules/.cache
+    # Clear environment variables that might affect build
+    unset TURBOPACK_CACHE_DIR
     {% if app_to_deploy.build_command is defined %}
     {{ app_to_deploy.build_command }}
     {% else %}
