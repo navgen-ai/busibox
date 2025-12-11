@@ -117,6 +117,7 @@ applications:
       MASTRA_API_URL: "http://{{ agent_api_host }}:{{ agent_api_port }}"
       TOKEN_SERVICE_URL: "http://{{ agent_api_host }}:{{ agent_api_port }}"
       AGENT_API_URL: "http://{{ agent_api_host }}:{{ agent_api_port }}"
+      NEXT_PUBLIC_AGENT_API_URL: "http://{{ agent_api_host }}:{{ agent_api_port }}"
       AI_PORTAL_URL: "https://{{ full_domain }}"
       NEXT_PUBLIC_APP_URL: "https://{{ full_domain }}/agents"
       NEXT_PUBLIC_BASE_PATH: "/agents"

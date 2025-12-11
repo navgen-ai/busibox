@@ -40,37 +40,11 @@
   debug:
     msg: "Node.js {{ node_version.stdout }} installed"
 
-- name: Install PM2 globally
-  npm:
-    name: pm2
-    global: yes
-    state: present
-
-- name: Setup PM2 startup script
-  shell: pm2 startup systemd -u root --hp /root
-  args:
-    creates: /etc/systemd/system/pm2-root.service
-
-- name: Enable PM2 service
-  systemd:
-    name: pm2-root
-    enabled: yes
-    daemon_reload: yes
-
 - name: Create apps root directory
   file:
     path: /srv/apps
     state: directory
     mode: "0755"
-
-- name: Create PM2 ecosystem config
-  copy:
-    dest: /srv/apps/ecosystem.config.js
-    content: |
-      module.exports = {
-        apps: []
-      };
-    mode: "0644"
 
 - name: Install common Node.js utilities
   npm:

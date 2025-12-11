@@ -59,36 +59,8 @@
   when: build_result.failed | default(false)
   tags: [nextjs_deploy]
 
-- name: Check if PM2 process exists
-  command: pm2 describe {{ app_name }}
-  become: yes
-  become_user: "{{ app_user }}"
-  register: pm2_check
-  failed_when: false
-  changed_when: false
-  tags: [nextjs_deploy]
-
-- name: Start app with PM2
-  command: pm2 start {{ app_home }}/ecosystem.config.js
-  args:
-    chdir: "{{ app_home }}/current"
-  become: yes
-  become_user: "{{ app_user }}"
-  when: pm2_check.rc != 0
-  tags: [nextjs_deploy]
-
-- name: Reload app with PM2
-  command: pm2 reload {{ app_name }}
-  become: yes
-  become_user: "{{ app_user }}"
-  when: pm2_check.rc == 0 and git_clone.changed
-  tags: [nextjs_deploy]
-
-- name: Save PM2 process list
-  command: pm2 save
-  become: yes
-  become_user: "{{ app_user }}"
-  tags: [nextjs_deploy]
+# Note: Service management is handled by app_deployer role via systemd
+# This role only handles code deployment and building
 
 - name: Wait for app to be ready
   uri:
@@ -102,66 +74,31 @@
   failed_when: false
   tags: [nextjs_deploy]
 
-- name: Get PM2 process status
-  command: pm2 status
-  become: yes
-  become_user: "{{ app_user }}"
-  register: pm2_status
+- name: Get systemd service status
+  systemd:
+    name: "{{ app_name }}"
+  register: service_status
   failed_when: false
   changed_when: false
   tags: [nextjs_deploy]
 
-- name: Display PM2 status
+- name: Display service status
   debug:
-    var: pm2_status.stdout_lines
+    msg: "{{ app_name }} service is {{ service_status.status.ActiveState | default('unknown') }}"
   tags: [nextjs_deploy]
 
-- name: Get PM2 error logs for troubleshooting
-  command: cat {{ app_home }}/logs/error.log
-  become: yes
-  become_user: "{{ app_user }}"
-  register: pm2_error_logs
+- name: Get service logs for troubleshooting
+  command: journalctl -u {{ app_name }} -n 50 --no-pager
+  register: service_logs
   failed_when: false
   changed_when: false
   when: health_check.status is defined and health_check.status != 200
   tags: [nextjs_deploy]
 
-- name: Get PM2 output logs for troubleshooting
-  command: tail -100 {{ app_home }}/logs/out.log
-  become: yes
-  become_user: "{{ app_user }}"
-  register: pm2_out_logs
-  failed_when: false
-  changed_when: false
-  when: health_check.status is defined and health_check.status != 200
-  tags: [nextjs_deploy]
-
-- name: Get PM2 logs for troubleshooting
-  command: pm2 logs {{ app_name }} --lines 50 --nostream --err
-  become: yes
-  become_user: "{{ app_user }}"
-  register: pm2_logs
-  failed_when: false
-  changed_when: false
-  when: health_check.status is defined and health_check.status != 200
-  tags: [nextjs_deploy]
-
-- name: Display PM2 error log file
+- name: Display service logs
   debug:
-    msg: "{{ pm2_error_logs.stdout_lines | default(['No error log content']) }}"
-  when: pm2_error_logs.stdout_lines is defined
-  tags: [nextjs_deploy]
-
-- name: Display PM2 output log file
-  debug:
-    msg: "{{ pm2_out_logs.stdout_lines | default(['No output log content']) }}"
-  when: pm2_out_logs.stdout_lines is defined
-  tags: [nextjs_deploy]
-
-- name: Display PM2 logs
-  debug:
-    var: pm2_logs.stdout_lines
-  when: pm2_logs.stdout_lines is defined
+    var: service_logs.stdout_lines
+  when: service_logs.stdout_lines is defined
   tags: [nextjs_deploy]
 
 - name: Display app status
