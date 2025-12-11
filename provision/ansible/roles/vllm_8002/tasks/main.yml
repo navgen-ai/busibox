@@ -114,6 +114,7 @@
             tool_call_parser = model_config.get('tool_call_parser', '')
             tool_chat_template = model_config.get('tool_chat_template', '')
             multimodal = model_config.get('multimodal', False)
+            hf_overrides = model_config.get('hf_overrides', '')
             # Convert limit_mm_per_prompt dict to JSON string for vLLM
             limit_mm_dict = model_config.get('limit_mm_per_prompt', {})
             if limit_mm_dict:
@@ -126,7 +127,8 @@
         "tool_call_parser": tool_call_parser,
         "tool_chat_template": tool_chat_template,
         "multimodal": multimodal,
-        "limit_mm_per_prompt": limit_mm_per_prompt
+        "limit_mm_per_prompt": limit_mm_per_prompt,
+        "hf_overrides": hf_overrides
     }))
     PYTHON_EOF
   register: model_features_lookup
@@ -158,6 +160,14 @@
     - vllm_assigned_model != ""
     - model_features.multimodal is defined
     - model_features.multimodal
+
+- name: Set HF overrides if configured
+  set_fact:
+    vllm_hf_overrides: "{{ model_features.hf_overrides }}"
+  when: 
+    - vllm_assigned_model != ""
+    - model_features.hf_overrides is defined
+    - model_features.hf_overrides | length > 0
 
 - name: Display tool calling configuration if enabled
   debug:
