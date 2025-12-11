@@ -64,10 +64,10 @@
 
 **Independent Test**: Create workflow with 2–3 steps; execute; verify steps run in order, outputs chained, state saved in run events.
 
-- **T025**: Extend workflow model handling in `WorkflowDefinition` and validation of steps/branches
-- **T026**: Implement workflow execution engine (sequential + simple branching) leveraging agents/tools; persist step events
-- **T027**: Add workflow endpoints (create/list if needed) or reuse existing agents API if in scope; add integration tests
-- **Checkpoint**: Workflow run with multiple steps completes with persisted events
+- [X] **T025**: Extend workflow model handling in `WorkflowDefinition` and validation of steps/branches ✓
+- [X] **T026**: Implement workflow execution engine (sequential + simple branching) leveraging agents/tools; persist step events ✓
+- [X] **T027**: Add workflow endpoints (create/list if needed) or reuse existing agents API if in scope; add integration tests ✓
+- ✅ **Checkpoint**: Workflow run with multiple steps completes with persisted events
 
 ## Phase 7 — US5 (P4) Evaluate Agent Performance with Scorers
 
