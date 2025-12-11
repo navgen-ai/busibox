@@ -331,6 +331,15 @@ install_dependencies() {
         log_info "GitHub token available for npm authentication"
     fi
     
+    # Create .npmrc for GitHub Packages authentication (if package.json exists)
+    if [[ -f "package.json" ]]; then
+        log_info "Creating .npmrc for GitHub Packages authentication"
+        cat > .npmrc << 'EOF'
+@jazzmind:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
+EOF
+    fi
+    
     # Node.js application
     if [[ -f "package.json" ]]; then
         log_info "Installing Node.js dependencies"

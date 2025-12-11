@@ -42,39 +42,27 @@ The `.npmrc` file was **gitignored** in the ai-portal repository, so it wasn't i
 
 ## Solution
 
-The fix required two changes:
+The deployment scripts now automatically create the `.npmrc` file and set the `GITHUB_TOKEN` environment variable:
 
-### 1. Commit `.npmrc` to the Repository
+### 1. Create `.npmrc` During Deployment
 
-The `.npmrc` file must be committed to git so it's included in deployments:
-
-```bash
-# Remove .npmrc from .gitignore
-# Edit .gitignore and remove the line: .npmrc
-
-# Commit the .npmrc file
-git add .npmrc .gitignore
-git commit -m "fix: include .npmrc for GitHub Packages authentication"
-git push
-```
-
-**Why is this safe?** The `.npmrc` file uses an environment variable (`${GITHUB_TOKEN}`) rather than hardcoding the token, so it contains no secrets.
-
-### 2. Ensure GITHUB_TOKEN is Available During Deployment
-
-The deployment scripts set the `GITHUB_TOKEN` environment variable by reading from `~/.github_token`:
+The deployment scripts create the `.npmrc` file in the deployment directory:
 
 **Branch Deployment (deploy-branch.yml)**:
 ```yaml
+- name: Create .npmrc for GitHub Packages authentication
+  copy:
+    content: |
+      @jazzmind:registry=https://npm.pkg.github.com
+      //npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
+    dest: "{{ app_to_deploy.deploy_path }}/.npmrc"
+    mode: '0600'
+
 - name: Install dependencies
   shell: |
     cd {{ app_to_deploy.deploy_path }}
-    # Set GITHUB_TOKEN from file for npm authentication
     if [ -f ~/.github_token ]; then
       export GITHUB_TOKEN=$(cat ~/.github_token)
-      echo "Running npm with GITHUB_TOKEN set"
-    else
-      echo "WARNING: No token file found"
     fi
     npm install --production=false
 ```
@@ -84,15 +72,24 @@ The deployment scripts set the `GITHUB_TOKEN` environment variable by reading fr
 install_dependencies() {
     cd "${DEPLOY_PATH}"
     
-    # Export GitHub token for npm authentication to GitHub Packages
+    # Export GitHub token
     if [[ -n "${GITHUB_TOKEN:-}" ]]; then
         export GITHUB_TOKEN
-        log_info "GitHub token available for npm authentication"
+    fi
+    
+    # Create .npmrc for GitHub Packages authentication
+    if [[ -f "package.json" ]]; then
+        cat > .npmrc << 'EOF'
+@jazzmind:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
+EOF
     fi
     
     # ... rest of npm install logic
 }
 ```
+
+This approach is simpler and more reliable than depending on the `.npmrc` file being in the repository.
 
 ## GitHub Token Permissions
 
@@ -133,17 +130,7 @@ make deploy-ai-portal  # Or whichever app needs it
 
 ## Verification
 
-### 1. Check `.npmrc` is in Repository
-
-Verify the `.npmrc` file is committed and not gitignored:
-
-```bash
-cd /path/to/ai-portal
-git ls-files .npmrc  # Should show: .npmrc
-grep -q "^\.npmrc$" .gitignore && echo "ERROR: .npmrc is gitignored!" || echo "OK: .npmrc not gitignored"
-```
-
-### 2. Check Token is Deployed
+### 1. Check Token is Deployed
 
 SSH into the container and verify the token file exists:
 
@@ -153,9 +140,9 @@ cat ~/.github_token
 # Should show your token (starts with ghp_ or github_pat_)
 ```
 
-### 3. Check `.npmrc` is Deployed
+### 2. Check `.npmrc` is Created
 
-After deployment, verify the `.npmrc` file exists in the deployment directory:
+After deployment, verify the `.npmrc` file was created:
 
 ```bash
 ssh root@<container-ip>
@@ -165,7 +152,7 @@ cat /srv/apps/ai-portal/.npmrc
 # //npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
 ```
 
-### 4. Test npm Authentication Manually
+### 3. Test npm Authentication Manually
 
 On the container, test if npm can authenticate:
 
@@ -177,7 +164,7 @@ npm install --dry-run
 
 If it works, you should see packages being resolved without 401 errors.
 
-### 5. Test Full Deployment
+### 4. Test Full Deployment
 
 Deploy the application:
 
@@ -197,9 +184,16 @@ Watch for the "Install dependencies" task - it should complete without 401 error
 
 ## Common Issues
 
+### `.npmrc` File Not Created
+
+**Symptom**: 401 errors, `.npmrc` not found in deployment directory
+
+**Solution**: 
+The deployment scripts should automatically create the `.npmrc` file. If it's not being created, check that the deployment script has been updated with the latest changes.
+
 ### Token Has Wrong Permissions
 
-**Symptom**: 401 errors persist even after fix
+**Symptom**: 401 errors persist even after `.npmrc` is present
 
 **Solution**: 
 1. Check token permissions on GitHub (needs `read:packages`)
@@ -217,16 +211,11 @@ cd provision/ansible
 ansible-playbook -i inventory/test/hosts.yml site.yml --tags app_deployer
 ```
 
-### .npmrc File Missing or Incorrect
+### GITHUB_TOKEN Not Set
 
-**Symptom**: npm doesn't try to use GitHub Packages
+**Symptom**: `.npmrc` exists but npm still can't authenticate
 
-**Solution**: Ensure the application has a `.npmrc` file in its root:
-
-```
-@jazzmind:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
-```
+**Solution**: Ensure the `GITHUB_TOKEN` environment variable is being set during npm install. Check the deployment script exports the token from `~/.github_token`.
 
 ## Prevention
 
