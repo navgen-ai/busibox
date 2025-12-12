@@ -20,8 +20,12 @@ echo ""
 # Check if we're in a venv or have pytest available
 if command -v pytest &> /dev/null; then
     PYTEST_CMD="pytest"
+elif [ -f ".venv/bin/pytest" ]; then
+    echo "Activating virtual environment (.venv)..."
+    source .venv/bin/activate
+    PYTEST_CMD="pytest"
 elif [ -f "venv/bin/pytest" ]; then
-    echo "Activating virtual environment..."
+    echo "Activating virtual environment (venv)..."
     source venv/bin/activate
     PYTEST_CMD="pytest"
 else
