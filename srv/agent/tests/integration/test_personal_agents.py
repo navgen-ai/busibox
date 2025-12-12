@@ -55,7 +55,7 @@ async def user_b_token() -> str:
     return "Bearer mock-token-user-b"
 
 
-@pytest.fixture
+@pytest.fixture(scope="function")
 async def user_a_client(user_a_principal):
     """HTTP client authenticated as User A."""
     from httpx import ASGITransport, AsyncClient
@@ -65,15 +65,19 @@ async def user_a_client(user_a_principal):
     async def override_get_principal():
         return user_a_principal
     
+    # Store original overrides
+    original_overrides = app.dependency_overrides.copy()
     app.dependency_overrides[get_principal] = override_get_principal
     
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        yield client
-    
-    app.dependency_overrides.clear()
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            yield client
+    finally:
+        # Restore original overrides
+        app.dependency_overrides = original_overrides
 
 
-@pytest.fixture
+@pytest.fixture(scope="function")
 async def user_b_client(user_b_principal):
     """HTTP client authenticated as User B."""
     from httpx import ASGITransport, AsyncClient
@@ -83,12 +87,16 @@ async def user_b_client(user_b_principal):
     async def override_get_principal():
         return user_b_principal
     
+    # Store original overrides
+    original_overrides = app.dependency_overrides.copy()
     app.dependency_overrides[get_principal] = override_get_principal
     
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        yield client
-    
-    app.dependency_overrides.clear()
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            yield client
+    finally:
+        # Restore original overrides
+        app.dependency_overrides = original_overrides
 
 
 @pytest.fixture
