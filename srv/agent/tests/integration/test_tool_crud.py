@@ -216,8 +216,13 @@ async def test_delete_unused_tool_returns_204(
     
     assert response.status_code == 204
     
-    # Verify tool is soft-deleted
-    tool = await db_session.get(ToolDefinition, tool_id)
+    # Verify tool is soft-deleted (query fresh from DB)
+    await db_session.expire_all()  # Expire all cached objects
+    from sqlalchemy import select
+    stmt = select(ToolDefinition).where(ToolDefinition.id == tool_id)
+    result = await db_session.execute(stmt)
+    tool = result.scalar_one_or_none()
+    assert tool is not None, "Tool should still exist in database"
     assert tool.is_active is False, "Tool should be soft-deleted"
     
     # Verify tool no longer in list
