@@ -42,11 +42,11 @@ if [ -d "prisma/migrations" ] && [ "$(ls -A prisma/migrations 2>/dev/null)" ]; t
     echo "✗ Migration deployment failed"
     echo "Attempting db push as fallback..."
     
-    if npx prisma db push --skip-generate 2>&1; then
+    if npx prisma db push 2>&1; then
       echo "✓ Database schema pushed successfully"
     else
       echo "⚠ Schema push failed, trying with --accept-data-loss..."
-      if npx prisma db push --skip-generate --accept-data-loss 2>&1; then
+      if npx prisma db push --accept-data-loss 2>&1; then
         echo "✓ Database schema pushed with data loss accepted"
       else
         echo "✗ Failed to push database schema"
@@ -57,11 +57,11 @@ if [ -d "prisma/migrations" ] && [ "$(ls -A prisma/migrations 2>/dev/null)" ]; t
 else
   echo "No migrations found, using db push to create schema..."
   
-  if npx prisma db push --skip-generate 2>&1; then
+  if npx prisma db push 2>&1; then
     echo "✓ Database schema created successfully"
   else
     echo "⚠ Schema push failed, trying with --accept-data-loss..."
-    if npx prisma db push --skip-generate --accept-data-loss 2>&1; then
+    if npx prisma db push --accept-data-loss 2>&1; then
       echo "✓ Database schema pushed with data loss accepted"
     else
       echo "✗ Failed to create database schema"
