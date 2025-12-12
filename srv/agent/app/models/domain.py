@@ -36,11 +36,16 @@ class AgentDefinition(Base):
     workflow: Mapped[Optional[dict]] = mapped_column(JSON, default=None)
     scopes: Mapped[list] = mapped_column(JSON, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by: Mapped[Optional[str]] = mapped_column(String(255))
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_now, onupdate=_now
     )
+    
+    def __repr__(self) -> str:
+        return f"<AgentDefinition(id={self.id}, name={self.name}, is_builtin={self.is_builtin}, version={self.version})>"
 
 
 class ToolDefinition(Base):
@@ -53,11 +58,16 @@ class ToolDefinition(Base):
     entrypoint: Mapped[str] = mapped_column(String(255), comment="registered adapter name")
     scopes: Mapped[list] = mapped_column(JSON, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by: Mapped[Optional[str]] = mapped_column(String(255))
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_now, onupdate=_now
     )
+    
+    def __repr__(self) -> str:
+        return f"<ToolDefinition(id={self.id}, name={self.name}, is_builtin={self.is_builtin}, version={self.version})>"
 
 
 class WorkflowDefinition(Base):
@@ -68,11 +78,15 @@ class WorkflowDefinition(Base):
     description: Mapped[Optional[str]] = mapped_column(Text)
     steps: Mapped[list] = mapped_column(JSON, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[Optional[str]] = mapped_column(String(255))
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_now, onupdate=_now
     )
+    
+    def __repr__(self) -> str:
+        return f"<WorkflowDefinition(id={self.id}, name={self.name}, version={self.version})>"
 
 
 class EvalDefinition(Base):
@@ -83,11 +97,15 @@ class EvalDefinition(Base):
     description: Mapped[Optional[str]] = mapped_column(Text)
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[Optional[str]] = mapped_column(String(255))
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_now, onupdate=_now
     )
+    
+    def __repr__(self) -> str:
+        return f"<EvalDefinition(id={self.id}, name={self.name}, version={self.version})>"
 
 
 class RagDatabase(Base):
@@ -131,11 +149,20 @@ class RunRecord(Base):
     input: Mapped[dict] = mapped_column(JSON, default=dict)
     output: Mapped[Optional[dict]] = mapped_column(JSON)
     events: Mapped[list] = mapped_column(JSON, default=list)
+    definition_snapshot: Mapped[Optional[dict]] = mapped_column(JSONType)
+    parent_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("run_records.id", ondelete="SET NULL")
+    )
+    resume_from_step: Mapped[Optional[str]] = mapped_column(String(255))
+    workflow_state: Mapped[Optional[dict]] = mapped_column(JSONType)
     created_by: Mapped[Optional[str]] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_now, onupdate=_now
     )
+    
+    def __repr__(self) -> str:
+        return f"<RunRecord(id={self.id}, agent_id={self.agent_id}, status={self.status}, parent_run_id={self.parent_run_id})>"
 
 
 class TokenGrant(Base):
