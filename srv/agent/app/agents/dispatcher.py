@@ -5,9 +5,21 @@ Analyzes natural language queries and routes them to appropriate tools and agent
 based on query content, user permissions, and available resources.
 """
 
-from pydantic_ai import Agent
+import os
 
+from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIModel
+
+from app.config.settings import get_settings
 from app.schemas.dispatcher import RoutingDecision
+
+# Configure OpenAI client to use LiteLLM via environment variables
+settings = get_settings()
+os.environ["OPENAI_BASE_URL"] = str(settings.litellm_base_url)
+
+# Get LiteLLM API key from environment (set by Ansible deployment)
+litellm_api_key = os.getenv("LITELLM_API_KEY", "sk-1234")  # Default for local dev
+os.environ["OPENAI_API_KEY"] = litellm_api_key
 
 # System prompt for dispatcher agent
 DISPATCHER_SYSTEM_PROMPT = """You are an intelligent routing agent that analyzes user queries and determines which tools and agents to use.
@@ -100,9 +112,16 @@ Response:
 - alternatives: ["Enable doc_search for internal documents", "Enable web_search for web information"]
 """
 
-# Create dispatcher agent with Claude 3.5 Sonnet
+# Create OpenAI-compatible model using LiteLLM
+# The model will automatically use the OPENAI_BASE_URL and OPENAI_API_KEY we set above
+model = OpenAIModel(
+    model_name="claude-3-5-sonnet",  # LiteLLM will route to local model
+    provider="openai",
+)
+
+# Create dispatcher agent with LiteLLM-backed model
 dispatcher_agent = Agent[None, RoutingDecision](
-    model="anthropic:claude-3-5-sonnet",
+    model=model,
     system_prompt=DISPATCHER_SYSTEM_PROMPT,
     model_settings={
         "temperature": 0.3,  # Low temperature for consistent routing
