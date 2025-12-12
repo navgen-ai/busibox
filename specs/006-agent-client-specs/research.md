@@ -12,14 +12,15 @@ This document consolidates research findings for implementing agent-server API e
 
 ### 1. Dispatcher Agent Implementation with LiteLLM
 
-**Decision**: Use Pydantic AI Agent with Claude 3.5 Sonnet via LiteLLM for query routing
+**Decision**: Use Pydantic AI Agent with LiteLLM (OpenAI-compatible) for query routing
 
 **Rationale**:
-- LiteLLM already integrated in agent-server stack
+- LiteLLM already integrated in agent-server stack (no external API dependencies)
 - Pydantic AI provides structured output validation (routing decisions as Pydantic models)
-- Claude 3.5 Sonnet excels at reasoning and classification tasks
+- OpenAI-compatible interface works with any model in LiteLLM (Claude, GPT, local models)
 - System prompt can encode routing logic without complex rule engines
 - Confidence scoring via LLM reasoning is more flexible than heuristic-based approaches
+- All inference stays within Busibox infrastructure (no external API calls)
 
 **Alternatives Considered**:
 - **Heuristic-based routing** (keyword matching, regex patterns): Rejected because it's brittle, requires constant maintenance, and can't handle natural language nuance
@@ -28,8 +29,14 @@ This document consolidates research findings for implementing agent-server API e
 
 **Implementation Pattern**:
 ```python
+import os
 from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIModel
 from pydantic import BaseModel
+
+# Configure to use LiteLLM
+os.environ["OPENAI_BASE_URL"] = str(settings.litellm_base_url)
+os.environ["OPENAI_API_KEY"] = os.getenv("LITELLM_API_KEY", "sk-1234")
 
 class RoutingDecision(BaseModel):
     selected_tools: list[str]
@@ -38,10 +45,15 @@ class RoutingDecision(BaseModel):
     reasoning: str
     alternatives: list[str]
 
-dispatcher_agent = Agent(
-    model="anthropic:claude-3-5-sonnet",
+# Create OpenAI-compatible model
+model = OpenAIModel(
+    model_name="claude-3-5-sonnet",  # LiteLLM routes to local model
+    provider="openai",
+)
+
+dispatcher_agent = Agent[None, RoutingDecision](
+    model=model,
     system_prompt="Analyze query and route to appropriate tools/agents...",
-    result_type=RoutingDecision
 )
 ```
 

@@ -130,7 +130,7 @@ curl -X POST http://<test-agent-ip>:8000/agents/definitions \
   -d '{
     "name": "test-personal-agent",
     "display_name": "Test Personal Agent",
-    "model": "anthropic:claude-3-5-sonnet",
+    "model": "claude-3-5-sonnet",  # Via LiteLLM
     "instructions": "You are a test assistant",
     "tools": {"names": []},
     "scopes": []
@@ -335,7 +335,7 @@ curl -X POST http://<test-agent-ip>:8000/agents/definitions \
   -H "Content-Type: application/json" \
   -d '{
     "name": "version-test-agent",
-    "model": "anthropic:claude-3-5-sonnet",
+    "model": "claude-3-5-sonnet",  # Via LiteLLM
     "instructions": "Test agent",
     "tools": {"names": ["search"]},
     "scopes": ["search.read"]
