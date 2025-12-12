@@ -10,6 +10,9 @@ cd "$PROJECT_ROOT"
 # Set PYTHONPATH to include project root
 export PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}"
 
+# Set LiteLLM API key for tests (dispatcher agent needs it)
+export LITELLM_API_KEY="${LITELLM_API_KEY:-sk-test-key}"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
