@@ -27,6 +27,7 @@ from app.models.domain import RunRecord
 from app.schemas.auth import Principal
 from app.services.agent_registry import agent_registry
 from app.services.token_service import get_or_exchange_token
+from app.services.version_isolation import capture_definition_snapshot
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -172,12 +173,24 @@ async def create_run(
     if not payload.get("prompt"):
         raise ValueError("Payload must contain 'prompt' field")
     
-    # Create run record with initial event
+    # Capture definition snapshot for version isolation
+    try:
+        definition_snapshot = await capture_definition_snapshot(
+            agent_id=agent_id,
+            workflow_id=None,  # TODO: Add workflow_id parameter when workflow support added
+            session=session
+        )
+    except ValueError as e:
+        logger.error(f"Failed to capture definition snapshot: {e}")
+        definition_snapshot = None
+    
+    # Create run record with initial event and snapshot
     run_record = RunRecord(
         agent_id=agent_id,
         status="pending",
         input=payload,
         created_by=principal.sub,
+        definition_snapshot=definition_snapshot,
         events=[],
     )
     add_run_event(run_record, "created", data={"agent_tier": agent_tier})
