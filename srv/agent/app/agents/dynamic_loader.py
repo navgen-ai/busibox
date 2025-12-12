@@ -1,13 +1,18 @@
+import os
 import uuid
 from typing import Dict, List, Optional
 
 from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.core import BusiboxDeps, ingest_tool, rag_tool, search_tool
+from app.config.settings import get_settings
 from app.models.domain import AgentDefinition
 from app.schemas.definitions import AgentDefinitionCreate
+
+settings = get_settings()
 
 # Registry of permitted tool adapters
 TOOL_REGISTRY = {
@@ -21,12 +26,22 @@ async def load_active_agents(session: AsyncSession) -> Dict[uuid.UUID, Agent[Bus
     """
     Hydrate active agent definitions from the database and register allowed tools.
     """
+    # Configure OpenAI client to use LiteLLM
+    os.environ["OPENAI_BASE_URL"] = str(settings.litellm_base_url)
+    litellm_api_key = os.getenv("LITELLM_API_KEY", "sk-1234")
+    os.environ["OPENAI_API_KEY"] = litellm_api_key
+    
     stmt = select(AgentDefinition).where(AgentDefinition.is_active.is_(True))
     result = await session.execute(stmt)
     agents: Dict[uuid.UUID, Agent[BusiboxDeps, object]] = {}
     for definition in result.scalars().all():
+        # Create OpenAI-compatible model for LiteLLM
+        model = OpenAIModel(
+            model_name=definition.model,
+            provider="openai",
+        )
         agent = Agent[BusiboxDeps, object](
-            model=definition.model,
+            model=model,
             instructions=definition.instructions,
         )
         for tool_name in definition.tools.get("names", []):
@@ -94,7 +109,18 @@ async def register_agent(
     session.add(definition)
     await session.commit()
     await session.refresh(definition)
-    agent = Agent[BusiboxDeps, object](model=definition.model, instructions=definition.instructions)
+    
+    # Configure OpenAI client to use LiteLLM
+    os.environ["OPENAI_BASE_URL"] = str(settings.litellm_base_url)
+    litellm_api_key = os.getenv("LITELLM_API_KEY", "sk-1234")
+    os.environ["OPENAI_API_KEY"] = litellm_api_key
+    
+    # Create OpenAI-compatible model for LiteLLM
+    model = OpenAIModel(
+        model_name=definition.model,
+        provider="openai",
+    )
+    agent = Agent[BusiboxDeps, object](model=model, instructions=definition.instructions)
     for tool_name in tool_names:
         tool_fn = TOOL_REGISTRY[tool_name]  # Safe to use [] now after validation
         agent.tool(tool_fn)  # type: ignore[arg-type]
