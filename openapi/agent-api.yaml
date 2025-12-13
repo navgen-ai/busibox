@@ -53,6 +53,12 @@ tags:
     description: Intelligent query routing
   - name: scores
     description: Performance scoring and evaluation
+  - name: conversations
+    description: Conversation and message management
+  - name: messages
+    description: Message operations
+  - name: settings
+    description: User chat settings
 
 paths:
   /:
@@ -887,6 +893,310 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /conversations:
+    get:
+      summary: List user's conversations
+      description: Get paginated list of conversations with message counts and last message preview
+      tags: [conversations]
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 100
+          description: Number of conversations to return
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+          description: Number of conversations to skip
+        - name: order_by
+          in: query
+          schema:
+            type: string
+            default: created_at
+            enum: [created_at, updated_at]
+          description: Field to order by
+        - name: order
+          in: query
+          schema:
+            type: string
+            default: desc
+            enum: [asc, desc]
+          description: Sort order
+      responses:
+        '200':
+          description: List of conversations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      summary: Create conversation
+      description: Create a new conversation for the authenticated user
+      tags: [conversations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConversationCreate'
+      responses:
+        '201':
+          description: Conversation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationRead'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /conversations/{conversation_id}:
+    get:
+      summary: Get conversation with messages
+      description: Get conversation details with optional paginated messages
+      tags: [conversations]
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: include_messages
+          in: query
+          schema:
+            type: boolean
+            default: true
+          description: Include messages in response
+        - name: message_limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+            maximum: 500
+          description: Max messages to return
+        - name: message_offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+          description: Message offset for pagination
+      responses:
+        '200':
+          description: Conversation details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationWithMessages'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      summary: Update conversation
+      description: Update conversation title
+      tags: [conversations]
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConversationUpdate'
+      responses:
+        '200':
+          description: Conversation updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationRead'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      summary: Delete conversation
+      description: Delete conversation and all its messages (cascade delete)
+      tags: [conversations]
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Conversation deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /conversations/{conversation_id}/messages:
+    get:
+      summary: List messages
+      description: Get paginated messages in a conversation
+      tags: [messages]
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+            maximum: 500
+          description: Number of messages to return
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+          description: Number of messages to skip
+        - name: order
+          in: query
+          schema:
+            type: string
+            default: asc
+            enum: [asc, desc]
+          description: Sort order by created_at
+      responses:
+        '200':
+          description: List of messages
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    post:
+      summary: Create message
+      description: Create a new message in a conversation
+      tags: [messages]
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MessageCreate'
+      responses:
+        '201':
+          description: Message created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageRead'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/BadRequest'
+
+  /messages/{message_id}:
+    get:
+      summary: Get message
+      description: Get a single message by ID
+      tags: [messages]
+      parameters:
+        - name: message_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Message details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageRead'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /users/me/chat-settings:
+    get:
+      summary: Get chat settings
+      description: Get user's chat settings, creating defaults if not found
+      tags: [settings]
+      responses:
+        '200':
+          description: Chat settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatSettingsRead'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    put:
+      summary: Update chat settings
+      description: Update user's chat settings (upsert operation)
+      tags: [settings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatSettingsUpdate'
+      responses:
+        '200':
+          description: Settings updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatSettingsRead'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/BadRequest'
+
 components:
   securitySchemes:
     BearerAuth:
@@ -1414,6 +1724,235 @@ components:
         - selected_agents
         - confidence
         - reasoning
+
+    Attachment:
+      type: object
+      properties:
+        name:
+          type: string
+          description: File name
+        type:
+          type: string
+          description: MIME type
+        url:
+          type: string
+          description: File URL
+        size:
+          type: integer
+          description: File size in bytes
+        knowledge_base_id:
+          type: string
+          description: Optional knowledge base ID
+      required:
+        - name
+        - type
+        - url
+        - size
+
+    MessagePreview:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant, system]
+        content:
+          type: string
+          description: Preview content (max 100 chars)
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - role
+        - content
+        - created_at
+
+    MessageCreate:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant, system]
+        content:
+          type: string
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Attachment'
+        run_id:
+          type: string
+          format: uuid
+        routing_decision:
+          type: object
+          description: Dispatcher routing decision
+        tool_calls:
+          type: array
+          items:
+            type: object
+      required:
+        - role
+        - content
+
+    MessageRead:
+      allOf:
+        - $ref: '#/components/schemas/MessageCreate'
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            conversation_id:
+              type: string
+              format: uuid
+            created_at:
+              type: string
+              format: date-time
+          required:
+            - id
+            - conversation_id
+            - created_at
+
+    MessageListResponse:
+      type: object
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/MessageRead'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+      required:
+        - messages
+        - total
+        - limit
+        - offset
+
+    ConversationCreate:
+      type: object
+      properties:
+        title:
+          type: string
+          maxLength: 255
+          description: Optional conversation title
+
+    ConversationUpdate:
+      type: object
+      properties:
+        title:
+          type: string
+          maxLength: 255
+          description: Updated conversation title
+
+    ConversationRead:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        user_id:
+          type: string
+        message_count:
+          type: integer
+        last_message:
+          $ref: '#/components/schemas/MessagePreview'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - title
+        - user_id
+        - created_at
+        - updated_at
+
+    ConversationWithMessages:
+      allOf:
+        - $ref: '#/components/schemas/ConversationRead'
+        - type: object
+          properties:
+            messages:
+              type: array
+              items:
+                $ref: '#/components/schemas/MessageRead'
+              default: []
+
+    ConversationListResponse:
+      type: object
+      properties:
+        conversations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationRead'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+      required:
+        - conversations
+        - total
+        - limit
+        - offset
+
+    ChatSettingsUpdate:
+      type: object
+      properties:
+        enabled_tools:
+          type: array
+          items:
+            type: string
+          description: Enabled tool names
+        enabled_agents:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Enabled agent IDs
+        model:
+          type: string
+          description: Preferred model
+        temperature:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 2.0
+          description: Temperature setting
+        max_tokens:
+          type: integer
+          minimum: 1
+          maximum: 32000
+          description: Max tokens setting
+
+    ChatSettingsRead:
+      allOf:
+        - $ref: '#/components/schemas/ChatSettingsUpdate'
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            user_id:
+              type: string
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+          required:
+            - id
+            - user_id
+            - created_at
+            - updated_at
 
     Error:
       type: object

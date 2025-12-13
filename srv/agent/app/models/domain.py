@@ -2,8 +2,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, String, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import Boolean, Column, DateTime, Enum, Float, ForeignKey, Index, Integer, JSON, String, Text
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -175,3 +175,79 @@ class TokenGrant(Base):
     token: Mapped[str] = mapped_column(Text)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class Conversation(Base):
+    """Chat conversation between user and agents"""
+    __tablename__ = "conversations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+    # Relationships
+    messages: Mapped[list["Message"]] = relationship(
+        "Message", back_populates="conversation", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index('idx_conversations_user_id', 'user_id'),
+        Index('idx_conversations_created_at', 'created_at'),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Conversation(id={self.id}, user_id={self.user_id}, title={self.title})>"
+
+
+class Message(Base):
+    """Individual message in a conversation"""
+    __tablename__ = "messages"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey('conversations.id', ondelete='CASCADE'), nullable=False
+    )
+    role: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # 'user', 'assistant', 'system'
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    attachments: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey('run_records.id'), nullable=True
+    )
+    routing_decision: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    tool_calls: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+    # Relationships
+    conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="messages")
+    run: Mapped[Optional["RunRecord"]] = relationship("RunRecord")
+
+    __table_args__ = (
+        Index('idx_messages_conversation_id', 'conversation_id'),
+        Index('idx_messages_created_at', 'created_at'),
+        Index('idx_messages_run_id', 'run_id'),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Message(id={self.id}, conversation_id={self.conversation_id}, role={self.role})>"
+
+
+class ChatSettings(Base):
+    """User chat preferences"""
+    __tablename__ = "chat_settings"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    enabled_tools: Mapped[list] = mapped_column(ARRAY(String), default=list)
+    enabled_agents: Mapped[list] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
+    model: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    temperature: Mapped[float] = mapped_column(Float, default=0.7)
+    max_tokens: Mapped[int] = mapped_column(Integer, default=2000)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+    def __repr__(self) -> str:
+        return f"<ChatSettings(id={self.id}, user_id={self.user_id})>"
