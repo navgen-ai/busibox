@@ -20,9 +20,10 @@ Successfully implemented agent-server API enhancements including:
 - ✅ **Scheduled Runs** (Phase 5)
 - ✅ **Workflow Execution** (Phase 6)
 - ✅ **Performance Evaluation** (Phase 7)
+- ✅ **Conversation Management** (US6 - P1)
 
 **Implementation Progress**: All critical features complete  
-**Test Coverage**: 130+ tests (100% pass rate)  
+**Test Coverage**: 157+ tests (100% pass rate)  
 **Status**: ✅ **PRODUCTION READY**
 
 ## Feature Status
@@ -134,6 +135,19 @@ Successfully implemented agent-server API enhancements including:
 - ✅ Built-in resource protection (403)
 - ✅ In-use resource protection (409)
 
+**US6 - Conversation Management**:
+- ✅ Conversation CRUD endpoints
+- ✅ Message CRUD endpoints
+- ✅ Chat settings management
+- ✅ Row-level authorization
+- ✅ Cascade deletion (conversation → messages)
+- ✅ Pagination support
+- ✅ Attachment metadata storage
+- ✅ Routing decision tracking
+- ✅ Tool call results storage
+
+**Tests**: 27 tests (integration)
+
 ## Test Coverage
 
 ### Unit Tests: 117 tests ✅
@@ -236,13 +250,22 @@ Successfully implemented agent-server API enhancements including:
 **Evaluator CRUD** (3 tests):
 - Create, update, delete
 
+**Conversation Management** (27 tests):
+- Conversation CRUD operations
+- Message CRUD operations
+- Chat settings management
+- Authorization checks
+- Pagination
+- Cascade deletion
+- Timestamp updates
+
 ### Test Results
 
-**Final Status** (as of 2025-12-11):
-- ✅ **62 tests PASSED** (94%)
+**Final Status** (as of 2025-12-12):
+- ✅ **89 tests PASSED** (95%+)
 - ⏭️ **4 tests SKIPPED** (tracing span collection)
 - ❌ **0 tests FAILED**
-- ⏱️ **~6.5 minutes** execution time
+- ⏱️ **~8 minutes** execution time
 
 **Coverage**: 90%+ overall
 
@@ -287,12 +310,24 @@ Successfully implemented agent-server API enhancements including:
 - `POST /scores/execute` - Execute scorer
 - `GET /scores/aggregates` - Get statistics
 
+### Conversation Management (8 endpoints) ✅
+- `GET /conversations` - List conversations
+- `POST /conversations` - Create conversation
+- `GET /conversations/{id}` - Get conversation with messages
+- `PATCH /conversations/{id}` - Update conversation
+- `DELETE /conversations/{id}` - Delete conversation
+- `GET /conversations/{id}/messages` - List messages
+- `POST /conversations/{id}/messages` - Create message
+- `GET /messages/{id}` - Get message
+- `GET /users/me/chat-settings` - Get chat settings
+- `PUT /users/me/chat-settings` - Update chat settings
+
 ### System (3 endpoints) ✅
 - `GET /health` - Health check
 - `POST /auth/exchange` - Token exchange
 - `GET /` - Service info
 
-**Total**: 30 endpoints
+**Total**: 38 endpoints
 
 ## Database Schema
 
@@ -305,17 +340,23 @@ Successfully implemented agent-server API enhancements including:
 - `run_records` - Execution history
 - `token_grants` - Token cache
 - `dispatcher_decision_log` - Routing decisions
+- `conversations` - Chat conversations
+- `messages` - Conversation messages
+- `chat_settings` - User chat preferences
 - `rag_databases` - RAG config (future)
 - `rag_documents` - RAG docs (future)
 - `alembic_version` - Migration tracking
 
 ### Indexes ✅
 
-11 indexes for performance:
+17 indexes for performance:
 - Agent/tool builtin + created_by
 - Run records by agent_id, status, created_by
 - Token grants by user_sub, expires_at
 - Dispatcher log by user_id, timestamp, confidence
+- Conversations by user_id, created_at
+- Messages by conversation_id, created_at, run_id
+- Chat settings by user_id (unique)
 
 ## Deployment Status
 
@@ -548,6 +589,27 @@ All required variables configured:
 - **Deployment**: `docs/deployment/agent-server-deployment.md`
 - **Testing**: `docs/guides/agent-server-testing.md`
 - **API Reference**: `docs/reference/agent-server-api.md`
+- **Conversation API**: `docs/reference/conversation-api.md`
 - **Integration**: `docs/architecture/agent-client-integration.md`
 - **Specification**: `specs/006-agent-client-specs/spec.md`
+
+---
+
+## Changelog
+
+### 2025-12-12
+- ✅ Added conversation management (US6)
+- ✅ Added message CRUD endpoints
+- ✅ Added chat settings management
+- ✅ Created database migration 003
+- ✅ Added 27 integration tests
+- ✅ Updated OpenAPI specification
+- ✅ Updated documentation
+- Total endpoints: 30 → 38 (+8)
+- Total tests: 130 → 157 (+27)
+
+### 2025-12-11
+- ✅ Completed all Phase 8 enhancements
+- ✅ All tests passing (62/66)
+- ✅ Production deployment ready
 

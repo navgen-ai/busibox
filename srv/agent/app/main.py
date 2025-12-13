@@ -4,7 +4,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import agents, auth, dispatcher, evals, health, runs, scores, streams, tools, workflows
+from app.api import agents, auth, conversations, dispatcher, evals, health, runs, scores, streams, tools, workflows
 from app.config.settings import get_settings
 from app.db.session import engine
 from app.models.base import Base
@@ -53,6 +53,7 @@ app.include_router(dispatcher.router)
 app.include_router(runs.router)
 app.include_router(streams.router)
 app.include_router(scores.router)
+app.include_router(conversations.router)
 
 
 @app.get("/")
