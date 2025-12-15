@@ -366,7 +366,7 @@ test-authz:
 		exit 1; \
 	fi
 	@echo "=== Authz Service Tests (pytest) ==="
-	@ssh root@$(AUTHZ_IP) 'cd /srv/authz/app && source ../venv/bin/activate && pip install -q -r requirements.test.txt 2>/dev/null; pytest -v --tb=short' || (echo "Authz tests FAILED" && exit 1)
+	@ssh -o StrictHostKeyChecking=no root@$(AUTHZ_IP) 'cd /srv/authz/app && source ../venv/bin/activate && pip install -q -r requirements.test.txt 2>/dev/null; pytest -v --tb=short' || (echo "Authz tests FAILED" && exit 1)
 	@echo "✓ Authz tests passed"
 	@echo ""
 
