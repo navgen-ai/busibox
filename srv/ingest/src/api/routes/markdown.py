@@ -10,7 +10,6 @@ import uuid
 import structlog
 
 from shared.config import Config
-from services.postgres_service import PostgresService
 from api.services.minio_service import MinIOService
 from processors.html_renderer import HTMLRenderer
 
@@ -19,38 +18,36 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 
-def _get_file_metadata(postgres_service, file_uuid, user_uuid, fields):
+async def _get_file_metadata(postgres_service, file_uuid, user_uuid, fields, request=None):
     """
-    Helper to get file metadata using synchronous PostgreSQL.
+    Helper to get file metadata using async PostgreSQL.
     
     Args:
-        postgres_service: PostgresService instance
+        postgres_service: PostgresService instance (async)
         file_uuid: File UUID
         user_uuid: User UUID
         fields: List of field names to select
+        request: Optional FastAPI Request for RLS context
         
     Returns:
         Dict with file data or None if not found
     """
-    conn = postgres_service.pool.getconn()
-    try:
-        with conn.cursor() as cur:
-            field_list = ", ".join(fields)
-            cur.execute(
-                f"""SELECT {field_list}
-                   FROM ingestion_files 
-                   WHERE file_id = %s AND user_id = %s""",
-                (str(file_uuid), str(user_uuid))  # Convert UUID to string for psycopg2
-            )
-            row = cur.fetchone()
-            
-            if not row:
-                return None
-            
-            # Convert tuple to dict
-            return dict(zip(fields, row))
-    finally:
-        postgres_service.pool.putconn(conn)
+    import uuid
+    field_list = ", ".join(fields)
+    async with postgres_service.acquire(request) as conn:
+        row = await conn.fetchrow(
+            f"""SELECT {field_list}
+               FROM ingestion_files 
+               WHERE file_id = $1 AND user_id = $2""",
+            uuid.UUID(file_uuid),
+            uuid.UUID(user_uuid)
+        )
+        
+        if not row:
+            return None
+        
+        # Convert row to dict
+        return dict(row)
 
 
 @router.get("/{fileId}/markdown")
@@ -64,9 +61,8 @@ async def get_markdown(fileId: str, request: Request):
     user_id = request.state.user_id
 
     config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
+    from api.main import pg_service as postgres_service  # Use shared async PostgresService instance
     minio_service = MinIOService(config)
-    postgres_service.connect()
 
     try:
         # Validate fileId is a valid UUID
@@ -74,11 +70,12 @@ async def get_markdown(fileId: str, request: Request):
         user_uuid = uuid.UUID(user_id)
 
         # Get file metadata
-        file_data = _get_file_metadata(
+        file_data = await _get_file_metadata(
             postgres_service, 
             file_uuid, 
             user_uuid,
-            ["file_id", "user_id", "original_filename", "markdown_path", "has_markdown", "image_count"]
+            ["file_id", "user_id", "original_filename", "markdown_path", "has_markdown", "image_count"],
+            request=request
         )
 
         if not file_data:
@@ -131,7 +128,7 @@ async def get_markdown(fileId: str, request: Request):
             content={"error": "Failed to retrieve markdown", "details": str(e)}
         )
     finally:
-        postgres_service.close()
+        # Don't close - pg_service is a singleton shared across requests
 
 
 @router.get("/{fileId}/html")
@@ -145,9 +142,8 @@ async def get_html(fileId: str, request: Request):
     user_id = request.state.user_id
 
     config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
+    from api.main import pg_service as postgres_service  # Use shared async PostgresService instance
     minio_service = MinIOService(config)
-    postgres_service.connect()
 
     try:
         # Validate fileId is a valid UUID
@@ -217,7 +213,7 @@ async def get_html(fileId: str, request: Request):
             content={"error": "Failed to retrieve HTML", "details": str(e)}
         )
     finally:
-        postgres_service.close()
+        # Don't close - pg_service is a singleton shared across requests
 
 
 @router.get("/{fileId}/images/{imageIndex}")
@@ -235,9 +231,8 @@ async def get_image(fileId: str, imageIndex: int, request: Request):
     user_id = request.state.user_id
 
     config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
+    from api.main import pg_service as postgres_service  # Use shared async PostgresService instance
     minio_service = MinIOService(config)
-    postgres_service.connect()
 
     try:
         # Validate fileId is a valid UUID
@@ -332,4 +327,4 @@ async def get_image(fileId: str, imageIndex: int, request: Request):
             content={"error": "Failed to retrieve image", "details": str(e)}
         )
     finally:
-        postgres_service.close()
+        # Don't close - pg_service is a singleton shared across requests
