@@ -147,11 +147,10 @@ async def upload_file(
     config = Config().to_dict()
     
     # Initialize services
+    from api.main import pg_service  # Use shared PostgresService instance
     minio_service = MinIOService(config)
-    postgres_service = PostgresService(config, request)
     redis_service = RedisService(config)
     
-    await postgres_service.connect()
     await redis_service.connect()
     
     try:
@@ -174,7 +173,7 @@ async def upload_file(
         
         # Check for duplicate (skip if force_reprocess requested)
         should_check_duplicate = force_reprocess != "true"
-        existing = await postgres_service.check_duplicate(content_hash) if should_check_duplicate else None
+        existing = await pg_service.check_duplicate(content_hash, request) if should_check_duplicate else None
         
         if existing:
             # Duplicate detected - reuse vectors
@@ -185,7 +184,7 @@ async def upload_file(
                 content_hash=content_hash,
             )
             
-            await postgres_service.reuse_vectors(
+            await pg_service.reuse_vectors(
                 file_id,
                 existing["file_id"],
                 user_id,
@@ -251,7 +250,7 @@ async def upload_file(
             )
         
         # New file - create record with visibility and roles
-        await postgres_service.create_file_record(
+        await pg_service.create_file_record(
             file_id=file_id,
             user_id=user_id,
             filename=file.filename,
@@ -263,6 +262,7 @@ async def upload_file(
             metadata=parsed_metadata,
             visibility=visibility,
             role_ids=parsed_role_ids if visibility == "shared" else None,
+            request=request,
         )
         
         # Skip processing queue for video and image files (they're stored but not processed)
@@ -341,6 +341,6 @@ async def upload_file(
         )
     
     finally:
-        await postgres_service.disconnect()
+        # Don't disconnect pg_service - it's a singleton shared across requests
         await redis_service.disconnect()
 

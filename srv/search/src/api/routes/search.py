@@ -483,14 +483,9 @@ async def _enrich_results(results: list, request: Request) -> list:
         return results
     
     try:
-        # Build database URL
-        db_url = (
-            f"postgresql://{config.postgres_user}:{config.postgres_password}"
-            f"@{config.postgres_host}:{config.postgres_port}/{config.postgres_db}"
-        )
-        conn = await asyncpg.connect(db_url)
-        
-        try:
+        # Use shared PostgresService connection pool
+        from api.main import pg_service
+        async with pg_service.acquire() as conn:
             await _set_rls_session_vars(conn, request)
             # Get unique file IDs
             file_ids = list(set(result["file_id"] for result in results))
@@ -516,9 +511,6 @@ async def _enrich_results(results: list, request: Request) -> list:
                     enriched.append(result)
             
             return enriched
-        
-        finally:
-            await conn.close()
     
     except Exception as e:
         logger.error(

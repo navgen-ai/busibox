@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.middleware.jwt_auth import JWTAuthMiddleware
 from api.middleware.logging import LoggingMiddleware
 from api.routes import search, health
+from api.services.postgres import PostgresService
 from shared.config import config
 
 # Configure structured logging
@@ -26,6 +27,9 @@ structlog.configure(
 )
 
 logger = structlog.get_logger()
+
+# Global PostgresService instance (singleton)
+pg_service = PostgresService(config.to_dict())
 
 # Create FastAPI app
 app = FastAPI(
@@ -75,12 +79,14 @@ async def startup_event():
         milvus_host=config.milvus_host,
         milvus_collection=config.milvus_collection,
     )
+    await pg_service.connect()
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown."""
     logger.info("Shutting down Search API")
+    await pg_service.disconnect()
 
 
 @app.get("/")

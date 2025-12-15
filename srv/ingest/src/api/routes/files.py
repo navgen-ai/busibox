@@ -132,9 +132,8 @@ async def get_file_metadata(fileId: str, request: Request):
     """
     user_id = request.state.user_id
     
-    config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
-    await postgres_service.connect()
+    from api.main import pg_service as postgres_service  # Use shared PostgresService instance
+    # Connection is already established in startup
     
     try:
         async with postgres_service.acquire(request) as conn:
@@ -353,7 +352,7 @@ async def get_file_metadata(fileId: str, request: Request):
         )
     
     finally:
-        await postgres_service.disconnect()
+        # Don't disconnect - pg_service is a singleton shared across requests
 
 
 @router.get("/{fileId}/history")
@@ -506,7 +505,7 @@ async def download_file(fileId: str, request: Request):
         )
     
     finally:
-        await postgres_service.disconnect()
+        # Don't disconnect - pg_service is a singleton shared across requests
 
 
 @router.get("/{fileId}/presigned-url")
@@ -619,7 +618,7 @@ async def get_presigned_url(fileId: str, request: Request, expiry: int = 3600):
         )
     
     finally:
-        await postgres_service.disconnect()
+        # Don't disconnect - pg_service is a singleton shared across requests
 
 
 @router.get("/{fileId}/chunks")
@@ -642,9 +641,8 @@ async def get_file_chunks(
     """
     user_id = request.state.user_id
     
-    config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
-    await postgres_service.connect()
+    from api.main import pg_service as postgres_service  # Use shared PostgresService instance
+    # Connection is already established in startup
     
     try:
         async with postgres_service.acquire(request) as conn:
@@ -719,7 +717,7 @@ async def get_file_chunks(
         )
     
     finally:
-        await postgres_service.disconnect()
+        # Don't disconnect - pg_service is a singleton shared across requests
 
 
 @router.get("/{fileId}/vectors")
@@ -742,9 +740,8 @@ async def get_file_vectors(
     """
     user_id = request.state.user_id
     
-    config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
-    await postgres_service.connect()
+    from api.main import pg_service as postgres_service  # Use shared PostgresService instance
+    # Connection is already established in startup
     
     try:
         async with postgres_service.acquire(request) as conn:
@@ -825,7 +822,7 @@ async def get_file_vectors(
         )
     
     finally:
-        await postgres_service.disconnect()
+        # Don't disconnect - pg_service is a singleton shared across requests
 
 
 @router.get("/{fileId}/markdown")
@@ -917,7 +914,7 @@ async def get_file_markdown(
         )
     
     finally:
-        await postgres_service.disconnect()
+        # Don't disconnect - pg_service is a singleton shared across requests
 
 
 class DocumentSearchRequest(BaseModel):
@@ -1058,7 +1055,7 @@ async def search_within_document(
         )
     
     finally:
-        await postgres_service.disconnect()
+        # Don't disconnect - pg_service is a singleton shared across requests
 
 
 @router.delete("/{fileId}")
@@ -1161,7 +1158,7 @@ async def delete_file(fileId: str, request: Request):
         )
     
     finally:
-        await postgres_service.disconnect()
+        # Don't disconnect - pg_service is a singleton shared across requests
 
 
 @router.post("/{fileId}/move")
@@ -1194,9 +1191,8 @@ async def move_file(fileId: str, request: Request):
             content={"error": "roleIds required for shared visibility"},
         )
 
-    config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
-    await postgres_service.connect()
+    from api.main import pg_service as postgres_service  # Use shared PostgresService instance
+    # Connection is already established in startup
 
     # Fetch current record under RLS
     async with postgres_service.acquire(request) as conn:
@@ -1460,7 +1456,7 @@ async def reprocess_file(fileId: str, request: Request):
         )
     
     finally:
-        await postgres_service.disconnect()
+        # Don't disconnect - pg_service is a singleton shared across requests
 
 
 @router.get("/{fileId}/export")
@@ -1745,5 +1741,5 @@ async def export_file(
         )
     
     finally:
-        await postgres_service.disconnect()
+        # Don't disconnect - pg_service is a singleton shared across requests
 

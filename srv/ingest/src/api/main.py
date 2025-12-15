@@ -17,6 +17,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.middleware.jwt_auth import JWTAuthMiddleware
 from api.middleware.logging import LoggingMiddleware
 from api.routes import embeddings, extract, files, health, markdown, roles, search, status, upload, authz, test_docs
+from api.services.postgres import PostgresService
+from shared.config import Config
 
 # Configure structured logging
 structlog.configure(
@@ -37,6 +39,10 @@ structlog.configure(
 )
 
 logger = structlog.get_logger()
+
+# Global PostgresService instance (singleton)
+config = Config().to_dict()
+pg_service = PostgresService(config)
 
 # Create FastAPI application
 app = FastAPI(
@@ -156,12 +162,14 @@ app.include_router(test_docs.router, tags=["Test Docs"])
 async def startup_event():
     """Initialize services on startup."""
     logger.info("Ingestion API starting up")
+    await pg_service.connect()
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown."""
     logger.info("Ingestion API shutting down")
+    await pg_service.disconnect()
 
 
 @app.get("/")

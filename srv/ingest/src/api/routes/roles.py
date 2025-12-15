@@ -80,8 +80,8 @@ async def get_document_roles(file_id: str, request: Request):
     user_id = request.state.user_id
     
     config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
-    await postgres_service.connect()
+    from api.main import pg_service as postgres_service  # Use shared PostgresService instance
+    # Connection is already established in startup
     
     try:
         # Get document (RLS will filter by access)
@@ -124,7 +124,7 @@ async def get_document_roles(file_id: str, request: Request):
         )
     
     finally:
-        await postgres_service.disconnect()
+        # Don't disconnect - pg_service is a singleton shared across requests
 
 
 @router.put("/{file_id}/roles")
@@ -333,7 +333,7 @@ async def update_document_roles(
         )
     
     finally:
-        await postgres_service.disconnect()
+        # Don't disconnect - pg_service is a singleton shared across requests
         milvus_service.close()
 
 
@@ -493,6 +493,6 @@ async def share_document(
         )
     
     finally:
-        await postgres_service.disconnect()
+        # Don't disconnect - pg_service is a singleton shared across requests
         milvus_service.close()
 
