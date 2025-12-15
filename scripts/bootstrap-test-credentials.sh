@@ -232,7 +232,7 @@ fi
 ADMIN_TOKEN_GENERATED=false
 if [ -z "$ADMIN_TOKEN" ]; then
     echo -e "${BLUE}Fetching admin token from authz service...${NC}"
-    ADMIN_TOKEN=$(ssh root@${AUTHZ_IP} "grep '^AUTHZ_ADMIN_TOKEN=' /srv/authz/.env 2>/dev/null | cut -d'=' -f2" 2>/dev/null || echo "")
+    ADMIN_TOKEN=$(ssh root@${AUTHZ_HOST} "grep '^AUTHZ_ADMIN_TOKEN=' /srv/authz/.env 2>/dev/null | cut -d'=' -f2" 2>/dev/null || echo "")
     
     if [ -z "$ADMIN_TOKEN" ]; then
         echo -e "${YELLOW}⚠ Could not fetch admin token from authz service${NC}"
@@ -571,7 +571,7 @@ if [ "$ADMIN_TOKEN_GENERATED" = true ]; then
     echo -e "${YELLOW}You MUST update the authz service configuration and restart it:${NC}"
     echo ""
     echo -e "${BLUE}1. Update the authz service .env file:${NC}"
-    echo -e "   ssh root@${AUTHZ_IP}"
+    echo -e "   ssh root@${AUTHZ_HOST}"
     echo -e "   echo 'AUTHZ_ADMIN_TOKEN=${ADMIN_TOKEN}' >> /srv/authz/.env"
     echo ""
     echo -e "${BLUE}2. Restart the authz service:${NC}"
