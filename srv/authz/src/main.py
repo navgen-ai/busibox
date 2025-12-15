@@ -1,9 +1,34 @@
 import uvicorn
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
 
 from routes import admin, authz, internal, oauth
+from services.postgres import PostgresService
+from config import Config
 
-app = FastAPI(title="Authz Service", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize database schema and bootstrap on startup."""
+    print("[AUTHZ] Initializing database schema...")
+    config = Config()
+    pg = PostgresService(config.to_dict())
+    await pg.ensure_schema()
+    print("[AUTHZ] Database schema initialized")
+    
+    # Run bootstrap (creates signing keys and optional OAuth client)
+    from routes.oauth import _ensure_bootstrap
+    await _ensure_bootstrap()
+    print("[AUTHZ] Bootstrap complete")
+    
+    yield
+    
+    # Cleanup on shutdown
+    await pg.close()
+    print("[AUTHZ] Shutdown complete")
+
+
+app = FastAPI(title="Authz Service", version="1.0.0", lifespan=lifespan)
 
 
 @app.get("/health/live")
