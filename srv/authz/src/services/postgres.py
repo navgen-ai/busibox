@@ -289,9 +289,14 @@ class PostgresService:
     # RBAC sync (initially driven by ai-portal)
     # ---------------------------------------------------------------------
 
-    async def upsert_roles(self, roles: List[dict]) -> None:
+    async def upsert_roles(self, roles: List[dict]) -> dict[str, str]:
+        """
+        Upsert roles and return a mapping of role names to their IDs.
+        Returns: dict mapping role name -> role ID (as string)
+        """
         if not roles:
-            return
+            return {}
+        name_to_id: dict[str, str] = {}
         async with self.acquire(None, None) as conn:
             for r in roles:
                 # First, check if a role with this name already exists
@@ -312,8 +317,10 @@ class PostgresService:
                         r.get("description"),
                         role_id,
                     )
+                    name_to_id[r["name"]] = str(role_id)
                 else:
                     # Role doesn't exist, insert with provided ID
+                    role_id = uuid.UUID(r["id"])
                     await conn.execute(
                         """
                         INSERT INTO authz_roles (id, name, description)
@@ -323,10 +330,12 @@ class PostgresService:
                               description = EXCLUDED.description,
                               updated_at = now()
                         """,
-                        uuid.UUID(r["id"]),
+                        role_id,
                         r["name"],
                         r.get("description"),
                     )
+                    name_to_id[r["name"]] = str(role_id)
+        return name_to_id
 
     async def upsert_user_and_roles(
         self,

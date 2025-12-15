@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, status
 
+import uuid
+
 from config import Config
 from oauth.client_auth import verify_client_secret
 from oauth.contracts import SyncUser
@@ -57,7 +59,33 @@ async def sync_user(request: Request):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_request") from e
 
     await pg.connect()
-    await pg.upsert_roles([r.model_dump() for r in su.roles])
+    # Upsert roles and get mapping of role names to IDs
+    role_name_to_id = await pg.upsert_roles([r.model_dump() for r in su.roles])
+    
+    # Resolve user_role_ids: if provided IDs don't exist, try to resolve by role name
+    resolved_role_ids = []
+    for role_id_or_name in su.user_role_ids:
+        # Check if it's a UUID (role ID)
+        try:
+            uuid.UUID(role_id_or_name)
+            # It's a UUID, check if it exists
+            role = await pg.get_role_by_id(role_id_or_name)
+            if role:
+                resolved_role_ids.append(role_id_or_name)
+            else:
+                # UUID doesn't exist, try to find by name
+                role = await pg.get_role_by_name(role_id_or_name)
+                if role:
+                    resolved_role_ids.append(role["id"])
+        except ValueError:
+            # Not a UUID, treat as role name
+            role = await pg.get_role_by_name(role_id_or_name)
+            if role:
+                resolved_role_ids.append(role["id"])
+            elif role_id_or_name in role_name_to_id:
+                # Use the ID from the roles we just upserted
+                resolved_role_ids.append(role_name_to_id[role_id_or_name])
+    
     await pg.upsert_user_and_roles(
         user_id=su.user_id,
         email=su.email,
@@ -67,7 +95,7 @@ async def sync_user(request: Request):
         idp_object_id=su.idp_object_id,
         idp_roles=su.idp_roles,
         idp_groups=su.idp_groups,
-        user_role_ids=su.user_role_ids,
+        user_role_ids=resolved_role_ids,
     )
 
     return {"status": "ok"}
