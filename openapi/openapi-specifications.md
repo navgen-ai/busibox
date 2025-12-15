@@ -2,7 +2,7 @@
 
 **Category**: reference  
 **Created**: 2025-12-12  
-**Updated**: 2025-12-12  
+**Updated**: 2025-12-15  
 **Status**: active
 
 ## Overview
@@ -10,6 +10,32 @@
 This document provides an index of OpenAPI specifications for Busibox APIs and explains how to use them.
 
 ## Available Specifications
+
+### AuthZ API
+- **File**: `openapi/authz-api.yaml`
+- **Service**: Authorization Service (authz-lxc)
+- **Port**: 8010
+- **Implementation**: `srv/authz/src/`
+- **Description**: OAuth2-compliant authorization and authentication service with RBAC management
+
+**Key Features**:
+- OAuth2 token issuance (client_credentials and token-exchange grants)
+- JWKS endpoint for token validation
+- RBAC management (roles, users, permissions)
+- OAuth client registry
+- Audit logging
+- User synchronization for first-party services
+
+**Endpoints**:
+- `/.well-known/jwks.json` - Public keys for JWT validation
+- `/oauth/token` - OAuth2 token endpoint
+- `/admin/roles` - Role management
+- `/admin/user-roles` - User-role bindings
+- `/admin/oauth-clients` - OAuth client management
+- `/admin/users/{user_id}/roles` - User role queries
+- `/internal/sync/user` - User sync from ai-portal
+- `/authz/audit` - Audit logging
+- `/health` - Health checks
 
 ### Agent API
 - **File**: `openapi/agent-api.yaml`
@@ -100,6 +126,18 @@ This document provides an index of OpenAPI specifications for Busibox APIs and e
 ### Viewing Documentation
 
 Each service provides interactive API documentation:
+
+**AuthZ API**:
+```bash
+# Swagger UI
+http://authz-lxc:8010/docs
+
+# ReDoc
+http://authz-lxc:8010/redoc
+
+# OpenAPI JSON
+http://authz-lxc:8010/openapi.json
+```
 
 **Agent API**:
 ```bash
@@ -193,6 +231,7 @@ Validate OpenAPI specs:
 npm install -g @apidevtools/swagger-cli
 
 # Validate specs
+swagger-cli validate openapi/authz-api.yaml
 swagger-cli validate openapi/agent-api.yaml
 swagger-cli validate openapi/ingest-api.yaml
 swagger-cli validate openapi/search-api.yaml
@@ -200,30 +239,66 @@ swagger-cli validate openapi/search-api.yaml
 
 ## Authentication
 
-All APIs use JWT-based authentication:
+### OAuth2 Token Exchange
 
+Busibox uses OAuth2 token exchange (RFC 8693) for service authentication:
+
+**1. Get service token from AuthZ**:
 ```bash
-# Get JWT token from AI Portal or auth service
-TOKEN="your-jwt-token"
+curl -X POST http://authz-lxc:8010/oauth/token \
+  -H "Content-Type: application/json" \
+  -d '{
+    "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+    "client_id": "ai-portal",
+    "client_secret": "your-secret",
+    "audience": "ingest-api",
+    "requested_subject": "user-uuid",
+    "scope": "ingest.write"
+  }'
+```
 
-# Use in requests
+**2. Use token in service requests**:
+```bash
+TOKEN="eyJhbGc..."
+
 curl -H "Authorization: Bearer $TOKEN" \
-  http://agent-lxc:8000/agents
+  http://ingest-lxc:8002/upload \
+  -F "file=@document.pdf"
+```
 
-# Legacy X-User-Id header (fallback)
+**3. Legacy X-User-Id header** (deprecated, fallback only):
+```bash
 curl -H "X-User-Id: user-uuid" \
   http://ingest-lxc:8002/upload
 ```
 
-JWT tokens contain:
-- User identity (`sub` claim)
-- Role memberships with CRUD permissions
-- Token expiry
+### JWT Token Structure
+
+JWT tokens issued by AuthZ contain:
+- **Standard claims**: `iss`, `sub`, `aud`, `exp`, `iat`, `nbf`, `jti`
+- **OAuth2 scopes**: `scope` (space-separated string)
+- **RBAC roles**: `roles` array with `{id, name, permissions: [read|create|update|delete]}`
+- **Optional IdP metadata**: `idp: {provider, tenantId, objectId}`
 
 This enables:
 - Row-Level Security (RLS) in PostgreSQL
 - Partition filtering in Milvus
 - Fine-grained access control
+- Audit trail with user context
+
+### Token Validation
+
+Services validate tokens using AuthZ's JWKS endpoint:
+
+```bash
+# Get public keys
+curl http://authz-lxc:8010/.well-known/jwks.json
+
+# Services cache JWKS for 5 minutes
+# Tokens are validated locally without calling AuthZ
+```
+
+See `docs/guides/oauth2-token-exchange-implementation.md` for architecture details.
 
 ## Implementation Details
 
@@ -334,8 +409,14 @@ HTTP status codes:
 
 ## Changelog
 
+### 2025-12-15
+- Added AuthZ API specification (`authz-api.yaml`)
+- Updated authentication section with OAuth2 token exchange details
+- Added JWKS validation documentation
+- Consolidated guide references
+
 ### 2025-12-12
-- Created comprehensive OpenAPI specifications for all three APIs
+- Created comprehensive OpenAPI specifications for Agent, Ingest, and Search APIs
 - Documented authentication and authorization patterns
 - Added usage examples and client generation instructions
 - Verified specs match current implementations

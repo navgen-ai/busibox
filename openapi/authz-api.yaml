@@ -1,0 +1,921 @@
+openapi: 3.0.3
+info:
+  title: Busibox AuthZ API
+  description: |
+    Authorization and authentication service for Busibox platform.
+    
+    Provides:
+    - OAuth2 token issuance (client_credentials and token-exchange grants)
+    - RBAC management (roles, users, permissions)
+    - Audit logging
+    - JWKS endpoint for token validation
+    
+    **Authentication**: OAuth client credentials or admin token required for most endpoints.
+  version: 1.0.0
+  contact:
+    name: Busibox Team
+
+servers:
+  - url: http://10.96.200.210:8010
+    description: Production AuthZ Service
+  - url: http://10.96.201.210:8010
+    description: Test AuthZ Service
+
+tags:
+  - name: OAuth
+    description: OAuth2 token endpoints
+  - name: Admin
+    description: RBAC management endpoints
+  - name: Internal
+    description: Internal sync endpoints for first-party services
+  - name: Audit
+    description: Audit logging endpoints
+  - name: Health
+    description: Health check endpoints
+
+paths:
+  /.well-known/jwks.json:
+    get:
+      tags: [OAuth]
+      summary: Get JSON Web Key Set
+      description: Returns public keys for JWT signature validation. Used by downstream services to validate tokens.
+      operationId: getJWKS
+      responses:
+        '200':
+          description: JWKS response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/JWK'
+
+  /oauth/token:
+    post:
+      tags: [OAuth]
+      summary: OAuth2 Token Endpoint
+      description: |
+        Issue access tokens using OAuth2 grants.
+        
+        Supported grant types:
+        - `client_credentials`: Service-to-service authentication
+        - `urn:ietf:params:oauth:grant-type:token-exchange`: On-behalf-of user tokens (RFC 8693)
+        
+        Accepts both `application/x-www-form-urlencoded` and `application/json` content types.
+      operationId: token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OAuthTokenRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OAuthTokenRequest'
+      responses:
+        '200':
+          description: Token issued successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthTokenResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Invalid client credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Unauthorized audience or scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/roles:
+    get:
+      tags: [Admin]
+      summary: List all roles
+      description: Returns all roles in the system. Requires admin authentication.
+      operationId: listRoles
+      security:
+        - AdminToken: []
+        - OAuthClient: []
+      responses:
+        '200':
+          description: List of roles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RoleResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags: [Admin]
+      summary: Create a new role
+      description: Creates a new role. Requires admin authentication.
+      operationId: createRole
+      security:
+        - AdminToken: []
+        - OAuthClient: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/RoleCreate'
+                - $ref: '#/components/schemas/OAuthClientAuth'
+      responses:
+        '200':
+          description: Role created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /admin/roles/{role_id}:
+    get:
+      tags: [Admin]
+      summary: Get a specific role
+      description: Returns details of a specific role by ID. Requires admin authentication.
+      operationId: getRole
+      security:
+        - AdminToken: []
+        - OAuthClient: []
+      parameters:
+        - name: role_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Role details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Admin]
+      summary: Update a role
+      description: Updates an existing role. Requires admin authentication.
+      operationId: updateRole
+      security:
+        - AdminToken: []
+        - OAuthClient: []
+      parameters:
+        - name: role_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/RoleUpdate'
+                - $ref: '#/components/schemas/OAuthClientAuth'
+      responses:
+        '200':
+          description: Role updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Admin]
+      summary: Delete a role
+      description: Deletes a role and all associated user-role bindings. Requires admin authentication.
+      operationId: deleteRole
+      security:
+        - AdminToken: []
+        - OAuthClient: []
+      parameters:
+        - name: role_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Role deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  deleted:
+                    type: boolean
+                    example: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/user-roles:
+    post:
+      tags: [Admin]
+      summary: Add user-role binding
+      description: Assigns a role to a user. Requires admin authentication.
+      operationId: addUserRole
+      security:
+        - AdminToken: []
+        - OAuthClient: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/UserRoleBinding'
+                - $ref: '#/components/schemas/OAuthClientAuth'
+      responses:
+        '200':
+          description: User-role binding created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserRoleBindingResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    delete:
+      tags: [Admin]
+      summary: Remove user-role binding
+      description: Removes a role from a user. Requires admin authentication.
+      operationId: removeUserRole
+      security:
+        - AdminToken: []
+        - OAuthClient: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/UserRoleBinding'
+                - $ref: '#/components/schemas/OAuthClientAuth'
+      responses:
+        '200':
+          description: User-role binding removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  deleted:
+                    type: boolean
+                    example: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/users/{user_id}/roles:
+    get:
+      tags: [Admin]
+      summary: Get user roles
+      description: Returns all roles assigned to a specific user. Requires admin authentication.
+      operationId: getUserRoles
+      security:
+        - AdminToken: []
+        - OAuthClient: []
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of user roles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RoleResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /admin/oauth-clients:
+    get:
+      tags: [Admin]
+      summary: List OAuth clients
+      description: Returns all OAuth clients. Requires admin authentication.
+      operationId: listOAuthClients
+      security:
+        - AdminToken: []
+        - OAuthClient: []
+      responses:
+        '200':
+          description: List of OAuth clients
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OAuthClientResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags: [Admin]
+      summary: Create OAuth client
+      description: Creates a new OAuth client. Requires admin authentication.
+      operationId: createOAuthClient
+      security:
+        - AdminToken: []
+        - OAuthClient: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OAuthClientCreate'
+      responses:
+        '201':
+          description: OAuth client created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /internal/sync/user:
+    post:
+      tags: [Internal]
+      summary: Sync user and roles
+      description: |
+        Upserts user, roles, and user-role assignments. Called by ai-portal for RBAC synchronization.
+        Requires OAuth client credentials in request body.
+      operationId: syncUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - type: object
+                  properties:
+                    user:
+                      $ref: '#/components/schemas/SyncUser'
+                - $ref: '#/components/schemas/OAuthClientAuth'
+      responses:
+        '200':
+          description: User synced successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /authz/audit:
+    post:
+      tags: [Audit]
+      summary: Log audit event
+      description: |
+        Appends an audit log entry. Can optionally include Authorization header with JWT
+        to propagate user context.
+      operationId: audit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuditEvent'
+      responses:
+        '200':
+          description: Audit event logged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /health/live:
+    get:
+      tags: [Health]
+      summary: Liveness check
+      description: Returns OK if service is running
+      operationId: healthLive
+      responses:
+        '200':
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /health/ready:
+    get:
+      tags: [Health]
+      summary: Readiness check
+      description: Returns OK if service is ready to accept requests
+      operationId: healthReady
+      responses:
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+components:
+  securitySchemes:
+    AdminToken:
+      type: http
+      scheme: bearer
+      description: Admin token for RBAC operations (AUTHZ_ADMIN_TOKEN)
+
+    OAuthClient:
+      type: oauth2
+      description: OAuth client credentials flow
+      flows:
+        clientCredentials:
+          tokenUrl: /oauth/token
+          scopes: {}
+
+  schemas:
+    JWK:
+      type: object
+      description: JSON Web Key
+      properties:
+        kty:
+          type: string
+          example: RSA
+        use:
+          type: string
+          example: sig
+        kid:
+          type: string
+          example: key-2024-12-15
+        alg:
+          type: string
+          example: RS256
+        n:
+          type: string
+          description: RSA modulus (base64url)
+        e:
+          type: string
+          description: RSA exponent (base64url)
+
+    OAuthTokenRequest:
+      type: object
+      required:
+        - grant_type
+        - client_id
+        - client_secret
+      properties:
+        grant_type:
+          type: string
+          enum:
+            - client_credentials
+            - urn:ietf:params:oauth:grant-type:token-exchange
+          description: OAuth2 grant type
+        client_id:
+          type: string
+          description: OAuth client ID
+        client_secret:
+          type: string
+          description: OAuth client secret
+        audience:
+          type: string
+          description: Target service (e.g., ingest-api, search-api, agent-api)
+          example: ingest-api
+        scope:
+          type: string
+          description: Space-delimited OAuth2 scopes
+          example: ingest.write ingest.read
+        requested_subject:
+          type: string
+          format: uuid
+          description: User ID for token-exchange grant
+        requested_purpose:
+          type: string
+          description: Purpose label for audit logging
+          example: document-upload
+        subject_token:
+          type: string
+          description: RFC 8693 subject token (optional)
+        subject_token_type:
+          type: string
+          description: RFC 8693 subject token type (optional)
+
+    OAuthTokenResponse:
+      type: object
+      required:
+        - access_token
+        - token_type
+        - expires_in
+      properties:
+        access_token:
+          type: string
+          description: JWT access token
+        token_type:
+          type: string
+          example: Bearer
+        expires_in:
+          type: integer
+          description: Token lifetime in seconds
+          example: 900
+        scope:
+          type: string
+          description: Granted scopes (space-delimited)
+          example: ingest.write ingest.read
+        issued_token_type:
+          type: string
+          description: RFC 8693 issued token type
+          example: urn:ietf:params:oauth:token-type:access_token
+
+    AccessTokenClaims:
+      type: object
+      description: JWT access token claims
+      required:
+        - iss
+        - sub
+        - aud
+        - exp
+        - iat
+        - nbf
+        - jti
+      properties:
+        iss:
+          type: string
+          description: Issuer (authz service)
+          example: busibox-authz
+        sub:
+          type: string
+          description: Subject (user ID or client ID)
+          example: user-123
+        aud:
+          type: string
+          description: Audience (target service)
+          example: ingest-api
+        exp:
+          type: integer
+          description: Expiration time (Unix timestamp)
+        iat:
+          type: integer
+          description: Issued at (Unix timestamp)
+        nbf:
+          type: integer
+          description: Not before (Unix timestamp)
+        jti:
+          type: string
+          format: uuid
+          description: JWT ID (unique token identifier)
+        scope:
+          type: string
+          description: Granted scopes (space-delimited)
+          example: ingest.write
+        roles:
+          type: array
+          description: User roles with permissions
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              name:
+                type: string
+                example: Editor
+              permissions:
+                type: array
+                items:
+                  type: string
+                  enum: [read, create, update, delete]
+        idp:
+          type: object
+          description: Optional IdP metadata
+          properties:
+            provider:
+              type: string
+              example: azure
+            tenantId:
+              type: string
+            objectId:
+              type: string
+
+    RoleCreate:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: Editor
+        description:
+          type: string
+          example: Can edit documents
+
+    RoleUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+
+    RoleResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: Editor
+        description:
+          type: string
+          example: Can edit documents
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    UserRoleBinding:
+      type: object
+      required:
+        - user_id
+        - role_id
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        role_id:
+          type: string
+          format: uuid
+
+    UserRoleBindingResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        role_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+
+    OAuthClientCreate:
+      type: object
+      required:
+        - client_id
+        - client_secret
+      properties:
+        client_id:
+          type: string
+          description: Client ID for the new OAuth client
+        client_secret:
+          type: string
+          description: Client secret (will be hashed)
+        allowed_audiences:
+          type: array
+          items:
+            type: string
+          example: [ingest-api, search-api, agent-api]
+        allowed_scopes:
+          type: array
+          items:
+            type: string
+          example: [ingest.read, ingest.write, search.read]
+        auth_client_id:
+          type: string
+          description: Client ID for authentication (if not using admin token)
+        auth_client_secret:
+          type: string
+          description: Client secret for authentication (if not using admin token)
+
+    OAuthClientResponse:
+      type: object
+      properties:
+        client_id:
+          type: string
+        allowed_audiences:
+          type: array
+          items:
+            type: string
+        allowed_scopes:
+          type: array
+          items:
+            type: string
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    SyncRole:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+
+    SyncUser:
+      type: object
+      required:
+        - user_id
+        - email
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        status:
+          type: string
+          example: active
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/SyncRole'
+        user_role_ids:
+          type: array
+          description: Role IDs or names to assign to user
+          items:
+            type: string
+        idp_provider:
+          type: string
+          example: azure
+        idp_tenant_id:
+          type: string
+        idp_object_id:
+          type: string
+        idp_roles:
+          type: array
+          items:
+            type: string
+        idp_groups:
+          type: array
+          items:
+            type: string
+
+    AuditEvent:
+      type: object
+      required:
+        - actorId
+        - action
+        - resourceType
+      properties:
+        actorId:
+          type: string
+          description: User or service performing the action
+        action:
+          type: string
+          description: Action performed
+          example: document.upload
+        resourceType:
+          type: string
+          description: Type of resource affected
+          example: document
+        resourceId:
+          type: string
+          description: ID of resource affected
+        details:
+          type: object
+          description: Additional event details
+          additionalProperties: true
+
+    OAuthClientAuth:
+      type: object
+      description: OAuth client credentials for authentication (alternative to admin token)
+      properties:
+        client_id:
+          type: string
+        client_secret:
+          type: string
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error code
+        detail:
+          type: string
+          description: Error details
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+

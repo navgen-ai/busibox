@@ -1,4 +1,4 @@
-.PHONY: ping all files pg milvus nginx search search-api agent ingest ingest-api ingest-worker ingest-update-tests apps openwebui deploy-apps deploy-ai-portal deploy-agent-client deploy-doc-intel deploy-foundation deploy-project-analysis deploy-innovation verify verify-health verify-smoke test test-menu test-ingest test-ingest-all test-ingest-coverage test-extraction-simple test-extraction-llm test-extraction-marker test-extraction-colpali test-search test-search-unit test-search-integration test-search-coverage test-agent test-authz test-apps test-all configure generate-token-keys bootstrap-test-creds
+.PHONY: ping all files pg milvus nginx search search-api agent ingest ingest-api ingest-worker ingest-update-tests apps openwebui deploy-apps deploy-ai-portal deploy-agent-client deploy-doc-intel deploy-foundation deploy-project-analysis deploy-innovation verify verify-health verify-smoke test test-menu test-ingest test-ingest-all test-ingest-coverage test-extraction-simple test-extraction-llm test-extraction-marker test-extraction-colpali test-search test-search-unit test-search-integration test-search-coverage test-agent test-authz test-apps test-security test-security-auth test-security-injection test-security-fuzz test-all configure generate-token-keys bootstrap-test-creds
 # Default to production inventory (can override with: make all INV=inventory/test)
 INV=inventory/production
 
@@ -436,3 +436,36 @@ test-all: test-ingest test-search test-agent test-authz test-apps
 	@echo "================================"
 	@echo "All service tests passed!"
 	@echo "================================"
+
+# Security Tests (run from admin workstation)
+test-security:
+	@echo "Running security tests against $(INV)..."
+	@if [ "$(INV)" = "inventory/test" ]; then \
+		SECURITY_TEST_ENV=test bash ../../tests/security/run_tests.sh; \
+	else \
+		SECURITY_TEST_ENV=production bash ../../tests/security/run_tests.sh; \
+	fi
+
+test-security-auth:
+	@echo "Running authentication security tests..."
+	@if [ "$(INV)" = "inventory/test" ]; then \
+		SECURITY_TEST_ENV=test bash ../../tests/security/run_tests.sh --marker=auth; \
+	else \
+		SECURITY_TEST_ENV=production bash ../../tests/security/run_tests.sh --marker=auth; \
+	fi
+
+test-security-injection:
+	@echo "Running injection security tests..."
+	@if [ "$(INV)" = "inventory/test" ]; then \
+		SECURITY_TEST_ENV=test bash ../../tests/security/run_tests.sh --marker=injection; \
+	else \
+		SECURITY_TEST_ENV=production bash ../../tests/security/run_tests.sh --marker=injection; \
+	fi
+
+test-security-fuzz:
+	@echo "Running fuzzing security tests..."
+	@if [ "$(INV)" = "inventory/test" ]; then \
+		SECURITY_TEST_ENV=test bash ../../tests/security/run_tests.sh --marker=fuzz; \
+	else \
+		SECURITY_TEST_ENV=production bash ../../tests/security/run_tests.sh --marker=fuzz; \
+	fi

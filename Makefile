@@ -1,4 +1,4 @@
-.PHONY: menu help setup configure deploy test mcp
+.PHONY: menu help setup configure deploy test test-security mcp
 
 # Default target - interactive menu
 .DEFAULT_GOAL := menu
@@ -39,13 +39,14 @@ help:
 	@echo "Usage: make <target>"
 	@echo ""
 	@echo "Available targets:"
-	@echo "  menu       - Interactive menu (default)"
-	@echo "  setup      - Initial setup (Proxmox host + LXC containers)"
-	@echo "  configure  - Configure models, GPUs, and containers"
-	@echo "  deploy     - Deploy services with Ansible"
-	@echo "  test       - Run tests (infrastructure and services)"
-	@echo "  mcp        - Build MCP server for Cursor AI"
-	@echo "  help       - Show this help message"
+	@echo "  menu          - Interactive menu (default)"
+	@echo "  setup         - Initial setup (Proxmox host + LXC containers)"
+	@echo "  configure     - Configure models, GPUs, and containers"
+	@echo "  deploy        - Deploy services with Ansible"
+	@echo "  test          - Run tests (infrastructure and services)"
+	@echo "  test-security - Run API security tests (fuzzing, OWASP)"
+	@echo "  mcp           - Build MCP server for Cursor AI"
+	@echo "  help          - Show this help message"
 	@echo ""
 	@echo "Quick Start:"
 	@echo "  1. make setup      # On Proxmox host"
@@ -67,6 +68,9 @@ deploy:
 
 test:
 	@bash scripts/test.sh
+
+test-security:
+	@bash tests/security/run_tests.sh
 
 mcp:
 	@bash scripts/mcp.sh

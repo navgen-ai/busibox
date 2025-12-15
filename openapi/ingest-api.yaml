@@ -29,8 +29,12 @@ info:
     - `Authorization: Bearer <JWT>` header (preferred) - JWT with user identity and role permissions
     - `X-User-Id` header (legacy) - User UUID for backward compatibility
     
-    JWT tokens contain user identity and document role memberships with CRUD permissions,
+    JWT tokens are issued by the AuthZ service (`authz-lxc:8010`) using OAuth2 token exchange.
+    Tokens contain user identity and document role memberships with CRUD permissions,
     enabling Row-Level Security (RLS) enforcement in the database.
+    
+    **Token validation**: This service validates JWTs using the AuthZ JWKS endpoint
+    (`/.well-known/jwks.json`). See `openapi/authz-api.yaml` for token issuance details.
     
     ## Rate Limits
     

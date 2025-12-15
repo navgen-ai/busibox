@@ -9,6 +9,10 @@ info:
     ## Authentication
     All endpoints (except `/health`) require Bearer token authentication with Busibox JWT.
     
+    JWT tokens are issued by the AuthZ service (`authz-lxc:8010`) using OAuth2 token exchange.
+    This service validates JWTs using the AuthZ JWKS endpoint (`/.well-known/jwks.json`).
+    See `openapi/authz-api.yaml` for token issuance details.
+    
     ## Features
     - Dynamic agent definition management with personal/built-in agents
     - Tool and workflow CRUD operations

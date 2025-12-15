@@ -656,6 +656,78 @@ search_tests_menu() {
     done
 }
 
+# Security tests menu
+security_tests_menu() {
+    local env="$1"
+    
+    while true; do
+        echo ""
+        menu "Security Tests - $env Environment" \
+            "Run All Security Tests" \
+            "Authentication & Authorization Tests" \
+            "Injection Attack Tests" \
+            "Fuzzing Tests" \
+            "Rate Limiting Tests" \
+            "Run Security Tests with Slow Tests" \
+            "Back to Service Menu"
+        
+        read -p "$(echo -e "${BOLD}Select option [1-7]:${NC} ")" choice
+        
+        local test_env="test"
+        if [[ "$env" == "production" ]]; then
+            test_env="production"
+        fi
+        
+        case $choice in
+            1)
+                header "All Security Tests" 70
+                echo ""
+                SECURITY_TEST_ENV="$test_env" bash "${REPO_ROOT}/tests/security/run_tests.sh"
+                pause
+                ;;
+            2)
+                header "Authentication Security Tests" 70
+                echo ""
+                SECURITY_TEST_ENV="$test_env" bash "${REPO_ROOT}/tests/security/run_tests.sh" --marker=auth
+                pause
+                ;;
+            3)
+                header "Injection Attack Tests" 70
+                echo ""
+                SECURITY_TEST_ENV="$test_env" bash "${REPO_ROOT}/tests/security/run_tests.sh" --marker=injection
+                pause
+                ;;
+            4)
+                header "Fuzzing Tests" 70
+                echo ""
+                SECURITY_TEST_ENV="$test_env" bash "${REPO_ROOT}/tests/security/run_tests.sh" --marker=fuzz
+                pause
+                ;;
+            5)
+                header "Rate Limiting Tests" 70
+                echo ""
+                SECURITY_TEST_ENV="$test_env" bash "${REPO_ROOT}/tests/security/run_tests.sh" --marker=rate_limit
+                pause
+                ;;
+            6)
+                header "All Security Tests (Including Slow)" 70
+                echo ""
+                warn "This will include slow tests like timing attacks and rate limiting."
+                if confirm "Continue?"; then
+                    SECURITY_TEST_ENV="$test_env" bash "${REPO_ROOT}/tests/security/run_tests.sh" --slow
+                fi
+                pause
+                ;;
+            7)
+                return 0
+                ;;
+            *)
+                error "Invalid selection. Please enter 1-7."
+                ;;
+        esac
+    done
+}
+
 # Service tests menu
 service_tests_menu() {
     local env="$1"
@@ -669,11 +741,12 @@ service_tests_menu() {
             "Search Service Tests" \
             "Agent Service Tests" \
             "Apps Service Tests" \
+            "Security Tests" \
             "All Service Tests" \
             "Bootstrap Test Credentials (for local dev)" \
             "Back to Main Menu"
         
-        read -p "$(echo -e "${BOLD}Select option [1-9]:${NC} ")" choice
+        read -p "$(echo -e "${BOLD}Select option [1-10]:${NC} ")" choice
         
         cd "$ANSIBLE_DIR"
         local inv="inventory/${env}"
@@ -740,6 +813,11 @@ service_tests_menu() {
                 pause
                 ;;
             7)
+                cd "$REPO_ROOT"
+                security_tests_menu "$env"
+                cd "$ANSIBLE_DIR"
+                ;;
+            8)
                 header "All Service Tests" 70
                 echo ""
                 if confirm "Run ALL service tests on $env? (This may take a while)"; then
@@ -747,7 +825,7 @@ service_tests_menu() {
                 fi
                 pause
                 ;;
-            8)
+            9)
                 header "Bootstrap Test Credentials" 70
                 echo ""
                 warn "This generates OAuth client credentials and admin tokens for local integration testing."
@@ -765,12 +843,12 @@ service_tests_menu() {
                 fi
                 pause
                 ;;
-            9)
+            10)
                 cd "$REPO_ROOT"
                 return 0
                 ;;
             *)
-                error "Invalid selection. Please enter 1-9."
+                error "Invalid selection. Please enter 1-10."
                 ;;
         esac
         
