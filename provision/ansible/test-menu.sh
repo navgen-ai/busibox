@@ -60,6 +60,7 @@ echo "  3) Search Service"
 echo "  4) Agent Service"
 echo "  5) Apps (AI Portal)"
 echo "  6) All Services"
+echo "  7) Bootstrap Test Credentials (for local dev)"
 echo "  Q) Quit"
 echo ""
 read -p "Choice: " main_choice
@@ -265,6 +266,27 @@ case "$main_choice" in
     6)
         echo -e "${GREEN}Running all service tests...${NC}"
         make test-all INV="$INV"
+        ;;
+    7)
+        echo ""
+        echo -e "${BLUE}Bootstrap Test Credentials${NC}"
+        echo -e "${YELLOW}This generates OAuth client credentials and admin tokens for local integration testing.${NC}"
+        echo ""
+        echo -e "${BLUE}Environment: ${INV}${NC}"
+        echo ""
+        read -p "Continue? [y/N]: " confirm
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            make bootstrap-test-creds INV="$INV"
+            echo ""
+            echo -e "${GREEN}✓ Credentials generated!${NC}"
+            echo ""
+            echo -e "${YELLOW}Copy the above variables to your busibox-app/.env file${NC}"
+            echo -e "${YELLOW}Then run: cd busibox-app && npm test${NC}"
+            echo ""
+            read -p "Press Enter to continue..."
+        else
+            echo "Cancelled."
+        fi
         ;;
     Q|q)
         echo "Exiting..."
