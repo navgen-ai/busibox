@@ -296,6 +296,10 @@ async def upload_file(
                 status_code=status.HTTP_200_OK,
                 content={
                     "fileId": file_id,
+                    "filename": file.filename,
+                    "mimeType": file.content_type,
+                    "sizeBytes": file_size,
+                    "url": f"/files/{file_id}",
                     "status": "queued",
                     "duplicate": False,
                     "message": "File uploaded and queued for processing",
@@ -319,6 +323,10 @@ async def upload_file(
                 status_code=status.HTTP_200_OK,
                 content={
                     "fileId": file_id,
+                    "filename": file.filename,
+                    "mimeType": file.content_type,
+                    "sizeBytes": file_size,
+                    "url": f"/files/{file_id}",
                     "status": "completed",
                     "duplicate": False,
                     "message": f"{file_type} file uploaded and stored",
