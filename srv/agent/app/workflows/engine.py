@@ -183,7 +183,7 @@ async def execute_workflow(
         
         # Create Busibox client
         busibox_client = BusiboxClient(
-            search_url="http://search-api:8001",
+            search_url="http://search-api:8003",
             ingest_url="http://ingest-api:8002",
             bearer_token=token_response.access_token,
         )
