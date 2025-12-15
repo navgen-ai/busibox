@@ -40,8 +40,8 @@ class Settings(BaseSettings):
     )
 
     # Auth configuration
-    auth_issuer: Optional[AnyHttpUrl] = Field(
-        None, description="Expected issuer for Busibox JWT tokens"
+    auth_issuer: Optional[str] = Field(
+        None, description="Expected issuer for Busibox JWT tokens (string identifier, not URL)"
     )
     auth_audience: Optional[str] = Field(
         None, description="Expected audience for Busibox JWT tokens"
