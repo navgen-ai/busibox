@@ -365,10 +365,13 @@ async def get_user_roles(request: Request, user_id: str):
 
 
 class OAuthClientCreate(BaseModel):
-    client_id: str = Field(..., min_length=1)
-    client_secret: str = Field(..., min_length=1)
+    client_id: str = Field(..., min_length=1, description="Client ID for the new OAuth client")
+    client_secret: str = Field(..., min_length=1, description="Client secret for the new OAuth client")
     allowed_audiences: List[str] = Field(default_factory=list)
     allowed_scopes: List[str] = Field(default_factory=list)
+    # Optional: for authentication when admin token is not available
+    auth_client_id: Optional[str] = Field(None, description="Client ID for authentication (if not using admin token)")
+    auth_client_secret: Optional[str] = Field(None, description="Client secret for authentication (if not using admin token)")
 
 
 class OAuthClientResponse(BaseModel):
@@ -384,7 +387,28 @@ async def create_oauth_client(
     client_data: OAuthClientCreate, request: Request
 ) -> OAuthClientResponse:
     """Create a new OAuth client."""
-    await _require_admin_auth(request)
+    # Check authentication: admin token in header OR client credentials in body
+    auth_header = request.headers.get("authorization", "")
+    authenticated = False
+    
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:]
+        if config.admin_token and token == config.admin_token:
+            authenticated = True
+    
+    # Check OAuth client credentials in body (auth_client_id/auth_client_secret)
+    if not authenticated and client_data.auth_client_id and client_data.auth_client_secret:
+        await pg.connect()
+        client = await pg.get_oauth_client(client_data.auth_client_id)
+        if client and client.get("is_active"):
+            if verify_client_secret(client_data.auth_client_secret, client["client_secret_hash"]):
+                authenticated = True
+    
+    if not authenticated:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: valid admin token or OAuth client credentials required",
+        )
 
     from oauth.client_auth import hash_client_secret
 
