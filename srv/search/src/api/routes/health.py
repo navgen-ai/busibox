@@ -39,15 +39,11 @@ async def health_check():
         milvus_status = "connected" if milvus_healthy else "unavailable"
         
         # Check PostgreSQL
-        import asyncpg
         postgres_healthy = False
         try:
-            db_url = (
-                f"postgresql://{config.postgres_user}:{config.postgres_password}"
-                f"@{config.postgres_host}:{config.postgres_port}/{config.postgres_db}"
-            )
-            conn = await asyncpg.connect(db_url, timeout=5.0)
-            await conn.close()
+            from api.main import pg_service
+            async with pg_service.acquire() as conn:
+                await conn.fetchval("SELECT 1")
             postgres_healthy = True
         except Exception as e:
             logger.error("PostgreSQL health check failed", error=str(e))

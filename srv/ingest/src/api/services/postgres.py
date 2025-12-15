@@ -94,22 +94,32 @@ class PostgresService:
 
         NOTE: The previous implementation mistakenly recursed into itself and
         exhausted the call stack. This version correctly pulls from the pool.
+        
+        Args:
+            request: FastAPI Request object for RLS context (optional)
         """
         if not self.pool:
             await self.connect()
 
         async with self.pool.acquire() as conn:
-            await self._apply_rls(conn, request)
+            # Use provided request or fall back to instance request (for backward compatibility)
+            req = request or self.request
+            if req:
+                await self._apply_rls(conn, req)
             yield conn
     
-    async def check_duplicate(self, content_hash: str) -> Optional[Dict]:
+    async def check_duplicate(self, content_hash: str, request=None) -> Optional[Dict]:
         """
         Check if file with same content hash already exists and is completed.
+        
+        Args:
+            content_hash: SHA-256 content hash to check
+            request: Optional FastAPI Request for RLS context
         
         Returns:
             Existing file record if found, None otherwise
         """
-        async with self.acquire() as conn:
+        async with self.acquire(request) as conn:
             row = await conn.fetchrow("""
                 SELECT 
                     file_id,
@@ -148,6 +158,7 @@ class PostgresService:
         metadata: Optional[Dict] = None,
         visibility: str = "personal",
         role_ids: Optional[List[str]] = None,
+        request=None,
     ) -> str:
         """
         Create file record in ingestion_files table with role-based access control.
@@ -164,12 +175,13 @@ class PostgresService:
             metadata: Optional metadata dict
             visibility: 'personal' (owner only) or 'shared' (role-based)
             role_ids: List of role IDs (required if visibility='shared')
+            request: Optional FastAPI Request for RLS context
         
         Returns:
             file_id
         """
         import json
-        async with self.acquire() as conn:
+        async with self.acquire(request) as conn:
             await self._ensure_document_roles(conn)
             # Start transaction
             async with conn.transaction():
