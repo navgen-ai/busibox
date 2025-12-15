@@ -358,3 +358,78 @@ async def get_user_roles(request: Request, user_id: str):
         for r in roles
     ]
 
+
+# ============================================================================
+# OAuth Client Management
+# ============================================================================
+
+
+class OAuthClientCreate(BaseModel):
+    client_id: str = Field(..., min_length=1)
+    client_secret: str = Field(..., min_length=1)
+    allowed_audiences: List[str] = Field(default_factory=list)
+    allowed_scopes: List[str] = Field(default_factory=list)
+
+
+class OAuthClientResponse(BaseModel):
+    client_id: str
+    allowed_audiences: List[str]
+    allowed_scopes: List[str]
+    is_active: bool
+    created_at: str
+
+
+@router.post("/oauth-clients", status_code=status.HTTP_201_CREATED)
+async def create_oauth_client(
+    client_data: OAuthClientCreate, request: Request
+) -> OAuthClientResponse:
+    """Create a new OAuth client."""
+    await _require_admin_auth(request)
+
+    from oauth.client_auth import hash_client_secret
+
+    # Hash the client secret
+    hashed_secret = hash_client_secret(client_data.client_secret)
+
+    # Create the client
+    await pg.create_oauth_client(
+        client_id=client_data.client_id,
+        client_secret_hash=hashed_secret,
+        allowed_audiences=client_data.allowed_audiences,
+        allowed_scopes=client_data.allowed_scopes,
+    )
+
+    # Fetch the created client
+    client = await pg.get_oauth_client(client_data.client_id)
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create OAuth client",
+        )
+
+    return OAuthClientResponse(
+        client_id=client["client_id"],
+        allowed_audiences=client["allowed_audiences"],
+        allowed_scopes=client["allowed_scopes"],
+        is_active=client["is_active"],
+        created_at=str(client.get("created_at", "")),
+    )
+
+
+@router.get("/oauth-clients")
+async def list_oauth_clients(request: Request) -> List[OAuthClientResponse]:
+    """List all OAuth clients."""
+    await _require_admin_auth(request)
+
+    clients = await pg.list_oauth_clients()
+    return [
+        OAuthClientResponse(
+            client_id=c["client_id"],
+            allowed_audiences=c["allowed_audiences"],
+            allowed_scopes=c["allowed_scopes"],
+            is_active=c["is_active"],
+            created_at=str(c.get("created_at", "")),
+        )
+        for c in clients
+    ]
+

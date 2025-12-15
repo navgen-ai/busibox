@@ -103,6 +103,25 @@ else
     echo -e "${YELLOW}⚠ Could not create user via API (may need manual setup)${NC}"
 fi
 
+# Create OAuth client via admin endpoint
+echo -e "${BLUE}Creating OAuth client...${NC}"
+CREATE_CLIENT_RESPONSE=$(curl -s -X POST "${AUTHZ_URL}/admin/oauth-clients" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    -d "{
+        \"client_id\": \"${TEST_CLIENT_ID}\",
+        \"client_secret\": \"${TEST_CLIENT_SECRET}\",
+        \"allowed_audiences\": [\"ingest-api\", \"search-api\", \"agent-api\", \"authz\"],
+        \"allowed_scopes\": [\"read\", \"write\", \"admin\"]
+    }" 2>&1 || true)
+
+if echo "$CREATE_CLIENT_RESPONSE" | grep -q "client_id"; then
+    echo -e "${GREEN}✓ OAuth client created${NC}"
+else
+    echo -e "${YELLOW}⚠ Could not create OAuth client via API: ${CREATE_CLIENT_RESPONSE}${NC}"
+    echo -e "${YELLOW}  You may need to create it manually or ensure admin token is set${NC}"
+fi
+
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}Test Credentials Generated!${NC}"
