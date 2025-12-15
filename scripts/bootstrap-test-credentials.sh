@@ -29,7 +29,7 @@ set -euo pipefail
 #
 # EXAMPLE:
 #   bash scripts/bootstrap-test-credentials.sh test
-#   # Credentials are saved to inventory/test/group_vars/all/vault.yml
+#   # Credentials are saved to provision/ansible/roles/secrets/vars/vault.yml
 #   # Copy the output .env variables to busibox-app/.env
 #==============================================================================
 
@@ -88,7 +88,8 @@ BOOTSTRAP_CLIENT_ID=$(pct exec ${AUTHZ_CTID} -- grep AUTHZ_BOOTSTRAP_CLIENT_ID /
 BOOTSTRAP_CLIENT_SECRET=$(pct exec ${AUTHZ_CTID} -- grep AUTHZ_BOOTSTRAP_CLIENT_SECRET /srv/authz/.env 2>/dev/null | cut -d= -f2 || echo "")
 
 # Check for existing credentials in vault
-VAULT_FILE="provision/ansible/inventory/${ENV}/group_vars/all/vault.yml"
+# Note: The vault file is shared between test and production environments
+VAULT_FILE="provision/ansible/roles/secrets/vars/vault.yml"
 EXISTING_CREDS_FOUND=false
 TEST_USER_ID=""
 TEST_USER_EMAIL="test@busibox.local"
