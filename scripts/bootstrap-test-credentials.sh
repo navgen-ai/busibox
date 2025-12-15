@@ -103,23 +103,36 @@ else
     echo -e "${YELLOW}⚠ Could not create user via API (may need manual setup)${NC}"
 fi
 
-# Create OAuth client via admin endpoint
+# Create OAuth client via admin endpoint using bootstrap client credentials for auth
 echo -e "${BLUE}Creating OAuth client...${NC}"
-CREATE_CLIENT_RESPONSE=$(curl -s -X POST "${AUTHZ_URL}/admin/oauth-clients" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-    -d "{
-        \"client_id\": \"${TEST_CLIENT_ID}\",
-        \"client_secret\": \"${TEST_CLIENT_SECRET}\",
-        \"allowed_audiences\": [\"ingest-api\", \"search-api\", \"agent-api\", \"authz\"],
-        \"allowed_scopes\": [\"read\", \"write\", \"admin\"]
-    }" 2>&1 || true)
 
-if echo "$CREATE_CLIENT_RESPONSE" | grep -q "client_id"; then
-    echo -e "${GREEN}✓ OAuth client created${NC}"
+# Get bootstrap client credentials from authz service env
+BOOTSTRAP_CLIENT_ID=$(ssh root@${AUTHZ_HOST} "grep AUTHZ_BOOTSTRAP_CLIENT_ID /srv/authz/.env | cut -d= -f2" 2>/dev/null || echo "ai-portal")
+BOOTSTRAP_CLIENT_SECRET=$(ssh root@${AUTHZ_HOST} "grep AUTHZ_BOOTSTRAP_CLIENT_SECRET /srv/authz/.env | cut -d= -f2" 2>/dev/null || echo "")
+
+if [ -z "$BOOTSTRAP_CLIENT_SECRET" ]; then
+    echo -e "${YELLOW}⚠ Could not get bootstrap client credentials${NC}"
+    echo -e "${YELLOW}  OAuth client will need to be created manually${NC}"
 else
-    echo -e "${YELLOW}⚠ Could not create OAuth client via API: ${CREATE_CLIENT_RESPONSE}${NC}"
-    echo -e "${YELLOW}  You may need to create it manually or ensure admin token is set${NC}"
+    # Include bootstrap client credentials in body for authentication (per admin.py _require_admin_auth)
+    # The endpoint expects: client_id/client_secret for auth + client_id/client_secret/audiences/scopes for the new client
+    CREATE_CLIENT_RESPONSE=$(curl -s -X POST "${AUTHZ_URL}/admin/oauth-clients" \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"client_id\": \"${TEST_CLIENT_ID}\",
+            \"client_secret\": \"${TEST_CLIENT_SECRET}\",
+            \"allowed_audiences\": [\"ingest-api\", \"search-api\", \"agent-api\", \"authz\"],
+            \"allowed_scopes\": [\"read\", \"write\", \"admin\"],
+            \"auth_client_id\": \"${BOOTSTRAP_CLIENT_ID}\",
+            \"auth_client_secret\": \"${BOOTSTRAP_CLIENT_SECRET}\"
+        }" 2>&1 || true)
+
+    if echo "$CREATE_CLIENT_RESPONSE" | grep -q "client_id"; then
+        echo -e "${GREEN}✓ OAuth client created${NC}"
+    else
+        echo -e "${YELLOW}⚠ Could not create OAuth client via API: ${CREATE_CLIENT_RESPONSE}${NC}"
+        echo -e "${YELLOW}  You may need to create it manually${NC}"
+    fi
 fi
 
 echo ""
