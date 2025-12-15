@@ -74,7 +74,7 @@ class TestDatabaseSchema:
                 SELECT table_name 
                 FROM information_schema.tables 
                 WHERE table_schema = 'public' 
-                AND table_name LIKE 'authz_%'
+                AND (table_name LIKE 'authz_%' OR table_name = 'audit_logs')
                 ORDER BY table_name
             """)
             
@@ -188,8 +188,9 @@ class TestRBACOperations:
     @pytest.mark.asyncio
     async def test_create_role(self, db_pool, clean_test_data):
         """Test creating a role."""
+        import uuid
         async with db_pool.acquire() as conn:
-            role_id = f"test-role-{datetime.now().timestamp()}"
+            role_id = uuid.uuid4()
             
             await conn.execute("""
                 INSERT INTO authz_roles (id, name, description)
@@ -209,9 +210,10 @@ class TestRBACOperations:
     @pytest.mark.asyncio
     async def test_create_user_and_assign_role(self, db_pool, clean_test_data):
         """Test creating a user and assigning a role."""
+        import uuid
         async with db_pool.acquire() as conn:
-            user_id = f"test-user-{datetime.now().timestamp()}"
-            role_id = f"test-role-{datetime.now().timestamp()}"
+            user_id = uuid.uuid4()
+            role_id = uuid.uuid4()
             
             # Create role
             await conn.execute("""
@@ -245,10 +247,11 @@ class TestRBACOperations:
     @pytest.mark.asyncio
     async def test_get_user_roles(self, db_pool, clean_test_data):
         """Test retrieving user roles."""
+        import uuid
         async with db_pool.acquire() as conn:
-            user_id = f"test-user-{datetime.now().timestamp()}"
-            role1_id = f"test-role-1-{datetime.now().timestamp()}"
-            role2_id = f"test-role-2-{datetime.now().timestamp()}"
+            user_id = uuid.uuid4()
+            role1_id = uuid.uuid4()
+            role2_id = uuid.uuid4()
             
             # Create roles
             await conn.execute("""
