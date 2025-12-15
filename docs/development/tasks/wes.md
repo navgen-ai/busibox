@@ -1,7 +1,6 @@
 # Wes's Tasks
 
 Agent tasks:
-1 - make sure authz restarts on deploy & also runs migrations on deploy
 2 - make sure all busibox-app tests pass
 3 - make sure all authz tests pass
 4 - make sure all ai-portal tests pass
