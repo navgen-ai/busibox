@@ -76,37 +76,7 @@ fi
 echo -e "${GREEN}✓ Authz service is running${NC}"
 echo ""
 
-# Generate test credentials
-TEST_USER_ID="test-user-$(date +%s)"
-TEST_USER_EMAIL="test@busibox.local"
-TEST_CLIENT_ID="test-client-$(date +%s)"
-TEST_CLIENT_SECRET=$(openssl rand -hex 32)
-ADMIN_TOKEN=$(openssl rand -hex 32)
-
-echo -e "${BLUE}Creating test user and OAuth client...${NC}"
-
-# Create test user via internal sync endpoint
-SYNC_USER_RESPONSE=$(curl -s -X POST "${AUTHZ_URL}/internal/sync/user" \
-    -H "Content-Type: application/json" \
-    -d "{
-        \"user_id\": \"${TEST_USER_ID}\",
-        \"email\": \"${TEST_USER_EMAIL}\",
-        \"roles\": [
-            {\"id\": \"admin\", \"name\": \"Admin\", \"permissions\": [\"*\"]},
-            {\"id\": \"user\", \"name\": \"User\", \"permissions\": [\"read\", \"write\"]}
-        ]
-    }" 2>&1 || true)
-
-if echo "$SYNC_USER_RESPONSE" | grep -q "ok"; then
-    echo -e "${GREEN}✓ Test user created${NC}"
-else
-    echo -e "${YELLOW}⚠ Could not create user via API (may need manual setup)${NC}"
-fi
-
-# Create OAuth client via admin endpoint using bootstrap client credentials for auth
-echo -e "${BLUE}Creating OAuth client...${NC}"
-
-# Get bootstrap client credentials from authz service env
+# Get bootstrap client credentials for API calls
 # Determine container ID based on environment
 if [ "$ENV" = "test" ]; then
     AUTHZ_CTID=310
@@ -117,45 +87,170 @@ fi
 BOOTSTRAP_CLIENT_ID=$(pct exec ${AUTHZ_CTID} -- grep AUTHZ_BOOTSTRAP_CLIENT_ID /srv/authz/.env 2>/dev/null | cut -d= -f2 || echo "ai-portal")
 BOOTSTRAP_CLIENT_SECRET=$(pct exec ${AUTHZ_CTID} -- grep AUTHZ_BOOTSTRAP_CLIENT_SECRET /srv/authz/.env 2>/dev/null | cut -d= -f2 || echo "")
 
-if [ -z "$BOOTSTRAP_CLIENT_SECRET" ]; then
-    echo -e "${YELLOW}⚠ Could not get bootstrap client credentials${NC}"
-    echo -e "${YELLOW}  OAuth client will need to be created manually${NC}"
+# Check for existing credentials in vault
+VAULT_FILE="provision/ansible/inventory/${ENV}/group_vars/all/vault.yml"
+EXISTING_CREDS_FOUND=false
+TEST_USER_ID=""
+TEST_USER_EMAIL="test@busibox.local"
+TEST_CLIENT_ID=""
+TEST_CLIENT_SECRET=""
+ADMIN_TOKEN=""
+
+if [ -f "$VAULT_FILE" ]; then
+    echo -e "${BLUE}Checking for existing credentials in vault...${NC}"
+    
+    # Try to read existing credentials from vault
+    TEMP_VAULT=$(mktemp)
+    trap "rm -f $TEMP_VAULT" EXIT
+    
+    VAULT_PASS_FILE="${HOME}/.vault_pass"
+    WORKING_VAULT=""
+    if head -n1 "$VAULT_FILE" | grep -q "^\$ANSIBLE_VAULT"; then
+        # Vault is encrypted
+        if [ -f "$VAULT_PASS_FILE" ]; then
+            if ansible-vault decrypt "$VAULT_FILE" --output="$TEMP_VAULT" --vault-password-file="$VAULT_PASS_FILE" 2>/dev/null; then
+                WORKING_VAULT="$TEMP_VAULT"
+            fi
+        else
+            if ansible-vault decrypt "$VAULT_FILE" --output="$TEMP_VAULT" 2>/dev/null; then
+                WORKING_VAULT="$TEMP_VAULT"
+            fi
+        fi
+    else
+        WORKING_VAULT="$VAULT_FILE"
+    fi
+    
+    if [ -n "${WORKING_VAULT:-}" ] && [ -f "$WORKING_VAULT" ]; then
+        # Extract credentials using Python
+        EXISTING_CREDS=$(python3 <<PYTHON_EOF
+import yaml
+import sys
+try:
+    with open('$WORKING_VAULT', 'r') as f:
+        vault_data = yaml.safe_load(f) or {}
+    creds = vault_data.get('secrets', {}).get('test_credentials', {})
+    if creds:
+        print(f"{creds.get('authz_test_client_id', '')}|{creds.get('authz_test_client_secret', '')}|{creds.get('test_user_id', '')}|{creds.get('test_user_email', 'test@busibox.local')}|{creds.get('authz_admin_token', '')}")
+except Exception as e:
+    pass
+PYTHON_EOF
+)
+        
+        if [ -n "$EXISTING_CREDS" ]; then
+            IFS='|' read -r TEST_CLIENT_ID TEST_CLIENT_SECRET TEST_USER_ID TEST_USER_EMAIL ADMIN_TOKEN <<< "$EXISTING_CREDS"
+            
+            if [ -n "$TEST_CLIENT_ID" ] && [ -n "$TEST_CLIENT_SECRET" ] && [ -n "$TEST_USER_ID" ]; then
+                echo -e "${GREEN}✓ Found existing credentials in vault${NC}"
+                
+                # Verify OAuth client exists in authz (if we have bootstrap credentials)
+                if [ -n "$BOOTSTRAP_CLIENT_SECRET" ]; then
+                    echo -e "${BLUE}Verifying OAuth client exists in authz...${NC}"
+                    CLIENT_CHECK=$(curl -s -X GET "${AUTHZ_URL}/admin/oauth-clients" \
+                        -H "Content-Type: application/json" \
+                        -d "{\"auth_client_id\": \"${BOOTSTRAP_CLIENT_ID}\", \"auth_client_secret\": \"${BOOTSTRAP_CLIENT_SECRET}\"}" 2>&1 || echo "")
+                    
+                    if echo "$CLIENT_CHECK" | grep -q "\"client_id\": \"${TEST_CLIENT_ID}\""; then
+                        echo -e "${GREEN}✓ OAuth client verified in authz${NC}"
+                        EXISTING_CREDS_FOUND=true
+                    else
+                        echo -e "${YELLOW}⚠ OAuth client not found in authz, will create new one${NC}"
+                        EXISTING_CREDS_FOUND=false
+                    fi
+                else
+                    echo -e "${YELLOW}⚠ Cannot verify OAuth client (no bootstrap credentials), assuming it exists${NC}"
+                    EXISTING_CREDS_FOUND=true
+                fi
+            fi
+        fi
+        
+        rm -f "$TEMP_VAULT"
+    fi
+fi
+
+if [ "$EXISTING_CREDS_FOUND" = false ]; then
+    echo -e "${BLUE}No existing credentials found, generating new ones...${NC}"
+    
+    # Generate new test credentials
+    TEST_USER_ID="test-user-$(date +%s)"
+    TEST_USER_EMAIL="test@busibox.local"
+    TEST_CLIENT_ID="test-client-$(date +%s)"
+    TEST_CLIENT_SECRET=$(openssl rand -hex 32)
+    ADMIN_TOKEN=$(openssl rand -hex 32)
+    
+    echo -e "${BLUE}Creating test user and OAuth client...${NC}"
 else
-    # Include bootstrap client credentials in body for authentication (per admin.py _require_admin_auth)
-    # The endpoint expects: client_id/client_secret for auth + client_id/client_secret/audiences/scopes for the new client
-    CREATE_CLIENT_RESPONSE=$(curl -s -X POST "${AUTHZ_URL}/admin/oauth-clients" \
+    echo -e "${GREEN}Using existing credentials${NC}"
+    echo ""
+fi
+
+if [ "$EXISTING_CREDS_FOUND" = false ]; then
+    # Create test user via internal sync endpoint
+    echo -e "${BLUE}Creating test user...${NC}"
+    SYNC_USER_RESPONSE=$(curl -s -X POST "${AUTHZ_URL}/internal/sync/user" \
         -H "Content-Type: application/json" \
         -d "{
-            \"client_id\": \"${TEST_CLIENT_ID}\",
-            \"client_secret\": \"${TEST_CLIENT_SECRET}\",
-            \"allowed_audiences\": [\"ingest-api\", \"search-api\", \"agent-api\", \"authz\"],
-            \"allowed_scopes\": [\"read\", \"write\", \"admin\"],
-            \"auth_client_id\": \"${BOOTSTRAP_CLIENT_ID}\",
-            \"auth_client_secret\": \"${BOOTSTRAP_CLIENT_SECRET}\"
+            \"user_id\": \"${TEST_USER_ID}\",
+            \"email\": \"${TEST_USER_EMAIL}\",
+            \"roles\": [
+                {\"id\": \"admin\", \"name\": \"Admin\", \"permissions\": [\"*\"]},
+                {\"id\": \"user\", \"name\": \"User\", \"permissions\": [\"read\", \"write\"]}
+            ]
         }" 2>&1 || true)
 
-    if echo "$CREATE_CLIENT_RESPONSE" | grep -q "client_id"; then
-        echo -e "${GREEN}✓ OAuth client created${NC}"
+    if echo "$SYNC_USER_RESPONSE" | grep -q "ok"; then
+        echo -e "${GREEN}✓ Test user created${NC}"
     else
-        echo -e "${YELLOW}⚠ Could not create OAuth client via API: ${CREATE_CLIENT_RESPONSE}${NC}"
-        echo -e "${YELLOW}  You may need to create it manually${NC}"
+        echo -e "${YELLOW}⚠ Could not create user via API (may need manual setup)${NC}"
     fi
+
+    # Create OAuth client via admin endpoint using bootstrap client credentials for auth
+    echo -e "${BLUE}Creating OAuth client...${NC}"
+
+    if [ -z "$BOOTSTRAP_CLIENT_SECRET" ]; then
+        echo -e "${YELLOW}⚠ Could not get bootstrap client credentials${NC}"
+        echo -e "${YELLOW}  OAuth client will need to be created manually${NC}"
+    else
+        # Include bootstrap client credentials in body for authentication (per admin.py _require_admin_auth)
+        # The endpoint expects: client_id/client_secret for auth + client_id/client_secret/audiences/scopes for the new client
+        CREATE_CLIENT_RESPONSE=$(curl -s -X POST "${AUTHZ_URL}/admin/oauth-clients" \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"client_id\": \"${TEST_CLIENT_ID}\",
+                \"client_secret\": \"${TEST_CLIENT_SECRET}\",
+                \"allowed_audiences\": [\"ingest-api\", \"search-api\", \"agent-api\", \"authz\"],
+                \"allowed_scopes\": [\"read\", \"write\", \"admin\"],
+                \"auth_client_id\": \"${BOOTSTRAP_CLIENT_ID}\",
+                \"auth_client_secret\": \"${BOOTSTRAP_CLIENT_SECRET}\"
+            }" 2>&1 || true)
+
+        if echo "$CREATE_CLIENT_RESPONSE" | grep -q "client_id"; then
+            echo -e "${GREEN}✓ OAuth client created${NC}"
+        else
+            echo -e "${YELLOW}⚠ Could not create OAuth client via API: ${CREATE_CLIENT_RESPONSE}${NC}"
+            echo -e "${YELLOW}  You may need to create it manually${NC}"
+        fi
+    fi
+else
+    echo -e "${GREEN}✓ Using existing test user and OAuth client${NC}"
 fi
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}Test Credentials Generated!${NC}"
+if [ "$EXISTING_CREDS_FOUND" = true ]; then
+    echo -e "${GREEN}Test Credentials Retrieved!${NC}"
+else
+    echo -e "${GREEN}Test Credentials Generated!${NC}"
+fi
 echo -e "${GREEN}========================================${NC}"
 echo ""
 
-# Save credentials to ansible vault
-VAULT_FILE="provision/ansible/inventory/${ENV}/group_vars/all/vault.yml"
-
-if [ ! -f "$VAULT_FILE" ]; then
-    echo -e "${RED}Error: Vault file not found: ${VAULT_FILE}${NC}"
-    echo -e "${YELLOW}Skipping vault update. Credentials will only be printed below.${NC}"
-    echo ""
-else
+# Save credentials to ansible vault (only if we created new ones)
+if [ "$EXISTING_CREDS_FOUND" = false ]; then
+    if [ ! -f "$VAULT_FILE" ]; then
+        echo -e "${RED}Error: Vault file not found: ${VAULT_FILE}${NC}"
+        echo -e "${YELLOW}Skipping vault update. Credentials will only be printed below.${NC}"
+        echo ""
+    else
     echo -e "${BLUE}Merging credentials into vault: ${VAULT_FILE}...${NC}"
     
     # Check if vault is encrypted
@@ -291,6 +386,10 @@ PYTHON_EOF
         
         rm -f "$TEMP_SCRIPT" "$TEMP_VAULT"
     fi
+fi
+else
+    echo -e "${GREEN}✓ Using existing credentials from vault${NC}"
+    echo ""
 fi
 
 echo ""

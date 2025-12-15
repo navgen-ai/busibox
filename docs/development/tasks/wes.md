@@ -1,7 +1,14 @@
 # Wes's Tasks
 
-1) use UI library on agent-client, make sure it works right
-2) build out agent client to support all the agent server functionality
+Agent tasks:
+1 - make sure authz restarts on deploy & also runs migrations on deploy
+2 - make sure all busibox-app tests pass
+3 - make sure all authz tests pass
+4 - make sure all ai-portal tests pass
+5 - make sure agent-api is working and all tests pass
+6 - start rebuilding agent-client (rename to agent-manager) using busibox-app libs and components
+7 - make sure agent-manager runs and can talk to agent-api
+
 
 What I'd delagate now:
 - improving ingestion:
