@@ -1,4 +1,4 @@
-.PHONY: ping all files pg milvus nginx search search-api agent ingest ingest-api ingest-worker ingest-update-tests apps openwebui deploy-apps deploy-ai-portal deploy-agent-client deploy-doc-intel deploy-foundation deploy-project-analysis deploy-innovation verify verify-health verify-smoke test test-menu test-ingest test-ingest-all test-ingest-coverage test-extraction-simple test-extraction-llm test-extraction-marker test-extraction-colpali test-search test-search-unit test-search-integration test-search-coverage test-agent test-apps test-all configure generate-token-keys
+.PHONY: ping all files pg milvus nginx search search-api agent ingest ingest-api ingest-worker ingest-update-tests apps openwebui deploy-apps deploy-ai-portal deploy-agent-client deploy-doc-intel deploy-foundation deploy-project-analysis deploy-innovation verify verify-health verify-smoke test test-menu test-ingest test-ingest-all test-ingest-coverage test-extraction-simple test-extraction-llm test-extraction-marker test-extraction-colpali test-search test-search-unit test-search-integration test-search-coverage test-agent test-apps test-all configure generate-token-keys bootstrap-test-creds
 # Default to production inventory (can override with: make all INV=inventory/test)
 INV=inventory/production
 
@@ -127,6 +127,11 @@ configure:
 
 generate-token-keys:
 	@bash ../../scripts/generate-token-service-keys.sh
+
+# Bootstrap test credentials for local integration testing
+bootstrap-test-creds:
+	@echo "Bootstrapping test credentials for $(INV)..."
+	@bash ../../scripts/bootstrap-test-credentials.sh $(shell echo $(INV) | grep -q test && echo test || echo production)
 
 # Verification targets
 verify: verify-health verify-smoke
