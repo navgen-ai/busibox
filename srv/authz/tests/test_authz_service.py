@@ -115,10 +115,17 @@ class FakePG:
         if not u:
             return []
         out = []
-        for rid in u["role_ids"]:
+        for rid in u.get("role_ids", []):
             r = self.roles.get(rid)
             if r:
-                out.append({"id": r["id"], "name": r["name"], "description": r.get("description")})
+                from datetime import datetime
+                out.append({
+                    "id": r["id"],
+                    "name": r["name"],
+                    "description": r.get("description"),
+                    "created_at": r.get("created_at", datetime.now()),
+                    "updated_at": r.get("updated_at", datetime.now()),
+                })
         return out
 
     # Admin RBAC methods
@@ -184,7 +191,9 @@ class FakePG:
     async def add_user_role(self, *, user_id: str, role_id: str) -> dict:
         if user_id not in self.users:
             self.users[user_id] = {"email": "", "role_ids": []}
-        if role_id not in self.users[user_id]["role_ids"]:
+        if role_id not in self.users[user_id].get("role_ids", []):
+            if "role_ids" not in self.users[user_id]:
+                self.users[user_id]["role_ids"] = []
             self.users[user_id]["role_ids"].append(role_id)
         role = self.roles.get(role_id)
         if role:
