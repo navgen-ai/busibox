@@ -196,13 +196,42 @@ class PostgresService:
         async with self.acquire(None, None) as conn:
             row = await conn.fetchrow(
                 """
-                SELECT client_id, client_secret_hash, allowed_audiences, allowed_scopes, is_active
+                SELECT client_id, client_secret_hash, allowed_audiences, allowed_scopes, is_active, created_at
                 FROM authz_oauth_clients
                 WHERE client_id = $1
                 """,
                 client_id,
             )
             return dict(row) if row else None
+
+    async def create_oauth_client(
+        self,
+        *,
+        client_id: str,
+        client_secret_hash: str,
+        allowed_audiences: List[str],
+        allowed_scopes: List[str],
+        is_active: bool = True,
+    ) -> None:
+        """Create a new OAuth client (alias for upsert for clarity in admin endpoints)."""
+        await self.upsert_oauth_client(
+            client_id=client_id,
+            client_secret_hash=client_secret_hash,
+            allowed_audiences=allowed_audiences,
+            allowed_scopes=allowed_scopes,
+            is_active=is_active,
+        )
+
+    async def list_oauth_clients(self) -> List[dict]:
+        async with self.acquire(None, None) as conn:
+            rows = await conn.fetch(
+                """
+                SELECT client_id, allowed_audiences, allowed_scopes, is_active, created_at
+                FROM authz_oauth_clients
+                ORDER BY created_at DESC
+                """
+            )
+            return [dict(r) for r in rows]
 
     # ---------------------------------------------------------------------
     # Signing keys / JWKS
