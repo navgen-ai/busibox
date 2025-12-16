@@ -5,6 +5,12 @@ from app.schemas.auth import Principal
 
 
 async def get_principal(authorization: str = Header(...)) -> Principal:
+    """
+    Get authenticated principal from Bearer token.
+    
+    Validates JWT token and returns principal with user claims.
+    This is the ONLY authentication method - no fallbacks.
+    """
     if not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid auth header")
     token = authorization.split(" ", 1)[1]

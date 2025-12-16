@@ -7,3 +7,4 @@ from .assertions import SecurityAssertions
 
 __all__ = ["PayloadGenerator", "Fuzzer", "AuthTester", "SecurityAssertions"]
 
+

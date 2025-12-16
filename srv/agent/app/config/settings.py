@@ -38,6 +38,16 @@ class Settings(BaseSettings):
         "http://10.96.200.204:8003",
         description="Base URL for RAG/vector database API",
     )
+    
+    # Milvus configuration (for insights)
+    milvus_host: str = Field(
+        "10.96.200.204",
+        description="Milvus host for insights storage",
+    )
+    milvus_port: int = Field(
+        19530,
+        description="Milvus port",
+    )
 
     # Auth configuration
     auth_issuer: Optional[str] = Field(

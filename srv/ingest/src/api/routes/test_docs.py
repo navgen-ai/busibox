@@ -138,7 +138,7 @@ async def _seed_doc(
 
     headers = {
         "Authorization": request.headers.get("Authorization", ""),
-        "X-User-Id": getattr(request.state, "user_id", ""),
+        # Note: Service-to-service calls should use proper JWT tokens in production
     }
 
     data = {
@@ -186,7 +186,7 @@ async def _seed_doc(
 async def _fetch_status(file_id: str, request: Request) -> Dict:
     headers = {
         "Authorization": request.headers.get("Authorization", ""),
-        "X-User-Id": getattr(request.state, "user_id", ""),
+        # Note: Service-to-service calls should use proper JWT tokens in production
     }
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(_build_file_url(file_id), headers=headers)
@@ -278,7 +278,7 @@ async def cleanup_test_docs(request: Request):
 
     headers = {
         "Authorization": request.headers.get("Authorization", ""),
-        "X-User-Id": getattr(request.state, "user_id", ""),
+        # Note: Service-to-service calls should use proper JWT tokens in production
     }
 
     # Delete all files from state

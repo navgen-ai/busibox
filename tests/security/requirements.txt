@@ -28,3 +28,4 @@ pyyaml>=6.0.0
 # Rich output for test reporting
 rich>=13.0.0
 
+

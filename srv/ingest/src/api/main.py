@@ -72,9 +72,8 @@ the Busibox ingestion pipeline.
 
 ### Authentication
 
-All endpoints require authentication via one of:
-- `Authorization: Bearer <JWT>` header (preferred) - JWT with user identity and role permissions
-- `X-User-Id` header (legacy) - User UUID for backward compatibility
+All endpoints require authentication via:
+- `Authorization: Bearer <JWT>` header (required) - JWT with user identity and role permissions
 
 JWT tokens contain user identity and document role memberships with CRUD permissions,
 enabling Row-Level Security (RLS) enforcement in the database.

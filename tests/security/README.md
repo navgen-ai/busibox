@@ -260,3 +260,4 @@ security-tests:
 4. **Clear assertions**: Each test has clear pass/fail criteria
 5. **Actionable results**: Failed tests provide remediation guidance
 
+
