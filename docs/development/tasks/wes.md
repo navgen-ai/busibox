@@ -31,3 +31,12 @@ What I'd delagate now:
 1) Ability to add charts to a report
 2) Ability to add time series data - e.g. upload the same sheet for multiple months
 3) Ability to add a report to a dashboard
+
+
+## Cashman Projects
+
+### P&L Statement Analysis Platform
+- [ ] We need a workflow: upload each monthly P&L statement, extract the data (P&L data extraction agent + data cleaning/validation agent), store as timeseries data in a database
+- [ ] Another agent needs to be able to analyze the timeseries data based on questions
+- [ ] We also want a charting agent that can take a description of a chart & dataset and generate chartJS code
+Add a tool to the agent that can analyze a P&L statement and return a summary of the financial performance

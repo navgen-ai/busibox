@@ -48,7 +48,7 @@ class DispatcherDecisionLog(Base):
     alternatives: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, comment="Alternative tools/agents suggested")
     user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True, comment="User who made the query")
     request_id: Mapped[str] = mapped_column(String(255), nullable=False, comment="Request correlation ID")
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now, index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now, index=True)
 
     __table_args__ = (
         CheckConstraint('confidence >= 0 AND confidence <= 1', name='check_confidence_range'),
