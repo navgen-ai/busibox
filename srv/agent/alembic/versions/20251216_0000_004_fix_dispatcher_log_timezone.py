@@ -1,7 +1,7 @@
 """fix dispatcher log timezone
 
-Revision ID: 20251216_0000_004
-Revises: 20251212_0000_003
+Revision ID: 004
+Revises: 003
 Create Date: 2025-12-16 00:00:00.000000
 
 """
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '20251216_0000_004'
-down_revision: Union[str, None] = '20251212_0000_003'
+revision: str = '004'
+down_revision: Union[str, None] = '003'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
