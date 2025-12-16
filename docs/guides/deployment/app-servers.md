@@ -70,7 +70,7 @@ For each new application:
 2. **Download from GitHub** (latest release or main branch)
 3. **Install dependencies** (`npm install`)
 4. **Run build command** (if specified, e.g., `npm run build`)
-5. **Start with PM2** (`pm2 start npm --name {app-name} -- start`)
+5. **Start with systemd** (`systemctl start {app-name}.service`)
 6. **Health check** (verify `http://localhost:{port}{health_endpoint}`)
 
 ## Troubleshooting
@@ -81,12 +81,12 @@ For each new application:
 # View deploywatch logs
 tail -f /var/log/deploywatch/{app-name}.log
 
-# View PM2 status
-pm2 list
-pm2 logs {app-name} --lines 50
+# View service status
+systemctl status {app-name}.service
 
 # View application logs
-tail -f /srv/apps/{app-name}/logs/error.log
+journalctl -u {app-name}.service -f
+journalctl -u {app-name}.service -n 50 --no-pager
 ```
 
 ### Manual Deployment
@@ -104,8 +104,9 @@ for app in /srv/deploywatch/apps/*.sh; do bash "$app"; done
 ### Clean Slate Deployment
 
 ```bash
-# Remove old deployment
-pm2 delete ai-portal
+# Stop and remove old deployment
+systemctl stop ai-portal.service
+systemctl disable ai-portal.service
 rm -rf /srv/apps/ai-portal/*
 
 # Re-run playbook (will detect missing app and redeploy)
@@ -123,8 +124,11 @@ ansible-playbook -i inventory/test site.yml --ask-vault-pass --tags app_deployer
 After deployment, check status:
 
 ```bash
-# PM2 status
-pm2 status
+# Service status
+systemctl status ai-portal.service
+systemctl status agent-client.service
+systemctl status doc-intel.service
+systemctl status innovation.service
 
 # Health checks
 curl http://localhost:3000/api/health  # ai-portal
@@ -171,7 +175,7 @@ The deployment task checks `inventory_hostname` to ensure it only runs on the co
 
 ## Next Steps After Deployment
 
-1. **Verify applications are running**: `pm2 list`
+1. **Verify applications are running**: `systemctl list-units --type=service --state=running | grep -E '(ai-portal|agent-client|doc-intel|innovation)'`
 2. **Configure NGINX proxy**: 
    ```bash
    ansible-playbook -i inventory/test site.yml --ask-vault-pass --tags proxy

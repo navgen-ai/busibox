@@ -25,12 +25,12 @@ echo "=== Failed Deployment Directory ==="
 ssh root@${APPS_IP} "ls -la ${FAILED_PATH}/ 2>/dev/null || echo 'Failed deployment not found'"
 echo ""
 
-echo "=== PM2 Process Status ==="
-ssh root@${APPS_IP} "pm2 list"
+echo "=== Systemd Service Status ==="
+ssh root@${APPS_IP} "systemctl status agent-client.service"
 echo ""
 
-echo "=== PM2 Logs (last 50 lines) ==="
-ssh root@${APPS_IP} "pm2 logs agent-client --lines 50 --nostream 2>/dev/null || echo 'No PM2 logs found'"
+echo "=== Service Logs (last 50 lines) ==="
+ssh root@${APPS_IP} "journalctl -u agent-client.service -n 50 --no-pager 2>/dev/null || echo 'No logs found'"
 echo ""
 
 echo "=== Check if port 3001 is listening ==="

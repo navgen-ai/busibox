@@ -19,11 +19,11 @@ for app in ai-portal agent-client doc-intel innovation; do
 done
 ```
 
-## Step 2: Check PM2 Status
+## Step 2: Check Service Status
 
 ```bash
-pm2 list
-pm2 logs --lines 50
+systemctl list-units --type=service --state=running | grep -E '(ai-portal|agent-client|doc-intel|innovation)'
+journalctl -u ai-portal.service -n 50 --no-pager
 ```
 
 ## Step 3: Check GitHub Access
@@ -92,7 +92,7 @@ echo $GITHUB_TOKEN
 
 ```bash
 # Check if required tools are installed
-which node npm git curl jq pm2
+which node npm git curl jq
 
 # Check Node.js version
 node --version
@@ -122,9 +122,8 @@ df -h /srv/apps
 If you want to start fresh:
 
 ```bash
-# Stop all PM2 processes
-pm2 delete all
-pm2 save --force
+# Stop all services
+systemctl stop ai-portal.service agent-client.service doc-intel.service innovation.service
 
 # Remove all app directories
 rm -rf /srv/apps/ai-portal
@@ -147,7 +146,7 @@ bash -x /srv/deploywatch/apps/ai-portal.sh
 3. **Move**: Copy files to `/srv/apps/{app-name}/`
 4. **Install**: Run `npm install --production`
 5. **Build**: Run build command (e.g., `npm run build`)
-6. **Start**: Start with PM2 (`pm2 start npm --name {app-name} -- start`)
+6. **Start**: Start with systemd (`systemctl start {app-name}.service`)
 7. **Health Check**: Verify `/api/health` responds with 200
 
 Any of these steps can fail. The logs will show which step failed.

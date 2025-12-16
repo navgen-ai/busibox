@@ -24,11 +24,3 @@
     owner: root
     group: root
 
-- name: Create log directory with proper permissions
-  file:
-    path: /var/log/pm2
-    state: directory
-    mode: '0755'
-    owner: root
-    group: root
-

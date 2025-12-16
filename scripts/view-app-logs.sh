@@ -1,10 +1,10 @@
 #!/bin/bash
 # view-app-logs.sh
 # 
-# View application logs from PM2-managed apps
+# View application logs from systemd-managed apps
 # 
 # Execution Context: admin workstation OR apps-lxc container
-# Dependencies: pm2 (if in container), ssh (if on host)
+# Dependencies: systemd, ssh (if on host)
 # 
 # Usage:
 #   From host:    bash scripts/view-app-logs.sh <app-name> [environment] [lines]
@@ -29,8 +29,8 @@ APP_NAME="${1:-}"
 ENVIRONMENT="${2:-production}"
 LINES="${3:-100}"
 
-# Check if running inside container (has pm2) or on host (needs ssh)
-if command -v pm2 &> /dev/null; then
+# Check if running inside container or on host (needs ssh)
+if [ -f /etc/hostname ] && grep -q "apps-lxc" /etc/hostname 2>/dev/null; then
     RUNNING_IN_CONTAINER=true
     # If only 2 args provided in container, second is lines not environment
     if [ $# -eq 2 ] && [[ "${2}" =~ ^[0-9]+$ ]]; then
@@ -72,24 +72,24 @@ view_logs() {
     echo -e "${GREEN}=== Viewing logs for ${app} (last ${lines} lines) ===${NC}"
     echo ""
     
-    # Check if app exists
-    if ! pm2 describe "$app" &> /dev/null; then
-        echo -e "${RED}Error: Application '${app}' not found in PM2${NC}"
+    # Check if service exists
+    if ! systemctl list-units --type=service --all | grep -q "${app}.service"; then
+        echo -e "${RED}Error: Service '${app}' not found${NC}"
         echo ""
-        echo -e "${YELLOW}Available applications:${NC}"
-        pm2 list
+        echo -e "${YELLOW}Available services:${NC}"
+        systemctl list-units --type=service --state=running | grep -E '(ai-portal|agent-client|doc-intel|innovation)'
         exit 1
     fi
     
-    # Show combined logs (stdout + stderr)
-    echo -e "${BLUE}Combined Logs (stdout + stderr):${NC}"
-    pm2 logs "$app" --lines "$lines" --nostream --raw
+    # Show logs from journald
+    echo -e "${BLUE}Service Logs:${NC}"
+    journalctl -u "${app}.service" -n "$lines" --no-pager
 }
 
 # Main execution
 if [ "$RUNNING_IN_CONTAINER" = true ]; then
-    # Running inside container - direct PM2 access
-    echo -e "${GREEN}Running in container - accessing PM2 directly${NC}"
+    # Running inside container - direct access
+    echo -e "${GREEN}Running in container - accessing logs directly${NC}"
     echo ""
     view_logs "$APP_NAME" "$LINES"
 else
@@ -112,34 +112,29 @@ else
     echo -e "${GREEN}Connecting to apps-lxc ($ENVIRONMENT - $APPS_IP)...${NC}"
     echo ""
     
-    # SSH to container and run view_logs function
+    # SSH to container and view logs
     ssh -o StrictHostKeyChecking=no "root@$APPS_IP" "bash -c '
         set -euo pipefail
         
-        if ! command -v pm2 &> /dev/null; then
-            echo \"Error: PM2 not found in container\"
-            exit 1
-        fi
-        
-        if ! pm2 describe \"$APP_NAME\" &> /dev/null; then
-            echo \"Error: Application '\'$APP_NAME\'' not found in PM2\"
+        if ! systemctl list-units --type=service --all | grep -q \"$APP_NAME.service\"; then
+            echo \"Error: Service '\'$APP_NAME\'' not found\"
             echo \"\"
-            echo \"Available applications:\"
-            pm2 list
+            echo \"Available services:\"
+            systemctl list-units --type=service --state=running | grep -E '\''(ai-portal|agent-client|doc-intel|innovation)'\''
             exit 1
         fi
         
         echo \"=== Viewing logs for $APP_NAME (last $LINES lines) ===\"
         echo \"\"
-        pm2 logs \"$APP_NAME\" --lines \"$LINES\" --nostream --raw
+        journalctl -u \"$APP_NAME.service\" -n \"$LINES\" --no-pager
     '"
 fi
 
 echo ""
 echo -e "${YELLOW}Tip: To follow logs in real-time, use:${NC}"
 if [ "$RUNNING_IN_CONTAINER" = true ]; then
-    echo -e "  ${BLUE}pm2 logs $APP_NAME${NC}"
+    echo -e "  ${BLUE}journalctl -u $APP_NAME.service -f${NC}"
 else
-    echo -e "  ${BLUE}ssh root@$APPS_IP 'pm2 logs $APP_NAME'${NC}"
+    echo -e "  ${BLUE}ssh root@$APPS_IP 'journalctl -u $APP_NAME.service -f'${NC}"
 fi
 

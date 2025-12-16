@@ -47,8 +47,8 @@ ssh root@${AGENT_IP} "cd ${DEPLOY_PATH} && { \
 }"
 
 echo ""
-echo "=== Checking PM2 Process ==="
-ssh root@${AGENT_IP} "pm2 list" || echo "✗ PM2 not installed or not running"
+echo "=== Checking systemd Service ==="
+ssh root@${AGENT_IP} "systemctl status agent-server.service" || echo "✗ systemd service not found or not running"
 
 echo ""
 echo "=== Checking if Port ${AGENT_PORT} is Listening ==="
@@ -63,8 +63,8 @@ echo "=== Recent Deployment Logs (if any) ==="
 ssh root@${AGENT_IP} "test -d ${DEPLOY_PATH}/logs && ls -lt ${DEPLOY_PATH}/logs/ | head -5 || echo 'No logs directory'"
 
 echo ""
-echo "=== PM2 Logs for agent-server (last 20 lines) ==="
-ssh root@${AGENT_IP} "pm2 logs agent-server --lines 20 --nostream 2>&1 || echo 'No PM2 logs for agent-server'"
+echo "=== Service Logs for agent-server (last 20 lines) ==="
+ssh root@${AGENT_IP} "journalctl -u agent-server.service -n 20 --no-pager 2>&1 || echo 'No logs for agent-server'"
 
 echo ""
 echo "=== Try Running Deploywatch Script Manually ==="

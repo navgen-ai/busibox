@@ -112,31 +112,31 @@ test_postgres() {
     fi
 }
 
-# Helper function to test PM2 process
-test_pm2() {
+# Helper function to test systemd service
+test_systemd_service() {
     local name=$1
     local host=$2
-    local app_name=$3
+    local service_name=$3
     
     TOTAL=$((TOTAL + 1))
-    echo -n "Testing ${name} PM2 process... "
+    echo -n "Testing ${name} systemd service... "
     
     local status
-    status=$(ssh root@${host} "pm2 jlist 2>/dev/null | jq -r '.[] | select(.name==\"${app_name}\") | .pm2_env.status' 2>/dev/null" || echo "not_found")
+    status=$(ssh root@${host} "systemctl is-active ${service_name}.service 2>/dev/null" || echo "not_found")
     
-    if [[ "$status" == "online" ]]; then
-        echo -e "${GREEN}✓${NC} (online)"
+    if [[ "$status" == "active" ]]; then
+        echo -e "${GREEN}✓${NC} (active)"
         PASSED=$((PASSED + 1))
         return 0
-    elif [[ "$status" == "not_found" ]]; then
+    elif [[ "$status" == "not_found" ]] || [[ "$status" == "inactive" ]]; then
         echo -e "${YELLOW}⚠${NC} (not running)"
         WARNINGS=$((WARNINGS + 1))
-        WARNING_TESTS+=("$name: PM2 process not found")
+        WARNING_TESTS+=("$name: systemd service not found or inactive")
         return 1
     else
         echo -e "${RED}✗${NC} (status: $status)"
         FAILED=$((FAILED + 1))
-        FAILED_TESTS+=("$name: PM2 process status '$status'")
+        FAILED_TESTS+=("$name: systemd service status '$status'")
         return 1
     fi
 }
@@ -214,19 +214,13 @@ else
 fi
 
 echo ""
-echo -e "${BLUE}=== Web Applications (PM2) ===${NC}"
+echo -e "${BLUE}=== Web Applications (systemd) ===${NC}"
 echo ""
 
-# Check if jq is available
-if ! ssh root@${APPS_IP} "command -v jq >/dev/null 2>&1"; then
-    echo -e "${YELLOW}⚠${NC} jq not installed on apps-lxc, skipping PM2 detailed checks"
-    WARNINGS=$((WARNINGS + 1))
-else
-    test_pm2 "ai-portal" "$APPS_IP" "ai-portal"
-    test_pm2 "agent-client" "$APPS_IP" "agent-client"
-    test_pm2 "doc-intel" "$APPS_IP" "doc-intel"
-    test_pm2 "innovation" "$APPS_IP" "innovation"
-fi
+test_systemd_service "ai-portal" "$APPS_IP" "ai-portal"
+test_systemd_service "agent-client" "$APPS_IP" "agent-client"
+test_systemd_service "doc-intel" "$APPS_IP" "doc-intel"
+test_systemd_service "innovation" "$APPS_IP" "innovation"
 
 # HTTP health checks for web apps
 test_http "ai-portal" "http://${APPS_IP}:3000/api/health" "200"
