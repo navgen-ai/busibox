@@ -1674,10 +1674,10 @@ For more details, see: docs/guides/testing-guide.md`,
 
 4. **Verify deployment**:
    \`\`\`bash
-   # Check PM2 status
+   # Check service status
    ssh root@<apps-ip>
-   pm2 list
-   pm2 logs ${app_name}
+   systemctl status ${app_name}.service
+   journalctl -u ${app_name}.service -n 50 --no-pager
    
    # Or use AI Portal log viewer (if deployed)
    \`\`\`

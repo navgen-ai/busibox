@@ -17,9 +17,5 @@ app_group: "appuser"
 # Node.js version
 nodejs_version: "{{ default_node_version }}"
 
-# PM2 configuration (production resources)
-pm2_instances: 2
-pm2_max_memory_restart: "1G"
-
 # Health check configuration
 app_health_check_timeout: 30

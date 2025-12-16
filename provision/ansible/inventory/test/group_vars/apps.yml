@@ -14,10 +14,6 @@ app_group: "appuser"
 # Node.js version
 nodejs_version: "{{ default_node_version }}"
 
-# PM2 configuration (lower resources for test)
-pm2_instances: 1
-pm2_max_memory_restart: "512M"
-
 # Health check configuration
 app_health_check_timeout: 30
 

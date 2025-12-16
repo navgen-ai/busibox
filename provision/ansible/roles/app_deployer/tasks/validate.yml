@@ -124,8 +124,8 @@
 - name: Validate process manager values
   assert:
     that:
-      - item.process_manager is defined and item.process_manager in ['pm2', 'systemd'] or item.process_manager is not defined
-    fail_msg: "Application '{{ item.name }}' has invalid process_manager. Must be 'pm2' or 'systemd'"
+      - item.process_manager is defined and item.process_manager == 'systemd' or item.process_manager is not defined
+    fail_msg: "Application '{{ item.name }}' has invalid process_manager. Must be 'systemd'"
   loop: "{{ applications }}"
   loop_control:
     label: "{{ item.name }}"

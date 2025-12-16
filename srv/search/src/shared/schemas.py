@@ -191,3 +191,128 @@ class HealthResponse(BaseModel):
     embedder: str = Field(..., description="Embedding service status")
     cache: Optional[str] = Field(None, description="Cache status (if enabled)")
 
+
+# ============================================================================
+# Web Search Schemas
+# ============================================================================
+
+class WebSearchResult(BaseModel):
+    """Individual web search result."""
+    
+    title: str = Field(..., description="Result title")
+    url: str = Field(..., description="Result URL")
+    snippet: str = Field(..., description="Result snippet/description")
+    score: Optional[float] = Field(None, description="Relevance score")
+    published_date: Optional[str] = Field(None, description="Publication date")
+    domain: Optional[str] = Field(None, description="Domain name")
+
+
+class WebSearchRequest(BaseModel):
+    """Web search request."""
+    
+    query: str = Field(..., description="Search query", min_length=1, max_length=500)
+    provider: Optional[str] = Field(None, description="Specific provider to use (tavily, duckduckgo, serpapi, perplexity, bing)")
+    max_results: int = Field(5, description="Maximum results to return", ge=1, le=20)
+    search_depth: Literal["basic", "advanced"] = Field("basic", description="Search depth (tavily only)")
+    include_answer: bool = Field(False, description="Include AI-generated answer (tavily, perplexity)")
+    include_domains: Optional[List[str]] = Field(None, description="Domains to include")
+    exclude_domains: Optional[List[str]] = Field(None, description="Domains to exclude")
+
+
+class WebSearchResponse(BaseModel):
+    """Web search response."""
+    
+    query: str = Field(..., description="Original query")
+    results: List[WebSearchResult] = Field(..., description="Search results")
+    provider: str = Field(..., description="Provider used")
+    timestamp: str = Field(..., description="ISO timestamp")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Provider-specific metadata")
+
+
+class WebSearchProviderInfo(BaseModel):
+    """Information about a web search provider."""
+    
+    provider: str = Field(..., description="Provider name")
+    is_enabled: bool = Field(..., description="Whether provider is enabled")
+    is_default: bool = Field(..., description="Whether this is the default provider")
+    is_configured: bool = Field(..., description="Whether provider has required API keys")
+
+
+class WebSearchProviderConfig(BaseModel):
+    """Configuration for a web search provider."""
+    
+    provider: str = Field(..., description="Provider name (tavily, duckduckgo, serpapi, perplexity, bing)")
+    api_key: Optional[str] = Field(None, description="API key (not required for duckduckgo)")
+    endpoint: Optional[str] = Field(None, description="Custom endpoint URL")
+    is_enabled: bool = Field(True, description="Enable this provider")
+    is_default: bool = Field(False, description="Set as default provider")
+
+
+# ============================================================================
+# Chat Insights Schemas
+# ============================================================================
+
+class ChatInsight(BaseModel):
+    """Chat insight entity."""
+    
+    id: str = Field(..., description="Insight ID")
+    user_id: str = Field(..., description="User ID who owns this insight", alias="userId")
+    content: str = Field(..., description="The insight text")
+    embedding: List[float] = Field(..., description="Vector embedding (1024 dimensions)")
+    conversation_id: str = Field(..., description="Source conversation ID", alias="conversationId")
+    analyzed_at: int = Field(..., description="Unix timestamp when insight was extracted", alias="analyzedAt")
+    
+    class Config:
+        populate_by_name = True
+
+
+class InsertInsightsRequest(BaseModel):
+    """Request to insert insights."""
+    
+    insights: List[ChatInsight] = Field(..., description="List of insights to insert", min_items=1)
+
+
+class InsightSearchRequest(BaseModel):
+    """Request to search insights."""
+    
+    query: str = Field(..., description="Search query", min_length=1, max_length=500)
+    user_id: str = Field(..., description="User ID to filter results", alias="userId")
+    limit: int = Field(3, description="Maximum number of results", ge=1, le=20)
+    score_threshold: float = Field(0.7, description="Maximum L2 distance threshold", ge=0.0, le=2.0, alias="scoreThreshold")
+    
+    class Config:
+        populate_by_name = True
+
+
+class InsightSearchResult(BaseModel):
+    """Search result for chat insights."""
+    
+    id: str = Field(..., description="Insight ID")
+    user_id: str = Field(..., description="User ID", alias="userId")
+    content: str = Field(..., description="Insight content")
+    conversation_id: str = Field(..., description="Conversation ID", alias="conversationId")
+    analyzed_at: str = Field(..., description="ISO timestamp", alias="analyzedAt")
+    score: float = Field(..., description="Similarity score (L2 distance)")
+    
+    class Config:
+        populate_by_name = True
+
+
+class InsightSearchResponse(BaseModel):
+    """Response for insight search."""
+    
+    query: str = Field(..., description="Original query")
+    results: List[InsightSearchResult] = Field(..., description="Search results")
+    count: int = Field(..., description="Number of results returned")
+
+
+class InsightStatsResponse(BaseModel):
+    """Statistics for user insights."""
+    
+    user_id: str = Field(..., description="User ID", alias="userId")
+    count: int = Field(..., description="Number of insights")
+    collection_name: str = Field(..., description="Collection name", alias="collectionName")
+    
+    class Config:
+        populate_by_name = True
+

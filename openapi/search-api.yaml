@@ -61,6 +61,10 @@ security:
 tags:
   - name: search
     description: Search operations with multiple modes
+  - name: web-search
+    description: Web search operations
+  - name: web-search-admin
+    description: Web search provider administration
   - name: health
     description: Service health checks
 
@@ -322,6 +326,218 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
+
+  /web-search:
+    post:
+      summary: Web search
+      description: |
+        Perform web search using configured providers.
+        
+        **Supported providers:**
+        - `tavily`: AI-optimized search with clean results (requires API key)
+        - `duckduckgo`: Privacy-focused, no API key required (default)
+        - `serpapi`: Google search results (requires API key)
+        - `perplexity`: AI-powered search with citations (requires API key)
+        - `bing`: Microsoft Bing search (requires API key)
+        
+        If no provider is specified, uses the default provider from database.
+        Provider API keys are managed via admin endpoints.
+      tags: [web-search]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebSearchRequest'
+      responses:
+        '200':
+          description: Web search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebSearchResponse'
+        '400':
+          description: Invalid request or provider disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Provider not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /web-search/providers:
+    get:
+      summary: List web search providers
+      description: |
+        List all configured web search providers.
+        
+        Returns information about each provider including:
+        - Whether it's enabled
+        - Whether it's the default
+        - Whether it has required configuration (API keys)
+      tags: [web-search]
+      security: []
+      responses:
+        '200':
+          description: List of providers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WebSearchProviderInfo'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /web-search/providers/{provider}/status:
+    get:
+      summary: Get provider status
+      description: Get status of a specific web search provider
+      tags: [web-search]
+      security: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [tavily, duckduckgo, serpapi, perplexity, bing]
+      responses:
+        '200':
+          description: Provider status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebSearchProviderInfo'
+        '404':
+          description: Provider not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /web-search/admin/providers:
+    post:
+      summary: Add or update provider (admin)
+      description: |
+        Add or update a web search provider configuration.
+        
+        Requires admin authentication.
+      tags: [web-search-admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebSearchProviderConfig'
+      responses:
+        '200':
+          description: Provider updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebSearchProviderInfo'
+        '400':
+          description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /web-search/admin/providers/{provider}:
+    delete:
+      summary: Delete provider (admin)
+      description: |
+        Delete a web search provider configuration.
+        
+        Cannot delete the default provider.
+        Requires admin authentication.
+      tags: [web-search-admin]
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Provider deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '400':
+          description: Cannot delete default provider
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Provider not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /web-search/admin/providers/{provider}/default:
+    put:
+      summary: Set default provider (admin)
+      description: |
+        Set a provider as the default.
+        
+        Requires admin authentication.
+      tags: [web-search-admin]
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Default provider updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '400':
+          description: Provider is disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Provider not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
 components:
   securitySchemes:
@@ -744,6 +960,157 @@ components:
         detail:
           type: string
           description: Error message
+
+    # Web Search Schemas
+    WebSearchResult:
+      type: object
+      required:
+        - title
+        - url
+        - snippet
+      properties:
+        title:
+          type: string
+          description: Result title
+        url:
+          type: string
+          format: uri
+          description: Result URL
+        snippet:
+          type: string
+          description: Result snippet/description
+        score:
+          type: number
+          format: float
+          nullable: true
+          description: Relevance score
+        published_date:
+          type: string
+          nullable: true
+          description: Publication date
+        domain:
+          type: string
+          nullable: true
+          description: Domain name
+
+    WebSearchRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: Search query
+        provider:
+          type: string
+          enum: [tavily, duckduckgo, serpapi, perplexity, bing]
+          nullable: true
+          description: Specific provider to use (optional, uses default if not specified)
+        max_results:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 5
+          description: Maximum results to return
+        search_depth:
+          type: string
+          enum: [basic, advanced]
+          default: basic
+          description: Search depth (tavily only)
+        include_answer:
+          type: boolean
+          default: false
+          description: Include AI-generated answer (tavily, perplexity)
+        include_domains:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Domains to include
+        exclude_domains:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Domains to exclude
+
+    WebSearchResponse:
+      type: object
+      required:
+        - query
+        - results
+        - provider
+        - timestamp
+      properties:
+        query:
+          type: string
+          description: Original query
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebSearchResult'
+          description: Search results
+        provider:
+          type: string
+          description: Provider used
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO timestamp
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Provider-specific metadata (e.g., AI-generated answers, citations)
+
+    WebSearchProviderInfo:
+      type: object
+      required:
+        - provider
+        - is_enabled
+        - is_default
+        - is_configured
+      properties:
+        provider:
+          type: string
+          description: Provider name
+        is_enabled:
+          type: boolean
+          description: Whether provider is enabled
+        is_default:
+          type: boolean
+          description: Whether this is the default provider
+        is_configured:
+          type: boolean
+          description: Whether provider has required API keys
+
+    WebSearchProviderConfig:
+      type: object
+      required:
+        - provider
+      properties:
+        provider:
+          type: string
+          enum: [tavily, duckduckgo, serpapi, perplexity, bing]
+          description: Provider name
+        api_key:
+          type: string
+          nullable: true
+          description: API key (not required for duckduckgo)
+        endpoint:
+          type: string
+          format: uri
+          nullable: true
+          description: Custom endpoint URL
+        is_enabled:
+          type: boolean
+          default: true
+          description: Enable this provider
+        is_default:
+          type: boolean
+          default: false
+          description: Set as default provider
 
   responses:
     Unauthorized:

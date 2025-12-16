@@ -32,47 +32,45 @@ view-app-logs.sh ai-portal 100
 tail-app-logs.sh <app-name>
 tail-app-logs.sh ai-portal
 
-# Or use PM2 directly
-pm2 logs <app-name>
-pm2 logs ai-portal --lines 100
+# Or use journalctl directly
+journalctl -u <app-name>.service -f
+journalctl -u ai-portal.service -n 100 --no-pager
 ```
 
-## PM2 Commands
+## Systemd/Journalctl Commands
 
 ```bash
-# List applications
-pm2 list
+# List running services
+systemctl list-units --type=service --state=running | grep -E '(ai-portal|agent-client|doc-intel|innovation)'
 
 # View logs (real-time)
-pm2 logs <app-name>
+journalctl -u <app-name>.service -f
 
 # View last N lines
-pm2 logs <app-name> --lines <N>
+journalctl -u <app-name>.service -n <N> --no-pager
 
-# View stdout only
-pm2 logs <app-name> --out
+# View logs since specific time
+journalctl -u <app-name>.service --since "1 hour ago"
+journalctl -u <app-name>.service --since "2025-01-13 10:00:00"
 
-# View stderr only
-pm2 logs <app-name> --err
+# View logs with priority level
+journalctl -u <app-name>.service -p err  # errors only
+journalctl -u <app-name>.service -p warning  # warnings and above
 
-# Clear logs
-pm2 flush <app-name>
+# Search logs
+journalctl -u <app-name>.service | grep "error"
+journalctl -u <app-name>.service | grep -i "database"
 ```
 
 ## Direct File Access
 
 ```bash
-# Log files location
-/var/log/pm2/<app-name>-out.log
-/var/log/pm2/<app-name>-error.log
+# Logs are stored in journald, access via journalctl
+# For persistent logs, check:
+/var/log/journal/
 
-# View log file
-tail -f /var/log/pm2/ai-portal-out.log
-tail -n 100 /var/log/pm2/ai-portal-error.log
-
-# Search logs
-grep "error" /var/log/pm2/ai-portal-error.log
-grep -i "database" /var/log/pm2/*.log
+# Export logs to file
+journalctl -u <app-name>.service > /tmp/app-logs.txt
 ```
 
 ## Common App Names

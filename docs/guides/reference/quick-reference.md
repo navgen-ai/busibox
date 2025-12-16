@@ -84,7 +84,7 @@ ansible-inventory -i inventory/production --list | grep "_ip"
 ansible -i inventory/production all -m ping
 
 # Check service status
-ansible -i inventory/production apps -a "pm2 list"
+ansible -i inventory/production apps -a "systemctl list-units --type=service --state=running | grep -E '(ai-portal|agent-client|doc-intel|innovation)'"
 ansible -i inventory/production proxy -a "systemctl status nginx"
 
 # Syntax check

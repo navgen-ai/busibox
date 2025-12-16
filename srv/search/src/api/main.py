@@ -8,8 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.middleware.jwt_auth import JWTAuthMiddleware
 from api.middleware.logging import LoggingMiddleware
-from api.routes import search, health
+from api.routes import search, health, web_search, insights
 from api.services.postgres import PostgresService
+from services.insights_service import InsightsService
 from shared.config import config
 
 # Configure structured logging
@@ -28,8 +29,9 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
-# Global PostgresService instance (singleton)
+# Global service instances (singletons)
 pg_service = PostgresService(config.to_dict())
+insights_service = InsightsService(config.to_dict())
 
 # Create FastAPI app
 app = FastAPI(
@@ -37,7 +39,7 @@ app = FastAPI(
     description="""
     Sophisticated search API for Busibox platform.
     
-    Features:
+    **Document Search Features:**
     - **Keyword search**: Fast BM25 full-text search
     - **Semantic search**: Dense vector similarity search
     - **Hybrid search**: Combined keyword + semantic (recommended)
@@ -45,6 +47,12 @@ app = FastAPI(
     - **Highlighting**: Search term highlighting in results
     - **Semantic alignment**: Visualize query-document similarity
     - **MMR**: Maximal Marginal Relevance for diverse results
+    
+    **Web Search Features:**
+    - **Multi-provider support**: Tavily, DuckDuckGo, SerpAPI, Perplexity, Bing
+    - **Centralized API key management**: Store keys securely in database
+    - **Provider switching**: Change providers without app redeployment
+    - **Admin endpoints**: Configure providers via API
     """,
     version="1.0.0",
     docs_url="/docs",
@@ -64,8 +72,14 @@ app.add_middleware(
 app.add_middleware(LoggingMiddleware)
 app.add_middleware(JWTAuthMiddleware)
 
+# Store services in app state for access in routes
+app.state.pg_service = pg_service
+app.state.insights_service = insights_service
+
 # Include routers
 app.include_router(search.router, prefix="/search", tags=["search"])
+app.include_router(web_search.router, prefix="/web-search", tags=["web-search"])
+app.include_router(insights.router, prefix="/insights", tags=["insights"])
 app.include_router(health.router, prefix="/health", tags=["health"])
 
 

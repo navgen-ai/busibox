@@ -75,8 +75,8 @@ echo "Checking enabled sites on proxy..."
 ssh root@${PROXY_IP} "ls -la /etc/nginx/sites-enabled/ | grep -v 'total\|^\.$\|^\.\.'" || echo "Could not list NGINX sites"
 
 echo ""
-echo "=== PM2 Status on apps-lxc ==="
-ssh root@${APPS_IP} "pm2 list" || echo "Could not get PM2 status"
+echo "=== Systemd Services on apps-lxc ==="
+ssh root@${APPS_IP} "systemctl list-units --type=service --state=running | grep -E '(ai-portal|agent-client|doc-intel|innovation)'" || echo "Could not get service status"
 
 echo ""
 echo "=== Service Logs (last 10 lines) ==="
@@ -85,8 +85,8 @@ echo "--- agent-server ---"
 ssh root@${AGENT_IP} "journalctl -u agent-server -n 10 --no-pager" 2>/dev/null || echo "No logs or service not found"
 
 echo ""
-echo "--- ai-portal PM2 logs ---"
-ssh root@${APPS_IP} "pm2 logs ai-portal --lines 10 --nostream" 2>/dev/null || echo "No PM2 logs"
+echo "--- ai-portal ---"
+ssh root@${APPS_IP} "journalctl -u ai-portal -n 10 --no-pager" 2>/dev/null || echo "No logs or service not found"
 
 echo ""
 echo "==================================="

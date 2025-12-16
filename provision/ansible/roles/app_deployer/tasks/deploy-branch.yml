@@ -331,46 +331,10 @@
   register: port_cleanup
   failed_when: false
 
-# Set process manager (default to pm2 for backwards compatibility)
+# Set process manager (systemd only)
 - name: Set process manager
   set_fact:
-    process_manager: "{{ app_to_deploy.process_manager | default('pm2') }}"
-
-# ============================================================================
-# PM2 Process Manager
-# ============================================================================
-- name: Check if PM2 is managing the application
-  shell: pm2 list | grep -q "{{ app_to_deploy.name }}"
-  delegate_to: "{{ app_to_deploy.container_ip }}"
-  register: pm2_check
-  failed_when: false
-  changed_when: false
-  when: process_manager == 'pm2'
-
-- name: Stop application with PM2 (if already running)
-  shell: |
-    cd {{ app_to_deploy.deploy_path }}
-    pm2 stop {{ app_to_deploy.name }} || true
-    pm2 delete {{ app_to_deploy.name }} || true
-  delegate_to: "{{ app_to_deploy.container_ip }}"
-  when: process_manager == 'pm2' and pm2_check.rc == 0
-  register: stop_result
-
-- name: Start application with PM2 and environment variables
-  shell: |
-    cd {{ app_to_deploy.deploy_path }}
-    # Load environment from .env file and start with PM2
-    pm2 start npm \
-      --name "{{ app_to_deploy.name }}" \
-      --env production \
-      {% for key, value in app_to_deploy.env.items() %}
-      --update-env {{ key }}="{{ value }}" \
-      {% endfor %}
-      -- start -- -p {{ app_to_deploy.port }}
-    pm2 save
-  delegate_to: "{{ app_to_deploy.container_ip }}"
-  register: start_result
-  when: process_manager == 'pm2'
+    process_manager: "{{ app_to_deploy.process_manager | default('systemd') }}"
 
 # ============================================================================
 # Systemd Process Manager
@@ -445,11 +409,7 @@
       Status: Running on port {{ app_to_deploy.port }}
       
       View logs:
-      {% if process_manager == 'systemd' %}
         ssh root@{{ app_to_deploy.container_ip }} "journalctl -u {{ app_to_deploy.name }} -f"
-      {% else %}
-        ssh root@{{ app_to_deploy.container_ip }} "pm2 logs {{ app_to_deploy.name }}"
-      {% endif %}
       
       Health check:
         curl http://{{ app_to_deploy.container_ip }}:{{ app_to_deploy.port }}{{ health_check_path }}

@@ -157,7 +157,7 @@ deploywatch_check_interval: 300  # Check more frequently in test (5 minutes)
 deploywatch_apps_dir: /srv/deploywatch/apps
 
 # Application Defaults
-default_process_manager: pm2
+default_process_manager: systemd
 default_node_version: "20"
 
 # ============================================================================

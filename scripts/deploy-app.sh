@@ -83,7 +83,7 @@ echo -e "${YELLOW}⚠️  This will:${NC}"
 echo "  1. Download the latest code from branch '$BRANCH'"
 echo "  2. Install dependencies (npm install)"
 echo "  3. Build the application (npm run build)"
-echo "  4. Restart the application with PM2"
+echo "  4. Restart the application with systemd"
 echo ""
 read -p "Continue? (y/N) " -n 1 -r
 echo

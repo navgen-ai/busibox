@@ -195,6 +195,6 @@ fi
 echo ""
 echo -e "${YELLOW}Next steps:${NC}"
 echo -e "  1. Verify tables: ${BLUE}bash scripts/check-database.sh $APP_NAME $ENVIRONMENT${NC}"
-echo -e "  2. Restart app: ${BLUE}ssh root@\$APPS_IP 'pm2 restart $APP_NAME'${NC}"
+echo -e "  2. Restart app: ${BLUE}ssh root@\$APPS_IP 'systemctl restart $APP_NAME'${NC}"
 echo -e "  3. Check logs: ${BLUE}bash scripts/tail-app-logs.sh $APP_NAME $ENVIRONMENT${NC}"
 

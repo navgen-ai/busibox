@@ -4,7 +4,7 @@
 # Follow (tail -f) application logs in real-time
 # 
 # Execution Context: admin workstation OR apps-lxc container
-# Dependencies: pm2 (if in container), ssh (if on host)
+# Dependencies: systemd, ssh (if on host)
 # 
 # Usage:
 #   From host:    bash scripts/tail-app-logs.sh <app-name> [environment]
@@ -28,8 +28,8 @@ NC='\033[0m' # No Color
 APP_NAME="${1:-}"
 ENVIRONMENT="${2:-production}"
 
-# Check if running inside container (has pm2) or on host (needs ssh)
-if command -v pm2 &> /dev/null; then
+# Check if running inside container or on host (needs ssh)
+if [ -f /etc/hostname ] && grep -q "apps-lxc" /etc/hostname 2>/dev/null; then
     RUNNING_IN_CONTAINER=true
 else
     RUNNING_IN_CONTAINER=false
@@ -60,20 +60,20 @@ fi
 
 # Main execution
 if [ "$RUNNING_IN_CONTAINER" = true ]; then
-    # Running inside container - direct PM2 access
+    # Running inside container - direct access
     echo -e "${GREEN}Following logs for ${APP_NAME}...${NC}"
     echo -e "${YELLOW}Press Ctrl+C to stop${NC}"
     echo ""
     
-    if ! pm2 describe "$APP_NAME" &> /dev/null; then
-        echo -e "${RED}Error: Application '${APP_NAME}' not found in PM2${NC}"
+    if ! systemctl list-units --type=service --all | grep -q "${APP_NAME}.service"; then
+        echo -e "${RED}Error: Service '${APP_NAME}' not found${NC}"
         echo ""
-        echo -e "${YELLOW}Available applications:${NC}"
-        pm2 list
+        echo -e "${YELLOW}Available services:${NC}"
+        systemctl list-units --type=service --state=running | grep -E '(ai-portal|agent-client|doc-intel|innovation)'
         exit 1
     fi
     
-    pm2 logs "$APP_NAME"
+    journalctl -u "${APP_NAME}.service" -f
 else
     # Running on host - SSH to container
     # Determine container IP based on environment
@@ -95,6 +95,6 @@ else
     echo -e "${YELLOW}Press Ctrl+C to stop${NC}"
     echo ""
     
-    ssh -o StrictHostKeyChecking=no "root@$APPS_IP" "pm2 logs '$APP_NAME'"
+    ssh -o StrictHostKeyChecking=no "root@$APPS_IP" "journalctl -u '${APP_NAME}.service' -f"
 fi
 
