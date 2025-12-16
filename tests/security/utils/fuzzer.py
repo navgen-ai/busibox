@@ -491,3 +491,4 @@ class AsyncFuzzer(Fuzzer):
         
         return report
 
+

@@ -31,8 +31,8 @@ class EmbeddingService:
         
         Args:
             query: Search query text
-            user_id: User ID for authentication (legacy, optional)
-            authorization: Authorization header value for JWT passthrough (preferred)
+            user_id: User ID (unused, kept for backward compatibility)
+            authorization: Authorization header value for JWT passthrough (required)
         
         Returns:
             Embedding vector or None on failure
@@ -44,12 +44,10 @@ class EmbeddingService:
                 model=self.model,
             )
             
-            # Prepare headers - prefer JWT passthrough, fall back to X-User-Id
+            # Prepare headers - pass through JWT authorization
             headers = {}
             if authorization:
                 headers["Authorization"] = authorization
-            if user_id:
-                headers["X-User-Id"] = user_id
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
@@ -98,8 +96,8 @@ class EmbeddingService:
         
         Args:
             texts: List of texts to embed
-            user_id: User ID for authentication (legacy, optional)
-            authorization: Authorization header value for JWT passthrough (preferred)
+            user_id: User ID (unused, kept for backward compatibility)
+            authorization: Authorization header value for JWT passthrough (required)
         
         Returns:
             List of embedding vectors or None on failure
@@ -111,12 +109,10 @@ class EmbeddingService:
                 model=self.model,
             )
             
-            # Prepare headers - prefer JWT passthrough, fall back to X-User-Id
+            # Prepare headers - pass through JWT authorization
             headers = {}
             if authorization:
                 headers["Authorization"] = authorization
-            if user_id:
-                headers["X-User-Id"] = user_id
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(

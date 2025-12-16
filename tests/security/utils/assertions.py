@@ -275,3 +275,4 @@ class SecurityAssertions:
                 f"{timing_ms}ms vs baseline {baseline_ms}ms (ratio: {ratio:.2f})"
             )
 
+

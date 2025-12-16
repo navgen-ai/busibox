@@ -67,7 +67,7 @@ async def upload_file(
     
     Headers:
         Authorization: Bearer <JWT> (preferred) - JWT with user identity and role permissions
-        X-User-Id: User UUID (legacy fallback)
+        Authorization: Bearer <JWT> (required)
     
     Body:
         file: Document file (multipart/form-data)

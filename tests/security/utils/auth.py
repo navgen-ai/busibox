@@ -360,3 +360,4 @@ class AuthTester:
             details="Test skipped due to error",
         )
 
+

@@ -49,3 +49,4 @@ echo "✓ Migrations completed successfully"
 
 
 
+

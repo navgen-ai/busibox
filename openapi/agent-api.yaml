@@ -63,6 +63,8 @@ tags:
     description: Message operations
   - name: settings
     description: User chat settings
+  - name: insights
+    description: Chat insights (agent memories/context)
 
 paths:
   /:
@@ -1201,6 +1203,450 @@ paths:
         '422':
           $ref: '#/components/responses/BadRequest'
 
+  /insights/init:
+    post:
+      summary: Initialize insights collection
+      description: |
+        Initialize the chat_insights collection in Milvus.
+        Creates the collection with schema if it doesn't exist.
+        This endpoint is idempotent - safe to call multiple times.
+      tags: [insights]
+      responses:
+        '200':
+          description: Collection initialized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  collection:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /insights:
+    post:
+      summary: Insert insights
+      description: Insert chat insights into Milvus for RAG
+      tags: [insights]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InsertInsightsRequest'
+      responses:
+        '200':
+          description: Insights inserted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  count:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /insights/search:
+    post:
+      summary: Search insights
+      description: Search for relevant insights based on query
+      tags: [insights]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InsightSearchRequest'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsightSearchResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /insights/conversation/{conversation_id}:
+    delete:
+      summary: Delete conversation insights
+      description: Delete all insights for a conversation
+      tags: [insights]
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Insights deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  conversationId:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /insights/user/{user_id}:
+    delete:
+      summary: Delete user insights
+      description: Delete all insights for a user (for account deletion/cleanup)
+      tags: [insights]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Insights deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  userId:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /insights/stats/{user_id}:
+    get:
+      summary: Get user insight statistics
+      description: Get statistics for user insights
+      tags: [insights]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: User statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsightStatsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /insights/flush:
+    post:
+      summary: Flush insights collection
+      description: Flush collection to ensure data persistence
+      tags: [insights]
+      responses:
+        '200':
+          description: Collection flushed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  collection:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /chat/message:
+    post:
+      summary: Send chat message
+      description: |
+        Send a chat message and get a response with intelligent routing.
+        
+        This endpoint:
+        - Creates or retrieves conversation
+        - Stores user message
+        - Performs auto model selection if requested
+        - Routes through dispatcher for tool/agent selection
+        - Stores assistant response
+        - Returns response with metadata
+      tags: [chat]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - message
+              properties:
+                message:
+                  type: string
+                  minLength: 1
+                  maxLength: 10000
+                  description: User message
+                conversation_id:
+                  type: string
+                  format: uuid
+                  description: Conversation ID (creates new if not provided)
+                model:
+                  type: string
+                  default: auto
+                  enum: [auto, chat, research, frontier]
+                  description: Model selection
+                attachments:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Attachment'
+                  description: File attachments
+                enable_web_search:
+                  type: boolean
+                  default: false
+                  description: Enable web search tool
+                enable_doc_search:
+                  type: boolean
+                  default: false
+                  description: Enable document search tool
+                temperature:
+                  type: number
+                  minimum: 0.0
+                  maximum: 2.0
+                  description: Temperature override
+                max_tokens:
+                  type: integer
+                  minimum: 1
+                  maximum: 32000
+                  description: Max tokens override
+      responses:
+        '200':
+          description: Chat response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message_id:
+                    type: string
+                    format: uuid
+                  conversation_id:
+                    type: string
+                    format: uuid
+                  content:
+                    type: string
+                  model:
+                    type: string
+                  routing_decision:
+                    type: object
+                  tool_calls:
+                    type: array
+                    items:
+                      type: object
+                  run_id:
+                    type: string
+                    format: uuid
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Conversation not found
+        '422':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /chat/message/stream:
+    post:
+      summary: Send chat message with streaming
+      description: |
+        Send a chat message and stream the response using Server-Sent Events (SSE).
+        
+        Event types:
+        - model_selected: Model selection result
+        - routing_decision: Dispatcher routing decision
+        - content_chunk: Partial response content
+        - tool_call: Tool execution update
+        - message_complete: Final message with ID
+        - error: Error occurred
+      tags: [chat]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - message
+              properties:
+                message:
+                  type: string
+                  minLength: 1
+                  maxLength: 10000
+                conversation_id:
+                  type: string
+                  format: uuid
+                model:
+                  type: string
+                  default: auto
+                  enum: [auto, chat, research, frontier]
+                attachments:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Attachment'
+                enable_web_search:
+                  type: boolean
+                  default: false
+                enable_doc_search:
+                  type: boolean
+                  default: false
+                temperature:
+                  type: number
+                  minimum: 0.0
+                  maximum: 2.0
+                max_tokens:
+                  type: integer
+                  minimum: 1
+                  maximum: 32000
+      responses:
+        '200':
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Conversation not found
+        '422':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /chat/models:
+    get:
+      summary: List available models
+      description: |
+        List all available models with their capabilities.
+        
+        Returns models that can be selected for chat, including:
+        - Model ID and name
+        - Capabilities (vision, tools, reasoning)
+        - Performance characteristics (speed, cost)
+        - Token limits
+      tags: [chat]
+      responses:
+        '200':
+          description: Available models
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        description:
+                          type: string
+                        supports_vision:
+                          type: boolean
+                        supports_tools:
+                          type: boolean
+                        supports_reasoning:
+                          type: boolean
+                        max_tokens:
+                          type: integer
+                        cost_tier:
+                          type: string
+                          enum: [low, medium, high]
+                        speed_tier:
+                          type: string
+                          enum: [fast, medium, slow]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /chat/{conversation_id}/history:
+    get:
+      summary: Get chat history
+      description: Get chat history for a conversation
+      tags: [chat]
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+            maximum: 500
+      responses:
+        '200':
+          description: Chat history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conversation_id:
+                    type: string
+                    format: uuid
+                  title:
+                    type: string
+                  messages:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MessageRead'
+                  total_messages:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Conversation not found
+        '500':
+          $ref: '#/components/responses/InternalError'
+
 components:
   securitySchemes:
     BearerAuth:
@@ -1957,6 +2403,146 @@ components:
             - user_id
             - created_at
             - updated_at
+
+    ChatInsight:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Insight ID
+        userId:
+          type: string
+          description: User ID who owns this insight
+        content:
+          type: string
+          description: The insight text
+          maxLength: 5000
+        embedding:
+          type: array
+          items:
+            type: number
+            format: float
+          description: Vector embedding (1024 dimensions)
+        conversationId:
+          type: string
+          description: Source conversation ID
+        analyzedAt:
+          type: integer
+          description: Unix timestamp when insight was extracted
+      required:
+        - id
+        - userId
+        - content
+        - embedding
+        - conversationId
+        - analyzedAt
+
+    InsertInsightsRequest:
+      type: object
+      properties:
+        insights:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatInsight'
+          minItems: 1
+          description: List of insights to insert
+      required:
+        - insights
+
+    InsightSearchRequest:
+      type: object
+      properties:
+        query:
+          type: string
+          description: Search query
+          minLength: 1
+          maxLength: 500
+        userId:
+          type: string
+          description: User ID to filter results
+        limit:
+          type: integer
+          description: Maximum number of results
+          minimum: 1
+          maximum: 20
+          default: 3
+        scoreThreshold:
+          type: number
+          format: float
+          description: Maximum L2 distance threshold
+          minimum: 0.0
+          maximum: 2.0
+          default: 0.7
+      required:
+        - query
+        - userId
+
+    InsightSearchResult:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Insight ID
+        userId:
+          type: string
+          description: User ID
+        content:
+          type: string
+          description: Insight content
+        conversationId:
+          type: string
+          description: Conversation ID
+        analyzedAt:
+          type: string
+          format: date-time
+          description: ISO timestamp
+        score:
+          type: number
+          format: float
+          description: Similarity score (L2 distance)
+      required:
+        - id
+        - userId
+        - content
+        - conversationId
+        - analyzedAt
+        - score
+
+    InsightSearchResponse:
+      type: object
+      properties:
+        query:
+          type: string
+          description: Original query
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/InsightSearchResult'
+          description: Search results
+        count:
+          type: integer
+          description: Number of results returned
+      required:
+        - query
+        - results
+        - count
+
+    InsightStatsResponse:
+      type: object
+      properties:
+        userId:
+          type: string
+          description: User ID
+        count:
+          type: integer
+          description: Number of insights
+        collectionName:
+          type: string
+          description: Collection name
+      required:
+        - userId
+        - count
+        - collectionName
 
     Error:
       type: object

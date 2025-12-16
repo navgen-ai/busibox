@@ -22,6 +22,8 @@ opentelemetry-instrumentation-sqlalchemy>=0.48b0
 opentelemetry-exporter-otlp>=1.27.0
 python-json-logger>=2.0.7
 aiosqlite>=0.20.0
+pymilvus>=2.3.0
+greenlet>=3.0.0
 
 
 

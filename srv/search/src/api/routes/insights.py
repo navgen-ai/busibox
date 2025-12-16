@@ -60,7 +60,7 @@ async def insert_insights(
     """
     Insert insights into Milvus.
     
-    Requires authentication via JWT or X-User-Id header.
+    Requires authentication via Bearer token.
     """
     service = get_insights_service(request)
     user_id = request.state.user_id
@@ -109,7 +109,7 @@ async def search_insights(
     Search for relevant insights based on query.
     
     Filters results by user_id to ensure users only see their own insights.
-    Requires authentication via JWT or X-User-Id header.
+    Requires authentication via Bearer token.
     """
     service = get_insights_service(request)
     user_id = request.state.user_id
