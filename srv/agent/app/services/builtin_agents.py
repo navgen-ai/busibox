@@ -149,19 +149,17 @@ def get_builtin_agent_definitions() -> List[AgentDefinitionRead]:
             if hasattr(module, agent_var_name):
                 agent_instance = getattr(module, agent_var_name)
                 if isinstance(agent_instance, Agent):
-                    # Try to get system_prompt - it might be a property or attribute
-                    if hasattr(agent_instance, '_system_prompt'):
-                        instructions = str(agent_instance._system_prompt) or instructions
-                    elif hasattr(agent_instance, 'system_prompt'):
-                        prompt = agent_instance.system_prompt
-                        # If it's callable, call it; otherwise use it directly
-                        if callable(prompt):
+                    # PydanticAI stores system_prompt in _system_prompts list
+                    if hasattr(agent_instance, '_system_prompts') and agent_instance._system_prompts:
+                        # Get the first system prompt (there may be multiple)
+                        first_prompt = agent_instance._system_prompts[0]
+                        if isinstance(first_prompt, str):
+                            instructions = first_prompt
+                        elif callable(first_prompt):
                             try:
-                                instructions = str(prompt()) or instructions
+                                instructions = str(first_prompt()) or instructions
                             except:
                                 pass
-                        else:
-                            instructions = str(prompt) or instructions
         except Exception as e:
             print(f"Warning: Failed to extract instructions from {module_name}: {e}")
         
