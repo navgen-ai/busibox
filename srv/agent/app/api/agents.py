@@ -87,8 +87,15 @@ async def list_available_models(
     settings = get_settings()
     
     try:
+        headers = {}
+        if settings.litellm_api_key:
+            headers["Authorization"] = f"Bearer {settings.litellm_api_key}"
+        
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{settings.litellm_base_url}/models")
+            response = await client.get(
+                f"{settings.litellm_base_url}/models",
+                headers=headers
+            )
             response.raise_for_status()
             return response.json()
     except Exception as e:
