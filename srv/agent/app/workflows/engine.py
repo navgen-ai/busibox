@@ -36,6 +36,143 @@ class WorkflowExecutionError(Exception):
     pass
 
 
+class GuardrailsExceededError(WorkflowExecutionError):
+    """Raised when workflow exceeds guardrails limits."""
+    pass
+
+
+class UsageLimits:
+    """
+    Track and enforce usage limits for workflow execution.
+    
+    Based on Pydantic AI's UsageLimits pattern:
+    https://ai.pydantic.dev/api/run/#pydantic_ai.UsageLimits
+    """
+    
+    def __init__(self, guardrails: Optional[Dict[str, Any]] = None):
+        """
+        Initialize usage limits from guardrails configuration.
+        
+        Args:
+            guardrails: Dict with optional keys:
+                - request_limit: Max LLM requests
+                - total_tokens_limit: Max tokens across all requests
+                - tool_calls_limit: Max tool invocations
+                - timeout_seconds: Max duration
+                - max_cost_dollars: Cost ceiling
+        """
+        if guardrails is None:
+            guardrails = {}
+        
+        self.request_limit = guardrails.get("request_limit")
+        self.total_tokens_limit = guardrails.get("total_tokens_limit")
+        self.tool_calls_limit = guardrails.get("tool_calls_limit")
+        self.timeout_seconds = guardrails.get("timeout_seconds")
+        self.max_cost_dollars = guardrails.get("max_cost_dollars")
+        
+        # Current usage counters
+        self.requests = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.tool_calls = 0
+        self.estimated_cost = 0.0
+    
+    def check_before_step(self, step_type: str) -> None:
+        """
+        Check if starting a new step would exceed limits.
+        
+        Args:
+            step_type: Type of step about to execute
+            
+        Raises:
+            GuardrailsExceededError: If limits would be exceeded
+        """
+        # Check request limit (for agent steps)
+        if step_type == "agent" and self.request_limit is not None:
+            if self.requests >= self.request_limit:
+                raise GuardrailsExceededError(
+                    f"Request limit exceeded: {self.requests}/{self.request_limit}"
+                )
+        
+        # Check tool call limit
+        if step_type == "tool" and self.tool_calls_limit is not None:
+            if self.tool_calls >= self.tool_calls_limit:
+                raise GuardrailsExceededError(
+                    f"Tool calls limit exceeded: {self.tool_calls}/{self.tool_calls_limit}"
+                )
+    
+    def update(self, 
+               requests: int = 0,
+               input_tokens: int = 0,
+               output_tokens: int = 0,
+               tool_calls: int = 0,
+               estimated_cost: float = 0.0) -> None:
+        """
+        Update usage counters and check limits.
+        
+        Args:
+            requests: Number of requests to add
+            input_tokens: Input tokens to add
+            output_tokens: Output tokens to add
+            tool_calls: Tool calls to add
+            estimated_cost: Cost to add
+            
+        Raises:
+            GuardrailsExceededError: If any limit is exceeded
+        """
+        self.requests += requests
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+        self.tool_calls += tool_calls
+        self.estimated_cost += estimated_cost
+        
+        # Check limits
+        if self.request_limit is not None and self.requests > self.request_limit:
+            raise GuardrailsExceededError(
+                f"Request limit exceeded: {self.requests}/{self.request_limit}"
+            )
+        
+        if self.total_tokens_limit is not None:
+            total_tokens = self.input_tokens + self.output_tokens
+            if total_tokens > self.total_tokens_limit:
+                raise GuardrailsExceededError(
+                    f"Token limit exceeded: {total_tokens}/{self.total_tokens_limit}"
+                )
+        
+        if self.tool_calls_limit is not None and self.tool_calls > self.tool_calls_limit:
+            raise GuardrailsExceededError(
+                f"Tool calls limit exceeded: {self.tool_calls}/{self.tool_calls_limit}"
+            )
+        
+        if self.max_cost_dollars is not None and self.estimated_cost > self.max_cost_dollars:
+            raise GuardrailsExceededError(
+                f"Cost limit exceeded: ${self.estimated_cost:.4f}/${self.max_cost_dollars:.4f}"
+            )
+    
+    def get_usage_dict(self) -> Dict[str, Any]:
+        """
+        Get current usage as a dictionary.
+        
+        Returns:
+            Dict with usage metrics
+        """
+        return {
+            "requests": self.requests,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "tool_calls": self.tool_calls,
+            "estimated_cost_dollars": self.estimated_cost,
+        }
+    
+    def __repr__(self) -> str:
+        return (
+            f"UsageLimits(requests={self.requests}/{self.request_limit}, "
+            f"tokens={self.input_tokens + self.output_tokens}/{self.total_tokens_limit}, "
+            f"tool_calls={self.tool_calls}/{self.tool_calls_limit}, "
+            f"cost=${self.estimated_cost:.4f}/${self.max_cost_dollars})"
+        )
+
+
 def _resolve_value(value: Any, context: Dict[str, Any]) -> Any:
     """
     Resolve a value that may contain JSONPath-like references.
@@ -84,6 +221,50 @@ def _resolve_args(args: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, An
         else:
             resolved[key] = _resolve_value(value, context)
     return resolved
+
+
+def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """
+    Estimate cost for LLM API call based on model and token usage.
+    
+    Args:
+        model: Model name (e.g., "gpt-4", "claude-3-5-sonnet")
+        input_tokens: Number of input tokens
+        output_tokens: Number of output tokens
+        
+    Returns:
+        Estimated cost in dollars
+        
+    Note: Prices are approximate and should be updated based on current rates.
+    """
+    # Pricing per 1M tokens (approximate, as of Dec 2024)
+    pricing = {
+        # OpenAI
+        "gpt-4": {"input": 30.0, "output": 60.0},
+        "gpt-4-turbo": {"input": 10.0, "output": 30.0},
+        "gpt-3.5-turbo": {"input": 0.5, "output": 1.5},
+        # Anthropic
+        "claude-3-5-sonnet": {"input": 3.0, "output": 15.0},
+        "claude-3-opus": {"input": 15.0, "output": 75.0},
+        "claude-3-haiku": {"input": 0.25, "output": 1.25},
+        # Default fallback
+        "default": {"input": 5.0, "output": 15.0},
+    }
+    
+    # Find matching pricing
+    model_lower = model.lower()
+    rates = pricing.get("default", {"input": 5.0, "output": 15.0})
+    
+    for model_key, model_rates in pricing.items():
+        if model_key in model_lower:
+            rates = model_rates
+            break
+    
+    # Calculate cost
+    input_cost = (input_tokens / 1_000_000) * rates["input"]
+    output_cost = (output_tokens / 1_000_000) * rates["output"]
+    
+    return input_cost + output_cost
 
 
 def _evaluate_condition(condition: Dict[str, Any], context: Dict[str, Any]) -> bool:
