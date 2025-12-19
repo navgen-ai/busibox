@@ -333,7 +333,7 @@ async def execute_agent(
             from pydantic_ai.models.openai import OpenAIModel
             import os
             from app.config.settings import get_settings
-            from app.agents.tools import TOOL_REGISTRY
+            from app.agents.dynamic_loader import TOOL_REGISTRY
             
             settings = get_settings()
             
