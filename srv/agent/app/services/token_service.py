@@ -24,6 +24,9 @@ async def get_or_exchange_token(
     Fetch a cached downstream token if valid; otherwise perform exchange and persist.
     """
     now = datetime.now(timezone.utc)
+    # Convert to naive datetime for PostgreSQL TIMESTAMP WITHOUT TIME ZONE comparison
+    now_naive = now.replace(tzinfo=None)
+    
     # Tokens are audience-bound; incorporate inferred audience into the cache key
     # without changing the DB schema by adding a pseudo-scope marker.
     audience = _audience_for_purpose(purpose, scopes)
@@ -37,7 +40,7 @@ async def get_or_exchange_token(
                 TokenGrant.subject == principal.sub,
                 cast(TokenGrant.scopes, JSONB).op('@>')(cast(scopes_key, JSONB)),
                 cast(TokenGrant.scopes, JSONB).op('<@')(cast(scopes_key, JSONB)),
-                TokenGrant.expires_at > now + EXPIRY_REFRESH_BUFFER,
+                TokenGrant.expires_at > now_naive + EXPIRY_REFRESH_BUFFER,
             )
         )
         .order_by(TokenGrant.expires_at.desc())
