@@ -504,7 +504,12 @@ async def synthesize_response(
     Returns:
         Synthesized response string
     """
-    # Build context from results
+    # If we have a single successful agent result with no tools, return it directly
+    # (agent already generated a complete response)
+    if len(agent_results) == 1 and not tool_results and agent_results[0].success:
+        return agent_results[0].output
+    
+    # Build context from results for multi-step responses
     context_parts = []
     
     # Add tool results
