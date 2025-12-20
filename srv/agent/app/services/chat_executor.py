@@ -379,7 +379,17 @@ async def execute_agent(
         
         # Create minimal principal and deps for agent execution
         principal = Principal(sub=user_id, scopes=[], client_id="chat-service")
-        client = BusiboxClient(principal=principal)
+        
+        # Get or exchange token for downstream services
+        from app.services.token_service import get_or_exchange_token
+        token = await get_or_exchange_token(
+            session, 
+            principal, 
+            scopes=["search:read", "ingest:write", "rag:read"],
+            purpose="chat-agent-execution"
+        )
+        
+        client = BusiboxClient(token.access_token)
         deps = BusiboxDeps(principal=principal, busibox_client=client)
         
         # Execute agent with 30s timeout
