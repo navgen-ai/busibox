@@ -367,13 +367,29 @@ async def execute_agent(
         # Extract output string
         if success:
             output_obj = run_record.output or {}
+            logger.info(
+                f"Extracting output from run_record",
+                extra={
+                    "run_id": str(run_record.id),
+                    "output_type": type(output_obj).__name__,
+                    "output_keys": list(output_obj.keys()) if isinstance(output_obj, dict) else None,
+                    "output_preview": str(output_obj)[:200]
+                }
+            )
+            
             if isinstance(output_obj, dict):
                 # Try to get a clean output string
                 if "result" in output_obj:
                     output = str(output_obj["result"])
                 elif "data" in output_obj:
-                    output = str(output_obj["data"])
+                    # Handle nested data
+                    data = output_obj["data"]
+                    if isinstance(data, str):
+                        output = data
+                    else:
+                        output = str(data)
                 else:
+                    # No recognized key, stringify the whole thing
                     output = str(output_obj)
             else:
                 output = str(output_obj)
