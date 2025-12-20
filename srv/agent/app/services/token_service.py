@@ -1,7 +1,8 @@
 from datetime import datetime, timedelta, timezone
 from typing import List
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, cast, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.tokens import _audience_for_purpose, exchange_token
@@ -34,7 +35,8 @@ async def get_or_exchange_token(
         .where(
             and_(
                 TokenGrant.subject == principal.sub,
-                TokenGrant.scopes == scopes_key,
+                cast(TokenGrant.scopes, JSONB).op('@>')(cast(scopes_key, JSONB)),
+                cast(TokenGrant.scopes, JSONB).op('<@')(cast(scopes_key, JSONB)),
                 TokenGrant.expires_at > now + EXPIRY_REFRESH_BUFFER,
             )
         )
