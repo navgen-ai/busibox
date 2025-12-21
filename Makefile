@@ -4,10 +4,11 @@
 .DEFAULT_GOAL := menu
 
 # Variables for direct test commands
-# Usage: make test-local SERVICE=authz INV=test
+# Usage: make test SERVICE=authz INV=test
+#        make test SERVICE=authz INV=test MODE=local
 SERVICE ?=
 INV ?= test
-MODE ?= local
+MODE ?= container
 
 # Interactive menu (default when running just 'make')
 menu:
