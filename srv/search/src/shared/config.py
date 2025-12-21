@@ -52,6 +52,17 @@ class Config(BaseSettings):
     vllm_reranker_url: str = os.getenv("VLLM_RERANKER_URL", "http://10.96.200.208:8002/v1")
     vllm_reranker_model: str = os.getenv("VLLM_RERANKER_MODEL", "Qwen/Qwen3-Reranker-0.6B")
     
+    # AuthZ JWT Validation
+    authz_jwks_url: str = os.getenv("AUTHZ_JWKS_URL", "http://10.96.200.210:8010/.well-known/jwks.json")
+    authz_issuer: str = os.getenv("AUTHZ_ISSUER", "busibox-authz")
+    authz_audience: str = os.getenv("AUTHZ_AUDIENCE", "search-api")
+    jwt_algorithms: str = os.getenv("JWT_ALGORITHMS", "RS256")
+    
+    # Test credentials (used by integration tests)
+    authz_test_client_id: Optional[str] = os.getenv("AUTHZ_TEST_CLIENT_ID", None)
+    authz_test_client_secret: Optional[str] = os.getenv("AUTHZ_TEST_CLIENT_SECRET", None)
+    test_user_id: Optional[str] = os.getenv("TEST_USER_ID", None)
+    
     # Search defaults
     default_search_limit: int = 10
     default_rerank_k: int = 100
