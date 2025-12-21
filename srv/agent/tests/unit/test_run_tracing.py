@@ -265,7 +265,8 @@ async def test_create_run_logs_execution_phases(test_session, caplog):
 
     caplog.set_level(logging.INFO)
 
-    principal = Principal(sub="test-user", roles=[], scopes=["search.read"], token="test")
+    # Use token=None to trigger the "Exchanging token" path, not "Using provided token"
+    principal = Principal(sub="test-user", roles=[], scopes=["search.read"], token=None)
     agent_id = uuid.uuid4()
 
     mock_agent = MagicMock()
@@ -274,7 +275,9 @@ async def test_create_run_logs_execution_phases(test_session, caplog):
     mock_result.data.model_dump = MagicMock(return_value={"message": "success"})
     mock_agent.run = AsyncMock(return_value=mock_result)
 
-    with patch("app.services.run_service.agent_registry.get", return_value=mock_agent):
+    # Use get_or_load (async) not get (sync) - the actual method name in run_service
+    with patch("app.services.run_service.agent_registry.get_or_load", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_agent
         with patch("app.services.run_service.get_or_exchange_token") as mock_token:
             mock_token.return_value = MagicMock(access_token="test-token")
 
@@ -291,10 +294,11 @@ async def test_create_run_logs_execution_phases(test_session, caplog):
     log_messages = [r.message for r in caplog.records if r.levelname == "INFO"]
 
     # Verify key execution phases are logged
-    assert any("Exchanging token" in msg for msg in log_messages)
-    assert any("Executing agent" in msg for msg in log_messages)
-    assert any("succeeded" in msg for msg in log_messages)
-    assert any("completed with status" in msg for msg in log_messages)
+    # The actual log message is "Exchanging token for run {id}"
+    assert any("Exchanging token" in msg for msg in log_messages), f"No 'Exchanging token' found in: {log_messages}"
+    assert any("Executing" in msg for msg in log_messages), f"No 'Executing' found in: {log_messages}"
+    assert any("succeeded" in msg for msg in log_messages), f"No 'succeeded' found in: {log_messages}"
+    assert any("completed with status" in msg for msg in log_messages), f"No 'completed with status' found in: {log_messages}"
 
 
 @pytest.mark.asyncio

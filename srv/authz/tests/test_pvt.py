@@ -25,6 +25,12 @@ SERVICE_PORT = os.getenv("SERVICE_PORT", "8010")
 SERVICE_URL = f"http://localhost:{SERVICE_PORT}"
 ADMIN_TOKEN = os.getenv("AUTHZ_ADMIN_TOKEN", "")
 
+# Test client credentials (for token exchange tests)
+AUTHZ_TEST_CLIENT_ID = os.getenv("AUTHZ_TEST_CLIENT_ID", "")
+AUTHZ_TEST_CLIENT_SECRET = os.getenv("AUTHZ_TEST_CLIENT_SECRET", "")
+AUTHZ_BOOTSTRAP_CLIENT_ID = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_ID", "ai-portal")
+AUTHZ_BOOTSTRAP_CLIENT_SECRET = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_SECRET", "")
+
 # Database config - REQUIRED
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "")
 POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
@@ -189,6 +195,28 @@ class TestPVTTokenExchange:
             assert resp.status_code in [400, 401, 403], f"Expected 400/401/403, got {resp.status_code}"
     
     @pytest.mark.asyncio
+    async def test_bootstrap_client_token_exchange(self):
+        """Can get access token using bootstrap client credentials."""
+        client_id = require_env("AUTHZ_BOOTSTRAP_CLIENT_ID", AUTHZ_BOOTSTRAP_CLIENT_ID)
+        client_secret = require_env("AUTHZ_BOOTSTRAP_CLIENT_SECRET", AUTHZ_BOOTSTRAP_CLIENT_SECRET)
+        
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{SERVICE_URL}/oauth/token",
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "audience": "agent-api",
+                },
+                timeout=10.0,
+            )
+            assert resp.status_code == 200, f"Token exchange failed: {resp.text}"
+            data = resp.json()
+            assert "access_token" in data, "No access_token in response"
+            assert len(data["access_token"]) > 0
+    
+    @pytest.mark.asyncio
     async def test_bootstrap_client_exists(self):
         """Bootstrap OAuth client (ai-portal) exists."""
         admin_token = require_env("AUTHZ_ADMIN_TOKEN", ADMIN_TOKEN)
@@ -203,3 +231,19 @@ class TestPVTTokenExchange:
             data = resp.json()
             client_ids = [c.get("client_id") for c in data]
             assert "ai-portal" in client_ids, "Bootstrap client 'ai-portal' not found"
+    
+    @pytest.mark.asyncio
+    async def test_admin_authenticated_access(self):
+        """Admin token allows access to admin endpoints."""
+        admin_token = require_env("AUTHZ_ADMIN_TOKEN", ADMIN_TOKEN)
+        
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{SERVICE_URL}/admin/roles",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                timeout=5.0,
+            )
+            # Should succeed with 200 - not 401/403
+            assert resp.status_code == 200, f"Admin access failed: {resp.status_code} - {resp.text}"
+            data = resp.json()
+            assert isinstance(data, list)
