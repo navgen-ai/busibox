@@ -14,11 +14,11 @@ set -euo pipefail
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 ANSIBLE_DIR="${REPO_ROOT}/provision/ansible"
 
 # Source UI library
-source "${SCRIPT_DIR}/lib/ui.sh"
+source "${REPO_ROOT}/scripts/lib/ui.sh"
 
 # vLLM mode for test environment: "alias" (use production) or "deploy" (own container)
 VLLM_MODE="alias"
