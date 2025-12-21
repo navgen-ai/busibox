@@ -25,10 +25,10 @@ SERVICE_PORT = os.getenv("PORT", "8080")
 SERVICE_URL = f"http://localhost:{SERVICE_PORT}"
 
 # AuthZ configuration - REQUIRED for token exchange
+# Use bootstrap client (ai-portal) - the standard OAuth client for all services
 AUTH_JWKS_URL = os.getenv("AUTH_JWKS_URL", "")
-AUTHZ_TEST_CLIENT_ID = os.getenv("AUTHZ_TEST_CLIENT_ID", "")
-AUTHZ_TEST_CLIENT_SECRET = os.getenv("AUTHZ_TEST_CLIENT_SECRET", "")
-TEST_USER_ID = os.getenv("TEST_USER_ID", "")
+AUTHZ_BOOTSTRAP_CLIENT_ID = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_ID", "ai-portal")
+AUTHZ_BOOTSTRAP_CLIENT_SECRET = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_SECRET", "")
 
 # Dependencies - REQUIRED
 LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "")
@@ -50,11 +50,11 @@ def get_authz_base_url() -> str:
 
 @pytest.fixture(scope="module")
 def access_token():
-    """Get an access token for the agent API using test client credentials."""
+    """Get an access token for the agent API using bootstrap client credentials."""
     import httpx
     
-    client_id = require_env("AUTHZ_TEST_CLIENT_ID", AUTHZ_TEST_CLIENT_ID)
-    client_secret = require_env("AUTHZ_TEST_CLIENT_SECRET", AUTHZ_TEST_CLIENT_SECRET)
+    client_id = require_env("AUTHZ_BOOTSTRAP_CLIENT_ID", AUTHZ_BOOTSTRAP_CLIENT_ID)
+    client_secret = require_env("AUTHZ_BOOTSTRAP_CLIENT_SECRET", AUTHZ_BOOTSTRAP_CLIENT_SECRET)
     authz_url = get_authz_base_url()
     
     # Token exchange using client credentials grant
