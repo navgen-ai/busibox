@@ -1,7 +1,7 @@
 # Ingestion Service
 
 **Created**: 2025-12-09  
-**Last Updated**: 2025-12-20  
+**Last Updated**: 2025-12-21  
 **Status**: Active  
 **Category**: Architecture  
 **Related Docs**:  
@@ -39,6 +39,7 @@
 2. **Metadata**: PostgreSQL record with visibility + role IDs.
 3. **Queue**: Redis Streams entry (`jobs:ingestion`).
 4. **Processing worker** (`srv/ingest/src/worker.py`):
+   - **PDF Splitting**: Large PDFs (>5 pages) automatically split into 5-page chunks before processing to prevent memory issues and timeouts. Configurable via `PDF_SPLIT_PAGES` and `PDF_SPLIT_ENABLED`.
    - Extraction: Marker (GPU) with remote override; fallbacks (pdfplumber, etc.).
    - Classification and metadata enrichment.
    - Chunking: configurable 400–800 tokens, ~12% overlap.
@@ -60,6 +61,7 @@
 - Embeddings: `FASTEMBED_MODEL`, `EMBEDDING_BATCH_SIZE`
 - Visual: `COLPALI_BASE_URL`, `COLPALI_ENABLED`
 - Extraction: `MARKER_ENABLED`, `MARKER_SERVICE_URL`, `MARKER_USE_GPU`
+- **PDF Splitting**: `PDF_SPLIT_ENABLED` (default: true), `PDF_SPLIT_PAGES` (default: 5)
 - Chunking: `CHUNK_SIZE_MIN`, `CHUNK_SIZE_MAX`, `CHUNK_OVERLAP_PCT`
 - Auth: `AUTHZ_JWKS_URL`, `JWT_ISSUER`, `JWT_AUDIENCE`, `ALLOW_LEGACY_AUTH`
 

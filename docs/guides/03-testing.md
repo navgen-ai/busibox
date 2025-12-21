@@ -1,7 +1,7 @@
 # Testing Guide
 
 **Created**: 2025-12-09  
-**Last Updated**: 2025-12-15  
+**Last Updated**: 2025-12-21  
 **Status**: Active  
 **Category**: Guide  
 **Related Docs**:  
@@ -28,9 +28,11 @@
   pip install -r requirements.txt
   pytest tests/api     # API routes incl. upload/status/search
   pytest tests/integration -m "not slow"  # pipeline coverage
+  pytest tests/test_pdf_splitting.py -v  # PDF splitting tests (uses real PDFs from busibox-testdocs)
   ```
 - End-to-end upload + SSE + indexing:
   - Use `tests/integration/test_full_pipeline.py` (requires MinIO, Redis, Milvus running).
+- **PDF Splitting Tests**: Tests validate that large PDFs (>5 pages) are automatically split into 5-page chunks before processing. Uses real PDF files from the `busibox-testdocs` repository.
 
 ### Search Service
 - Run search tests:

@@ -139,6 +139,7 @@ ssh root@10.96.201.206 "cd /srv/ingest && source venv/bin/activate && pytest tes
 **Test coverage:**
 - File upload with chunking
 - Text extraction (PDF, DOCX)
+- **PDF splitting** for large documents (>5 pages)
 - Semantic chunking
 - Embedding generation
 - Milvus insertion
