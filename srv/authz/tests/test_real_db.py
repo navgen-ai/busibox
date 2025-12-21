@@ -511,7 +511,7 @@ class TestKeystoreEndpoints:
                 headers={"Authorization": f"Bearer {admin_token}"},
                 json={
                     "file_id": file_id,
-                    "content_base64": content_b64,
+                    "content": content_b64,  # API expects "content" field
                     "role_ids": [test_role_id],
                 },
                 timeout=30.0,
