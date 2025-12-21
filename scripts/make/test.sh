@@ -38,6 +38,102 @@ get_vault_flags() {
     fi
 }
 
+# Get container IP by name and environment
+get_container_ip() {
+    local container="$1"
+    local env="$2"
+    
+    local network_base
+    if [[ "$env" == "production" ]]; then
+        network_base="10.96.200"
+    else
+        network_base="10.96.201"
+    fi
+    
+    case "$container" in
+        proxy)    echo "${network_base}.200" ;;
+        apps)     echo "${network_base}.201" ;;
+        agent)    echo "${network_base}.202" ;;
+        postgres) echo "${network_base}.203" ;;
+        milvus)   echo "${network_base}.204" ;;
+        minio)    echo "${network_base}.205" ;;
+        ingest)   echo "${network_base}.206" ;;
+        litellm)  echo "${network_base}.207" ;;
+        vllm)     echo "${network_base}.208" ;;
+        ollama)   echo "${network_base}.209" ;;
+        authz)    echo "${network_base}.210" ;;
+        search)   echo "${network_base}.211" ;;
+        *)        echo "" ;;
+    esac
+}
+
+# Extract test credentials from vault using Python YAML parsing
+# Usage: eval "$(extract_vault_credentials)"
+extract_vault_credentials() {
+    local vault_flags
+    vault_flags="$(get_vault_flags)"
+    local vault_file="${ANSIBLE_DIR}/roles/secrets/vars/vault.yml"
+    
+    # Create temp file for decrypted vault
+    local temp_vault
+    temp_vault=$(mktemp)
+    trap "rm -f $temp_vault" RETURN
+    
+    # Decrypt vault
+    if ! ansible-vault view "$vault_file" $vault_flags > "$temp_vault" 2>/dev/null; then
+        echo "# Failed to decrypt vault" >&2
+        return 1
+    fi
+    
+    # Extract credentials using Python
+    python3 <<PYTHON_EOF
+import yaml
+import sys
+
+try:
+    with open('$temp_vault', 'r') as f:
+        vault = yaml.safe_load(f) or {}
+    
+    secrets = vault.get('secrets', {})
+    
+    # PostgreSQL
+    pg = secrets.get('postgresql', {})
+    print(f"POSTGRES_PASSWORD='{pg.get('password', '')}'")
+    print(f"TEST_DB_PASSWORD='{pg.get('password', '')}'")
+    
+    # Authz - check multiple possible locations
+    authz = secrets.get('authz', {})
+    test_creds = secrets.get('test_credentials', {})
+    ai_portal = secrets.get('ai-portal', {})
+    
+    # Admin token: check authz.admin_token, then test_credentials.authz_admin_token
+    admin_token = authz.get('admin_token', '')
+    if not admin_token:
+        admin_token = test_creds.get('authz_admin_token', '')
+    if not admin_token:
+        admin_token = ai_portal.get('authz_admin_token', '')
+    print(f"AUTHZ_ADMIN_TOKEN='{admin_token}'")
+    
+    # Master key for envelope encryption
+    master_key = authz.get('master_key', '')
+    print(f"AUTHZ_MASTER_KEY='{master_key}'")
+    
+    # MinIO
+    minio = secrets.get('minio', {})
+    print(f"MINIO_ACCESS_KEY='{minio.get('minio_access_key', '') or minio.get('access_key', '')}'")
+    print(f"MINIO_SECRET_KEY='{minio.get('minio_secret_key', '') or minio.get('secret_key', '')}'")
+    
+    # Test credentials
+    print(f"AUTHZ_TEST_CLIENT_ID='{test_creds.get('authz_test_client_id', '')}'")
+    print(f"AUTHZ_TEST_CLIENT_SECRET='{test_creds.get('authz_test_client_secret', '')}'")
+    print(f"TEST_USER_ID='{test_creds.get('test_user_id', '')}'")
+    
+except Exception as e:
+    print(f"# Error: {e}", file=sys.stderr)
+    sys.exit(1)
+PYTHON_EOF
+}
+
 # ============================================================================
 # LLM Testing Functions
 # ============================================================================
@@ -762,16 +858,28 @@ service_tests_menu() {
                     local vault_flags
                     vault_flags="$(get_vault_flags)"
                     
-                    # Extract test credentials from vault
+                    # Extract test credentials from vault using Python YAML parsing
                     info "Extracting test credentials from vault..."
-                    TEST_DB_PASSWORD=$(ansible-vault view "${ANSIBLE_DIR}/roles/secrets/vars/vault.yml" $vault_flags 2>/dev/null | grep 'password: 0f78' | awk '{print $2}')
-                    AUTHZ_ADMIN_TOKEN=$(ansible-vault view "${ANSIBLE_DIR}/roles/secrets/vars/vault.yml" $vault_flags 2>/dev/null | grep 'authz_admin_token:' | awk '{print $2}')
+                    local creds
+                    creds=$(extract_vault_credentials 2>/dev/null) || {
+                        error "Could not extract credentials from vault"
+                        pause
+                        continue
+                    }
+                    eval "$creds"
+                    
+                    # Get container IPs for the environment
+                    local postgres_ip authz_ip
+                    postgres_ip=$(get_container_ip postgres "$env")
+                    authz_ip=$(get_container_ip authz "$env")
                     
                     if [ -z "$TEST_DB_PASSWORD" ]; then
                         error "Could not extract TEST_DB_PASSWORD from vault"
                         pause
                         continue
                     fi
+                    
+                    info "Using postgres at ${postgres_ip}, authz at ${authz_ip}"
                     
                     # ansible ad-hoc uses ANSIBLE_CONFIG; ensure we stay in ansible dir
                     # Sync test requirements and tests to authz-lxc
@@ -782,9 +890,18 @@ service_tests_menu() {
                         error "Failed to copy authz tests"
                     }
                     
+                    # Build environment variables for test run
+                    local test_env="TEST_DB_USER=busibox_test_user"
+                    test_env="${test_env} TEST_DB_PASSWORD=${TEST_DB_PASSWORD}"
+                    test_env="${test_env} TEST_DB_NAME=busibox_test"
+                    test_env="${test_env} TEST_DB_HOST=${postgres_ip}"
+                    test_env="${test_env} AUTHZ_ADMIN_TOKEN=${AUTHZ_ADMIN_TOKEN}"
+                    test_env="${test_env} AUTHZ_MASTER_KEY=${AUTHZ_MASTER_KEY}"
+                    test_env="${test_env} AUTHZ_SERVICE_URL=http://${authz_ip}:8010"
+                    
                     # Run tests with real database credentials
                     info "Running tests with real database integration..."
-                    ANSIBLE_CONFIG="${ANSIBLE_DIR}/ansible.cfg" ansible -i "$inv" authz -m shell -a "bash -lc 'cd /srv/authz/app && source ../venv/bin/activate && pip install -q -r requirements.test.txt && export TEST_DB_USER=busibox_test_user TEST_DB_PASSWORD=${TEST_DB_PASSWORD} TEST_DB_NAME=busibox_test TEST_DB_HOST=10.96.201.203 AUTHZ_ADMIN_TOKEN=${AUTHZ_ADMIN_TOKEN} && pytest -v --tb=short'" $vault_flags || {
+                    ANSIBLE_CONFIG="${ANSIBLE_DIR}/ansible.cfg" ansible -i "$inv" authz -m shell -a "bash -lc 'cd /srv/authz/app && source ../venv/bin/activate && pip install -q -r requirements.test.txt && export ${test_env} && pytest -v --tb=short'" $vault_flags || {
                         error "Authz tests failed"
                     }
                 fi
