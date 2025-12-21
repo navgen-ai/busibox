@@ -1,6 +1,13 @@
 ---
 # Standalone authz service (separate from ingest)
 
+- name: Install rsync for synchronize module
+  apt:
+    name: rsync
+    state: present
+    update_cache: yes
+  tags: [authz]
+
 - name: Ensure authz group exists
   group:
     name: "{{ authz_group }}"
