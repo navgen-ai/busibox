@@ -55,7 +55,7 @@ get_container_ip() {
         vllm)     echo "${network_base}.208" ;;
         ollama)   echo "${network_base}.209" ;;
         authz)    echo "${network_base}.210" ;;
-        search)   echo "${network_base}.211" ;;
+        search)   echo "${network_base}.204" ;;  # Search runs on milvus container
         *)        echo "" ;;
     esac
 }
