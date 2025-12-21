@@ -135,23 +135,28 @@ Best strategy selection
    ├─ mime_type
    └─ file_id
 
-2. Strategy Selection
+2. PDF Splitting (if PDF > 5 pages)
+   ├─ Split into 5-page chunks
+   ├─ Process each chunk separately
+   └─ Combine results automatically
+
+3. Strategy Selection
    ├─ Check MIME type support
    ├─ Check enabled strategies
    └─ Return applicable strategies
 
-3. Parallel Processing
+4. Parallel Processing
    ├─ SIMPLE: pypdf → chunks → embeddings
    ├─ MARKER: marker-pdf → markdown → chunks → embeddings
    └─ COLPALI: pdf2image → ColPali → visual embeddings
 
-4. Results Collection
+5. Results Collection
    ├─ ProcessingResult per strategy
    ├─ Success/failure status
    ├─ Processing time
    └─ Extracted data
 
-5. Comparison & Selection
+6. Comparison & Selection
    ├─ Compare metrics
    ├─ Generate recommendations
    └─ Select best strategy
@@ -376,12 +381,14 @@ srv/ingest/
 │       ├── processing_strategy.py       # ✅ Strategy framework
 │       ├── multi_flow_processor.py      # ✅ Multi-flow processor
 │       ├── colpali.py                   # ✅ ColPali embedder
-│       ├── text_extractor.py            # (existing)
+│       ├── pdf_splitter.py              # ✅ PDF splitting for large docs
+│       ├── text_extractor.py            # (existing, updated for splitting)
 │       ├── chunker.py                   # (existing)
 │       └── embedder.py                  # (existing)
 ├── tests/
 │   ├── test_multi_flow.py               # ✅ Multi-flow tests (40+ tests)
-│   └── test_colpali.py                  # ✅ ColPali tests (30+ tests)
+│   ├── test_colpali.py                  # ✅ ColPali tests (30+ tests)
+│   └── test_pdf_splitting.py            # ✅ PDF splitting tests (17 tests)
 └── ...
 
 scripts/
@@ -407,6 +414,7 @@ docs/
 - [x] Performance benchmarking
 - [x] Error handling and diagnostics
 - [x] Best strategy selection (speed/quality/balanced)
+- [x] **PDF splitting** for large documents (>5 pages) to prevent memory issues
 
 ### 📋 Pending (Next Phase)
 
@@ -584,10 +592,12 @@ if not successful:
 - **Strategy framework:** `srv/ingest/src/processors/processing_strategy.py`
 - **Multi-flow processor:** `srv/ingest/src/processors/multi_flow_processor.py`
 - **ColPali embedder:** `srv/ingest/src/processors/colpali.py`
+- **PDF splitter:** `srv/ingest/src/processors/pdf_splitter.py`
 
 ### Tests
 - **Multi-flow tests:** `srv/ingest/tests/test_multi_flow.py`
 - **ColPali tests:** `srv/ingest/tests/test_colpali.py`
+- **PDF splitting tests:** `srv/ingest/tests/test_pdf_splitting.py`
 - **ColPali script:** `scripts/test-colpali.sh`
 
 ### Documentation

@@ -9,6 +9,10 @@ Supports:
 - ODT: odfpy
 - TXT, HTML, XML, Markdown, CSV, JSON: Direct parsing
 - Page image extraction for ColPali (PDFs only)
+
+PDF Splitting:
+Large PDFs (>5 pages by default) are automatically split into smaller chunks
+before processing to prevent memory issues and timeouts.
 """
 
 import json
@@ -20,6 +24,8 @@ from typing import Dict, List, Optional, Tuple
 import pdfplumber
 import structlog
 from docx import Document
+
+from processors.pdf_splitter import PDFSplitter, DEFAULT_PAGES_PER_SPLIT
 
 logger = structlog.get_logger()
 
@@ -159,6 +165,18 @@ class TextExtractor:
         self.temp_dir = config.get("temp_dir", "/tmp/ingest")
         self.marker_enabled = config.get("marker_enabled", True)  # Can disable to save memory
         
+        # PDF splitting configuration
+        # Split large PDFs into chunks of this many pages (default: 5)
+        self.pdf_split_pages = config.get("pdf_split_pages", DEFAULT_PAGES_PER_SPLIT)
+        # Enable/disable PDF splitting (default: True)
+        self.pdf_split_enabled = config.get("pdf_split_enabled", True)
+        
+        # Initialize PDF splitter
+        self.pdf_splitter = PDFSplitter(
+            pages_per_split=self.pdf_split_pages,
+            temp_dir=self.temp_dir,
+        )
+        
         # Remote Marker service URL - if set, calls remote service instead of local Marker
         # This allows test environment to use production Marker service
         self.marker_service_url = config.get("marker_service_url") or os.getenv("MARKER_SERVICE_URL")
@@ -166,6 +184,12 @@ class TextExtractor:
             logger.info(
                 "Using remote Marker service",
                 url=self.marker_service_url,
+            )
+        
+        if self.pdf_split_enabled:
+            logger.info(
+                "PDF splitting enabled",
+                pages_per_split=self.pdf_split_pages,
             )
         
         os.makedirs(self.temp_dir, exist_ok=True)
@@ -221,7 +245,130 @@ class TextExtractor:
             raise ValueError(f"Unsupported MIME type: {mime_type}")
     
     def _extract_pdf(self, file_path: str) -> ExtractionResult:
-        """Extract text from PDF using Marker, TATR, and page images."""
+        """Extract text from PDF using Marker, TATR, and page images.
+        
+        For large PDFs (>pdf_split_pages pages), the PDF is split into smaller
+        chunks before processing to prevent memory issues and timeouts.
+        Results from each chunk are then combined.
+        """
+        # Check if PDF needs splitting
+        if self.pdf_split_enabled and self.pdf_splitter.needs_splitting(file_path):
+            return self._extract_pdf_with_splitting(file_path)
+        
+        # Process as single PDF (no splitting needed)
+        return self._extract_single_pdf(file_path)
+    
+    def _extract_pdf_with_splitting(self, file_path: str) -> ExtractionResult:
+        """Extract text from a large PDF by splitting it into chunks.
+        
+        Args:
+            file_path: Path to PDF file
+            
+        Returns:
+            Combined ExtractionResult from all chunks
+        """
+        total_page_count = self.pdf_splitter.get_page_count(file_path)
+        
+        logger.info(
+            "Processing large PDF with splitting",
+            file_path=file_path,
+            total_pages=total_page_count,
+            pages_per_split=self.pdf_split_pages,
+        )
+        
+        # Split the PDF
+        splits = self.pdf_splitter.split(file_path)
+        
+        # Accumulate results from all splits
+        all_text_parts = []
+        all_markdown_parts = []
+        all_page_images = []
+        all_tables = []
+        extraction_method = "unknown"
+        
+        try:
+            for split_idx, (split_path, start_page, end_page) in enumerate(splits):
+                logger.info(
+                    "Processing PDF split",
+                    split_num=split_idx + 1,
+                    total_splits=len(splits),
+                    pages=f"{start_page}-{end_page}",
+                    split_path=split_path,
+                )
+                
+                # Extract from this split
+                result = self._extract_single_pdf(split_path)
+                
+                # Accumulate text
+                if result.text:
+                    # Add page range marker for debugging/reference
+                    all_text_parts.append(result.text)
+                
+                # Accumulate markdown
+                if result.markdown:
+                    all_markdown_parts.append(result.markdown)
+                
+                # Accumulate page images (adjust paths to avoid conflicts)
+                if result.page_images:
+                    all_page_images.extend(result.page_images)
+                
+                # Accumulate tables
+                if result.tables:
+                    # Add page offset to table metadata
+                    for table in result.tables:
+                        if isinstance(table, dict):
+                            table["page_offset"] = start_page - 1
+                    all_tables.extend(result.tables)
+                
+                # Use extraction method from first successful extraction
+                if extraction_method == "unknown" and result.metadata.get("extraction_method"):
+                    extraction_method = result.metadata.get("extraction_method")
+                
+                logger.debug(
+                    "Split extraction complete",
+                    split_num=split_idx + 1,
+                    text_length=len(result.text) if result.text else 0,
+                    page_images=len(result.page_images) if result.page_images else 0,
+                )
+        
+        finally:
+            # Clean up split files
+            self.pdf_splitter.cleanup_splits(splits, file_path)
+        
+        # Combine results
+        combined_text = "\n\n".join(all_text_parts)
+        combined_markdown = "\n\n".join(all_markdown_parts) if all_markdown_parts else None
+        
+        logger.info(
+            "PDF splitting extraction complete",
+            file_path=file_path,
+            total_pages=total_page_count,
+            num_splits=len(splits),
+            combined_text_length=len(combined_text),
+            combined_page_images=len(all_page_images),
+            combined_tables=len(all_tables),
+        )
+        
+        return ExtractionResult(
+            text=combined_text,
+            markdown=combined_markdown,
+            page_images=all_page_images,
+            page_count=total_page_count,
+            tables=all_tables,
+            metadata={
+                "extraction_method": extraction_method,
+                "split_processing": True,
+                "num_splits": len(splits),
+                "pages_per_split": self.pdf_split_pages,
+            },
+        )
+    
+    def _extract_single_pdf(self, file_path: str) -> ExtractionResult:
+        """Extract text from a single PDF (no splitting).
+        
+        This is the original extraction logic, now used for both small PDFs
+        and individual chunks of split PDFs.
+        """
         page_images = []
         markdown_text = None
         text_content = ""

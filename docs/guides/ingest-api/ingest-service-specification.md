@@ -267,6 +267,14 @@ data: {"message": "Processing complete"}
 **Input**: File from MinIO  
 **Output**: Raw text content
 
+**PDF Splitting for Large Documents**:
+- Large PDFs (>5 pages by default) are automatically split into smaller chunks before processing
+- Prevents memory issues and timeouts with very large documents (100+ pages)
+- Configurable via `PDF_SPLIT_ENABLED` (default: true) and `PDF_SPLIT_PAGES` (default: 5)
+- Uses `pypdf` (or `PyPDF2` fallback) for splitting
+- Split files are processed sequentially, results combined automatically
+- Temporary split files are cleaned up after processing
+
 **Supported Formats**:
 - **PDF** (dual-track processing):
   - **Text extraction**: `Marker` or `Unstructured.io` for high-quality markdown
@@ -281,9 +289,11 @@ data: {"message": "Processing complete"}
 - **JSON**: Direct parse
 
 **PDF Processing Strategy** (per ai-search.md):
-1. **Parse to text/markdown**: Unstructured/Marker + TATR for tables → Text chunks
-2. **Extract page images**: One image per page → ColPali embeddings
-3. **Fuse both**: Text chunks (BM25 + dense) + page images (ColPali multi-vector)
+1. **Split large PDFs**: Documents >5 pages split into 5-page chunks
+2. **Parse to text/markdown**: Unstructured/Marker + TATR for tables → Text chunks
+3. **Extract page images**: One image per page → ColPali embeddings
+4. **Fuse both**: Text chunks (BM25 + dense) + page images (ColPali multi-vector)
+5. **Combine results**: Split chunk results merged back into single document
 
 **OCR** (if needed):
 - Tesseract for scanned PDFs
