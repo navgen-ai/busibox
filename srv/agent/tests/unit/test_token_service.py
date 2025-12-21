@@ -36,8 +36,23 @@ def _principal() -> Principal:
 
 
 @pytest.mark.asyncio
-async def test_returns_cached_token_when_valid(monkeypatch, test_session: AsyncSession, test_token: TokenGrant, mock_principal: Principal):
+async def test_returns_cached_token_when_valid(monkeypatch, test_session: AsyncSession):
     """Test that a valid cached token is returned without calling exchange."""
+    # Create a principal and matching cached token
+    principal = _principal()
+    
+    # The token service adds "aud:{audience}" to the scopes key
+    # For purpose="ingest", the audience is "ingest-api"
+    # So the cache key scopes will be sorted(["search.read", "ingest.write", "aud:ingest-api"])
+    cached_token = TokenGrant(
+        subject=principal.sub,
+        scopes=sorted(["aud:ingest-api", "ingest.write", "search.read"]),
+        token="cached-test-token",
+        expires_at=_future(60),  # Valid for 60 more minutes
+    )
+    test_session.add(cached_token)
+    await test_session.commit()
+    
     # Mock exchange_token to ensure it's not called (should use cached token)
     async def should_not_be_called(*args, **kwargs):
         raise AssertionError("Should not exchange token when valid cached token exists")
@@ -46,13 +61,13 @@ async def test_returns_cached_token_when_valid(monkeypatch, test_session: AsyncS
 
     token = await get_or_exchange_token(
         session=test_session,
-        principal=mock_principal,
+        principal=principal,
         scopes=["ingest.write", "search.read"],  # order should be normalized
         purpose="ingest",
     )
 
-    assert token.access_token == test_token.token
-    assert token.expires_at == test_token.expires_at
+    assert token.access_token == cached_token.token
+    assert token.expires_at == cached_token.expires_at
 
 
 @pytest.mark.asyncio

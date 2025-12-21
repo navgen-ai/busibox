@@ -5,8 +5,8 @@ These tests run after deployment to verify the service is functioning correctly.
 They are designed to be fast (<30 seconds total) and catch critical issues:
 - Service health
 - Milvus connectivity
-- Auth integration (AuthZ JWKS)
-- Core search endpoints
+- Auth integration (AuthZ token exchange AND authenticated access)
+- Core search endpoints with authentication
 
 Run with: pytest tests/test_pvt.py -v
 Or: pytest -m pvt -v
@@ -23,8 +23,13 @@ import httpx
 SERVICE_PORT = os.getenv("SERVICE_PORT", "8003")
 SERVICE_URL = f"http://localhost:{SERVICE_PORT}"
 
-# Dependencies - REQUIRED
+# AuthZ configuration - REQUIRED for token exchange
 AUTHZ_JWKS_URL = os.getenv("AUTHZ_JWKS_URL", "")
+AUTHZ_TEST_CLIENT_ID = os.getenv("AUTHZ_TEST_CLIENT_ID", "")
+AUTHZ_TEST_CLIENT_SECRET = os.getenv("AUTHZ_TEST_CLIENT_SECRET", "")
+TEST_USER_ID = os.getenv("TEST_USER_ID", "")
+
+# Dependencies - REQUIRED
 MILVUS_HOST = os.getenv("MILVUS_HOST", "")
 MILVUS_PORT = os.getenv("MILVUS_PORT", "19530")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "")
@@ -36,6 +41,50 @@ def require_env(var_name: str, value: str) -> str:
     if not value:
         pytest.fail(f"Required environment variable {var_name} is not set. Check .env file.")
     return value
+
+
+def get_authz_base_url() -> str:
+    """Extract AuthZ base URL from JWKS URL."""
+    jwks = require_env("AUTHZ_JWKS_URL", AUTHZ_JWKS_URL)
+    return jwks.replace("/.well-known/jwks.json", "")
+
+
+@pytest.fixture(scope="module")
+def access_token():
+    """Get an access token for the search API using test client credentials."""
+    import httpx
+    
+    client_id = require_env("AUTHZ_TEST_CLIENT_ID", AUTHZ_TEST_CLIENT_ID)
+    client_secret = require_env("AUTHZ_TEST_CLIENT_SECRET", AUTHZ_TEST_CLIENT_SECRET)
+    authz_url = get_authz_base_url()
+    
+    # Token exchange using client credentials grant
+    with httpx.Client() as client:
+        resp = client.post(
+            f"{authz_url}/oauth/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "audience": "search-api",
+            },
+            timeout=10.0,
+        )
+        
+        if resp.status_code != 200:
+            pytest.fail(f"Failed to get access token: {resp.status_code} - {resp.text}")
+        
+        data = resp.json()
+        if "access_token" not in data:
+            pytest.fail(f"No access_token in response: {data}")
+        
+        return data["access_token"]
+
+
+@pytest.fixture(scope="module")
+def auth_headers(access_token):
+    """Return headers with Bearer token."""
+    return {"Authorization": f"Bearer {access_token}"}
 
 
 @pytest.mark.pvt
@@ -69,7 +118,7 @@ class TestPVTAuth:
     """Authentication tests - verify JWT infrastructure works."""
     
     @pytest.mark.asyncio
-    async def test_search_endpoint_requires_auth(self):
+    async def test_search_endpoint_rejects_unauthenticated(self):
         """Search endpoints reject unauthenticated requests."""
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -90,6 +139,25 @@ class TestPVTAuth:
             data = resp.json()
             assert "keys" in data
             assert len(data["keys"]) >= 1
+    
+    @pytest.mark.asyncio
+    async def test_token_exchange_works(self, access_token):
+        """Can obtain access token from AuthZ service."""
+        assert access_token is not None
+        assert len(access_token) > 0
+    
+    @pytest.mark.asyncio
+    async def test_authenticated_search_request(self, auth_headers):
+        """Authenticated search requests are accepted."""
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{SERVICE_URL}/search",
+                json={"query": "test", "limit": 1},
+                headers=auth_headers,
+                timeout=10.0,
+            )
+            # Should succeed or return empty results - not 401/403
+            assert resp.status_code in [200, 422], f"Auth failed: {resp.status_code} - {resp.text}"
 
 
 @pytest.mark.pvt
@@ -144,17 +212,20 @@ class TestPVTDependencies:
 
 @pytest.mark.pvt
 class TestPVTAPI:
-    """API tests - verify core endpoints work."""
+    """API tests - verify core endpoints work with authentication."""
     
     @pytest.mark.asyncio
-    async def test_search_requires_auth(self):
-        """Search endpoint exists and requires authentication."""
+    async def test_search_with_auth(self, auth_headers):
+        """Can perform search with valid authentication."""
         async with httpx.AsyncClient() as client:
-            # Try to search without auth - should get 401/403
             resp = await client.post(
                 f"{SERVICE_URL}/search",
-                json={"query": "test"},
-                timeout=5.0,
+                json={"query": "test document", "limit": 5},
+                headers=auth_headers,
+                timeout=10.0,
             )
-            # 401/403 = auth required (good), 422 = bad request format (endpoint exists)
-            assert resp.status_code in [401, 403, 422], f"Search should require auth, got {resp.status_code}"
+            # 200 with results, 422 if request validation fails (but auth passed)
+            assert resp.status_code in [200, 422], f"Search failed: {resp.status_code}"
+            if resp.status_code == 200:
+                data = resp.json()
+                assert data is not None

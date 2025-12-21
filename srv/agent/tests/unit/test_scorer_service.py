@@ -237,8 +237,8 @@ async def test_execute_scorer_latency(test_session: AsyncSession):
     )
     test_session.add(scorer)
     
-    # Create run
-    now = datetime.now(timezone.utc)
+    # Create run with timezone-naive datetimes for database compatibility
+    now = _now_naive()
     run_record = RunRecord(
         agent_id=uuid.uuid4(),
         status="succeeded",

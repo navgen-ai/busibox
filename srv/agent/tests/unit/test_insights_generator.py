@@ -30,52 +30,52 @@ async def test_conversation_insight_creation():
 
 
 @pytest.mark.asyncio
-@patch('httpx.AsyncClient')
-async def test_get_embedding_success(mock_client_class):
+async def test_get_embedding_success():
     """Test successful embedding generation."""
-    # Mock HTTP client
-    mock_response = MagicMock()
-    mock_response.json.return_value = {"embedding": [0.1, 0.2, 0.3]}
-    mock_response.raise_for_status = MagicMock()
-    
-    mock_client = AsyncMock()
-    mock_client.post = AsyncMock(return_value=mock_response)
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock()
-    
-    mock_client_class.return_value = mock_client
-    
-    embedding = await get_embedding(
-        "test text",
-        "http://localhost:8002",
-        "Bearer token"
-    )
-    
-    assert embedding == [0.1, 0.2, 0.3]
+    # Mock HTTP client - patch where the module is used
+    with patch('app.services.insights_generator.httpx.AsyncClient') as mock_client_class:
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"embedding": [0.1, 0.2, 0.3]}
+        mock_response.raise_for_status = MagicMock()
+        
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        
+        # Make the context manager work
+        mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
+        
+        embedding = await get_embedding(
+            "test text",
+            "http://localhost:8002",
+            "Bearer token"
+        )
+        
+        assert embedding == [0.1, 0.2, 0.3]
 
 
 @pytest.mark.asyncio
-@patch('httpx.AsyncClient')
-async def test_get_embedding_failure(mock_client_class):
+async def test_get_embedding_failure():
     """Test embedding generation failure returns zero vector."""
-    # Mock HTTP client to raise exception
-    mock_client = AsyncMock()
-    mock_client.post = AsyncMock(side_effect=Exception("API error"))
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock()
-    
-    mock_client_class.return_value = mock_client
-    
-    embedding = await get_embedding(
-        "test text",
-        "http://localhost:8002",
-        None
-    )
-    
-    # Should return zero vector
-    assert embedding is not None
-    assert len(embedding) == 384
-    assert all(x == 0.0 for x in embedding)
+    # Mock HTTP client to raise exception - patch where the module is used
+    with patch('app.services.insights_generator.httpx.AsyncClient') as mock_client_class:
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=Exception("API error"))
+        
+        # Make the context manager work
+        mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
+        
+        embedding = await get_embedding(
+            "test text",
+            "http://localhost:8002",
+            None
+        )
+        
+        # Should return zero vector
+        assert embedding is not None
+        assert len(embedding) == 384
+        assert all(x == 0.0 for x in embedding)
 
 
 @pytest.mark.asyncio

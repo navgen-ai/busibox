@@ -5,9 +5,9 @@ These tests run after deployment to verify the service is functioning correctly.
 They are designed to be fast (<30 seconds total) and catch critical issues:
 - Service health
 - Database connectivity (PostgreSQL)
-- Auth integration (AuthZ JWKS)
+- Auth integration (AuthZ token exchange AND authenticated access)
 - LiteLLM connectivity
-- Core API endpoints
+- Core API endpoints with authentication
 
 Run with: pytest tests/test_pvt.py -v
 Or: pytest -m pvt -v
@@ -24,8 +24,13 @@ import httpx
 SERVICE_PORT = os.getenv("PORT", "8080")
 SERVICE_URL = f"http://localhost:{SERVICE_PORT}"
 
-# Dependencies - REQUIRED
+# AuthZ configuration - REQUIRED for token exchange
 AUTH_JWKS_URL = os.getenv("AUTH_JWKS_URL", "")
+AUTHZ_TEST_CLIENT_ID = os.getenv("AUTHZ_TEST_CLIENT_ID", "")
+AUTHZ_TEST_CLIENT_SECRET = os.getenv("AUTHZ_TEST_CLIENT_SECRET", "")
+TEST_USER_ID = os.getenv("TEST_USER_ID", "")
+
+# Dependencies - REQUIRED
 LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
@@ -35,6 +40,50 @@ def require_env(var_name: str, value: str) -> str:
     if not value:
         pytest.fail(f"Required environment variable {var_name} is not set. Check .env file.")
     return value
+
+
+def get_authz_base_url() -> str:
+    """Extract AuthZ base URL from JWKS URL."""
+    jwks = require_env("AUTH_JWKS_URL", AUTH_JWKS_URL)
+    return jwks.replace("/.well-known/jwks.json", "")
+
+
+@pytest.fixture(scope="module")
+def access_token():
+    """Get an access token for the agent API using test client credentials."""
+    import httpx
+    
+    client_id = require_env("AUTHZ_TEST_CLIENT_ID", AUTHZ_TEST_CLIENT_ID)
+    client_secret = require_env("AUTHZ_TEST_CLIENT_SECRET", AUTHZ_TEST_CLIENT_SECRET)
+    authz_url = get_authz_base_url()
+    
+    # Token exchange using client credentials grant
+    with httpx.Client() as client:
+        resp = client.post(
+            f"{authz_url}/oauth/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "audience": "agent-api",
+            },
+            timeout=10.0,
+        )
+        
+        if resp.status_code != 200:
+            pytest.fail(f"Failed to get access token: {resp.status_code} - {resp.text}")
+        
+        data = resp.json()
+        if "access_token" not in data:
+            pytest.fail(f"No access_token in response: {data}")
+        
+        return data["access_token"]
+
+
+@pytest.fixture(scope="module")
+def auth_headers(access_token):
+    """Return headers with Bearer token."""
+    return {"Authorization": f"Bearer {access_token}"}
 
 
 @pytest.mark.pvt
@@ -95,7 +144,7 @@ class TestPVTAuth:
     """Authentication tests - verify JWT infrastructure works."""
     
     @pytest.mark.asyncio
-    async def test_protected_endpoint_requires_auth(self):
+    async def test_agents_endpoint_rejects_unauthenticated(self):
         """Protected endpoints reject unauthenticated requests."""
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{SERVICE_URL}/agents", timeout=5.0)
@@ -112,6 +161,24 @@ class TestPVTAuth:
             data = resp.json()
             assert "keys" in data
             assert len(data["keys"]) >= 1
+    
+    @pytest.mark.asyncio
+    async def test_token_exchange_works(self, access_token):
+        """Can obtain access token from AuthZ service."""
+        assert access_token is not None
+        assert len(access_token) > 0
+    
+    @pytest.mark.asyncio
+    async def test_authenticated_request_succeeds(self, auth_headers):
+        """Authenticated requests to /agents endpoint succeed."""
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{SERVICE_URL}/agents",
+                headers=auth_headers,
+                timeout=5.0,
+            )
+            # Should get 200 with list of agents - not 401/403
+            assert resp.status_code == 200, f"Auth failed: {resp.status_code} - {resp.text}"
 
 
 @pytest.mark.pvt
@@ -132,15 +199,20 @@ class TestPVTDependencies:
 
 @pytest.mark.pvt
 class TestPVTAPI:
-    """API tests - verify core endpoints work."""
+    """API tests - verify core endpoints work with authentication."""
     
     @pytest.mark.asyncio
-    async def test_agents_endpoint_requires_auth(self):
-        """Agents endpoint exists and requires authentication."""
+    async def test_list_agents_with_auth(self, auth_headers):
+        """Can list agents with valid authentication."""
         async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{SERVICE_URL}/agents", timeout=5.0)
-            # 401/403 = auth required (good)
-            assert resp.status_code in [401, 403], f"Agents should require auth, got {resp.status_code}"
+            resp = await client.get(
+                f"{SERVICE_URL}/agents",
+                headers=auth_headers,
+                timeout=5.0,
+            )
+            assert resp.status_code == 200, f"List agents failed: {resp.status_code}"
+            data = resp.json()
+            assert isinstance(data, list)
     
     @pytest.mark.asyncio
     async def test_builtin_agents_available(self):
