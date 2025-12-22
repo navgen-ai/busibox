@@ -120,8 +120,9 @@ async def check_file_access(
     
     # Shared files: check role intersection
     if visibility == "shared":
-        # Get user's readable role IDs from request state
-        user_role_ids = getattr(request.state, "role_ids_read", [])
+        # Get user's role IDs from request state
+        # Note: JWT middleware sets "role_ids" not "role_ids_read"
+        user_role_ids = getattr(request.state, "role_ids", [])
         
         # Check if user has at least one matching role
         if not file_role_ids:
