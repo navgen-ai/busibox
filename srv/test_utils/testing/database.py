@@ -1,154 +1,200 @@
 """
-PostgreSQL connection pooling for tests.
+Database utilities for testing.
 
-Provides a shared connection pool across all tests to avoid:
-- Connection exhaustion from too many concurrent connections
-- Slow test startup from creating new connections per test
-- Connection leaks from improperly closed connections
-
-Usage:
-    from testing.database import get_db_pool, db_connection
-    
-    # Get the shared pool
-    pool = await get_db_pool()
-    
-    # Use a connection from the pool
-    async with db_connection() as conn:
-        result = await conn.fetch("SELECT * FROM users")
-    
-    # Or use the fixture
-    async def test_something(db_conn):
-        result = await db_conn.fetch("SELECT * FROM users")
+Provides connection pooling and session management for PostgreSQL tests.
+Handles connection lifecycle to avoid "too many connections" errors.
 """
 
 import os
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import asyncpg
 import pytest
 
-from .fixtures import get_env
 
-
-# Global connection pool (shared across all tests)
-_pool: Optional[asyncpg.Pool] = None
-_pool_lock = asyncio.Lock()
-
-
-def get_db_config() -> dict:
+class DatabasePool:
     """
-    Get database configuration from environment variables.
+    Manages a PostgreSQL connection pool for tests.
     
-    Returns:
-        Dict with database connection parameters
-    """
-    return {
-        "host": get_env("POSTGRES_HOST", "localhost"),
-        "port": int(get_env("POSTGRES_PORT", "5432")),
-        "user": get_env("POSTGRES_USER", "busibox"),
-        "password": get_env("POSTGRES_PASSWORD", ""),
-        "database": get_env("POSTGRES_DB", "busibox"),
-    }
-
-
-async def get_db_pool(
-    min_size: int = 2,
-    max_size: int = 10,
-    **kwargs
-) -> asyncpg.Pool:
-    """
-    Get or create the shared database connection pool.
+    Ensures connections are properly pooled and cleaned up,
+    avoiding "too many connections" errors during test runs.
     
-    The pool is created lazily on first use and reused across all tests.
-    
-    Args:
-        min_size: Minimum number of connections in pool
-        max_size: Maximum number of connections in pool
-        **kwargs: Additional arguments passed to asyncpg.create_pool
+    Usage:
+        pool = DatabasePool()
+        await pool.initialize()
         
-    Returns:
-        asyncpg connection pool
+        async with pool.acquire() as conn:
+            result = await conn.fetch("SELECT * FROM users")
+        
+        await pool.close()
     """
-    global _pool
     
-    async with _pool_lock:
-        if _pool is None:
-            config = get_db_config()
-            _pool = await asyncpg.create_pool(
-                host=config["host"],
-                port=config["port"],
-                user=config["user"],
-                password=config["password"],
-                database=config["database"],
-                min_size=min_size,
-                max_size=max_size,
-                **kwargs
+    _instance: Optional["DatabasePool"] = None
+    _pools: Dict[str, asyncpg.Pool] = {}
+    
+    def __init__(
+        self,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        database: Optional[str] = None,
+        user: Optional[str] = None,
+        password: Optional[str] = None,
+        min_size: int = 1,
+        max_size: int = 5,
+    ):
+        """
+        Initialize database pool configuration.
+        
+        Args:
+            host: PostgreSQL host (default from POSTGRES_HOST)
+            port: PostgreSQL port (default from POSTGRES_PORT or 5432)
+            database: Database name (default from POSTGRES_DB)
+            user: Database user (default from POSTGRES_USER)
+            password: Database password (default from POSTGRES_PASSWORD)
+            min_size: Minimum pool size
+            max_size: Maximum pool size
+        """
+        self.host = host or os.getenv("POSTGRES_HOST", "localhost")
+        self.port = port or int(os.getenv("POSTGRES_PORT", "5432"))
+        self.database = database or os.getenv("POSTGRES_DB", "busibox_test")
+        self.user = user or os.getenv("POSTGRES_USER", "busibox_test_user")
+        self.password = password or os.getenv("POSTGRES_PASSWORD", "")
+        self.min_size = min_size
+        self.max_size = max_size
+        self._pool: Optional[asyncpg.Pool] = None
+        self._initialized = False
+    
+    @classmethod
+    def get_instance(cls) -> "DatabasePool":
+        """Get or create singleton instance."""
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
+    @property
+    def dsn(self) -> str:
+        """Get the database connection string."""
+        return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.database}"
+    
+    async def initialize(self) -> None:
+        """
+        Initialize the connection pool.
+        
+        Safe to call multiple times - will only create pool once.
+        """
+        if self._initialized and self._pool is not None:
+            return
+        
+        try:
+            self._pool = await asyncpg.create_pool(
+                host=self.host,
+                port=self.port,
+                database=self.database,
+                user=self.user,
+                password=self.password,
+                min_size=self.min_size,
+                max_size=self.max_size,
+                command_timeout=30,
             )
-        return _pool
-
-
-async def close_db_pool():
-    """
-    Close the shared database connection pool.
+            self._initialized = True
+        except Exception as e:
+            pytest.fail(f"Failed to create database pool: {e}")
     
-    Should be called at the end of the test session.
-    """
-    global _pool
+    async def close(self) -> None:
+        """Close the connection pool."""
+        if self._pool is not None:
+            await self._pool.close()
+            self._pool = None
+            self._initialized = False
     
-    async with _pool_lock:
-        if _pool is not None:
-            await _pool.close()
-            _pool = None
-
-
-@asynccontextmanager
-async def db_connection():
-    """
-    Context manager for acquiring a database connection from the pool.
-    
-    Usage:
-        async with db_connection() as conn:
-            result = await conn.fetch("SELECT 1")
-    """
-    pool = await get_db_pool()
-    async with pool.acquire() as conn:
-        yield conn
-
-
-@asynccontextmanager
-async def db_transaction():
-    """
-    Context manager for a database transaction.
-    
-    Automatically rolls back on exception.
-    
-    Usage:
-        async with db_transaction() as conn:
-            await conn.execute("INSERT INTO users ...")
-            # Commits on exit, rolls back on exception
-    """
-    pool = await get_db_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
+    @asynccontextmanager
+    async def acquire(self):
+        """
+        Acquire a connection from the pool.
+        
+        Usage:
+            async with pool.acquire() as conn:
+                await conn.fetch("SELECT 1")
+        """
+        if not self._initialized:
+            await self.initialize()
+        
+        async with self._pool.acquire() as conn:
             yield conn
-
-
-async def set_rls_context(conn: asyncpg.Connection, user_id: str, role_ids: list = None):
-    """
-    Set Row-Level Security context variables on a connection.
     
-    Args:
-        conn: Database connection
-        user_id: User ID for RLS
-        role_ids: List of role IDs for RLS (optional)
+    async def execute(self, query: str, *args) -> str:
+        """Execute a query and return status."""
+        async with self.acquire() as conn:
+            return await conn.execute(query, *args)
+    
+    async def fetch(self, query: str, *args) -> list:
+        """Fetch all rows from a query."""
+        async with self.acquire() as conn:
+            return await conn.fetch(query, *args)
+    
+    async def fetchrow(self, query: str, *args) -> Optional[asyncpg.Record]:
+        """Fetch a single row from a query."""
+        async with self.acquire() as conn:
+            return await conn.fetchrow(query, *args)
+    
+    async def fetchval(self, query: str, *args) -> Any:
+        """Fetch a single value from a query."""
+        async with self.acquire() as conn:
+            return await conn.fetchval(query, *args)
+
+
+class RLSEnabledPool(DatabasePool):
     """
-    await conn.execute(f"SET LOCAL app.user_id = '{user_id}'")
-    if role_ids:
-        await conn.execute(f"SET LOCAL app.user_role_ids_read = '{','.join(role_ids)}'")
-    else:
-        await conn.execute("SET LOCAL app.user_role_ids_read = ''")
+    Database pool that sets Row-Level Security session variables.
+    
+    Automatically sets app.user_id and app.user_role_ids_read
+    on each connection acquisition.
+    """
+    
+    def __init__(
+        self,
+        user_id: Optional[str] = None,
+        role_ids: Optional[list] = None,
+        **kwargs
+    ):
+        """
+        Initialize RLS-enabled pool.
+        
+        Args:
+            user_id: User ID for RLS (default from TEST_USER_ID)
+            role_ids: List of role IDs for RLS
+            **kwargs: Additional DatabasePool arguments
+        """
+        super().__init__(**kwargs)
+        self.rls_user_id = user_id or os.getenv("TEST_USER_ID", "")
+        self.rls_role_ids = role_ids or []
+    
+    def set_rls_context(self, user_id: str, role_ids: list = None) -> None:
+        """Update RLS context for subsequent connections."""
+        self.rls_user_id = user_id
+        self.rls_role_ids = role_ids or []
+    
+    @asynccontextmanager
+    async def acquire(self):
+        """
+        Acquire a connection with RLS variables set.
+        
+        Sets app.user_id and app.user_role_ids_read before yielding.
+        """
+        if not self._initialized:
+            await self.initialize()
+        
+        async with self._pool.acquire() as conn:
+            # Set RLS session variables
+            if self.rls_user_id:
+                await conn.execute(f"SET LOCAL app.user_id = '{self.rls_user_id}'")
+            if self.rls_role_ids:
+                role_ids_str = ",".join(self.rls_role_ids)
+                await conn.execute(f"SET LOCAL app.user_role_ids_read = '{role_ids_str}'")
+            
+            yield conn
 
 
 # =============================================================================
@@ -157,11 +203,7 @@ async def set_rls_context(conn: asyncpg.Connection, user_id: str, role_ids: list
 
 @pytest.fixture(scope="session")
 def event_loop():
-    """
-    Create an event loop for the test session.
-    
-    This is required for session-scoped async fixtures.
-    """
+    """Create event loop for async tests (session-scoped)."""
     loop = asyncio.get_event_loop_policy().new_event_loop()
     yield loop
     loop.close()
@@ -170,26 +212,29 @@ def event_loop():
 @pytest.fixture(scope="session")
 async def db_pool():
     """
-    Session-scoped database connection pool.
+    Session-scoped database pool fixture.
     
-    The pool is created once per test session and closed at the end.
+    Creates a single pool for all tests in the session,
+    avoiding connection exhaustion.
     
     Usage:
         async def test_something(db_pool):
             async with db_pool.acquire() as conn:
                 result = await conn.fetch("SELECT 1")
     """
-    pool = await get_db_pool()
+    pool = DatabasePool.get_instance()
+    await pool.initialize()
     yield pool
-    await close_db_pool()
+    await pool.close()
 
 
-@pytest.fixture
-async def db_conn(db_pool):
+@pytest.fixture(scope="function")
+async def db_conn(db_pool: DatabasePool):
     """
-    Function-scoped database connection from the pool.
+    Function-scoped database connection fixture.
     
-    Acquires a connection for each test and releases it after.
+    Acquires a connection from the session pool for each test.
+    Connection is returned to pool after test.
     
     Usage:
         async def test_something(db_conn):
@@ -199,46 +244,77 @@ async def db_conn(db_pool):
         yield conn
 
 
-@pytest.fixture
-async def db_conn_with_rls(db_conn, auth_client):
+@pytest.fixture(scope="session")
+async def rls_pool():
     """
-    Database connection with RLS context set for the test user.
-    
-    Sets the app.user_id and app.user_role_ids_read session variables
-    based on the test user's current roles.
+    Session-scoped RLS-enabled database pool.
     
     Usage:
-        async def test_rls(db_conn_with_rls, auth_client):
-            # Connection has RLS context for test user
-            result = await db_conn_with_rls.fetch("SELECT * FROM protected_table")
+        async def test_rls(rls_pool):
+            rls_pool.set_rls_context(user_id="...", role_ids=["..."])
+            async with rls_pool.acquire() as conn:
+                # RLS variables are set automatically
+                result = await conn.fetch("SELECT * FROM protected_table")
     """
-    # Get test user's current roles
-    roles = auth_client.get_user_roles()
-    role_ids = [r["id"] for r in roles]
-    
-    # Set RLS context
-    await set_rls_context(db_conn, auth_client.test_user_id, role_ids)
-    
-    yield db_conn
+    pool = RLSEnabledPool()
+    await pool.initialize()
+    yield pool
+    await pool.close()
 
 
-@pytest.fixture
-async def db_transaction_rollback(db_pool):
-    """
-    Database connection wrapped in a transaction that rolls back after the test.
-    
-    Useful for tests that modify data but should not persist changes.
-    
-    Usage:
-        async def test_insert(db_transaction_rollback):
-            await db_transaction_rollback.execute("INSERT INTO users ...")
-            # Changes are rolled back after test
-    """
-    async with db_pool.acquire() as conn:
-        tr = conn.transaction()
-        await tr.start()
-        try:
-            yield conn
-        finally:
-            await tr.rollback()
+# =============================================================================
+# Test Utilities
+# =============================================================================
 
+async def check_postgres_connection(
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    database: Optional[str] = None,
+    user: Optional[str] = None,
+    password: Optional[str] = None,
+) -> bool:
+    """
+    Check if PostgreSQL is reachable.
+    
+    Returns True if connection succeeds, False otherwise.
+    """
+    try:
+        conn = await asyncpg.connect(
+            host=host or os.getenv("POSTGRES_HOST", "localhost"),
+            port=port or int(os.getenv("POSTGRES_PORT", "5432")),
+            database=database or os.getenv("POSTGRES_DB", "busibox_test"),
+            user=user or os.getenv("POSTGRES_USER", "busibox_test_user"),
+            password=password or os.getenv("POSTGRES_PASSWORD", ""),
+            timeout=5,
+        )
+        await conn.close()
+        return True
+    except Exception:
+        return False
+
+
+async def wait_for_postgres(
+    timeout: int = 30,
+    interval: float = 1.0,
+    **kwargs
+) -> bool:
+    """
+    Wait for PostgreSQL to become available.
+    
+    Args:
+        timeout: Maximum seconds to wait
+        interval: Seconds between checks
+        **kwargs: Connection parameters
+    
+    Returns:
+        True if connected, False if timeout
+    """
+    import time
+    start = time.time()
+    
+    while time.time() - start < timeout:
+        if await check_postgres_connection(**kwargs):
+            return True
+        await asyncio.sleep(interval)
+    
+    return False
