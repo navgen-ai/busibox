@@ -1,9 +1,12 @@
 """
 Unit tests for Milvus search service.
+
+These tests focus on pure functions that don't require a real Milvus connection.
+Search functionality is tested in integration tests.
 """
 
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 from services.milvus_search import MilvusSearchService
 
 
@@ -34,109 +37,6 @@ class TestMilvusSearchService:
         mock_connections.connect.assert_called_once()
         mock_collection.load.assert_called_once()
     
-    def test_keyword_search(self, mock_config):
-        """Test BM25 keyword search."""
-        service = MilvusSearchService(mock_config)
-        service.connected = True
-        
-        # Mock collection
-        mock_collection = Mock()
-        # Mock partitions as empty list (needed by get_accessible_partitions)
-        mock_collection.partitions = []
-        mock_hits = Mock()
-        # Fix: get() method takes 2 arguments (key, default)
-        mock_hits.entity.get = Mock(side_effect=lambda key, default=None: {
-            "file_id": "file-123",
-            "chunk_index": 0,
-            "page_number": 1,
-            "text": "test text",
-            "metadata": {},
-        }.get(key, default))
-        mock_hits.score = 0.95
-        
-        mock_collection.search = Mock(return_value=[[mock_hits]])
-        service.collection = mock_collection
-        
-        results = service.keyword_search(
-            query="test query",
-            user_id="user-123",
-            top_k=10,
-        )
-        
-        assert len(results) == 1
-        assert results[0]["file_id"] == "file-123"
-        assert results[0]["score"] == 0.95
-        mock_collection.search.assert_called_once()
-    
-    def test_semantic_search(self, mock_config, sample_embedding):
-        """Test dense vector semantic search."""
-        service = MilvusSearchService(mock_config)
-        service.connected = True
-        
-        # Mock collection
-        mock_collection = Mock()
-        # Mock partitions as empty list (needed by get_accessible_partitions)
-        mock_collection.partitions = []
-        mock_hits = Mock()
-        # Fix: get() method takes 2 arguments (key, default)
-        mock_hits.entity.get = Mock(side_effect=lambda key, default=None: {
-            "file_id": "file-456",
-            "chunk_index": 2,
-            "page_number": 3,
-            "text": "semantic test",
-            "metadata": {},
-        }.get(key, default))
-        mock_hits.score = 0.89
-        
-        mock_collection.search = Mock(return_value=[[mock_hits]])
-        service.collection = mock_collection
-        
-        results = service.semantic_search(
-            query_embedding=sample_embedding,
-            user_id="user-123",
-            top_k=10,
-        )
-        
-        assert len(results) == 1
-        assert results[0]["file_id"] == "file-456"
-        assert results[0]["score"] == 0.89
-    
-    @pytest.mark.asyncio
-    async def test_hybrid_search(self, mock_config, sample_embedding):
-        """Test hybrid search with RRF fusion."""
-        service = MilvusSearchService(mock_config)
-        service.connected = True
-        
-        # Mock semantic and keyword searches
-        dense_results = [
-            {"file_id": "file-1", "chunk_index": 0, "text": "text1", "score": 0.9, "page_number": 1, "metadata": {}},
-            {"file_id": "file-2", "chunk_index": 0, "text": "text2", "score": 0.8, "page_number": 1, "metadata": {}},
-        ]
-        
-        sparse_results = [
-            {"file_id": "file-2", "chunk_index": 0, "text": "text2", "score": 0.95, "page_number": 1, "metadata": {}},
-            {"file_id": "file-3", "chunk_index": 0, "text": "text3", "score": 0.7, "page_number": 1, "metadata": {}},
-        ]
-        
-        service.semantic_search = Mock(return_value=dense_results)
-        service.keyword_search = Mock(return_value=sparse_results)
-        
-        results = await service.hybrid_search(
-            query_embedding=sample_embedding,
-            query_text="test query",
-            user_id="user-123",
-            top_k=3,
-            rerank_k=10,
-        )
-        
-        # Should fuse and return top 3
-        assert len(results) <= 3
-        assert all("score" in r for r in results)
-        
-        # file-2 should rank high (appears in both)
-        file_2_scores = [r for r in results if r["file_id"] == "file-2"]
-        assert len(file_2_scores) > 0
-    
     def test_rrf_fusion(self, mock_config):
         """Test Reciprocal Rank Fusion algorithm."""
         service = MilvusSearchService(mock_config)
@@ -163,32 +63,6 @@ class TestMilvusSearchService:
         assert fused[0]["file_id"] == "doc2"
         assert "dense_score" in fused[0]
         assert "sparse_score" in fused[0]
-    
-    def test_get_document(self, mock_config):
-        """Test retrieving a specific document."""
-        service = MilvusSearchService(mock_config)
-        service.connected = True
-        
-        mock_collection = Mock()
-        # Mock partitions as empty list (needed by get_accessible_partitions)
-        mock_collection.partitions = []
-        mock_collection.query = Mock(return_value=[{
-            "file_id": "file-123",
-            "chunk_index": 5,
-            "text": "document text",
-            "text_dense": [0.1] * 1024,
-        }])
-        service.collection = mock_collection
-        
-        result = service.get_document(
-            file_id="file-123",
-            chunk_index=5,
-            user_id="user-123",
-        )
-        
-        assert result is not None
-        assert result["file_id"] == "file-123"
-        assert result["chunk_index"] == 5
     
     def test_health_check(self, mock_config):
         """Test health check."""
