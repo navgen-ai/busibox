@@ -315,7 +315,8 @@ MILVUS_PORT=19530
 MINIO_HOST=${MINIO_IP}
 MINIO_PORT=9000
 MINIO_CONSOLE_PORT=9001
-MINIO_ENDPOINT=http://${MINIO_IP}:9000
+# MinIO client expects host:port without scheme
+MINIO_ENDPOINT=${MINIO_IP}:9000
 MINIO_BUCKET=documents
 
 # ============================================
