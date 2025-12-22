@@ -22,8 +22,10 @@ import pytest
 import httpx
 
 # Read from environment (set by .env file)
+# For container testing: SERVICE_URL defaults to localhost:8002
+# For local testing: Set INGEST_API_URL to the remote container's URL
 API_PORT = os.getenv("API_PORT", "8002")
-SERVICE_URL = f"http://localhost:{API_PORT}"
+SERVICE_URL = os.getenv("INGEST_API_URL", f"http://localhost:{API_PORT}")
 
 # AuthZ configuration - REQUIRED for token exchange
 # Use bootstrap client (ai-portal) - the standard OAuth client for all services

@@ -21,8 +21,10 @@ import pytest
 import httpx
 
 # Read from environment (set by .env file)
+# For container testing: SERVICE_URL defaults to localhost:8010
+# For local testing: Set TEST_AUTHZ_URL to the remote container's URL
 SERVICE_PORT = os.getenv("SERVICE_PORT", "8010")
-SERVICE_URL = f"http://localhost:{SERVICE_PORT}"
+SERVICE_URL = os.getenv("TEST_AUTHZ_URL", f"http://localhost:{SERVICE_PORT}")
 ADMIN_TOKEN = os.getenv("AUTHZ_ADMIN_TOKEN", "")
 
 # Test client credentials (for token exchange tests)
