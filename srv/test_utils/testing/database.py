@@ -149,8 +149,10 @@ class RLSEnabledPool(DatabasePool):
     """
     Database pool that sets Row-Level Security session variables.
     
-    Automatically sets app.user_id and app.user_role_ids_read
+    Automatically sets app.user_id and app.user_role_ids_read/create/update/delete
     on each connection acquisition.
+    
+    Handles event loop changes by recreating the pool when needed.
     """
     
     def __init__(
@@ -170,34 +172,63 @@ class RLSEnabledPool(DatabasePool):
         super().__init__(**kwargs)
         self.rls_user_id = user_id or os.getenv("TEST_USER_ID", "")
         self.rls_role_ids = role_ids or []
+        self._current_loop = None
     
     def set_rls_context(self, user_id: str, role_ids: list = None) -> None:
         """Update RLS context for subsequent connections."""
         self.rls_user_id = user_id
         self.rls_role_ids = role_ids or []
     
+    async def _ensure_pool_for_current_loop(self):
+        """
+        Ensure the pool is initialized for the current event loop.
+        
+        Recreates the pool if the event loop has changed (common in pytest).
+        """
+        current_loop = asyncio.get_running_loop()
+        
+        if self._current_loop is not current_loop:
+            # Event loop changed, need to recreate pool
+            if self._pool is not None:
+                try:
+                    await self._pool.close()
+                except Exception:
+                    pass  # Ignore errors closing old pool
+                self._pool = None
+                self._initialized = False
+            self._current_loop = current_loop
+        
+        if not self._initialized:
+            await self.initialize()
+            self._current_loop = current_loop
+    
     @asynccontextmanager
     async def acquire(self):
         """
         Acquire a connection with RLS variables set.
         
-        Sets app.user_id using SET (not SET LOCAL) so it persists
-        for the entire connection without requiring a transaction.
+        Sets app.user_id and app.user_role_ids_* using SET (not SET LOCAL)
+        so they persist for the entire connection without requiring a transaction.
         
         The connection is reset when returned to the pool, clearing
         the session variables.
+        
+        Handles event loop changes automatically.
         """
-        if not self._initialized:
-            await self.initialize()
+        await self._ensure_pool_for_current_loop()
         
         async with self._pool.acquire() as conn:
             # Set RLS session variables using SET (persists for connection)
             if self.rls_user_id:
                 await conn.execute(f"SET app.user_id = '{self.rls_user_id}'")
+            
             if self.rls_role_ids:
-                import json
-                role_ids_json = json.dumps(self.rls_role_ids)
-                await conn.execute(f"SET app.user_role_ids = '{role_ids_json}'")
+                # Set role IDs as CSV for all CRUD operations
+                role_ids_csv = ",".join(self.rls_role_ids)
+                await conn.execute(f"SET app.user_role_ids_read = '{role_ids_csv}'")
+                await conn.execute(f"SET app.user_role_ids_create = '{role_ids_csv}'")
+                await conn.execute(f"SET app.user_role_ids_update = '{role_ids_csv}'")
+                await conn.execute(f"SET app.user_role_ids_delete = '{role_ids_csv}'")
             
             yield conn
     

@@ -3,7 +3,7 @@ Integration test for full ingestion pipeline.
 
 Tests: upload → parse → chunk → embed → index → search
 
-Uses JWT auth fixtures from conftest.py.
+Uses JWT auth fixtures from conftest.py and test_utils for database access.
 
 NOTE: This test uses small inline text content and is designed to be FAST.
 For full PDF processing tests, see test_full_pipeline.py (marked @slow).
@@ -21,8 +21,13 @@ logger = structlog.get_logger()
 @pytest.mark.asyncio
 @pytest.mark.integration
 @pytest.mark.pipeline
-async def test_basic_text_pipeline(async_client, postgres_service, config, rls_pool, test_user_id):
-    """Test full pipeline: upload → parse → chunk → embed → index."""
+async def test_basic_text_pipeline(async_client):
+    """
+    Test full pipeline: upload → parse → chunk → embed → index.
+    
+    Uses only API calls for all operations to avoid event loop issues
+    with mixed fixture scopes.
+    """
     file_id = None
     
     try:
@@ -59,52 +64,58 @@ async def test_basic_text_pipeline(async_client, postgres_service, config, rls_p
         file_id = upload_data["fileId"]
         logger.info("File uploaded", file_id=file_id)
         
-        # Step 2: Wait for processing (poll status)
+        # Step 2: Wait for processing (poll status via API)
         logger.info("Step 2: Waiting for processing", file_id=file_id)
         
         max_wait = 60
         wait_interval = 2
         elapsed = 0
+        final_stage = None
         
         while elapsed < max_wait:
-            async with postgres_service.pool.acquire() as conn:
-                status_row = await conn.fetchrow("""
-                    SELECT stage, progress, error_message
-                    FROM ingestion_status
-                    WHERE file_id = $1
-                """, uuid.UUID(file_id))
+            response = await async_client.get(f"/files/{file_id}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                status = data.get("status", {})
+                stage = status.get("stage", "unknown")
+                final_stage = stage
                 
-                if status_row:
-                    stage = status_row["stage"]
-                    
-                    if stage == "completed":
-                        break
-                    elif stage == "failed":
-                        logger.warning("Processing failed", error=status_row["error_message"])
-                        break
+                if stage == "completed":
+                    logger.info("Processing completed", file_id=file_id)
+                    break
+                elif stage == "failed":
+                    error_msg = status.get("errorMessage", "Unknown error")
+                    logger.warning("Processing failed", file_id=file_id, error=error_msg)
+                    break
+                else:
+                    logger.debug("Processing in progress", file_id=file_id, stage=stage)
             
             await asyncio.sleep(wait_interval)
             elapsed += wait_interval
         
-        # Step 3: Verify data in PostgreSQL (use RLS pool)
-        logger.info("Step 3: Verifying PostgreSQL data", file_id=file_id)
+        # Step 3: Verify data via API
+        logger.info("Step 3: Verifying file data via API", file_id=file_id)
         
-        rls_pool.set_rls_context(user_id=test_user_id)
-        async with rls_pool.acquire() as conn:
-            file_row = await conn.fetchrow("""
-                SELECT 
-                    file_id, filename, document_type, chunk_count,
-                    vector_count, content_hash
-                FROM ingestion_files
-                WHERE file_id = $1
-            """, uuid.UUID(file_id))
-            
-            if file_row:
-                logger.info("PostgreSQL data verified", 
-                           chunk_count=file_row["chunk_count"],
-                           vector_count=file_row["vector_count"])
+        response = await async_client.get(f"/files/{file_id}")
+        assert response.status_code == 200, f"Failed to get file: {response.text}"
         
-        logger.info("Integration test completed", file_id=file_id)
+        file_data = response.json()
+        logger.info(
+            "File data retrieved",
+            file_id=file_id,
+            chunk_count=file_data.get("chunkCount"),
+            vector_count=file_data.get("vectorCount"),
+            document_type=file_data.get("documentType"),
+            stage=file_data.get("status", {}).get("stage"),
+        )
+        
+        # For text files, we should have some chunks (even if processing failed)
+        # The main goal is to verify the upload and job queuing worked
+        if final_stage == "completed":
+            assert file_data.get("chunkCount", 0) > 0, "No chunks created after completion"
+        
+        logger.info("Integration test completed", file_id=file_id, final_stage=final_stage)
         
     finally:
         # Cleanup - always runs even if test fails
