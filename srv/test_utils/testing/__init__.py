@@ -2,15 +2,13 @@
 from .auth import AuthTestClient, auth_client, clean_test_user
 from .fixtures import require_env, get_authz_base_url, get_env
 from .database import (
-    get_db_pool,
-    close_db_pool,
-    db_connection,
-    db_transaction,
-    set_rls_context,
+    DatabasePool,
+    RLSEnabledPool,
     db_pool,
     db_conn,
-    db_conn_with_rls,
-    db_transaction_rollback,
+    rls_pool,
+    check_postgres_connection,
+    wait_for_postgres,
 )
 
 __all__ = [
@@ -23,15 +21,11 @@ __all__ = [
     "get_authz_base_url",
     "get_env",
     # Database utilities
-    "get_db_pool",
-    "close_db_pool",
-    "db_connection",
-    "db_transaction",
-    "set_rls_context",
-    # Database fixtures
+    "DatabasePool",
+    "RLSEnabledPool",
     "db_pool",
     "db_conn",
-    "db_conn_with_rls",
-    "db_transaction_rollback",
+    "rls_pool",
+    "check_postgres_connection",
+    "wait_for_postgres",
 ]
-
