@@ -75,6 +75,13 @@ source "$VENV_DIR/bin/activate"
 # Set PYTHONPATH
 export PYTHONPATH="${SRC_DIR}:${PYTHONPATH:-}"
 
+# Load environment variables (needed for test credentials)
+if [ -f "${SEARCH_DIR}/.env" ]; then
+    set -a  # automatically export all variables
+    source "${SEARCH_DIR}/.env"
+    set +a
+fi
+
 # Change to search directory
 cd "$SEARCH_DIR"
 
