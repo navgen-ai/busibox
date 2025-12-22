@@ -29,6 +29,10 @@ AUTHZ_JWKS_URL = os.getenv("AUTHZ_JWKS_URL", "")
 AUTHZ_BOOTSTRAP_CLIENT_ID = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_ID", "ai-portal")
 AUTHZ_BOOTSTRAP_CLIENT_SECRET = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_SECRET", "")
 
+# Test user - for token exchange to get a token with real user identity
+# Required for search since it needs to do token exchange to call ingest
+TEST_USER_ID = os.getenv("TEST_USER_ID", "")
+
 # Dependencies - REQUIRED
 MILVUS_HOST = os.getenv("MILVUS_HOST", "")
 MILVUS_PORT = os.getenv("MILVUS_PORT", "19530")
@@ -51,21 +55,33 @@ def get_authz_base_url() -> str:
 
 @pytest.fixture(scope="module")
 def access_token():
-    """Get an access token for the search API using bootstrap client credentials."""
+    """
+    Get an access token for the search API with a real user identity.
+    
+    Uses token exchange (RFC 8693) to get a token with:
+    - sub = TEST_USER_ID (real user for RLS)
+    - aud = search-api (correct audience)
+    - roles = user's roles from authz database
+    
+    This is required because search needs to do token exchange when calling
+    ingest for embeddings, and that requires a valid UUID user ID.
+    """
     import httpx
     
     client_id = require_env("AUTHZ_BOOTSTRAP_CLIENT_ID", AUTHZ_BOOTSTRAP_CLIENT_ID)
     client_secret = require_env("AUTHZ_BOOTSTRAP_CLIENT_SECRET", AUTHZ_BOOTSTRAP_CLIENT_SECRET)
+    test_user_id = require_env("TEST_USER_ID", TEST_USER_ID)
     authz_url = get_authz_base_url()
     
-    # Token exchange using client credentials grant
+    # Token exchange to get a token for a real user
     with httpx.Client() as client:
         resp = client.post(
             f"{authz_url}/oauth/token",
             data={
-                "grant_type": "client_credentials",
+                "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
                 "client_id": client_id,
                 "client_secret": client_secret,
+                "requested_subject": test_user_id,
                 "audience": "search-api",
             },
             timeout=10.0,

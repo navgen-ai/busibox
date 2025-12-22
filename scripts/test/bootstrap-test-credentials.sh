@@ -169,37 +169,31 @@ API_SERVICE_EXISTS=$(run_db_query "SELECT client_id FROM authz_oauth_clients WHE
 if [ -n "$API_SERVICE_EXISTS" ]; then
     echo -e "${GREEN}✓ api-service client exists${NC}"
 else
-    echo -e "${BLUE}Creating api-service client...${NC}"
+    echo -e "${BLUE}Creating api-service client via authz admin API...${NC}"
     
-    # Get the jwt_secret from authz container to hash it the same way
+    # Get credentials for admin API call
+    ADMIN_TOKEN=$(pct exec ${AUTHZ_CTID} -- grep AUTHZ_ADMIN_TOKEN /srv/authz/.env 2>/dev/null | cut -d= -f2 || echo "")
     JWT_SECRET=$(pct exec ${AUTHZ_CTID} -- grep AUTHZ_BOOTSTRAP_CLIENT_SECRET /srv/authz/.env 2>/dev/null | cut -d= -f2 || echo "")
     
-    if [ -n "$JWT_SECRET" ]; then
-        # Hash the secret using Python (same method as authz service)
-        SECRET_HASH=$(python3 << PYTHON_EOF
-import hashlib
-import secrets
-import base64
-
-secret = "${JWT_SECRET}"
-salt = secrets.token_urlsafe(16)
-iterations = 200000
-dk = hashlib.pbkdf2_hmac('sha256', secret.encode(), salt.encode(), iterations)
-hash_value = base64.b64encode(dk).decode()
-print(f"pbkdf2_sha256\${iterations}\${salt}\${hash_value}")
-PYTHON_EOF
-)
+    if [ -n "$ADMIN_TOKEN" ] && [ -n "$JWT_SECRET" ]; then
+        # Create api-service client via admin API (proper hashing handled by authz)
+        CREATE_RESPONSE=$(curl -s -X POST "${AUTHZ_URL}/admin/oauth-clients" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+            -d "{
+                \"client_id\": \"api-service\",
+                \"client_secret\": \"${JWT_SECRET}\",
+                \"allowed_audiences\": [\"ingest-api\", \"search-api\", \"agent-api\", \"authz\"],
+                \"allowed_scopes\": [\"read\", \"write\"]
+            }" 2>&1)
         
-        # Insert the api-service client
-        run_db_query "INSERT INTO authz_oauth_clients (client_id, client_secret_hash, allowed_audiences, allowed_scopes, is_active, created_at) VALUES ('api-service', '${SECRET_HASH}', ARRAY['ingest-api', 'search-api', 'agent-api', 'authz'], ARRAY['read', 'write'], true, NOW());"
-        
-        if [ $? -eq 0 ]; then
+        if echo "$CREATE_RESPONSE" | grep -q "client_id"; then
             echo -e "${GREEN}✓ api-service client created${NC}"
         else
-            echo -e "${YELLOW}⚠ Could not create api-service client${NC}"
+            echo -e "${YELLOW}⚠ Could not create api-service client: ${CREATE_RESPONSE}${NC}"
         fi
     else
-        echo -e "${YELLOW}⚠ Could not get jwt_secret to create api-service client${NC}"
+        echo -e "${YELLOW}⚠ Missing admin token or jwt_secret to create api-service client${NC}"
     fi
 fi
 
