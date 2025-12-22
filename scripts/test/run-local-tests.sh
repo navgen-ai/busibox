@@ -116,9 +116,34 @@ run_service_tests() {
     source "$ENV_FILE"
     set +a
     
-    # Activate virtual environment if available
-    if [[ -n "$venv_dir" ]]; then
-        info "Activating virtual environment..."
+    # Auto-setup virtual environment if not found
+    if [[ -z "$venv_dir" ]]; then
+        info "No virtual environment found. Setting up test_venv..."
+        venv_dir="${service_dir}/test_venv"
+        
+        python3 -m venv "$venv_dir"
+        source "${venv_dir}/bin/activate"
+        
+        # Install requirements
+        if [[ -f "requirements.txt" ]]; then
+            info "Installing requirements.txt..."
+            pip install -q --upgrade pip
+            pip install -q -r requirements.txt
+        fi
+        
+        # Install test requirements
+        if [[ -f "requirements.test.txt" ]]; then
+            info "Installing requirements.test.txt..."
+            pip install -q -r requirements.test.txt
+        fi
+        
+        # Always ensure pytest and httpx are available for tests
+        pip install -q pytest pytest-asyncio httpx
+        
+        success "Virtual environment created: $venv_dir"
+    else
+        # Activate existing virtual environment
+        info "Activating virtual environment: $venv_dir"
         source "${venv_dir}/bin/activate"
         
         # Install test dependencies if present (assumes main requirements already installed)
@@ -126,8 +151,6 @@ run_service_tests() {
             info "Installing test dependencies..."
             pip install -q -r requirements.test.txt 2>/dev/null || true
         fi
-    else
-        warn "No virtual environment found. Create one with: python -m venv venv && pip install -r requirements.txt"
     fi
     
     # Determine test directory

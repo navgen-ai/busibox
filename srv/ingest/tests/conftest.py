@@ -105,12 +105,12 @@ def minio_service(config):
 
 
 @pytest.fixture
-def postgres_service(config):
+async def postgres_service(config):
     """Real PostgreSQL service instance."""
     service = PostgresService(config)
-    service.connect()
+    await service.connect()
     yield service
-    service.close()
+    await service.disconnect()
 
 
 @pytest.fixture
