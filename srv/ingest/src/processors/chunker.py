@@ -111,6 +111,53 @@ class Chunker:
             # Fallback: rough estimate (4 chars per token)
             return len(text) // 4
     
+    def _preprocess_for_spacy(self, text: str) -> str:
+        """
+        Preprocess text to help spaCy recognize heading boundaries.
+        
+        SpaCy's sentence segmentation doesn't handle all-caps headings well
+        because they lack sentence-ending punctuation. This method adds
+        invisible sentence boundaries after common heading patterns.
+        
+        Args:
+            text: Raw input text
+            
+        Returns:
+            Preprocessed text with better sentence boundary hints
+        """
+        # Pattern 1: ALL CAPS line followed by double newline (heading)
+        # Add a period after the heading if it doesn't have one
+        # e.g., "INTRODUCTION\n\n" -> "INTRODUCTION.\n\n"
+        text = re.sub(
+            r'^([A-Z][A-Z\s]{2,}[A-Z])(\n\n)',
+            r'\1.\2',
+            text,
+            flags=re.MULTILINE
+        )
+        
+        # Pattern 2: ALL CAPS with colon (e.g., "BACKGROUND:")
+        # Already has punctuation, but ensure it's treated as sentence end
+        # This pattern is usually fine as-is
+        
+        # Pattern 3: Section numbers like "1. Introduction" or "Chapter 1:"
+        # These typically have punctuation, but add period if missing before double newline
+        text = re.sub(
+            r'^((?:Chapter|Section|Part)\s+\d+[^.\n]*)(\n\n)',
+            r'\1.\2',
+            text,
+            flags=re.MULTILINE | re.IGNORECASE
+        )
+        
+        # Pattern 4: Numbered sections like "1.1 Methods" without trailing punctuation
+        text = re.sub(
+            r'^(\d+(?:\.\d+)*\s+[A-Z][^\n.!?]*)(\n\n)',
+            r'\1.\2',
+            text,
+            flags=re.MULTILINE
+        )
+        
+        return text
+    
     def chunk(
         self,
         text: str,
@@ -143,13 +190,16 @@ class Chunker:
             )
             return self._chunk_simple(text, page_number)
         
+        # Preprocess text to help spaCy recognize heading boundaries
+        preprocessed_text = self._preprocess_for_spacy(text)
+        
         # Parse document with spaCy
         logger.debug(
             "Using semantic chunking with spaCy",
-            text_length=len(text),
+            text_length=len(preprocessed_text),
             language=primary_lang,
         )
-        doc = nlp(text)
+        doc = nlp(preprocessed_text)
         
         # Group into paragraphs first (for better semantic boundaries)
         paragraphs = self._extract_paragraphs(doc)

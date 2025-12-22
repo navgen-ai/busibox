@@ -27,7 +27,9 @@ tests/api/test_markdown_endpoints.py::TestImageEndpoint::test_get_image_correct_
 tests/api/test_markdown_endpoints.py::TestImageEndpoint::test_get_image_invalid_index FAILED [ 12%]
 tests/api/test_markdown_endpoints.py::TestImageEndpoint::test_get_image_cache_headers FAILED [ 12%]
 tests/api/test_markdown_endpoints.py::TestImageEndpoint::test_get_image_no_images_available FAILED [ 12%]
+
 tests/api/test_scope_enforcement.py::test_get_file_requires_read_scope FAILED [ 13%]
+
 tests/api/test_status.py::test_status_stream_success FAILED              [ 15%]
 tests/api/test_status.py::test_status_stream_error FAILED                [ 15%]
 tests/api/test_upload.py::TestUploadValidation::test_upload_invalid_mime_type FAILED [ 16%]
@@ -37,6 +39,7 @@ tests/api/test_upload.py::TestUploadControlFlow::test_upload_duplicate_detection
 tests/api/test_upload.py::TestUploadMetadata::test_upload_with_valid_metadata FAILED [ 17%]
 tests/api/test_upload.py::TestUploadMetadata::test_upload_invalid_metadata FAILED [ 17%]
 tests/integration/test_concurrent.py::test_concurrent_uploads FAILED     [ 18%]
+
 tests/integration/test_duplicates.py::test_duplicate_detection FAILED    [ 20%]
 tests/integration/test_errors.py::test_invalid_file_type FAILED          [ 20%]
 tests/integration/test_errors.py::test_missing_user_id FAILED            [ 20%]
@@ -46,7 +49,34 @@ tests/integration/test_full_pipeline.py::TestFullDocumentPipeline::test_upload_a
 tests/integration/test_full_pipeline.py::TestFullDocumentPipeline::test_reprocess_document SKIPPED [ 22%]
 tests/integration/test_full_pipeline.py::TestFullDocumentPipeline::test_multiple_documents_concurrent SKIPPED [ 22%]
 tests/integration/test_pipeline.py::test_full_pipeline FAILED            [ 22%]
+
 tests/integration/test_services.py::test_postgres_service FAILED         [ 23%]
+
 tests/integration/test_services.py::test_service_integration FAILED      [ 24%]
 tests/integration/test_sse.py::test_sse_status_streaming FAILED          [ 24%]
+
 tests/test_chunker.py::TestHeadingDetection::test_all_caps_heading FAILED [ 26%]
+
+tests/test_colpali.py::TestEmbeddingGeneration::test_pdf_page_embedding FAILED [ 35%]
+tests/test_colpali.py::TestAPICompatibility::test_embeddings_endpoint_structure FAILED [ 36%]
+
+tests/test_colpali.py::TestErrorHandling::test_corrupted_image_data FAILED [ 38%]
+
+tests/test_colpali.py::TestIntegration::test_full_workflow FAILED        [ 39%]
+
+tests/test_image_extractor.py::TestImageExtractor::test_extract_images_from_pdf SKIPPED [ 48%]
+tests/test_image_extractor.py::TestImageExtractor::test_extract_images_from_docx SKIPPED [ 48%]
+tests/test_image_extractor.py::TestImageExtractor::test_image_format_conversion SKIPPED [ 48%]
+tests/test_image_extractor.py::TestImageExtractor::test_image_quality_preservation SKIPPED [ 49%]
+tests/test_image_extractor.py::TestImageExtractor::test_large_image_handling SKIPPED [ 50%]
+tests/test_image_extractor.py::TestImageExtractor::test_extract_auto_detect_pdf SKIPPED [ 50%]
+tests/test_image_extractor.py::TestImageExtractor::test_extract_auto_detect_from_extension SKIPPED [ 51%]
+tests/test_image_extractor.py::TestImageExtractor::test_metadata_includes_original_format SKIPPED [ 51%]
+tests/test_image_extractor.py::TestImageExtractor::test_image_index_sequential SKIPPED [ 52%]
+tests/test_image_extractor.py::TestImageExtractor::test_multiple_images_same_page SKIPPED [ 52%]
+tests/test_image_extractor.py::TestImageExtractor::test_custom_target_format SKIPPED [ 52%]
+tests/test_llm_cleanup.py::TestLLMCleanupInit::test_init_enabled FAILED  [ 53%]
+tests/test_llm_cleanup.py::TestLLMCleanupInit::test_init_with_fallback_model FAILED [ 53%]
+tests/test_llm_cleanup_batch.py::test_single_chunk ERROR                 [ 59%]
+tests/test_llm_cleanup_batch.py::test_batch_size ERROR                   [ 60%]
+
