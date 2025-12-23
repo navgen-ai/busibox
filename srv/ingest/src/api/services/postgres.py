@@ -149,7 +149,14 @@ class PostgresService:
     
     async def check_duplicate(self, content_hash: str, request=None) -> Optional[Dict]:
         """
-        Check if file with same content hash already exists and is completed.
+        Check if file with same content hash already exists and is FULLY completed.
+        Also cleans up incomplete/corrupt duplicates to prevent them from blocking
+        future uploads.
+        
+        A file is considered fully completed when:
+        - status.stage = 'completed'
+        - has_markdown = true (for document types that generate markdown)
+        - chunk_count > 0
         
         Args:
             content_hash: SHA-256 content hash to check
@@ -159,6 +166,7 @@ class PostgresService:
             Existing file record if found, None otherwise
         """
         async with self.acquire(request) as conn:
+            # First, find a fully completed duplicate
             row = await conn.fetchrow("""
                 SELECT 
                     file_id,
@@ -167,6 +175,8 @@ class PostgresService:
                     processing_duration_seconds
                 FROM ingestion_files
                 WHERE content_hash = $1
+                AND has_markdown = true
+                AND chunk_count > 0
                 AND file_id IN (
                     SELECT file_id FROM ingestion_status
                     WHERE stage = 'completed'
@@ -176,12 +186,53 @@ class PostgresService:
             """, content_hash)
             
             if row:
+                # Found a valid duplicate - also clean up any incomplete ones
+                # to prevent database bloat
+                await conn.execute("""
+                    DELETE FROM ingestion_files
+                    WHERE content_hash = $1
+                    AND file_id != $2
+                    AND (
+                        has_markdown = false
+                        OR chunk_count = 0
+                        OR chunk_count IS NULL
+                        OR file_id NOT IN (
+                            SELECT file_id FROM ingestion_status
+                            WHERE stage = 'completed'
+                        )
+                    )
+                """, content_hash, row["file_id"])
+                
                 return {
                     "file_id": str(row["file_id"]),
                     "chunk_count": row["chunk_count"],
                     "vector_count": row["vector_count"],
                     "processing_duration_seconds": row["processing_duration_seconds"],
                 }
+            
+            # No valid duplicate found - clean up ALL incomplete files with this hash
+            # so the new upload can proceed cleanly
+            deleted = await conn.execute("""
+                DELETE FROM ingestion_files
+                WHERE content_hash = $1
+                AND (
+                    has_markdown = false
+                    OR chunk_count = 0
+                    OR chunk_count IS NULL
+                    OR file_id NOT IN (
+                        SELECT file_id FROM ingestion_status
+                        WHERE stage = 'completed'
+                    )
+                )
+            """, content_hash)
+            
+            if deleted and deleted != "DELETE 0":
+                logger.info(
+                    "Cleaned up incomplete duplicates",
+                    content_hash=content_hash[:16] + "...",
+                    deleted=deleted,
+                )
+            
             return None
     
     async def create_file_record(
