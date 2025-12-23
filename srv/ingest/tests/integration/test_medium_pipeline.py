@@ -82,7 +82,7 @@ class TestMediumPipeline:
         """
         Upload a text-heavy PDF and verify full processing completes.
         
-        Uses: doc03_chartparser_paper (253KB) - academic paper with text
+        Uses: doc01_rfp_project_management - RFP document with structured text
         
         This verifies:
         - PDF parsing works
@@ -91,7 +91,7 @@ class TestMediumPipeline:
         - Markdown is generated
         """
         test_docs = get_test_doc_repo_path()
-        sample_pdf = test_docs / "pdf" / "general" / "doc03_chartparser_paper" / "source.pdf"
+        sample_pdf = test_docs / "pdf" / "general" / "doc01_rfp_project_management" / "source.pdf"
         
         if not sample_pdf.exists():
             pytest.skip(f"Sample PDF not found: {sample_pdf}")
@@ -100,7 +100,7 @@ class TestMediumPipeline:
         with open(sample_pdf, "rb") as f:
             response = await async_client.post(
                 "/upload",
-                files={"file": ("paper.pdf", f, "application/pdf")},
+                files={"file": ("rfp_document.pdf", f, "application/pdf")},
                 data={"metadata": "{}"},
             )
         
@@ -164,14 +164,14 @@ class TestMediumPipeline:
         """
         Upload a structured datasheet PDF and verify parsing.
         
-        Uses: doc01_rfp_project_management (142KB) - RFP document
+        Uses: doc05_rslzva1_datasheet - Technical datasheet with tables/specs
         
         This verifies:
         - Document type classification
         - Table/structure handling
         """
         test_docs = get_test_doc_repo_path()
-        sample_pdf = test_docs / "pdf" / "general" / "doc01_rfp_project_management" / "source.pdf"
+        sample_pdf = test_docs / "pdf" / "general" / "doc05_rslzva1_datasheet" / "source.pdf"
         
         if not sample_pdf.exists():
             pytest.skip(f"Sample PDF not found: {sample_pdf}")
@@ -180,7 +180,7 @@ class TestMediumPipeline:
         with open(sample_pdf, "rb") as f:
             response = await async_client.post(
                 "/upload",
-                files={"file": ("rfp.pdf", f, "application/pdf")},
+                files={"file": ("datasheet.pdf", f, "application/pdf")},
                 data={"metadata": "{}"},
             )
         

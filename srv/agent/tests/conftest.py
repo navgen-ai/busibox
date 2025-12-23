@@ -250,6 +250,12 @@ def mock_jwt_token() -> str:
 
 
 @pytest.fixture
+def mock_token(mock_jwt_token: str) -> str:
+    """Alias for mock_jwt_token for CRUD tests compatibility."""
+    return mock_jwt_token
+
+
+@pytest.fixture
 def auth_headers(mock_jwt_token: str) -> dict:
     """Get authentication headers with a real JWT token."""
     return {"Authorization": f"Bearer {mock_jwt_token}"}

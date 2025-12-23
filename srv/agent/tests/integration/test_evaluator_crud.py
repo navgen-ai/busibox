@@ -19,8 +19,9 @@ from app.models.domain import EvalDefinition
 @pytest.fixture
 async def custom_eval_id(db_session: AsyncSession, mock_user_id: str) -> uuid.UUID:
     """Create a custom evaluator for testing."""
+    unique_name = f"custom_test_eval_{uuid.uuid4().hex[:8]}"
     evaluator = EvalDefinition(
-        name="custom_test_eval",
+        name=unique_name,
         description="Custom evaluator for testing",
         config={
             "criteria": "Accuracy",
@@ -53,7 +54,7 @@ async def test_get_evaluator_by_id(
     assert response.status_code == 200
     evaluator = response.json()
     assert evaluator["id"] == str(custom_eval_id)
-    assert evaluator["name"] == "custom_test_eval"
+    assert evaluator["name"].startswith("custom_test_eval_")
 
 
 @pytest.mark.asyncio
@@ -114,6 +115,7 @@ async def test_delete_evaluator_returns_204(
     # Verify evaluator is soft-deleted
     evaluator = await db_session.get(EvalDefinition, custom_eval_id)
     assert evaluator.is_active is False
+
 
 
 

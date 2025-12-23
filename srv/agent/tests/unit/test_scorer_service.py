@@ -233,9 +233,10 @@ def test_score_tool_usage_no_tools():
 @pytest.mark.asyncio
 async def test_execute_scorer_latency(test_session: AsyncSession):
     """Test execute_scorer with latency scorer."""
-    # Create scorer
+    # Create scorer with unique name
+    unique_name = f"latency-scorer-{uuid.uuid4().hex[:8]}"
     scorer = EvalDefinition(
-        name="latency-scorer",
+        name=unique_name,
         description="Latency evaluation",
         config={"type": "latency", "threshold_ms": 3000},
         is_active=True,
@@ -269,9 +270,10 @@ async def test_execute_scorer_latency(test_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_execute_scorer_success(test_session: AsyncSession):
     """Test execute_scorer with success scorer."""
-    # Create scorer
+    # Create scorer with unique name
+    unique_name = f"success-scorer-{uuid.uuid4().hex[:8]}"
     scorer = EvalDefinition(
-        name="success-scorer",
+        name=unique_name,
         config={"type": "success"},
         is_active=True,
     )
@@ -319,8 +321,9 @@ async def test_execute_scorer_not_found(test_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_execute_scorer_run_not_completed(test_session: AsyncSession):
     """Test execute_scorer raises ValueError for incomplete run."""
+    unique_name = f"test-scorer-{uuid.uuid4().hex[:8]}"
     scorer = EvalDefinition(
-        name="test-scorer",
+        name=unique_name,
         config={"type": "success"},
         is_active=True,
     )
@@ -345,8 +348,10 @@ async def test_execute_scorer_run_not_completed(test_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_get_score_aggregates_no_runs(test_session: AsyncSession):
-    """Test get_score_aggregates with no runs."""
-    aggregates = await get_score_aggregates(test_session)
+    """Test get_score_aggregates with a non-existent agent returns zero."""
+    # Use a random agent_id that won't have any runs
+    random_agent_id = uuid.uuid4()
+    aggregates = await get_score_aggregates(test_session, agent_id=random_agent_id)
     
     assert aggregates["total_runs"] == 0
     assert aggregates["successful_runs"] == 0
