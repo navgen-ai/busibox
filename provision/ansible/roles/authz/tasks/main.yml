@@ -243,6 +243,27 @@
   when: authz_health_check.status != 200
   tags: [authz]
 
+- name: Wait for authz service to be ready before PVT tests
+  uri:
+    url: "http://localhost:{{ authz_service_port }}/health/live"
+    method: GET
+    status_code: 200
+    timeout: 5
+  delegate_to: "{{ inventory_hostname }}"
+  register: authz_ready_check
+  until: authz_ready_check.status == 200
+  retries: 12
+  delay: 2
+  failed_when: false
+  when: run_pvt_tests | default(true)
+  tags: [authz, pvt]
+
+- name: Fail if service not ready for PVT tests
+  fail:
+    msg: "Authz service did not become ready within 24 seconds. Check logs: journalctl -u {{ authz_service_name }} -n 50"
+  when: run_pvt_tests | default(true) and authz_ready_check.status != 200
+  tags: [authz, pvt]
+
 # Post-Deployment Validation Tests (PVT)
 - name: Run PVT tests
   shell: |
