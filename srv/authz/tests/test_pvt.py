@@ -249,3 +249,65 @@ class TestPVTTokenExchange:
             assert resp.status_code == 200, f"Admin access failed: {resp.status_code} - {resp.text}"
             data = resp.json()
             assert isinstance(data, list)
+
+
+@pytest.mark.pvt
+class TestPVTAudit:
+    """Audit logging tests - verify audit endpoint works."""
+    
+    @pytest.mark.asyncio
+    async def test_audit_log_endpoint_exists(self):
+        """Audit log endpoint is available and requires auth."""
+        async with httpx.AsyncClient() as client:
+            # Without auth should fail
+            resp = await client.post(
+                f"{SERVICE_URL}/audit/log",
+                json={
+                    "actor_id": "00000000-0000-0000-0000-000000000000",
+                    "action": "test.action",
+                    "resource_type": "test",
+                },
+                timeout=5.0,
+            )
+            # Should require authentication
+            assert resp.status_code in [401, 403], f"Expected auth required, got {resp.status_code}"
+    
+    @pytest.mark.asyncio
+    async def test_audit_log_with_admin_token(self):
+        """Audit log endpoint accepts entries with admin authentication."""
+        import uuid
+        admin_token = require_env("AUTHZ_ADMIN_TOKEN", ADMIN_TOKEN)
+        
+        test_action = f"pvt.test.{uuid.uuid4().hex[:8]}"
+        
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{SERVICE_URL}/audit/log",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={
+                    "actor_id": "00000000-0000-0000-0000-000000000001",
+                    "action": test_action,
+                    "resource_type": "pvt_test",
+                    "details": {"test": True, "source": "pvt"},
+                },
+                timeout=5.0,
+            )
+            assert resp.status_code == 200, f"Audit log failed: {resp.text}"
+            data = resp.json()
+            assert "audit_log_id" in data, "Response should include audit_log_id"
+    
+    @pytest.mark.asyncio
+    async def test_audit_logs_list_endpoint(self):
+        """Audit logs list endpoint is accessible."""
+        admin_token = require_env("AUTHZ_ADMIN_TOKEN", ADMIN_TOKEN)
+        
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{SERVICE_URL}/audit/logs?limit=5",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                timeout=5.0,
+            )
+            assert resp.status_code == 200, f"Audit logs list failed: {resp.text}"
+            data = resp.json()
+            assert "logs" in data, "Response should include logs array"
+            assert isinstance(data["logs"], list)
