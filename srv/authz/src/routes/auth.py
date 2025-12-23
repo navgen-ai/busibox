@@ -76,7 +76,7 @@ class MagicLinkResponse(BaseModel):
 class TotpCreate(BaseModel):
     user_id: str
     email: str
-    expires_in_seconds: int = Field(default=300, ge=60, le=600)  # 1-10 minutes
+    expires_in_seconds: int = Field(default=300, ge=60, le=900)  # 1-15 minutes (matches magic link)
 
 
 class TotpVerify(BaseModel):

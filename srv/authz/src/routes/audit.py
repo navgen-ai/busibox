@@ -94,6 +94,46 @@ async def _require_client_auth(request: Request) -> None:
     )
 
 
+async def _check_client_auth_from_body(body: dict) -> bool:
+    """
+    Check if request has valid client auth from parsed body, but don't raise if missing.
+    Returns True if authenticated, False otherwise.
+    """
+    # Try admin token first (from headers - but we can't access request here)
+    # This function only checks body-based auth
+    
+    # Try OAuth client credentials in body
+    try:
+        client_id = body.get("client_id")
+        client_secret = body.get("client_secret")
+
+        if client_id and client_secret:
+            await pg.connect()
+            client = await pg.get_oauth_client(client_id)
+            if client and client.get("is_active"):
+                if verify_client_secret(client_secret, client["client_secret_hash"]):
+                    return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _is_security_event(action: str) -> bool:
+    """
+    Check if an action is a security-related event that should be allowed
+    without authentication (e.g., failed login attempts).
+    """
+    security_actions = [
+        "user.login.failed",
+        "totp.code_failed",
+        "passkey.login_failed",
+        "magic_link.expired",
+        "oauth.token_rejected",
+    ]
+    return action in security_actions
+
+
 async def _require_read_auth(request: Request) -> None:
     """
     Require authentication for read-only operations.
@@ -150,7 +190,7 @@ async def create_audit_log(request: Request):
     Create an audit log entry.
     
     Body:
-    - client_id, client_secret (OAuth client auth)
+    - client_id, client_secret (OAuth client auth) - Optional for security events
     - actor_id: string (required) - The user performing the action
     - action: string (required) - The action performed (e.g., "USER_CREATED", "LOGIN")
     - resource_type: string (required) - The type of resource (e.g., "user", "role", "session")
@@ -164,10 +204,39 @@ async def create_audit_log(request: Request):
     - success: boolean (default: true) - Whether the action succeeded
     - error_message: string (optional) - Error message if failed
     - details: object (optional) - Additional context
+    
+    Note: Security events (failed logins, etc.) can be logged without authentication
+    to allow logging of failed authentication attempts.
     """
-    await _require_client_auth(request)
-
+    # Parse body once
     body = await request.json()
+    action = body.get("action", "")
+    
+    # Check if this is a security event that should be allowed without auth
+    is_security_event = _is_security_event(action)
+    
+    if not is_security_event:
+        # For non-security events, require authentication
+        # Check admin token first
+        auth_header = request.headers.get("authorization", "")
+        is_authenticated = False
+        
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header[7:]
+            if config.admin_token and token == config.admin_token:
+                is_authenticated = True
+        
+        # If not authenticated via admin token, check OAuth client credentials in body
+        if not is_authenticated:
+            is_authenticated = await _check_client_auth_from_body(body)
+        
+        if not is_authenticated:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: valid admin token or OAuth client credentials required",
+            )
+    
+    # Validate the body
     try:
         log_data = AuditLogCreate.model_validate(body)
     except Exception as e:
