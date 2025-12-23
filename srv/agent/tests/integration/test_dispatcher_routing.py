@@ -274,6 +274,91 @@ async def test_dispatcher_routing_accuracy_on_test_set(
 
 
 @pytest.mark.asyncio
+async def test_dispatcher_structured_output_validation(client: AsyncClient, mock_token: str):
+    """
+    Test: Dispatcher returns properly structured output from PydanticAI.
+    
+    Verifies that the dispatcher agent uses structured output (output_type=RoutingDecision)
+    and returns valid, typed data - not raw string parsing.
+    """
+    response = await client.post(
+        "/dispatcher/route",
+        json={
+            "query": "What does our Q4 report say about revenue?",
+            "available_tools": ["doc_search", "web_search"],
+            "available_agents": [],
+            "attachments": [],
+            "user_settings": {
+                "enabled_tools": ["doc_search", "web_search"],
+                "enabled_agents": []
+            }
+        },
+        headers={"Authorization": f"Bearer {mock_token}"},
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    
+    # Verify full response structure
+    assert "routing_decision" in data, "Response should have routing_decision"
+    routing = data["routing_decision"]
+    
+    # Verify all required fields are present and have correct types
+    assert isinstance(routing["selected_tools"], list), "selected_tools must be a list"
+    assert isinstance(routing["selected_agents"], list), "selected_agents must be a list"
+    assert isinstance(routing["confidence"], (int, float)), "confidence must be a number"
+    assert isinstance(routing["reasoning"], str), "reasoning must be a string"
+    assert isinstance(routing["alternatives"], list), "alternatives must be a list"
+    assert isinstance(routing["requires_disambiguation"], bool), "requires_disambiguation must be a bool"
+    
+    # Verify confidence bounds
+    assert 0.0 <= routing["confidence"] <= 1.0, "confidence must be between 0 and 1"
+    
+    # Verify reasoning is not empty (structured output should always provide reasoning)
+    assert len(routing["reasoning"]) > 0, "reasoning should not be empty"
+    
+    # Verify that if confidence < 0.7, requires_disambiguation should be True
+    if routing["confidence"] < 0.7:
+        assert routing["requires_disambiguation"] is True, "Low confidence should require disambiguation"
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_structured_output_handles_edge_cases(client: AsyncClient, mock_token: str):
+    """
+    Test: Dispatcher structured output handles edge cases correctly.
+    
+    Verifies that the structured output correctly handles cases where:
+    - No tools are enabled (should return empty lists)
+    - Confidence should be low or zero
+    """
+    response = await client.post(
+        "/dispatcher/route",
+        json={
+            "query": "Analyze this complex multi-dimensional data set",
+            "available_tools": ["doc_search", "web_search"],
+            "available_agents": [],
+            "attachments": [],
+            "user_settings": {
+                "enabled_tools": [],  # No tools enabled
+                "enabled_agents": []
+            }
+        },
+        headers={"Authorization": f"Bearer {mock_token}"},
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    routing = data["routing_decision"]
+    
+    # With no enabled tools, selected_tools should be empty
+    assert routing["selected_tools"] == [], "selected_tools should be empty when no tools enabled"
+    assert routing["selected_agents"] == [], "selected_agents should be empty when no agents enabled"
+    
+    # Confidence should be low when no tools available
+    assert routing["confidence"] <= 0.5, "confidence should be low when no tools enabled"
+
+
+@pytest.mark.asyncio
 @pytest.mark.slow
 async def test_dispatcher_response_time_under_2_seconds(client: AsyncClient, mock_token: str):
     """

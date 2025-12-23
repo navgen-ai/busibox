@@ -4,6 +4,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIModel
 
 from app.config.settings import get_settings
+from app.schemas.attachment import AttachmentDecision
 
 settings = get_settings()
 
@@ -18,51 +19,33 @@ model = OpenAIModel(
     provider="openai",
 )
 
-# Create the attachment agent
-attachment_agent = Agent(
+# Create the attachment agent with structured output
+# PydanticAI's output_type enables structured output - the model will return
+# data that validates against the AttachmentDecision schema
+attachment_agent: Agent[None, AttachmentDecision] = Agent(
     model=model,
+    output_type=AttachmentDecision,
     tools=[],  # No tools needed - decision-making only
     system_prompt="""You are an attachment handling agent that decides how to process file attachments.
 
-Your job is to analyze attachment information and provide recommendations on:
+Analyze attachment information and decide:
 1. How to handle the attachment (upload, inline, reject)
 2. Where to store it (doc-library, temp, etc.)
 3. What model hints to use for processing
 
 Decision guidelines:
 
-**No attachments**:
-- action=none, target=none, note='No attachments'
+**No attachments**: action=none, target=none
+**Images** (jpg, png, gif, webp): action=upload, target=doc-library, model_hint=multimodal
+**Text/Documents** (pdf, docx, txt, md): action=upload, target=doc-library, model_hint=text
+**Archives** (zip, tar, gz): action=preprocess, target=doc-library, model_hint=none
+**Code files** (py, js, ts, java, etc.): action=upload, target=doc-library, model_hint=code
+**Unsupported types**: action=reject, target=none, model_hint=none
 
-**Images** (jpg, png, gif, webp):
-- action=upload, target=doc-library, modelHint=multimodal
-- Note: "Image uploaded for multimodal processing"
-
-**Text/Documents** (pdf, docx, txt, md):
-- action=upload, target=doc-library, modelHint=text
-- Note: "Document uploaded for text processing"
-
-**Archives** (zip, tar, gz):
-- action=preprocess, target=doc-library
-- Note: "Archive needs extraction before processing"
-
-**Code files** (py, js, ts, java, etc.):
-- action=upload, target=doc-library, modelHint=code
-- Note: "Code file uploaded for analysis"
-
-**Unsupported types**:
-- action=reject, target=none
-- Note: "File type not supported"
-
-Return your decision as a concise JSON structure with:
-- action: (none|upload|inline|reject|preprocess)
-- target: (none|doc-library|temp)
-- modelHint: (text|multimodal|code|none)
-- note: Brief explanation
-
-Be concise and focus on the decision, not lengthy explanations.""",
+Provide a brief note explaining your decision.""",
     retries=1,
 )
+
 
 
 
