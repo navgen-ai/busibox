@@ -21,8 +21,9 @@ from app.models.domain import AgentDefinition, ToolDefinition
 @pytest.fixture
 async def custom_tool_id(db_session: AsyncSession, mock_user_id: str) -> uuid.UUID:
     """Create a custom tool for testing."""
+    unique_name = f"custom_test_tool_{uuid.uuid4().hex[:8]}"
     tool = ToolDefinition(
-        name="custom_test_tool",
+        name=unique_name,
         description="Custom tool for testing",
         schema={"input": {"type": "object"}, "output": {"type": "object"}},
         entrypoint="app.tools.test:custom_tool",
@@ -40,8 +41,9 @@ async def custom_tool_id(db_session: AsyncSession, mock_user_id: str) -> uuid.UU
 @pytest.fixture
 async def builtin_tool_id(db_session: AsyncSession) -> uuid.UUID:
     """Create a built-in tool for testing."""
+    unique_name = f"builtin_test_tool_{uuid.uuid4().hex[:8]}"
     tool = ToolDefinition(
-        name="builtin_test_tool",
+        name=unique_name,
         description="Built-in tool for testing",
         schema={"input": {"type": "object"}, "output": {"type": "object"}},
         entrypoint="app.tools.builtin:test_tool",
@@ -75,7 +77,7 @@ async def test_get_tool_by_id(
     assert response.status_code == 200
     tool = response.json()
     assert tool["id"] == str(custom_tool_id)
-    assert tool["name"] == "custom_test_tool"
+    assert tool["name"].startswith("custom_test_tool_")
     assert tool["is_builtin"] is False
 
 
@@ -152,12 +154,17 @@ async def test_delete_tool_in_use_returns_409(
     Acceptance Scenario 4: Given my custom tool is used by an active agent, When I try 
     to delete it, Then I receive a 409 Conflict error with details about which agents use it.
     """
-    # Create agent that uses the tool
+    # Create agent that uses the tool - we need to get the actual tool name
+    from sqlalchemy import select
+    stmt = select(ToolDefinition).where(ToolDefinition.id == custom_tool_id)
+    result = await db_session.execute(stmt)
+    tool = result.scalar_one()
+    
     agent = AgentDefinition(
-        name="agent-using-tool",
+        name=f"agent-using-tool-{uuid.uuid4().hex[:8]}",
         model="agent",
         instructions="Test agent",
-        tools={"names": ["custom_test_tool"]},
+        tools={"names": [tool.name]},
         scopes=[],
         is_active=True,
         is_builtin=False,
@@ -193,8 +200,9 @@ async def test_delete_unused_tool_returns_204(
     Then it is soft-deleted (is_active = false) and no longer appears in my tool list.
     """
     # Create unused tool
+    unique_name = f"unused_test_tool_{uuid.uuid4().hex[:8]}"
     tool = ToolDefinition(
-        name="unused_test_tool",
+        name=unique_name,
         description="Unused tool",
         schema={},
         entrypoint="app.tools.test:unused",
@@ -254,6 +262,7 @@ async def test_update_builtin_tool_returns_403(
     
     assert response.status_code == 403
     assert "built-in" in response.json()["detail"].lower()
+
 
 
 

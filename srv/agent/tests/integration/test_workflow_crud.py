@@ -20,8 +20,9 @@ from app.models.domain import WorkflowDefinition
 @pytest.fixture
 async def custom_workflow_id(db_session: AsyncSession, mock_user_id: str) -> uuid.UUID:
     """Create a custom workflow for testing."""
+    unique_name = f"custom_test_workflow_{uuid.uuid4().hex[:8]}"
     workflow = WorkflowDefinition(
-        name="custom_test_workflow",
+        name=unique_name,
         description="Custom workflow for testing",
         steps=[
             {
@@ -58,7 +59,7 @@ async def test_get_workflow_by_id(
     assert response.status_code == 200
     workflow = response.json()
     assert workflow["id"] == str(custom_workflow_id)
-    assert workflow["name"] == "custom_test_workflow"
+    assert workflow["name"].startswith("custom_test_workflow_")
 
 
 @pytest.mark.asyncio
@@ -128,8 +129,9 @@ async def test_delete_unused_workflow_returns_204(
     Test: DELETE unused workflow returns 204.
     """
     # Create unused workflow
+    unique_name = f"unused_test_workflow_{uuid.uuid4().hex[:8]}"
     workflow = WorkflowDefinition(
-        name="unused_test_workflow",
+        name=unique_name,
         description="Unused workflow",
         steps=[],
         is_active=True,
@@ -151,6 +153,7 @@ async def test_delete_unused_workflow_returns_204(
     # Verify workflow is soft-deleted
     workflow = await db_session.get(WorkflowDefinition, workflow_id)
     assert workflow.is_active is False
+
 
 
 

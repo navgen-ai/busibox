@@ -102,8 +102,9 @@ async def user_b_client(user_b_principal):
 @pytest.fixture
 async def builtin_agent_id(db_session: AsyncSession) -> uuid.UUID:
     """Create a built-in agent visible to all users."""
+    unique_name = f"builtin-test-agent-{uuid.uuid4().hex[:8]}"
     agent = AgentDefinition(
-        name="builtin-test-agent",
+        name=unique_name,
         display_name="Built-in Test Agent",
         description="System agent for testing",
         model="agent",
@@ -132,10 +133,11 @@ async def test_personal_agent_filtering_user_a_creates_agent(
     personal agent named "My Research Assistant", Then only I can see it in my agent list.
     """
     # Create personal agent as User A
+    unique_name = f"user-a-research-assistant-{uuid.uuid4().hex[:8]}"
     response = await user_a_client.post(
         "/agents/definitions",
         json={
-            "name": "user-a-research-assistant",
+            "name": unique_name,
             "display_name": "My Research Assistant",
             "description": "Personal research assistant",
             "model": "agent",
@@ -175,10 +177,11 @@ async def test_personal_agent_not_visible_to_other_users(
     Acceptance Scenario 1 (continued): User B should not see User A's personal agent.
     """
     # Create personal agent as User A
+    unique_name = f"user-a-private-agent-{uuid.uuid4().hex[:8]}"
     response = await user_a_client.post(
         "/agents/definitions",
         json={
-            "name": "user-a-private-agent",
+            "name": unique_name,
             "display_name": "User A Private Agent",
             "model": "agent",
             "instructions": "Private agent",
@@ -241,8 +244,9 @@ async def test_unauthorized_access_to_personal_agent_returns_404(
     When they make the request, Then they receive a 404 Not Found error.
     """
     # Create personal agent as User A
+    unique_name = f"user-a-secret-agent-{uuid.uuid4().hex[:8]}"
     agent = AgentDefinition(
-        name="user-a-secret-agent",
+        name=unique_name,
         display_name="User A Secret Agent",
         model="agent",
         instructions="Secret instructions",
@@ -296,10 +300,11 @@ async def test_personal_agent_created_with_correct_ownership(
     """
     Test: Personal agents created with is_builtin=False and created_by set to user.
     """
+    unique_name = f"ownership-test-agent-{uuid.uuid4().hex[:8]}"
     response = await user_a_client.post(
         "/agents/definitions",
         json={
-            "name": "ownership-test-agent",
+            "name": unique_name,
             "model": "agent",
             "instructions": "Test agent",
             "tools": {"names": []},
@@ -320,6 +325,7 @@ async def test_personal_agent_created_with_correct_ownership(
     
     assert db_agent.is_builtin is False
     assert db_agent.created_by == "user-a"
+
 
 
 

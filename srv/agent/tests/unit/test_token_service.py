@@ -1,4 +1,5 @@
 """Unit tests for token caching and exchange flow."""
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import List
 
@@ -26,10 +27,13 @@ def _past(minutes: int = 5) -> datetime:
     return _now_naive() - timedelta(minutes=minutes)
 
 
-def _principal() -> Principal:
+def _principal(unique_id: str = None) -> Principal:
+    """Create a principal with a unique subject to avoid cache conflicts."""
+    if unique_id is None:
+        unique_id = uuid.uuid4().hex[:8]
     return Principal(
-        sub="user-123",
-        email="user@example.com",
+        sub=f"user-{unique_id}",
+        email=f"user-{unique_id}@example.com",
         roles=["user"],
         scopes=["search.read", "ingest.write"],
     )
@@ -39,7 +43,9 @@ def _principal() -> Principal:
 async def test_returns_cached_token_when_valid(monkeypatch, test_session: AsyncSession):
     """Test that a valid cached token is returned without calling exchange."""
     # Create a principal and matching cached token
-    principal = _principal()
+    unique_id = uuid.uuid4().hex[:8]
+    principal = _principal(unique_id)
+    unique_token = f"cached-test-token-{unique_id}"
     
     # The token service adds "aud:{audience}" to the scopes key
     # For purpose="ingest", the audience is "ingest-api"
@@ -47,7 +53,7 @@ async def test_returns_cached_token_when_valid(monkeypatch, test_session: AsyncS
     cached_token = TokenGrant(
         subject=principal.sub,
         scopes=sorted(["aud:ingest-api", "ingest.write", "search.read"]),
-        token="cached-test-token",
+        token=unique_token,
         expires_at=_future(60),  # Valid for 60 more minutes
     )
     test_session.add(cached_token)
@@ -73,11 +79,12 @@ async def test_returns_cached_token_when_valid(monkeypatch, test_session: AsyncS
 @pytest.mark.asyncio
 async def test_exchanges_when_expired(monkeypatch, test_session: AsyncSession):
     """Test that an expired token triggers a new exchange."""
-    principal = _principal()
+    unique_id = uuid.uuid4().hex[:8]
+    principal = _principal(unique_id)
     expired = TokenGrant(
         subject=principal.sub,
         scopes=["aud:ingest-api", "ingest.write", "search.read"],
-        token="stale-token",
+        token=f"stale-token-{unique_id}",
         expires_at=_past(),
     )
     test_session.add(expired)
@@ -110,13 +117,14 @@ async def test_exchanges_when_expired(monkeypatch, test_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_refreshes_token_near_expiry(monkeypatch, test_session: AsyncSession):
     """Test that a token near expiry triggers a refresh."""
-    principal = _principal()
+    unique_id = uuid.uuid4().hex[:8]
+    principal = _principal(unique_id)
     # Near expiry: buffer is typically 60 seconds, so divide by 2 to be within buffer
     near_expiry_time = _now_naive() + EXPIRY_REFRESH_BUFFER / 2
     near_expiry = TokenGrant(
         subject=principal.sub,
         scopes=["aud:ingest-api", "ingest.write", "search.read"],
-        token="almost-expired",
+        token=f"almost-expired-{unique_id}",
         expires_at=near_expiry_time,
     )
     test_session.add(near_expiry)
