@@ -2526,21 +2526,21 @@ class TestAuditWithBearerContext:
             assert token_resp.status_code == 200, f"Token exchange failed: {token_resp.text}"
             access_token = token_resp.json()["access_token"]
             
-            # Call audit endpoint with this token
+            # Call audit endpoint with this token (using new /audit/log endpoint)
             audit_resp = await client.post(
-                f"{TEST_AUTHZ_URL}/authz/audit",
+                f"{TEST_AUTHZ_URL}/audit/log",
                 headers={"Authorization": f"Bearer {access_token}"},
                 json={
-                    "actorId": user_id,
+                    "actor_id": user_id,
                     "action": "doc.move",
-                    "resourceType": "document",
-                    "resourceId": None,
+                    "resource_type": "document",
+                    "resource_id": None,
                     "details": {"from": "libA", "to": "libB"},
                 },
                 timeout=30.0,
             )
             
-            assert audit_resp.status_code == 200
+            assert audit_resp.status_code == 200, f"Audit log failed: {audit_resp.text}"
             
             # Verify audit log in database
             async with db_pool.acquire() as conn:
@@ -2551,7 +2551,7 @@ class TestAuditWithBearerContext:
                     ORDER BY created_at DESC
                     LIMIT 1
                     """,
-                    user_id,
+                    uuid.UUID(user_id),
                 )
                 assert row is not None
                 assert row["resource_type"] == "document"
