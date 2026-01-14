@@ -651,6 +651,7 @@ async def send_chat_message_stream_agentic(
         """Generate SSE events from agentic dispatcher."""
         try:
             # Get or create conversation
+            title_updated = False
             if payload.conversation_id:
                 result = await session.execute(
                     select(Conversation).where(
@@ -663,16 +664,26 @@ async def send_chat_message_stream_agentic(
                 if not conversation:
                     yield f"event: error\ndata: {json.dumps({'error': 'Conversation not found'})}\n\n"
                     return
+                
+                # Update title if it's still the default "New Conversation"
+                if conversation.title == "New Conversation":
+                    generated_title = payload.message[:50] + "..." if len(payload.message) > 50 else payload.message
+                    conversation.title = generated_title
+                    title_updated = True
+                    # Send title update event
+                    yield f"event: title_update\ndata: {json.dumps({'conversation_id': str(conversation.id), 'title': generated_title})}\n\n"
             else:
+                # Generate title from first message (truncate to 50 chars)
+                generated_title = payload.message[:50] + "..." if len(payload.message) > 50 else payload.message
                 conversation = Conversation(
-                    title=payload.message[:50] + "..." if len(payload.message) > 50 else payload.message,
+                    title=generated_title,
                     user_id=principal.sub
                 )
                 session.add(conversation)
                 await session.flush()
                 
-                # Send conversation created event
-                yield f"event: conversation_created\ndata: {json.dumps({'conversation_id': str(conversation.id)})}\n\n"
+                # Send conversation created event with title
+                yield f"event: conversation_created\ndata: {json.dumps({'conversation_id': str(conversation.id), 'title': generated_title})}\n\n"
             
             # Store user message
             user_message = Message(
@@ -729,7 +740,8 @@ async def send_chat_message_stream_agentic(
                     })
             
             # Store assistant message
-            response_text = "\n".join(full_content) if full_content else "No response generated."
+            # Join without separator - content chunks are already properly formatted
+            response_text = "".join(full_content) if full_content else "No response generated."
             
             assistant_message = Message(
                 conversation_id=conversation.id,

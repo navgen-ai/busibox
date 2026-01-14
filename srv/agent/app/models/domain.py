@@ -320,6 +320,10 @@ class Conversation(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    source: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True, index=True,
+        comment="App/client that created this conversation (e.g., 'ai-portal', 'agent-manager')"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
@@ -331,6 +335,7 @@ class Conversation(Base):
     __table_args__ = (
         Index('idx_conversations_user_id', 'user_id'),
         Index('idx_conversations_created_at', 'created_at'),
+        Index('idx_conversations_source', 'source'),
     )
 
     def __repr__(self) -> str:

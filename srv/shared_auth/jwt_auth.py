@@ -95,16 +95,38 @@ class UserContext:
         return [r.name for r in self.roles]
     
     def has_scope(self, scope: str) -> bool:
-        """Check if user has a specific scope."""
-        return scope in self.scopes
+        """
+        Check if user has a specific scope.
+        
+        Supports wildcard matching:
+        - Exact match: 'ingest.write' matches 'ingest.write'
+        - Wildcard: 'ingest.*' matches 'ingest.write', 'ingest.read', etc.
+        - Full wildcard: '*' matches everything
+        """
+        # Direct match
+        if scope in self.scopes:
+            return True
+        
+        # Check for wildcard scopes
+        # e.g., 'ingest.*' should match 'ingest.write'
+        scope_prefix = scope.rsplit('.', 1)[0] if '.' in scope else scope
+        wildcard_scope = f"{scope_prefix}.*"
+        if wildcard_scope in self.scopes:
+            return True
+        
+        # Check for full wildcard '*'
+        if '*' in self.scopes:
+            return True
+        
+        return False
     
     def has_any_scope(self, scopes: List[str]) -> bool:
-        """Check if user has any of the specified scopes."""
-        return bool(self.scopes.intersection(scopes))
+        """Check if user has any of the specified scopes (supports wildcards)."""
+        return any(self.has_scope(scope) for scope in scopes)
     
     def has_all_scopes(self, scopes: List[str]) -> bool:
-        """Check if user has all of the specified scopes."""
-        return set(scopes).issubset(self.scopes)
+        """Check if user has all of the specified scopes (supports wildcards)."""
+        return all(self.has_scope(scope) for scope in scopes)
 
 
 # ============================================================================

@@ -1,7 +1,138 @@
 # Wes's Tasks
-1 - get agent manager to be able to run the web search tool via the web research agent
-2 - use this agent via the ai-portal chat
-3 - deploy all this to busibox
+Issues:
+1) Thinking needs to work the same way in both fullchat and simplechat:
+- when dispatcher is thinking, the toggle is open and updating
+- as soon as we start streaming responses, close the toggle, but don't remove it
+- the thinking history should be preserved with the message so it shows up when we reload the conversation
+currently in fullchat the thinking toggle doesnt't appear immediately, is closed when it does, disappears as soon as the response has finished.
+2) As soon as thinking starts, the dispatcher should be sending a conversation title and the title should get updated.
+3) When the chat response first comes in, the "raw" output is properly formatted:
+e.g. 
+```
+Tonight in NYC (Wed, **Jan 14, 2026**), you’ve got major club sets (Birdland, Blue Note, Vanguard, Smoke), a speakeasy-style **jazz+swing** night, and several smaller-venue gigs across Manhattan and Brooklyn, per the listings below.
+## Headliner club shows (Manhattan)
+- **Fred Hersch** at **Village Vanguard** ([Jazz Near You](https://www.jazznearyou.com/newyork/live-calendar?searchmonth=01&searchyear=2026))
+- **Brad Mehldau (Solo Piano)** at **Smoke Jazz & Supper Club / Smoke Jazz Club** ([Jazz Near You](https://www.jazznearyou.com/newyork/live-calendar?searchmonth=01&searchyear=2026))
+- **Trio with Nate Smith & James Francies** at **Blue Note New York** ([Jazz Near You](https://www.jazznearyou.com/newyork/live-calendar?searchmonth=01&searchyear=2026)) + Shazam lists a **Nate Smith** event at **10:30 PM** at Blue Note ([Shazam](https://www.shazam.com/event/c0d71674-c38d-493c-bce7-716c0cc14915))
+- **Delfeayo Marsalis & The Uptown Jazz Orchestra** at **Birdland** ([Jazz Near You](https://www.jazznearyou.com/newyork/live-calendar?searchmonth=01&searchyear=2026))
+- **David Ostwald’s Louis Armstrong Eternity Band** at **Birdland Theater** ([Jazz Near You](https://www.jazznearyou.com/newyork/live-calendar?searchmonth=01&searchyear=2026))
+- **Frank Vignola’s Guitar Night** at **Birdland Theater** ([Jazz Near You](https://www.jazznearyou.com/newyork/live-calendar?searchmonth=01&searchyear=2026))
+```
+but when we reload there are a ton of random spaces
+```
+Tonight in NYC (Wed, **Jan 14, 2026
+**) there are multiple
+ notable **live jazz** options
+ across Manhattan and Brooklyn
+, from straight-ahead club sets to
+ big-band and dance-oriented spe
+akeasy jazz.
+ Below are the main
+ picks pulled from the listings.  
+##
+ Major NYC jazz club
+ shows (Manhattan)
+-
+ **Fred Hersch
+** at **Village Vanguard** ([Jazz
+ Near You](https://www.jazznearyou.com/newy
+ork/live-calendar?searchmonth=01&searchyear=2026
+))  
+- **Brad Meh
+ldau (Solo Piano)** at **Smoke Jazz & Supper Club / Smoke Jazz Club
+** ([Jazz Near You](https://www.jazznearyou.com/newyork
+/live-calendar?searchmonth=01&searchyear=2026))
+  
+- **Tr
+io with Nate Smith & James Francies** at **Blue Note New York** ([Jazz Near You](https://www.jazzneary
+ou.com/newyork/live-calendar?searchmonth=01&searchyear=2026)
+```
+We are storing the wrong thing?!
+
+4) Our markdown formatting is still not right. This must be a prose/tailwind/react markdown/postcss type configuration issue. The MD->HTML css is just not rendering like it should. It's partially formatting but not getting headers, spacing, lists right - just bold & links are formatting.
+
+
+
+## Recent Completions
+[X] - Fixed document_search tool authentication and configuration UI (2026-01-14)
+  - Problem 1: document_search tool wasn't using authenticated API calls, causing permission errors
+  - Problem 2: agent-manager showed irrelevant web_search provider options for document_search
+  - Problem 3: Tool testing endpoint couldn't handle tools that require RunContext
+  - Solution:
+    - Updated `document_search_tool` to use `RunContext[BusiboxDeps]` for authenticated calls
+    - Enhanced `BusiboxClient.search()` to support all search features (mode, file_ids, rerank, etc.)
+    - Fixed `ToolConfigPanel` to only show providers for web_search, not document_search
+    - Updated tool test endpoint to detect context-requiring tools and create MockRunContext with token exchange
+  - Files changed:
+    - `/Users/wsonnenreich/Code/busibox/srv/agent/app/tools/document_search_tool.py` - Added RunContext support
+    - `/Users/wsonnenreich/Code/busibox/srv/agent/app/clients/busibox.py` - Enhanced search() method
+    - `/Users/wsonnenreich/Code/busibox/srv/agent/app/api/tools.py` - Added RunContext handling in test endpoint
+    - `/Users/wsonnenreich/Code/agent-manager/components/tools/ToolConfigPanel.tsx` - Fixed provider filter
+    - `/Users/wsonnenreich/Code/busibox/srv/ingest/src/worker.py` - Added status update
+
+[X] - Added HuggingFace model caching for faster rebuilds (2026-01-14)
+  - Problem: Every Docker rebuild downloaded all safetensor models (~2GB+), taking 5-10 minutes
+  - Solution: Added persistent Docker volume `huggingface_cache` mounted to `/root/.cache/huggingface`
+  - Benefits:
+    - Models downloaded once and reused across container rebuilds
+    - Cache persists even after `docker compose down` (only cleared with `docker volume rm`)
+    - Shared across ingest-api, ingest-worker, and search-api
+    - Significantly faster rebuild times after first download
+  - Files changed:
+    - `/Users/wsonnenreich/Code/busibox/docker-compose.local.yml`
+  - Models cached:
+    - FastEmbed: `BAAI/bge-large-en-v1.5` (1024-d, ~1.3GB)
+    - sentence-transformers (search-api)
+    - Any future ColPali models
+
+[X] - Fixed ingestion worker poppler dependency (2026-01-14)
+  - Problem: Worker hanging with "Unable to get page count. Is poppler installed and in PATH?"
+  - Root cause: Missing `poppler-utils` in Docker container for PDF page image extraction (ColPali)
+  - Solution: 
+    - Added `poppler-utils` and `libmagic1` to Dockerfile
+    - Improved error handling in `_extract_pdf_page_images` to catch specific pdf2image exceptions
+    - Changed error log from `debug` to `info` level for better visibility
+  - Files changed:
+    - `/Users/wsonnenreich/Code/busibox/srv/ingest/Dockerfile`
+    - `/Users/wsonnenreich/Code/busibox/srv/ingest/src/processors/text_extractor.py`
+  - Status: Requires Docker rebuild: `docker compose -f docker-compose.local.yml build ingest-worker ingest-api`
+
+[X] - Fixed JWT token expiration/caching issue (2026-01-14)
+  - Problem: Document uploads failing with "Invalid or expired JWT token"
+  - Root cause: Tokens were cached and could expire between retrieval and use
+  - Solution: Added automatic token refresh and retry logic on 401/403 errors
+  - Files changed:
+    - `/Users/wsonnenreich/Code/busibox-app/src/lib/ingest/client.ts` - Added retry logic with token refresh
+    - `/Users/wsonnenreich/Code/ai-portal/src/lib/authz-client.ts` - Added token invalidation function
+    - `/Users/wsonnenreich/Code/ai-portal/src/lib/ingest/client.ts` - Added token tracking and auto-invalidation
+
+[X] - Fixed Docker deployment menu structure (2026-01-14)
+  - Added missing `ingest-worker` to all service lists
+  - Reorganized menu hierarchy:
+    - Top level: All Services, API Services, Data Services, Individual Services, Clean-up
+    - Each service group has: Build, Status, Restart, Start, Stop, Logs
+  - Fixed service selection menus to include ingest-worker
+
+## Active Tasks
+[X] - get agent manager to be able to run the web search tool via the web research agent
+[X] - use this agent via the ai-portal chat
+[X] - fix the document manager
+[X] - get the doc search tool to work
+[ ] - get the doc search agent to work
+[ ] - create an email messenger tool that can send emails
+[ ] - now the ai-portal chat agent should be able to use web search AND doc search together
+[ ] - deploy all this to busibox test
+[ ] - create an "agent tasks" capability
+    [ ] - first add to agent manager
+    [ ] - then we want to have agents, tasks, insights as things accessible from chat
+    [ ] - chat agent should be able to create agent tasks automatically
+    [ ] - test is "send me a videogame news summary via email every hour"
+        [ ] - should use "news agent"
+
+Future features
+[ ] - agents can manage their own insights/memories and consult when running
+[ ] - integration with whatsapp/sms via twilio
+
 4 - improve existing agents - chat (has websearch, filesearch, upload), web search (focus on deep research), RAG Search Agent
 
 
