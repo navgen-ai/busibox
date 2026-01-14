@@ -202,6 +202,26 @@ services:
     networks:
       - busibox-net
 
+  # Milvus Schema Initialization
+  # Creates the 'documents' collection with hybrid search support
+  milvus-init:
+    build:
+      context: .
+      dockerfile: provision/docker/milvus-init.Dockerfile
+    container_name: local-milvus-init
+    volumes:
+      - ./provision/ansible/roles/milvus/files/hybrid_schema.py:/app/hybrid_schema.py:ro
+    environment:
+      MILVUS_HOST: milvus
+      MILVUS_PORT: 19530
+    command: ["python", "/app/hybrid_schema.py"]
+    depends_on:
+      milvus:
+        condition: service_healthy
+    networks:
+      - busibox-net
+    restart: "no"
+
   # ===========================================================================
   # LLM GATEWAY
   # ===========================================================================
@@ -293,6 +313,8 @@ services:
       - ./srv/ingest/migrations:/app/migrations:ro
       - ./srv/shared_auth:/app/shared_auth:ro
       - ingest_temp:/tmp/ingest
+      # Model cache - persists downloaded models across container rebuilds
+      - model_cache:/root/.cache
     command: ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8002", "--reload", "--reload-dir", "/app/src"]
     environment:
       # Service
@@ -350,6 +372,73 @@ services:
     networks:
       - busibox-net
 
+  # Ingest Worker - Background Job Processor
+  # Consumes jobs from Redis stream and processes uploaded documents
+  ingest-worker:
+    build:
+      context: ./srv
+      dockerfile: ingest/Dockerfile
+    container_name: local-ingest-worker
+    hostname: ingest-worker
+    # Hot-reload: mount source code for development
+    volumes:
+      - ./srv/ingest/src:/app/src:ro
+      - ./srv/shared_auth:/app/shared_auth:ro
+      - ingest_temp:/tmp/ingest
+      # Model cache - persists downloaded models across container rebuilds
+      - model_cache:/root/.cache
+    # Run the worker process instead of the API
+    command: ["python", "src/worker.py"]
+    environment:
+      # PostgreSQL
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: busibox
+      POSTGRES_USER: ${POSTGRES_USER:-busibox_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_STREAM: jobs:ingestion
+      REDIS_CONSUMER_GROUP: workers
+      # MinIO
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_SECURE: "false"
+      MINIO_BUCKET: documents
+      # Milvus
+      MILVUS_HOST: milvus
+      MILVUS_PORT: 19530
+      MILVUS_COLLECTION: documents
+      # LiteLLM
+      LITELLM_BASE_URL: http://litellm:4000
+      LITELLM_API_KEY: ${LITELLM_API_KEY:-sk-local-dev-key}
+      # Processing Configuration
+      MARKER_ENABLED: ${MARKER_ENABLED:-true}
+      MARKER_USE_GPU: ${MARKER_USE_GPU:-false}
+      COLPALI_ENABLED: ${COLPALI_ENABLED:-false}
+      LLM_CLEANUP_ENABLED: ${LLM_CLEANUP_ENABLED:-true}
+      # Worker ID (for debugging)
+      WORKER_ID: local-worker-1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+      milvus-init:
+        condition: service_completed_successfully
+      ingest-api:
+        condition: service_healthy
+    # No healthcheck needed - worker just processes jobs
+    restart: unless-stopped
+    networks:
+      - busibox-net
+
   # Search API - Semantic Search Service
   search-api:
     build:
@@ -361,6 +450,8 @@ services:
     volumes:
       - ./srv/search/src:/app/src:ro
       - ./srv/shared_auth:/app/shared_auth:ro
+      # Model cache - persists downloaded models across container rebuilds
+      - model_cache:/root/.cache
     command: ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8003", "--reload", "--reload-dir", "/app/src"]
     environment:
       # Service
@@ -421,7 +512,8 @@ services:
     # Note: migrations still run on startup, but code changes hot-reload
     volumes:
       - ./srv/agent/app:/app/app:ro
-    command: ["sh", "-c", "python -m alembic upgrade head && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app"]
+      - ./srv/agent/alembic:/app/alembic:ro
+    command: ["sh", "-c", "echo 'Migration files:' && ls -la /app/alembic/versions/ && echo 'Current alembic head:' && python -m alembic heads && echo 'Current DB version:' && python -m alembic current && echo 'Running migrations...' && python -m alembic upgrade head && echo 'Migrations complete' && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app"]
     environment:
       # Service
       ENVIRONMENT: development
@@ -447,8 +539,10 @@ services:
       AUTH_ISSUER: busibox-authz
       AUTH_AUDIENCE: agent-api
       AUTH_TOKEN_URL: http://authz-api:8010/oauth/token
-      AUTH_CLIENT_ID: ${AGENT_API_CLIENT_ID:-agent-api}
-      AUTH_CLIENT_SECRET: ${AGENT_API_CLIENT_SECRET:-agent-api-secret}
+      # Use the same bootstrap client as ai-portal for token exchange
+      # This allows agent-api to exchange tokens for downstream services (search-api, ingest-api)
+      AUTH_CLIENT_ID: ${AUTHZ_BOOTSTRAP_CLIENT_ID:-ai-portal}
+      AUTH_CLIENT_SECRET: ${AUTHZ_BOOTSTRAP_CLIENT_SECRET:-ai-portal-secret}
     ports:
       - "8000:8000"
     depends_on:
@@ -631,6 +725,11 @@ volumes:
   milvus_minio_data:
   milvus_data:
   ingest_temp:
+  # Model cache - shared across ingest-api, ingest-worker, and search-api
+  # Caches all downloaded models (FastEmbed, Marker, sentence-transformers, etc.)
+  # Includes: .cache/huggingface, .cache/datalab, .cache/torch, etc.
+  # Persists across container rebuilds and survives docker-compose down
+  model_cache:
 
 # ===========================================================================
 # NETWORKS

@@ -373,8 +373,54 @@ async def test_tool(
         if tool_name == "web_search" and payload.providers:
             exec_kwargs["providers"] = payload.providers
         
-        # Execute the tool with provided input
-        result = await executor(**exec_kwargs)
+        # Check if tool requires RunContext (has ctx parameter)
+        import inspect
+        sig = inspect.signature(executor)
+        requires_context = 'ctx' in sig.parameters
+        
+        if requires_context:
+            # Tools like document_search need RunContext[BusiboxDeps]
+            from app.agents.core import BusiboxDeps
+            from app.clients.busibox import BusiboxClient
+            from app.services.token_service import get_or_exchange_token
+            
+            # Determine required scopes based on tool
+            # For now, search tools need search scopes
+            scopes = ["search:read"] if "search" in tool_name.lower() else []
+            purpose = "search" if "search" in tool_name.lower() else "agent"
+            
+            # Get or exchange token for downstream service
+            # This performs server-side token exchange using configured OAuth credentials
+            token = await get_or_exchange_token(
+                session=session,
+                principal=principal,
+                scopes=scopes,
+                purpose=purpose
+            )
+            
+            # Create BusiboxClient with the exchanged token
+            busibox_client = BusiboxClient(access_token=token.access_token)
+            
+            # Create deps
+            deps = BusiboxDeps(
+                principal=principal,
+                busibox_client=busibox_client
+            )
+            
+            # Create a mock RunContext
+            # Note: We can't create a real RunContext outside of pydantic-ai agent execution,
+            # so we'll pass deps directly and let the tool access it via ctx.deps
+            class MockRunContext:
+                def __init__(self, deps):
+                    self.deps = deps
+            
+            ctx = MockRunContext(deps)
+            
+            # Execute the tool with context as first argument
+            result = await executor(ctx, **exec_kwargs)
+        else:
+            # Execute the tool without context (old style tools like web_search)
+            result = await executor(**exec_kwargs)
         
         end_time = time.time()
         execution_time_ms = int((end_time - start_time) * 1000)

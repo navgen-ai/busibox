@@ -88,7 +88,9 @@ class Config:
         return {
             "worker_id": self.worker_id,
             "stream_name": self.stream_name,
+            "redis_stream": self.stream_name,  # Alias for API compatibility
             "consumer_group": self.consumer_group,
+            "redis_consumer_group": self.consumer_group,  # Alias for API compatibility
             "redis_host": self.redis_host,
             "redis_port": self.redis_port,
             "postgres_host": self.postgres_host,

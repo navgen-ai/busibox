@@ -155,6 +155,9 @@ async def exchange_token(
     Exchange a user token for a downstream token using OAuth2 token exchange (RFC 8693 style).
     Tokens are audience-bound to a single downstream service.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     audience = _audience_for_purpose(purpose, scopes)
     payload = {
         "grant_type": TOKEN_EXCHANGE_GRANT,
@@ -165,8 +168,13 @@ async def exchange_token(
         "requested_subject": principal.sub,
         "requested_purpose": purpose,
     }
+    
+    logger.info(f"Token exchange: client_id={settings.auth_client_id}, audience={audience}, subject={principal.sub}")
+    
     async with httpx.AsyncClient() as client:
         resp = await client.post(str(settings.auth_token_url), data=payload, timeout=10)
+        if not resp.is_success:
+            logger.error(f"Token exchange failed: {resp.status_code} - {resp.text}")
         resp.raise_for_status()
         data = resp.json()
 

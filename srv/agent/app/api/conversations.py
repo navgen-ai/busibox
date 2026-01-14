@@ -113,6 +113,7 @@ async def list_conversations(
     order_by: str = Query("created_at", description="Field to order by"),
     order: str = Query("desc", pattern="^(asc|desc)$", description="Sort order"),
     agent_id: Optional[str] = Query(None, description="Filter by agent ID (conversations where agent was used)"),
+    source: Optional[str] = Query(None, description="Filter by source app (e.g., 'ai-portal', 'agent-manager')"),
 ) -> ConversationListResponse:
     """
     List user's conversations with pagination and ordering.
@@ -121,10 +122,17 @@ async def list_conversations(
     
     If agent_id is provided, only returns conversations where a message
     has this agent in its routing_decision.selected_agents list.
+    
+    If source is provided, only returns conversations created by that app/client.
     """
     try:
         # Base filter for user ownership
         base_filter = Conversation.user_id == principal.sub
+        
+        # Filter by source if provided
+        if source:
+            from sqlalchemy import and_
+            base_filter = and_(base_filter, Conversation.source == source)
         
         # If agent_id is provided, find conversations with messages that used this agent
         if agent_id:
@@ -243,6 +251,7 @@ async def list_conversations(
                     id=conv.id,
                     title=conv.title,
                     user_id=conv.user_id,
+                    source=getattr(conv, 'source', None),
                     message_count=message_count,
                     last_message=last_message_preview,
                     created_at=conv.created_at,
@@ -252,7 +261,7 @@ async def list_conversations(
         
         logger.info(
             f"Listed {len(conversation_reads)} conversations for user {principal.sub}",
-            extra={"user_sub": principal.sub, "total": total, "agent_id_filter": agent_id}
+            extra={"user_sub": principal.sub, "total": total, "agent_id_filter": agent_id, "source_filter": source}
         )
         
         return ConversationListResponse(
@@ -280,13 +289,15 @@ async def create_conversation(
     Create a new conversation.
     
     If no title is provided, defaults to "New Conversation".
+    Source can be set to identify which app/client created the conversation.
     """
     try:
         title = payload.title if payload.title else "New Conversation"
         
         conversation = Conversation(
             title=title,
-            user_id=principal.sub
+            user_id=principal.sub,
+            source=payload.source,
         )
         
         session.add(conversation)
@@ -294,14 +305,15 @@ async def create_conversation(
         await session.refresh(conversation)
         
         logger.info(
-            f"Created conversation {conversation.id} for user {principal.sub}",
-            extra={"conversation_id": str(conversation.id), "user_sub": principal.sub}
+            f"Created conversation {conversation.id} for user {principal.sub} (source: {payload.source})",
+            extra={"conversation_id": str(conversation.id), "user_sub": principal.sub, "source": payload.source}
         )
         
         return ConversationRead(
             id=conversation.id,
             title=conversation.title,
             user_id=conversation.user_id,
+            source=conversation.source,
             message_count=0,
             last_message=None,
             created_at=conversation.created_at,

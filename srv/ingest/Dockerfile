@@ -20,6 +20,14 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
+# Install system dependencies
+# - poppler-utils: for PDF page image extraction (pdftoppm for ColPali)
+# - libmagic1: for file type detection
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    poppler-utils \
+    libmagic1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy requirements first (for caching)
 COPY ingest/requirements.txt .
 
@@ -31,6 +39,9 @@ RUN pip install --no-cache-dir https://github.com/explosion/spacy-models/release
 
 # Copy source code
 COPY ingest/src/ ./src/
+
+# Copy migrations directory
+COPY ingest/migrations/ ./migrations/
 
 # Copy shared_auth module
 COPY shared_auth/ ./shared_auth/

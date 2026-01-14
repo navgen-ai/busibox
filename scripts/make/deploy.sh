@@ -888,7 +888,7 @@ deployment_menu() {
 
 # Docker service selection submenu
 docker_select_service() {
-    local action="$1"  # "build", "start", "restart", "stop", "logs"
+    local action="$1"  # "build", "start", "restart", "stop", "logs", "status"
     local compose_file="${REPO_ROOT}/docker-compose.local.yml"
     local env_file="${REPO_ROOT}/.env.local"
     
@@ -900,6 +900,7 @@ docker_select_service() {
         menu "Select Service to ${action_title}" \
             "authz-api" \
             "ingest-api" \
+            "ingest-worker" \
             "search-api" \
             "agent-api" \
             "nginx" \
@@ -910,21 +911,22 @@ docker_select_service() {
             "milvus" \
             "Back"
         
-        read -p "$(echo -e "${BOLD}Select option [1-11]:${NC} ")" choice
+        read -p "$(echo -e "${BOLD}Select option [1-12]:${NC} ")" choice
         
         local service_name=""
         case $choice in
             1) service_name="authz-api" ;;
             2) service_name="ingest-api" ;;
-            3) service_name="search-api" ;;
-            4) service_name="agent-api" ;;
-            5) service_name="nginx" ;;
-            6) service_name="litellm" ;;
-            7) service_name="postgres" ;;
-            8) service_name="redis" ;;
-            9) service_name="minio" ;;
-            10) service_name="milvus" ;;
-            11) return 0 ;;
+            3) service_name="ingest-worker" ;;
+            4) service_name="search-api" ;;
+            5) service_name="agent-api" ;;
+            6) service_name="nginx" ;;
+            7) service_name="litellm" ;;
+            8) service_name="postgres" ;;
+            9) service_name="redis" ;;
+            10) service_name="minio" ;;
+            11) service_name="milvus" ;;
+            12) return 0 ;;
             *) error "Invalid selection"; continue ;;
         esac
         
@@ -954,112 +956,234 @@ docker_select_service() {
                 info "Showing logs for $service_name (press Ctrl+C to stop)..."
                 docker compose -f "$compose_file" logs -f "$service_name" || true
                 ;;
+            status)
+                info "Status for $service_name..."
+                docker compose -f "$compose_file" ps "$service_name"
+                ;;
         esac
         pause
     done
 }
 
-# Docker deployment menu
-docker_deploy_menu() {
+# Service group operations
+docker_service_group_menu() {
+    local group_name="$1"
+    local services="$2"
+    local compose_file="${REPO_ROOT}/docker-compose.local.yml"
+    local env_file="${REPO_ROOT}/.env.local"
+    
     while true; do
         echo ""
-        menu "Docker Deployment - Local Development" \
-            "Build All Services" \
-            "Build Specific Service" \
-            "Start All Services" \
-            "Start Specific Service" \
-            "Restart All Services" \
-            "Restart Specific Service" \
-            "Stop All Services" \
-            "Stop Specific Service" \
-            "View Service Status" \
-            "View All Logs" \
-            "View Service Logs" \
-            "Clean Up (remove containers & volumes)" \
-            "Exit"
+        menu "${group_name} Services" \
+            "Build" \
+            "Status" \
+            "Restart" \
+            "Start" \
+            "Stop" \
+            "Logs" \
+            "Back"
         
-        read -p "$(echo -e "${BOLD}Select option [1-13]:${NC} ")" choice
-        
-        local compose_file="${REPO_ROOT}/docker-compose.local.yml"
-        local env_file="${REPO_ROOT}/.env.local"
-        
-        # Create .env.local if it doesn't exist
-        if [[ ! -f "$env_file" ]] && [[ -f "${REPO_ROOT}/env.local.example" ]]; then
-            warn "Creating .env.local from env.local.example..."
-            cp "${REPO_ROOT}/env.local.example" "$env_file"
-        fi
+        read -p "$(echo -e "${BOLD}Select option [1-7]:${NC} ")" choice
         
         case $choice in
-            1)
-                header "Build All Docker Services" 70
+            1)  # Build
+                header "Build ${group_name} Services" 70
                 echo ""
-                info "Building all Docker images..."
+                info "Building: $services"
                 echo ""
-                docker compose -f "$compose_file" --env-file "$env_file" build
+                docker compose -f "$compose_file" --env-file "$env_file" build $services
                 echo ""
                 success "Build complete!"
                 pause
                 ;;
-            2)
-                docker_select_service "build"
-                ;;
-            3)
-                header "Start All Docker Services" 70
+            2)  # Status
+                header "${group_name} Services Status" 70
                 echo ""
-                info "Starting all Docker services..."
-                echo ""
-                docker compose -f "$compose_file" --env-file "$env_file" up -d
-                echo ""
-                success "Services started!"
-                echo ""
-                docker compose -f "$compose_file" ps
+                docker compose -f "$compose_file" ps $services
                 pause
                 ;;
-            4)
-                docker_select_service "start"
-                ;;
-            5)
-                header "Restart All Docker Services" 70
+            3)  # Restart
+                header "Restart ${group_name} Services" 70
                 echo ""
-                info "Restarting all Docker services..."
+                info "Restarting: $services"
                 echo ""
-                docker compose -f "$compose_file" --env-file "$env_file" restart
+                docker compose -f "$compose_file" --env-file "$env_file" restart $services
                 echo ""
                 success "Services restarted!"
                 pause
                 ;;
-            6)
-                docker_select_service "restart"
-                ;;
-            7)
-                header "Stop All Docker Services" 70
+            4)  # Start
+                header "Start ${group_name} Services" 70
                 echo ""
-                if confirm "Stop all Docker services?"; then
-                    docker compose -f "$compose_file" down
+                info "Starting: $services"
+                echo ""
+                docker compose -f "$compose_file" --env-file "$env_file" up -d $services
+                echo ""
+                success "Services started!"
+                pause
+                ;;
+            5)  # Stop
+                header "Stop ${group_name} Services" 70
+                echo ""
+                if confirm "Stop ${group_name} services?"; then
+                    docker compose -f "$compose_file" stop $services
                     success "Services stopped!"
                 fi
                 pause
                 ;;
-            8)
-                docker_select_service "stop"
-                ;;
-            9)
-                header "Docker Service Status" 70
+            6)  # Logs
+                header "${group_name} Services Logs" 70
                 echo ""
-                docker compose -f "$compose_file" ps
-                pause
-                ;;
-            10)
-                header "Docker Service Logs" 70
+                info "Showing logs (press Ctrl+C to stop)..."
                 echo ""
-                info "Showing all logs (press Ctrl+C to stop)..."
-                echo ""
-                docker compose -f "$compose_file" logs -f || true
+                docker compose -f "$compose_file" logs -f $services || true
                 ;;
-            11)
-                docker_select_service "logs"
+            7)  # Back
+                return 0
                 ;;
-            12)
+            *)
+                error "Invalid selection. Please enter 1-7."
+                ;;
+        esac
+    done
+}
+
+# Individual service operation menu
+docker_individual_service_menu() {
+    local compose_file="${REPO_ROOT}/docker-compose.local.yml"
+    local env_file="${REPO_ROOT}/.env.local"
+    
+    while true; do
+        echo ""
+        menu "Select Service" \
+            "authz-api" \
+            "ingest-api" \
+            "ingest-worker" \
+            "search-api" \
+            "agent-api" \
+            "nginx" \
+            "litellm" \
+            "postgres" \
+            "redis" \
+            "minio" \
+            "milvus" \
+            "Back"
+        
+        read -p "$(echo -e "${BOLD}Select option [1-12]:${NC} ")" choice
+        
+        local service_name=""
+        case $choice in
+            1) service_name="authz-api" ;;
+            2) service_name="ingest-api" ;;
+            3) service_name="ingest-worker" ;;
+            4) service_name="search-api" ;;
+            5) service_name="agent-api" ;;
+            6) service_name="nginx" ;;
+            7) service_name="litellm" ;;
+            8) service_name="postgres" ;;
+            9) service_name="redis" ;;
+            10) service_name="minio" ;;
+            11) service_name="milvus" ;;
+            12) return 0 ;;
+            *) error "Invalid selection"; continue ;;
+        esac
+        
+        # Service-specific operations menu
+        while true; do
+            echo ""
+            menu "${service_name} Operations" \
+                "Build" \
+                "Status" \
+                "Restart" \
+                "Start" \
+                "Stop" \
+                "Logs" \
+                "Back"
+            
+            read -p "$(echo -e "${BOLD}Select option [1-7]:${NC} ")" op_choice
+            
+            case $op_choice in
+                1)  # Build
+                    info "Building $service_name..."
+                    docker compose -f "$compose_file" --env-file "$env_file" build "$service_name"
+                    success "Build complete!"
+                    pause
+                    ;;
+                2)  # Status
+                    info "Status for $service_name..."
+                    docker compose -f "$compose_file" ps "$service_name"
+                    pause
+                    ;;
+                3)  # Restart
+                    info "Restarting $service_name..."
+                    docker compose -f "$compose_file" --env-file "$env_file" restart "$service_name"
+                    success "Service restarted!"
+                    pause
+                    ;;
+                4)  # Start
+                    info "Starting $service_name..."
+                    docker compose -f "$compose_file" --env-file "$env_file" up -d "$service_name"
+                    success "Service started!"
+                    pause
+                    ;;
+                5)  # Stop
+                    info "Stopping $service_name..."
+                    docker compose -f "$compose_file" --env-file "$env_file" stop "$service_name"
+                    success "Service stopped!"
+                    pause
+                    ;;
+                6)  # Logs
+                    info "Showing logs for $service_name (press Ctrl+C to stop)..."
+                    docker compose -f "$compose_file" logs -f "$service_name" || true
+                    ;;
+                7)  # Back
+                    break
+                    ;;
+                *)
+                    error "Invalid selection. Please enter 1-7."
+                    ;;
+            esac
+        done
+    done
+}
+
+# Docker deployment menu
+docker_deploy_menu() {
+    local compose_file="${REPO_ROOT}/docker-compose.local.yml"
+    local env_file="${REPO_ROOT}/.env.local"
+    
+    # Create .env.local if it doesn't exist
+    if [[ ! -f "$env_file" ]] && [[ -f "${REPO_ROOT}/env.local.example" ]]; then
+        warn "Creating .env.local from env.local.example..."
+        cp "${REPO_ROOT}/env.local.example" "$env_file"
+    fi
+    
+    while true; do
+        echo ""
+        menu "Docker Deployment - Local Development" \
+            "All Services" \
+            "All API Services (authz, ingest+worker, search, agent)" \
+            "All Data Services (postgres, redis, minio, milvus)" \
+            "Individual Services" \
+            "Clean Up (remove containers & volumes)" \
+            "Exit"
+        
+        read -p "$(echo -e "${BOLD}Select option [1-6]:${NC} ")" choice
+        
+        case $choice in
+            1)  # All Services
+                docker_service_group_menu "All" ""
+                ;;
+            2)  # All API Services
+                docker_service_group_menu "API" "authz-api ingest-api ingest-worker search-api agent-api"
+                ;;
+            3)  # All Data Services
+                docker_service_group_menu "Data" "postgres redis minio milvus"
+                ;;
+            4)  # Individual Services
+                docker_individual_service_menu
+                ;;
+            5)  # Clean Up
                 header "Clean Up Docker Environment" 70
                 echo ""
                 warn "This will remove all containers and volumes!"
@@ -1071,11 +1195,11 @@ docker_deploy_menu() {
                 fi
                 pause
                 ;;
-            13)
+            6)  # Exit
                 return 0
                 ;;
             *)
-                error "Invalid selection. Please enter 1-13."
+                error "Invalid selection. Please enter 1-6."
                 ;;
         esac
     done
