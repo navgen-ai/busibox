@@ -94,7 +94,7 @@ async def _ensure_bootstrap() -> None:
     # 2) bootstrap client (optional)
     if config.bootstrap_client_id and config.bootstrap_client_secret:
         existing = await _pg.get_oauth_client(config.bootstrap_client_id)
-        from oauth.client_auth import hash_client_secret
+        from oauth.client_auth import hash_client_secret, verify_client_secret
 
         desired_hash = hash_client_secret(config.bootstrap_client_secret)
         if not existing:
@@ -106,6 +106,16 @@ async def _ensure_bootstrap() -> None:
                 is_active=True,
             )
             logger.info("Bootstrapped authz OAuth client", client_id=config.bootstrap_client_id)
+        elif not verify_client_secret(config.bootstrap_client_secret, existing.get("client_secret_hash", "")):
+            # Client exists but secret has changed - update it
+            await _pg.upsert_oauth_client(
+                client_id=config.bootstrap_client_id,
+                client_secret_hash=desired_hash,
+                allowed_audiences=config.bootstrap_client_allowed_audiences,
+                allowed_scopes=config.bootstrap_client_allowed_scopes,
+                is_active=True,
+            )
+            logger.info("Updated bootstrap OAuth client secret", client_id=config.bootstrap_client_id)
     
     # 3) bootstrap essential roles
     await _ensure_bootstrap_roles()
