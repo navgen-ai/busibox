@@ -24,6 +24,9 @@ class Config:
 
         # Default token TTL for internal access tokens minted by authz (seconds).
         self.access_token_ttl = int(os.getenv("AUTHZ_ACCESS_TOKEN_TTL", os.getenv("AUTHZ_TOKEN_TTL", "900")))
+        
+        # Session JWT TTL (default 7 days = 604800 seconds)
+        self.session_token_ttl = int(os.getenv("AUTHZ_SESSION_TOKEN_TTL", "604800"))
 
         # JWKS / signing configuration (asymmetric; published via /.well-known/jwks.json)
         self.signing_alg = os.getenv("AUTHZ_SIGNING_ALG", "RS256")

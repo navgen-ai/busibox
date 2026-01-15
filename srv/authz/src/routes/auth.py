@@ -7,6 +7,11 @@ These endpoints manage:
 - TOTP codes (create, verify)
 - Passkeys (WebAuthn - challenge, register, authenticate)
 
+Session tokens are RS256-signed JWTs that can be:
+1. Validated cryptographically (no DB lookup required for basic validation)
+2. Used as subject_token for OAuth2 token exchange (RFC 8693)
+3. Revoked via JTI tracking in authz_sessions table
+
 Most endpoints require either:
 - OAuth client credentials (client_id/client_secret), OR
 - Admin token (for management operations)
@@ -14,14 +19,18 @@ Most endpoints require either:
 
 from __future__ import annotations
 
+import time
+import uuid as uuid_module
 from typing import List, Optional
 from uuid import UUID
 
+import jwt
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from config import Config
 from oauth.client_auth import verify_client_secret
+from oauth.keys import load_private_key
 
 router = APIRouter()
 config = Config()
@@ -34,6 +43,46 @@ def set_pg_service(pg_service):
     """Set the shared PostgresService instance."""
     global pg
     pg = pg_service
+
+
+# ============================================================================
+# Session JWT Signing
+# ============================================================================
+
+
+async def _sign_session_jwt(user_id: str, email: str, session_id: str) -> tuple[str, int]:
+    """
+    Sign a session JWT for a user.
+    
+    Returns (jwt_string, expires_at_timestamp)
+    """
+    await pg.connect()
+    row = await pg.get_active_signing_key()
+    if not row:
+        raise RuntimeError("no active signing key configured")
+    
+    kid = row["kid"]
+    alg = row["alg"]
+    private_pem = row["private_key_pem"]
+    key_obj = load_private_key(private_pem, config.key_encryption_passphrase)
+    
+    now = int(time.time())
+    exp = now + config.session_token_ttl
+    
+    claims = {
+        "iss": config.issuer,
+        "sub": user_id,
+        "aud": "ai-portal",  # Session tokens are for ai-portal
+        "exp": exp,
+        "iat": now,
+        "nbf": now,
+        "jti": session_id,  # Use session ID as JTI for revocation tracking
+        "typ": "session",
+        "email": email,
+    }
+    
+    token = jwt.encode(claims, key_obj, algorithm=alg, headers={"kid": kid, "typ": "JWT"})
+    return token, exp
 
 
 # ============================================================================
@@ -149,6 +198,12 @@ def _format_datetime(dt) -> str:
     if dt is None:
         return ""
     return dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
+
+
+def _format_datetime_from_timestamp(ts: int) -> str:
+    """Format a Unix timestamp as ISO datetime string."""
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
 # ============================================================================
@@ -370,7 +425,7 @@ async def use_magic_link(request: Request, token: str):
     - Sets email_verified_at
     - Creates a new session
     
-    Returns the user and session.
+    Returns the user and a signed session JWT.
     """
     await _require_client_auth(request)
 
@@ -385,6 +440,13 @@ async def use_magic_link(request: Request, token: str):
 
     user = result["user"]
     session = result["session"]
+    
+    # Sign a session JWT
+    session_jwt, expires_at = await _sign_session_jwt(
+        user_id=user["user_id"],
+        email=user["email"],
+        session_id=session["session_id"],
+    )
 
     return {
         "user": {
@@ -398,8 +460,9 @@ async def use_magic_link(request: Request, token: str):
             ],
         },
         "session": {
-            "token": session["token"],
-            "expires_at": _format_datetime(session["expires_at"]),
+            "token": session_jwt,
+            "expires_at": _format_datetime_from_timestamp(expires_at),
+            "token_type": "Bearer",
         },
     }
 
@@ -468,7 +531,7 @@ async def verify_totp_code(request: Request):
     If valid:
     - Marks the code as used
     - Creates a new session
-    - Returns user and session
+    - Returns user and signed session JWT
     """
     await _require_client_auth(request)
 
@@ -489,6 +552,13 @@ async def verify_totp_code(request: Request):
 
     user = result["user"]
     session = result["session"]
+    
+    # Sign a session JWT
+    session_jwt, expires_at = await _sign_session_jwt(
+        user_id=user["user_id"],
+        email=user["email"],
+        session_id=session["session_id"],
+    )
 
     return {
         "user": {
@@ -501,8 +571,9 @@ async def verify_totp_code(request: Request):
             ],
         },
         "session": {
-            "token": session["token"],
-            "expires_at": _format_datetime(session["expires_at"]),
+            "token": session_jwt,
+            "expires_at": _format_datetime_from_timestamp(expires_at),
+            "token_type": "Bearer",
         },
     }
 
@@ -716,7 +787,7 @@ async def authenticate_with_passkey(request: Request):
     1. Verifies the counter is greater than stored (replay protection)
     2. Updates the counter
     3. Creates a session
-    4. Returns user and session
+    4. Returns user and signed session JWT
     
     Body:
     - client_id, client_secret (OAuth client auth)
@@ -745,6 +816,13 @@ async def authenticate_with_passkey(request: Request):
 
     user = result["user"]
     session = result["session"]
+    
+    # Sign a session JWT
+    session_jwt, expires_at = await _sign_session_jwt(
+        user_id=user["user_id"],
+        email=user["email"],
+        session_id=session["session_id"],
+    )
 
     return {
         "user": {
@@ -757,8 +835,9 @@ async def authenticate_with_passkey(request: Request):
             ],
         },
         "session": {
-            "token": session["token"],
-            "expires_at": _format_datetime(session["expires_at"]),
+            "token": session_jwt,
+            "expires_at": _format_datetime_from_timestamp(expires_at),
+            "token_type": "Bearer",
         },
     }
 
