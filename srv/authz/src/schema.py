@@ -242,6 +242,18 @@ def get_authz_schema() -> SchemaManager:
     """)
     
     schema.add_table("""
+        CREATE TABLE IF NOT EXISTS authz_totp_secrets (
+            id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id uuid NOT NULL REFERENCES authz_users(user_id) ON DELETE CASCADE,
+            encrypted_secret bytea NOT NULL,
+            is_verified boolean NOT NULL DEFAULT false,
+            is_active boolean NOT NULL DEFAULT true,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            verified_at timestamptz NULL
+        )
+    """)
+    
+    schema.add_table("""
         CREATE TABLE IF NOT EXISTS authz_delegation_tokens (
             jti uuid PRIMARY KEY DEFAULT gen_random_uuid(),
             user_id uuid NOT NULL REFERENCES authz_users(user_id) ON DELETE CASCADE,
@@ -298,6 +310,9 @@ def get_authz_schema() -> SchemaManager:
     schema.add_index("CREATE INDEX IF NOT EXISTS idx_authz_totp_codes_user_id ON authz_totp_codes(user_id)")
     schema.add_index("CREATE INDEX IF NOT EXISTS idx_authz_totp_codes_email_code ON authz_totp_codes(email, code_hash)")
     schema.add_index("CREATE INDEX IF NOT EXISTS idx_authz_totp_codes_expires_at ON authz_totp_codes(expires_at)")
+    
+    # TOTP secrets
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_authz_totp_secrets_user_id ON authz_totp_secrets(user_id)")
     
     # Passkeys
     schema.add_index("CREATE INDEX IF NOT EXISTS idx_authz_passkeys_user_id ON authz_passkeys(user_id)")
