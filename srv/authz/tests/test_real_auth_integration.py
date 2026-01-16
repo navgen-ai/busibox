@@ -178,9 +178,13 @@ async def clean_test_data(db_pool):
             await conn.execute(
                 "DELETE FROM authz_roles WHERE name LIKE 'TestRole_%'"
             )
-            # Clean up test email domains
+            # Clean up test email domains (except test.example.com and busibox.local which are required)
             await conn.execute(
-                "DELETE FROM authz_email_domain_config WHERE domain LIKE 'test.%'"
+                """
+                DELETE FROM authz_email_domain_config 
+                WHERE domain LIKE 'test.%' 
+                AND domain NOT IN ('test.example.com', 'busibox.local')
+                """
             )
     
     await cleanup()
@@ -2224,6 +2228,7 @@ class TestAdminRoleEndpoints:
         """Test deleting a role."""
         # Create a role first
         role_id = str(uuid.uuid4())
+        role_name = f"TestRole_delete_{role_id[:8]}"
         async with db_pool.acquire() as conn:
             await conn.execute(
                 """
@@ -2231,7 +2236,7 @@ class TestAdminRoleEndpoints:
                 VALUES ($1, $2, $3)
                 """,
                 uuid.UUID(role_id),
-                "role-to-delete",
+                role_name,
                 "Will be deleted",
             )
         

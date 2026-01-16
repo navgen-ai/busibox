@@ -62,7 +62,27 @@ verify_ansible_connectivity() {
         return 1
     fi
     
-    if echo "$output" | grep -q "ERROR!"; then
+    # Check for undefined variable errors (common vault issue)
+    if echo "$output" | grep -q "is undefined"; then
+        local undefined_var=$(echo "$output" | grep -oE "'[a-z_]+' is undefined" | head -1 | grep -oE "'[^']+'" | tr -d "'")
+        echo ""
+        error "Ansible variable not defined: $undefined_var"
+        echo ""
+        warn "This variable should be defined in your vault file."
+        info "Check: inventory/${inv}/group_vars/all/vault.yml"
+        info "Or: roles/secrets/vars/vault.yml"
+        echo ""
+        info "Expected variables for staging environment:"
+        echo "  - network_base_octets_staging (e.g., '10.96.201')"
+        echo "  - network_base_octets_production (e.g., '10.96.200')"
+        echo "  - base_domain (e.g., 'example.com')"
+        echo "  - secrets.postgresql.password"
+        echo "  - secrets.minio.root_user/root_password"
+        echo "  - etc."
+        echo ""
+        cd "${REPO_ROOT}"
+        # Don't return error - let verification continue to check other things
+    elif echo "$output" | grep -q "ERROR!"; then
         # Show the error but continue
         echo "$output" | grep -A2 "ERROR!" | head -5
         warn "Ansible reported errors (see above)"
@@ -70,13 +90,23 @@ verify_ansible_connectivity() {
         echo "$output"
     fi
     
-    local success_count=$(echo "$output" | grep -c "SUCCESS" || echo "0")
-    local unreachable_count=$(echo "$output" | grep -c "UNREACHABLE" || echo "0")
+    # Count successes and failures (grep -c returns count, but may fail if no matches)
+    local success_count=0
+    local unreachable_count=0
+    success_count=$(echo "$output" | grep -c "SUCCESS" 2>/dev/null || true)
+    unreachable_count=$(echo "$output" | grep -c "UNREACHABLE" 2>/dev/null || true)
+    
+    # Ensure we have integers
+    success_count="${success_count:-0}"
+    unreachable_count="${unreachable_count:-0}"
+    # Remove any whitespace/newlines
+    success_count=$(echo "$success_count" | tr -d '[:space:]')
+    unreachable_count=$(echo "$unreachable_count" | tr -d '[:space:]')
     
     echo ""
-    if [ "$unreachable_count" -gt 0 ]; then
+    if [[ "$unreachable_count" -gt 0 ]]; then
         warn "$success_count host(s) reachable, $unreachable_count host(s) unreachable"
-    elif [ "$success_count" -gt 0 ]; then
+    elif [[ "$success_count" -gt 0 ]]; then
         success "All $success_count host(s) reachable"
     else
         warn "No hosts responded"
@@ -433,56 +463,98 @@ container_configuration() {
 # ========================================================================
 
 app_configuration() {
+    # Check if we're on Proxmox without local app repos
+    local AI_PORTAL_DIR="${AI_PORTAL_DIR:-$(cd "${REPO_ROOT}/../ai-portal" 2>/dev/null && pwd || echo "")}"
+    local has_local_repos=true
+    
+    if [[ -z "$AI_PORTAL_DIR" ]] || [[ ! -d "$AI_PORTAL_DIR" ]]; then
+        has_local_repos=false
+    fi
+    
     while true; do
         echo ""
-        menu "App Configuration" \
-            "Run All App Setup (recommended)" \
-            "Activate Admin User" \
-            "Fix Built-in Apps (Video, Chat, Documents)" \
-            "Register AuthZ Clients" \
-            "Back"
         
-        local choice=""
-        read -p "$(echo -e "${BOLD}Select option [1-5]:${NC} ")" choice
-        
-        case "${choice:-}" in
-            1)
-                header "Full App Configuration" 70
-                info "This will:"
-                echo "  1. Activate the admin user"
-                echo "  2. Fix built-in apps"
-                echo "  3. Register AuthZ clients"
-                echo ""
-                if confirm "Run full app configuration?"; then
-                    bash "${REPO_ROOT}/scripts/setup/configure-apps.sh" --all || error "Failed"
-                fi
-                pause
-                ;;
-            2)
-                header "Activate Admin User" 70
-                if confirm "Activate admin user?"; then
-                    bash "${REPO_ROOT}/scripts/setup/configure-apps.sh" --admin || error "Failed"
-                fi
-                pause
-                ;;
-            3)
-                header "Fix Built-in Apps" 70
-                if confirm "Fix built-in apps?"; then
-                    bash "${REPO_ROOT}/scripts/setup/configure-apps.sh" --apps || error "Failed"
-                fi
-                pause
-                ;;
-            4)
-                header "Register AuthZ Clients" 70
-                if confirm "Register AuthZ clients?"; then
-                    bash "${REPO_ROOT}/scripts/setup/configure-apps.sh" --authz || error "Failed"
-                fi
-                pause
-                ;;
-            5|b|B|"")
-                return 0
-                ;;
-        esac
+        if [[ "$has_local_repos" == "false" ]]; then
+            warn "ai-portal directory not found locally"
+            info "On Proxmox, app configuration must be run from the apps container"
+            echo ""
+            echo "To configure apps, SSH to the apps container and run:"
+            echo "  ${CYAN}cd /srv/apps/ai-portal && npx tsx scripts/activate-user.ts${NC}"
+            echo "  ${CYAN}cd /srv/apps/ai-portal && npx tsx scripts/fix-builtin-apps.ts${NC}"
+            echo ""
+            echo "Or set AI_PORTAL_DIR environment variable if ai-portal is elsewhere."
+            echo ""
+            
+            menu "App Configuration (Limited - No Local Repos)" \
+                "Register AuthZ Clients (works without local repos)" \
+                "Back"
+            
+            local choice=""
+            read -p "$(echo -e "${BOLD}Select option [1-2]:${NC} ")" choice
+            
+            case "${choice:-}" in
+                1)
+                    header "Register AuthZ Clients" 70
+                    if confirm "Register AuthZ clients?"; then
+                        # Register clients even without local repos
+                        bash "${REPO_ROOT}/scripts/setup/configure-apps.sh" --authz 2>&1 || warn "Some steps may have failed (expected without local repos)"
+                    fi
+                    pause
+                    ;;
+                2|b|B|"")
+                    return 0
+                    ;;
+            esac
+        else
+            menu "App Configuration" \
+                "Run All App Setup (recommended)" \
+                "Activate Admin User" \
+                "Fix Built-in Apps (Video, Chat, Documents)" \
+                "Register AuthZ Clients" \
+                "Back"
+            
+            local choice=""
+            read -p "$(echo -e "${BOLD}Select option [1-5]:${NC} ")" choice
+            
+            case "${choice:-}" in
+                1)
+                    header "Full App Configuration" 70
+                    info "This will:"
+                    echo "  1. Activate the admin user"
+                    echo "  2. Fix built-in apps"
+                    echo "  3. Register AuthZ clients"
+                    echo ""
+                    if confirm "Run full app configuration?"; then
+                        bash "${REPO_ROOT}/scripts/setup/configure-apps.sh" --all || error "Failed"
+                    fi
+                    pause
+                    ;;
+                2)
+                    header "Activate Admin User" 70
+                    if confirm "Activate admin user?"; then
+                        bash "${REPO_ROOT}/scripts/setup/configure-apps.sh" --admin || error "Failed"
+                    fi
+                    pause
+                    ;;
+                3)
+                    header "Fix Built-in Apps" 70
+                    if confirm "Fix built-in apps?"; then
+                        bash "${REPO_ROOT}/scripts/setup/configure-apps.sh" --apps || error "Failed"
+                    fi
+                    pause
+                    ;;
+                4)
+                    header "Register AuthZ Clients" 70
+                    if confirm "Register AuthZ clients?"; then
+                        bash "${REPO_ROOT}/scripts/setup/configure-apps.sh" --authz || error "Failed"
+                    fi
+                    pause
+                    ;;
+                5|b|B|"")
+                    return 0
+                    ;;
+            esac
+        fi
     done
 }
 

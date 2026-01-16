@@ -22,7 +22,7 @@ node_env: development  # For Node.js applications
 # Network Configuration - Test
 # ============================================================================
 # Base IP from vault (deployment-specific)
-network_base_octets: "{{ network_base_octets_test }}"
+network_base_octets: "{{ network_base_octets_staging }}"
 internal_network: "{{ network_base_octets }}.0/21"
 internal_gateway: "{{ network_base_octets }}.1"
 
