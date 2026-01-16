@@ -196,6 +196,25 @@ def get_ingest_schema() -> SchemaManager:
         )
     """)
     
+    # Processing strategy results table
+    schema.add_table("""
+        CREATE TABLE IF NOT EXISTS processing_strategy_results (
+            result_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            file_id UUID NOT NULL REFERENCES ingestion_files(file_id) ON DELETE CASCADE,
+            processing_strategy VARCHAR(50) NOT NULL,
+            success BOOLEAN NOT NULL DEFAULT false,
+            text_length INTEGER,
+            chunk_count INTEGER,
+            embedding_count INTEGER,
+            visual_embedding_count INTEGER,
+            processing_time_seconds NUMERIC(10,3),
+            error_message TEXT,
+            metadata JSONB DEFAULT '{}',
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(file_id, processing_strategy)
+        )
+    """)
+    
     # ==========================================================================
     # Indexes
     # ==========================================================================
@@ -229,6 +248,10 @@ def get_ingest_schema() -> SchemaManager:
     # processing_history indexes
     schema.add_index("CREATE INDEX IF NOT EXISTS idx_processing_history_file_id ON processing_history(file_id)")
     schema.add_index("CREATE INDEX IF NOT EXISTS idx_processing_history_stage ON processing_history(stage)")
+    
+    # processing_strategy_results indexes
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_strategy_results_file ON processing_strategy_results(file_id)")
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_strategy_results_strategy ON processing_strategy_results(processing_strategy)")
     
     # ==========================================================================
     # Migrations (Backfill and column additions)
