@@ -3,11 +3,28 @@ import sys
 import importlib
 import pytest
 
+# Add shared testing library to path (deployed to ../src/testing/ relative to tests/)
+# When deployed: /srv/authz/app/src/testing/
+# When local: srv/authz/src/testing/
+_authz_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Go up from tests/ to authz/
+_testing_path = os.path.join(_authz_root, "src", "testing")
+_has_shared_testing = False
+
+if os.path.exists(_testing_path):
+    if _testing_path not in sys.path:
+        sys.path.insert(0, _testing_path)
+    _has_shared_testing = True
+else:
+    # Fallback: try parent directory (for local dev)
+    _testing_path_alt = os.path.join(os.path.dirname(_authz_root), "shared", "testing")
+    if os.path.exists(_testing_path_alt):
+        if _testing_path_alt not in sys.path:
+            sys.path.insert(0, _testing_path_alt)
+        _has_shared_testing = True
+
 # Enable pytest plugin for failed test filter generation (if available)
-try:
+if _has_shared_testing:
     pytest_plugins = ["testing.pytest_failed_filter"]
-except ImportError:
-    pass  # Plugin not available in authz (no shared testing lib)
 
 
 @pytest.fixture(autouse=True)

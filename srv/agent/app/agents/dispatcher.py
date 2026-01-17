@@ -8,7 +8,7 @@ based on query content, user permissions, and available resources.
 import os
 
 from pydantic_ai import Agent
-from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.models.openai import OpenAIChatModel
 
 from app.config.settings import get_settings
 from app.schemas.dispatcher import RoutingDecision
@@ -69,7 +69,7 @@ _ensure_dispatcher_env()
 
 # Create OpenAI-compatible model using LiteLLM
 # Use "fast" purpose for quick dispatcher routing decisions
-model = OpenAIModel(
+model = OpenAIChatModel(
     model_name="fast",  # LiteLLM routes to fast model (phi-4)
     provider="openai",
 )

@@ -385,6 +385,7 @@ class TestTextExtractorWithSplitting:
 # Large PDF Processing Tests
 # ============================================================================
 
+@pytest.mark.slow
 class TestLargePDFProcessing:
     """Test processing of large PDFs with splitting."""
     
@@ -446,12 +447,18 @@ class TestLargePDFProcessing:
                 print(f"✗ {r['description']}: {r.get('error', 'Unknown error')}")
         
         print("=" * 80)
+        skipped_count = len([r for r in results if r['status'] == 'SKIPPED'])
+        failed_count = len([r for r in results if r['status'] == 'FAILED'])
         print(f"Total: {len(results)}, Success: {success_count}, "
-              f"Skipped: {len([r for r in results if r['status'] == 'SKIPPED'])}, "
-              f"Failed: {len([r for r in results if r['status'] == 'FAILED'])}")
+              f"Skipped: {skipped_count}, "
+              f"Failed: {failed_count}")
         print("=" * 80)
         
-        # At least some PDFs should be processed
+        # Skip test if all PDFs are missing (test docs not available)
+        if skipped_count == len(results):
+            pytest.skip("No test PDFs found - busibox-testdocs repository not available")
+        
+        # At least some PDFs should be processed if any are available
         assert success_count > 0, "At least some PDFs should be processed successfully"
     
     def test_very_large_pdf_memory_stability(

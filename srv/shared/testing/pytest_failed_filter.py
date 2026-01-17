@@ -15,6 +15,9 @@ Usage:
 import pytest
 from pathlib import Path
 
+# Module-level storage for failed tests (works across pytest versions)
+_failed_tests = []
+
 
 def pytest_addoption(parser):
     """Add command line options."""
@@ -28,24 +31,27 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     """Configure plugin."""
-    config.failed_tests = []
+    global _failed_tests
+    _failed_tests = []
+    config.failed_tests = _failed_tests
     config.addinivalue_line("markers", "failed_filter: mark test for failure tracking")
 
 
 def pytest_runtest_logreport(report):
     """Capture failed test names."""
     if report.failed and report.when == "call":
-        config = report.config
-        if hasattr(config, 'failed_tests'):
-            config.failed_tests.append(report.nodeid)
+        global _failed_tests
+        _failed_tests.append(report.nodeid)
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """Print failed test filter at the end."""
-    if not hasattr(config, 'failed_tests') or not config.failed_tests:
-        return
+    global _failed_tests
     
-    failed_tests = config.failed_tests
+    # Use module-level variable (more reliable across pytest versions)
+    failed_tests = _failed_tests
+    if not failed_tests:
+        return
     
     if failed_tests:
         terminalreporter.write_sep("=", "Failed Test Rerun Filter", bold=True, yellow=True)

@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,22 +19,11 @@ setup_tracing(settings)
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title=settings.app_name, debug=settings.debug)
 
-# Instrument FastAPI with OpenTelemetry
-instrument_fastapi(app)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.on_event("startup")
-async def startup_event() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup/shutdown events."""
+    # Startup
     # Note: Schema migrations are handled by Alembic (runs before uvicorn starts)
     # We only use create_all for tables not managed by migrations (if any)
     # Skip create_all since Alembic manages all tables
@@ -49,6 +39,25 @@ async def startup_event() -> None:
     }
     init_insights_service(insights_config)
     logger.info("Insights service initialized")
+    
+    yield
+    
+    # Shutdown (if needed in the future)
+    logger.info("Application shutting down")
+
+
+app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
+
+# Instrument FastAPI with OpenTelemetry
+instrument_fastapi(app)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 app.include_router(health.router)

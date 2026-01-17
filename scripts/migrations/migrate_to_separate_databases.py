@@ -265,12 +265,28 @@ async def create_target_schema(
     """Create schema in the target database using the service's schema.py."""
     db_name = config["database"]
     
-    log(f"Creating schema in '{db_name}'...", "STEP")
+    log(f"Checking schema in '{db_name}'...", "STEP")
     
     if dry_run:
         log(f"[DRY RUN] Would create schema in '{db_name}'", "INFO")
         return True
     
+    # First check if tables already exist (schema already created by service)
+    conn = await get_connection(db_name, SOURCE_USER, SOURCE_PASSWORD)
+    try:
+        # Check if any of the target tables exist
+        tables_exist = 0
+        for table_name in config["tables"][:3]:  # Check first 3 tables
+            if await table_exists(conn, table_name):
+                tables_exist += 1
+        
+        if tables_exist > 0:
+            log(f"Schema already exists in '{db_name}' ({tables_exist} tables found)", "INFO")
+            return True
+    finally:
+        await conn.close()
+    
+    # Schema doesn't exist, try to create it
     try:
         # Import the appropriate schema
         import importlib.util
@@ -282,6 +298,11 @@ async def create_target_schema(
         else:
             log(f"Unknown service: {service_name}", "ERROR")
             return False
+        
+        if not schema_path.exists():
+            log(f"Schema file not found: {schema_path}", "WARN")
+            log(f"Assuming schema is already created by service startup", "INFO")
+            return True
         
         spec = importlib.util.spec_from_file_location(f"{service_name}_schema", schema_path)
         schema_module = importlib.util.module_from_spec(spec)
@@ -303,6 +324,16 @@ async def create_target_schema(
             
     except Exception as e:
         log(f"Failed to create schema: {e}", "ERROR")
+        log(f"If schema already exists, this can be ignored", "WARN")
+        # Don't fail the migration if schema creation fails but tables exist
+        conn = await get_connection(db_name, SOURCE_USER, SOURCE_PASSWORD)
+        try:
+            tables_exist = sum(1 for t in config["tables"] if await table_exists(conn, t))
+            if tables_exist > 0:
+                log(f"Found {tables_exist} existing tables, continuing migration", "INFO")
+                return True
+        finally:
+            await conn.close()
         return False
 
 

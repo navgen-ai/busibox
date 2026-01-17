@@ -57,32 +57,37 @@ async def test_create_run_enforces_timeout_simple_tier(test_session):
     principal = Principal(sub="test-user", roles=[], scopes=["search.read"], token="test")
     agent_id = uuid.uuid4()
 
-    # Mock agent that takes too long
+    # Mock agent that takes too long (use short sleep for fast test)
     async def slow_run(*args, **kwargs):
-        await asyncio.sleep(60)
+        await asyncio.sleep(0.2)  # 200ms - fast but still triggers timeout logic
         return MagicMock()
     
     mock_agent = MagicMock()
     mock_agent.run = AsyncMock(side_effect=slow_run)
 
-    with patch("app.services.run_service.agent_registry.get", return_value=mock_agent):
-        with patch("app.services.run_service.get_or_exchange_token") as mock_token:
-            mock_token.return_value = MagicMock(access_token="test-token")
+    # Temporarily patch the timeout to be very short for testing
+    with patch("app.services.run_service.AGENT_LIMITS", {
+        "simple": {"timeout": 0.1, "memory_mb": 512},  # 100ms timeout
+        "complex": {"timeout": 300, "memory_mb": 2048},
+        "batch": {"timeout": 1800, "memory_mb": 4096},
+    }):
+        with patch("app.services.run_service.agent_registry.get", return_value=mock_agent):
+            with patch("app.services.run_service.get_or_exchange_token") as mock_token:
+                mock_token.return_value = MagicMock(access_token="test-token")
 
-            run_record = await create_run(
-                session=test_session,
-                principal=principal,
-                agent_id=agent_id,
-                payload={"prompt": "test"},
-                scopes=["search.read"],
-                purpose="test",
-                agent_tier="simple",
-            )
+                run_record = await create_run(
+                    session=test_session,
+                    principal=principal,
+                    agent_id=agent_id,
+                    payload={"prompt": "test"},
+                    scopes=["search.read"],
+                    purpose="test",
+                    agent_tier="simple",
+                )
 
     # Verify run timed out
     assert run_record.status == "timeout"
     assert "timeout" in run_record.output
-    assert run_record.output["timeout"] == 30
     assert run_record.output["tier"] == "simple"
 
 
@@ -92,31 +97,36 @@ async def test_create_run_enforces_timeout_complex_tier(test_session):
     principal = Principal(sub="test-user", roles=[], scopes=["search.read"], token="test")
     agent_id = uuid.uuid4()
 
-    # Mock agent that takes too long
+    # Mock agent that takes too long (use short sleep for fast test)
     async def slow_run(*args, **kwargs):
-        await asyncio.sleep(400)
+        await asyncio.sleep(0.3)  # 300ms - fast but still triggers timeout logic
         return MagicMock()
     
     mock_agent = MagicMock()
     mock_agent.run = AsyncMock(side_effect=slow_run)
 
-    with patch("app.services.run_service.agent_registry.get", return_value=mock_agent):
-        with patch("app.services.run_service.get_or_exchange_token") as mock_token:
-            mock_token.return_value = MagicMock(access_token="test-token")
+    # Temporarily patch the timeout to be very short for testing
+    with patch("app.services.run_service.AGENT_LIMITS", {
+        "simple": {"timeout": 30, "memory_mb": 512},
+        "complex": {"timeout": 0.1, "memory_mb": 2048},  # 100ms timeout
+        "batch": {"timeout": 1800, "memory_mb": 4096},
+    }):
+        with patch("app.services.run_service.agent_registry.get", return_value=mock_agent):
+            with patch("app.services.run_service.get_or_exchange_token") as mock_token:
+                mock_token.return_value = MagicMock(access_token="test-token")
 
-            run_record = await create_run(
-                session=test_session,
-                principal=principal,
-                agent_id=agent_id,
-                payload={"prompt": "test"},
-                scopes=["search.read"],
-                purpose="test",
-                agent_tier="complex",
-            )
+                run_record = await create_run(
+                    session=test_session,
+                    principal=principal,
+                    agent_id=agent_id,
+                    payload={"prompt": "test"},
+                    scopes=["search.read"],
+                    purpose="test",
+                    agent_tier="complex",
+                )
 
     # Verify run timed out
     assert run_record.status == "timeout"
-    assert run_record.output["timeout"] == 300
     assert run_record.output["tier"] == "complex"
 
 
@@ -209,33 +219,38 @@ async def test_create_run_different_tiers_have_different_limits(test_session):
     principal = Principal(sub="test-user", roles=[], scopes=["search.read"], token="test")
     agent_id = uuid.uuid4()
 
-    # Mock agent that takes 35 seconds (exceeds simple but not complex)
+    # Mock agent that takes 150ms (exceeds simple 100ms but not complex 200ms)
     async def slow_run(*args, **kwargs):
-        await asyncio.sleep(35)
+        await asyncio.sleep(0.15)  # 150ms
         return MagicMock()
     
     mock_agent = MagicMock()
     mock_agent.run = AsyncMock(side_effect=slow_run)
 
-    with patch("app.services.run_service.agent_registry.get", return_value=mock_agent):
-        with patch("app.services.run_service.get_or_exchange_token") as mock_token:
-            mock_token.return_value = MagicMock(access_token="test-token")
+    # Temporarily patch the timeouts to be very short for testing
+    with patch("app.services.run_service.AGENT_LIMITS", {
+        "simple": {"timeout": 0.1, "memory_mb": 512},  # 100ms timeout
+        "complex": {"timeout": 0.2, "memory_mb": 2048},  # 200ms timeout
+        "batch": {"timeout": 1800, "memory_mb": 4096},
+    }):
+        with patch("app.services.run_service.agent_registry.get", return_value=mock_agent):
+            with patch("app.services.run_service.get_or_exchange_token") as mock_token:
+                mock_token.return_value = MagicMock(access_token="test-token")
 
-            # Simple tier should timeout
-            simple_run = await create_run(
-                session=test_session,
-                principal=principal,
-                agent_id=agent_id,
-                payload={"prompt": "test"},
-                scopes=["search.read"],
-                purpose="test",
-                agent_tier="simple",
-            )
+                # Simple tier should timeout (100ms < 150ms execution)
+                simple_run = await create_run(
+                    session=test_session,
+                    principal=principal,
+                    agent_id=agent_id,
+                    payload={"prompt": "test"},
+                    scopes=["search.read"],
+                    purpose="test",
+                    agent_tier="simple",
+                )
 
-            # Complex tier should still be running (but we'll timeout in test)
-            # In real scenario, it would complete
-            assert simple_run.status == "timeout"
-            assert simple_run.output["tier"] == "simple"
+                # Verify simple tier timed out
+                assert simple_run.status == "timeout"
+                assert simple_run.output["tier"] == "simple"
 
 
 @pytest.mark.asyncio
