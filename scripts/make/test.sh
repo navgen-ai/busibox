@@ -17,8 +17,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 ANSIBLE_DIR="${REPO_ROOT}/provision/ansible"
 
-# Source UI library
+# Source libraries
 source "${REPO_ROOT}/scripts/lib/ui.sh"
+source "${REPO_ROOT}/scripts/lib/state.sh"
 
 # Detect vault password method (shared with deploy script)
 get_vault_flags() {
@@ -1222,11 +1223,13 @@ run_container_tests() {
             # Run tests via SSH
             if ssh "root@${authz_ip}" "cd /srv/authz/app && source ../venv/bin/activate && export PYTHONPATH=/srv/authz/app/src && source /srv/authz/.env && export ${test_env} && python -m pytest tests/ -v --tb=short"; then
                 success "Authz tests passed!"
+                save_test_result "authz" "passed"
             else
                 error "Authz tests failed"
                 echo ""
                 warn "To rerun failed tests, check output above for pytest filter"
                 echo ""
+                save_test_result "authz" "failed"
                 # Don't exit - continue to show summary
                 return 1
             fi
@@ -1280,11 +1283,13 @@ run_container_tests() {
             # Run tests with wrapper that captures failures
             if ssh "root@${ingest_ip}" "cd /srv/ingest && source venv/bin/activate && export PYTHONPATH=/srv/ingest/src && source .env && export ${test_env} && python -m pytest tests/ -v --tb=short ${pytest_args}"; then
                 success "Ingest tests passed!"
+                save_test_result "ingest" "passed"
             else
                 error "Ingest tests failed"
                 echo ""
                 warn "To rerun failed tests, check output above for pytest filter"
                 echo ""
+                save_test_result "ingest" "failed"
                 # Don't exit - continue to show summary
                 return 1
             fi
@@ -1327,11 +1332,13 @@ run_container_tests() {
             # Search service is deployed to /opt/search on milvus container
             if ssh "root@${search_ip}" "cd /opt/search && source venv/bin/activate && export PYTHONPATH=/opt/search/src && source .env && export ${test_env} && python -m pytest tests/ -v --tb=short ${pytest_args}"; then
                 success "Search tests passed!"
+                save_test_result "search" "passed"
             else
                 error "Search tests failed"
                 echo ""
                 warn "To rerun failed tests, check output above for pytest filter"
                 echo ""
+                save_test_result "search" "failed"
                 # Don't exit - continue to show summary
                 return 1
             fi
@@ -1378,11 +1385,13 @@ run_container_tests() {
             # Agent uses .venv not venv
             if ssh "root@${agent_ip}" "cd /srv/agent && source .venv/bin/activate && source .env && export ${test_env} && python -m pytest tests/ -v --tb=short ${pytest_args}"; then
                 success "Agent tests passed!"
+                save_test_result "agent" "passed"
             else
                 error "Agent tests failed"
                 echo ""
                 warn "To rerun failed tests, check output above for pytest filter"
                 echo ""
+                save_test_result "agent" "failed"
                 # Don't exit - continue to show summary
                 return 1
             fi
@@ -1401,12 +1410,20 @@ run_container_tests() {
             echo "═══════════════════════════════════════════════════════════════════════"
             echo ""
             
+            # Show passed services
+            local passed_services=($(get_passed_services))
+            if [[ ${#passed_services[@]} -gt 0 ]]; then
+                success "Passed services: ${passed_services[*]}"
+            fi
+            
+            # Show failed services
             if [[ ${#failed_services[@]} -eq 0 ]]; then
                 success "All service tests passed!"
             else
                 error "Failed services: ${failed_services[*]}"
                 echo ""
                 warn "Review output above for pytest filters to rerun failed tests"
+                warn "Or use 'Run Failed Tests' option to rerun only failed services"
                 return 1
             fi
             ;;

@@ -90,9 +90,9 @@ async def test_exchanges_when_expired(monkeypatch, test_session: AsyncSession):
     test_session.add(expired)
     await test_session.commit()
 
-    async def fake_exchange(_: Principal, scopes: List[str], purpose: str) -> TokenExchangeResponse:
+    async def fake_exchange(principal_arg: Principal, scopes: List[str], purpose: str) -> TokenExchangeResponse:
         return TokenExchangeResponse(
-            access_token="fresh-token",
+            access_token=f"fresh-token-{unique_id}",  # Use unique token
             token_type="bearer",
             expires_at=_future(30),
             scopes=scopes,
@@ -107,8 +107,8 @@ async def test_exchanges_when_expired(monkeypatch, test_session: AsyncSession):
         purpose="ingest",
     )
 
-    assert token.access_token == "fresh-token"
-    result = await test_session.execute(select(TokenGrant).where(TokenGrant.token == "fresh-token"))
+    assert token.access_token == f"fresh-token-{unique_id}"
+    result = await test_session.execute(select(TokenGrant).where(TokenGrant.token == f"fresh-token-{unique_id}"))
     saved = result.scalars().first()
     assert saved is not None
     assert saved.subject == principal.sub

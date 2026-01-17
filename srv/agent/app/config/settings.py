@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import List, Optional
 
-from pydantic import AnyHttpUrl, Field
+from pydantic import AnyHttpUrl, Field, ConfigDict
 from pydantic_settings import BaseSettings
 
 
@@ -113,11 +113,12 @@ class Settings(BaseSettings):
         description="Override service name for traces (defaults to app_name)",
     )
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
-        extra = "ignore"  # Ignore extra fields from .env that aren't in the model
+    model_config = ConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",  # Ignore extra fields from .env that aren't in the model
+    )
 
 
 @lru_cache(maxsize=1)

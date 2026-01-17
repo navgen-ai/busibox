@@ -212,27 +212,33 @@ class TestCreateRunErrorHandling:
         """
         import asyncio
         
-        with patch("app.services.run_service.agent_registry.get_or_load") as mock_get:
-            mock_agent = AsyncMock()
-            
-            # Simulate a slow agent that would timeout
-            async def slow_run(*args, **kwargs):
-                await asyncio.sleep(100)  # Would timeout after 30s
-            
-            mock_agent.run = slow_run
-            mock_get.return_value = mock_agent
-            
-            run = await create_run(
-                session=test_session,
-                principal=mock_principal,
-                agent_id=test_agent.id,
-                payload={"prompt": "test"},
-                scopes=[],  # No scopes to skip token exchange
-                purpose="test",
-                agent_tier="simple",  # 30s timeout
-            )
-            
-            assert run.status == "timeout"
+        # Temporarily patch timeout to be very short for fast testing
+        with patch("app.services.run_service.AGENT_LIMITS", {
+            "simple": {"timeout": 0.1, "memory_mb": 512},  # 100ms timeout
+            "complex": {"timeout": 300, "memory_mb": 2048},
+            "batch": {"timeout": 1800, "memory_mb": 4096},
+        }):
+            with patch("app.services.run_service.agent_registry.get_or_load") as mock_get:
+                mock_agent = AsyncMock()
+                
+                # Simulate a slow agent that would timeout (200ms exceeds 100ms timeout)
+                async def slow_run(*args, **kwargs):
+                    await asyncio.sleep(0.2)  # 200ms - fast but exceeds 100ms timeout
+                
+                mock_agent.run = slow_run
+                mock_get.return_value = mock_agent
+                
+                run = await create_run(
+                    session=test_session,
+                    principal=mock_principal,
+                    agent_id=test_agent.id,
+                    payload={"prompt": "test"},
+                    scopes=[],  # No scopes to skip token exchange
+                    purpose="test",
+                    agent_tier="simple",  # 100ms timeout (patched)
+                )
+                
+                assert run.status == "timeout"
             assert "timeout" in run.output["error"].lower()
             assert run.output["timeout"] == 30
     

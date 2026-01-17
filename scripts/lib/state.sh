@@ -311,6 +311,109 @@ export_state() {
     echo "export BUSIBOX_INSTALL_STATUS=\"$(get_install_status)\""
 }
 
+# ============================================================================
+# Test Result Tracking
+# ============================================================================
+
+# Save test result for a service
+# Usage: save_test_result "authz" "passed"
+# Usage: save_test_result "ingest" "failed"
+save_test_result() {
+    local service="$1"
+    local result="$2"  # "passed" or "failed"
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    
+    set_state "TEST_RESULT_${service}" "$result"
+    set_state "TEST_TIME_${service}" "$timestamp"
+}
+
+# Get test result for a service
+# Usage: result=$(get_test_result "authz")
+# Returns: "passed", "failed", or "" if never run
+get_test_result() {
+    local service="$1"
+    get_state "TEST_RESULT_${service}" ""
+}
+
+# Get test time for a service
+get_test_time() {
+    local service="$1"
+    get_state "TEST_TIME_${service}" ""
+}
+
+# Get list of failed services
+# Usage: failed_services=($(get_failed_services))
+# Optional: get_failed_services "services_only" to get only authz/ingest/search/agent (no subtests)
+get_failed_services() {
+    local filter="${1:-}"
+    init_state
+    local results
+    results=$(grep "^TEST_RESULT_.*=failed" "$BUSIBOX_STATE_FILE" 2>/dev/null | \
+        sed 's/^TEST_RESULT_//; s/=failed$//' || true)
+    
+    if [[ "$filter" == "services_only" ]]; then
+        # Only return core service tests without subtests (authz, ingest, search, agent)
+        # Exclude entries with colons (like ingest:unit, agent:integration)
+        echo "$results" | grep -E "^(authz|ingest|search|agent)$" | grep -v ":" | tr '\n' ' '
+    else
+        echo "$results" | tr '\n' ' '
+    fi
+}
+
+# Get list of passed services
+# Usage: passed_services=($(get_passed_services))
+# Optional: get_passed_services "services_only" to get only authz/ingest/search/agent (no subtests)
+get_passed_services() {
+    local filter="${1:-}"
+    init_state
+    local results
+    results=$(grep "^TEST_RESULT_.*=passed" "$BUSIBOX_STATE_FILE" 2>/dev/null | \
+        sed 's/^TEST_RESULT_//; s/=passed$//' || true)
+    
+    if [[ "$filter" == "services_only" ]]; then
+        # Only return core service tests without subtests (authz, ingest, search, agent)
+        # Exclude entries with colons (like ingest:unit, agent:integration)
+        echo "$results" | grep -E "^(authz|ingest|search|agent)$" | grep -v ":" | tr '\n' ' '
+    else
+        echo "$results" | tr '\n' ' '
+    fi
+}
+
+# Get list of failed app tests
+# Usage: failed_apps=($(get_failed_apps))
+get_failed_apps() {
+    init_state
+    grep "^TEST_RESULT_.*=failed" "$BUSIBOX_STATE_FILE" 2>/dev/null | \
+        sed 's/^TEST_RESULT_//; s/=failed$//' | \
+        grep -E "^(ai-portal|agent-manager)$" | tr '\n' ' ' || true
+}
+
+# Get list of passed app tests
+# Usage: passed_apps=($(get_passed_apps))
+get_passed_apps() {
+    init_state
+    grep "^TEST_RESULT_.*=passed" "$BUSIBOX_STATE_FILE" 2>/dev/null | \
+        sed 's/^TEST_RESULT_//; s/=passed$//' | \
+        grep -E "^(ai-portal|agent-manager)$" | tr '\n' ' ' || true
+}
+
+# Clear all test results
+clear_test_results() {
+    init_state
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' '/^TEST_RESULT_/d; /^TEST_TIME_/d' "$BUSIBOX_STATE_FILE"
+    else
+        sed -i '/^TEST_RESULT_/d; /^TEST_TIME_/d' "$BUSIBOX_STATE_FILE"
+    fi
+}
+
+# Check if any tests have failed
+has_failed_tests() {
+    local failed
+    failed=$(get_failed_services)
+    [[ -n "$failed" ]]
+}
+
 # Display current state (for debugging)
 show_state() {
     echo "=== Busibox State ==="

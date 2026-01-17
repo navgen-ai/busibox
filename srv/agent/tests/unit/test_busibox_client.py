@@ -43,7 +43,9 @@ async def test_search_attaches_bearer(monkeypatch):
     assert result["ok"] is True
     assert stub_client.calls[0]["headers"]["Authorization"] == "Bearer token-123"
     assert "/search" in stub_client.calls[0]["url"]
-    assert stub_client.calls[0]["json"] == {"query": "hello", "top_k": 3}
+    # Verify query is sent (API now includes additional params like mode, rerank, limit)
+    assert stub_client.calls[0]["json"]["query"] == "hello"
+    assert stub_client.calls[0]["json"]["limit"] == 3
 
 
 @pytest.mark.asyncio

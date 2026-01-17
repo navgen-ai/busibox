@@ -776,7 +776,10 @@ handle_deploy() {
             
         proxmox)
             # Use existing deploy script for Ansible deployments
-            bash "${SCRIPT_DIR}/deploy.sh"
+            if bash "${SCRIPT_DIR}/deploy.sh"; then
+                # After successful deployment, set status to deployed
+                set_install_status "deployed"
+            fi
             ;;
     esac
 }
@@ -1475,74 +1478,839 @@ handle_migration() {
     esac
 }
 
-handle_test() {
-    local env backend
+# Helper to run docker tests and save results
+# Usage: run_docker_test "service" ["pytest-args"]
+run_docker_test() {
+    local service_key="$1"  # Full key like "ingest:unit" or "agent"
+    local pytest_args="${2:-}"
     
+    # Extract base service name (before colon if present)
+    local base_service="${service_key%%:*}"
+    
+    local cmd="make test-docker SERVICE=$base_service"
+    
+    if [[ -n "$pytest_args" ]]; then
+        cmd="$cmd ARGS='$pytest_args'"
+    fi
+    
+    save_last_command "$cmd"
+    if (cd "$REPO_ROOT" && ARGS="$pytest_args" make test-docker SERVICE="$base_service"); then
+        save_test_result "$service_key" "passed"
+        return 0
+    else
+        save_test_result "$service_key" "failed"
+        return 1
+    fi
+}
+
+handle_test() {
+    # Main test menu loop
+    while true; do
+        local choice
+        choice=$(show_test_main_menu)
+        
+        case "$choice" in
+            back)
+                return 0
+                ;;
+            pvt)
+                handle_test_pvt
+                ;;
+            services)
+                handle_test_services
+                ;;
+            apps)
+                handle_test_apps
+                ;;
+            clear)
+                echo ""
+                if confirm "Clear all test results?"; then
+                    clear_test_results
+                    success "Test results cleared"
+                fi
+                pause
+                ;;
+        esac
+    done
+}
+
+show_test_main_menu() {
+    local env backend
     env=$(get_environment)
     backend=$(get_backend "$env")
     
-    echo ""
-    header "Test" 70
+    # Display everything to stderr so it shows on screen
+    {
+        echo ""
+        header "Test Menu" 70
+        
+        # Show test status summary
+        echo ""
+        echo -e "${BOLD}Test Status:${NC}"
+        
+        # PVT status
+        local pvt_result=$(get_test_result "pvt")
+        if [[ "$pvt_result" == "passed" ]]; then
+            echo -e "  PVT: ${GREEN}✓ Passed${NC}"
+        elif [[ "$pvt_result" == "failed" ]]; then
+            echo -e "  PVT: ${RED}✗ Failed${NC}"
+        else
+            echo -e "  PVT: ${DIM}Not run${NC}"
+        fi
+        
+        # Service tests status (only authz, ingest, search, agent)
+        local failed_services=($(get_failed_services "services_only"))
+        local passed_services=($(get_passed_services "services_only"))
+        
+        if [[ ${#failed_services[@]} -gt 0 ]]; then
+            echo -e "  Services: ${RED}Failed: ${failed_services[*]}${NC}"
+        fi
+        if [[ ${#passed_services[@]} -gt 0 ]]; then
+            echo -e "  Services: ${GREEN}Passed: ${passed_services[*]}${NC}"
+        fi
+        if [[ ${#failed_services[@]} -eq 0 && ${#passed_services[@]} -eq 0 ]]; then
+            echo -e "  Services: ${DIM}Not run${NC}"
+        fi
+        
+        # App tests status (ai-portal, agent-manager)
+        local failed_apps=($(get_failed_apps))
+        local passed_apps=($(get_passed_apps))
+        
+        if [[ ${#failed_apps[@]} -gt 0 ]]; then
+            echo -e "  Apps: ${RED}Failed: ${failed_apps[*]}${NC}"
+        fi
+        if [[ ${#passed_apps[@]} -gt 0 ]]; then
+            echo -e "  Apps: ${GREEN}Passed: ${passed_apps[*]}${NC}"
+        fi
+        if [[ ${#failed_apps[@]} -eq 0 && ${#passed_apps[@]} -eq 0 ]]; then
+            echo -e "  Apps: ${DIM}Not run${NC}"
+        fi
+        
+        echo ""
+        menu "Select Test Category" \
+            "PVT Tests (Post-Deployment Validation)" \
+            "Service Tests (AuthZ, Ingest, Search, Agent)" \
+            "App Tests (AI Portal, Agent Manager)" \
+            "Clear Test Results" \
+            "Back to Main Menu"
+    } >&2
     
-    case "$backend" in
-        docker)
-            echo ""
-            menu "Docker Test Options" \
-                "Run All Tests" \
-                "Test AuthZ Service" \
-                "Test Ingest Service" \
-                "Test Search Service" \
-                "Test Agent Service" \
-                "Back to Main Menu"
-            
-            read -p "$(echo -e "${BOLD}Select option [1-6]:${NC} ")" test_choice
-            
-            local cmd=""
-            case "$test_choice" in
-                1)
-                    cmd="make test-docker SERVICE=all"
-                    save_last_command "$cmd"
-                    (cd "$REPO_ROOT" && make test-docker SERVICE=all)
-                    ;;
-                2)
-                    cmd="make test-docker SERVICE=authz"
-                    save_last_command "$cmd"
-                    (cd "$REPO_ROOT" && make test-docker SERVICE=authz)
-                    ;;
-                3)
-                    cmd="make test-docker SERVICE=ingest"
-                    save_last_command "$cmd"
-                    (cd "$REPO_ROOT" && make test-docker SERVICE=ingest)
-                    ;;
-                4)
-                    cmd="make test-docker SERVICE=search"
-                    save_last_command "$cmd"
-                    (cd "$REPO_ROOT" && make test-docker SERVICE=search)
-                    ;;
-                5)
-                    cmd="make test-docker SERVICE=agent"
-                    save_last_command "$cmd"
-                    (cd "$REPO_ROOT" && make test-docker SERVICE=agent)
-                    ;;
-                6)
-                    return 0
-                    ;;
-            esac
-            ;;
-            
-        proxmox)
-            # Map environment to inventory name
-            local inv="$env"
-            if [[ "$env" == "local" ]]; then
-                inv="docker"
-            fi
-            
-            # Use existing test script
-            bash "${SCRIPT_DIR}/test.sh"
-            ;;
+    read -p "$(echo -e "${BOLD}Select option [1-5]:${NC} ")" choice
+    
+    # Return choice to stdout (for capture)
+    case "$choice" in
+        1) echo "pvt" ;;
+        2) echo "services" ;;
+        3) echo "apps" ;;
+        4) echo "clear" ;;
+        5) echo "back" ;;
+        *) echo "back" ;;
     esac
+}
+
+handle_test_pvt() {
+    local env backend
+    env=$(get_environment)
+    backend=$(get_backend "$env")
     
-    pause
+    while true; do
+        echo ""
+        header "PVT Tests" 70
+        echo ""
+        info "Post-Deployment Validation Tests verify services are healthy after deployment"
+        echo ""
+        
+        menu "PVT Test Options" \
+            "Run All PVT Tests" \
+            "Back to Test Menu"
+        
+        read -p "$(echo -e "${BOLD}Select option [1-2]:${NC} ")" choice
+        
+        case "$choice" in
+            1)
+                echo ""
+                info "Running PVT tests (tests marked with @pytest.mark.pvt)..."
+                case "$backend" in
+                    docker)
+                        # Run PVT tests for each service (test_pvt.py file in integration/)
+                        local services=("authz" "ingest" "search" "agent")
+                        local failed=0
+                        local cmd
+                        
+                        for svc in "${services[@]}"; do
+                            echo ""
+                            info "Running PVT tests for $svc..."
+                            if ! run_docker_test "$svc" "tests/integration/test_pvt.py"; then
+                                ((failed++))
+                            fi
+                        done
+                        
+                        echo ""
+                        if [[ $failed -eq 0 ]]; then
+                            success "All PVT tests passed!"
+                            save_test_result "pvt" "passed"
+                        else
+                            error "$failed service(s) failed PVT tests"
+                            save_test_result "pvt" "failed"
+                        fi
+                        ;;
+                    proxmox)
+                        if bash "${SCRIPT_DIR}/test.sh" pvt; then
+                            save_test_result "pvt" "passed"
+                        else
+                            save_test_result "pvt" "failed"
+                        fi
+                        ;;
+                esac
+                pause
+                ;;
+            2)
+                return 0
+                ;;
+            *)
+                return 0
+                ;;
+        esac
+    done
+}
+
+handle_test_services() {
+    local env backend
+    env=$(get_environment)
+    backend=$(get_backend "$env")
+    
+    while true; do
+        echo ""
+        header "Service Tests" 70
+        
+        # Show test status
+        local failed_services=($(get_failed_services))
+        local passed_services=($(get_passed_services))
+        
+        if [[ ${#failed_services[@]} -gt 0 ]]; then
+            echo ""
+            warn "Failed: ${failed_services[*]}"
+        fi
+        if [[ ${#passed_services[@]} -gt 0 ]]; then
+            echo ""
+            success "Passed: ${passed_services[*]}"
+        fi
+        
+        echo ""
+        
+        # Build menu options dynamically
+        local menu_items=("Run All Services")
+        
+        # Add "Run Failed Services" if there are failures
+        if [[ ${#failed_services[@]} -gt 0 ]]; then
+            menu_items+=("Run Failed Services (${failed_services[*]})")
+        fi
+        
+        menu_items+=(
+            "Test AuthZ Service"
+            "Test Ingest Service"
+            "Test Search Service"
+            "Test Agent Service"
+            "Back to Test Menu"
+        )
+        
+        menu "Service Test Options" "${menu_items[@]}"
+        
+        local max_option=$((${#menu_items[@]}))
+        read -p "$(echo -e "${BOLD}Select option [1-${max_option}]:${NC} ")" choice
+        
+        # Calculate option numbers dynamically
+        local opt=1
+        local all_opt=$opt; ((opt++))
+        local failed_opt=0
+        if [[ ${#failed_services[@]} -gt 0 ]]; then
+            failed_opt=$opt; ((opt++))
+        fi
+        local authz_opt=$opt; ((opt++))
+        local ingest_opt=$opt; ((opt++))
+        local search_opt=$opt; ((opt++))
+        local agent_opt=$opt; ((opt++))
+        local back_opt=$opt
+        
+        local cmd=""
+        case "$choice" in
+            $all_opt)
+                echo ""
+                case "$backend" in
+                    docker)
+                        run_docker_test "all"
+                        ;;
+                    proxmox)
+                        bash "${SCRIPT_DIR}/test.sh" services all
+                        ;;
+                esac
+                pause
+                ;;
+            $failed_opt)
+                if [[ $failed_opt -ne 0 ]]; then
+                    echo ""
+                    info "Running failed services: ${failed_services[*]}"
+                    echo ""
+                    case "$backend" in
+                        docker)
+                            for svc in "${failed_services[@]}"; do
+                                run_docker_test "$svc"
+                            done
+                            ;;
+                        proxmox)
+                            for svc in "${failed_services[@]}"; do
+                                bash "${SCRIPT_DIR}/test.sh" services "$svc"
+                            done
+                            ;;
+                    esac
+                    pause
+                fi
+                ;;
+            $authz_opt)
+                echo ""
+                case "$backend" in
+                    docker)
+                        run_docker_test "authz"
+                        ;;
+                    proxmox)
+                        bash "${SCRIPT_DIR}/test.sh" services authz
+                        ;;
+                esac
+                pause
+                ;;
+            $ingest_opt)
+                handle_test_ingest
+                ;;
+            $search_opt)
+                echo ""
+                case "$backend" in
+                    docker)
+                        run_docker_test "search"
+                        ;;
+                    proxmox)
+                        bash "${SCRIPT_DIR}/test.sh" services search
+                        ;;
+                esac
+                pause
+                ;;
+            $agent_opt)
+                handle_test_agent
+                ;;
+            $back_opt)
+                return 0
+                ;;
+            *)
+                return 0
+                ;;
+        esac
+    done
+}
+
+# Handle Ingest service tests with unit/integration submenu
+handle_test_ingest() {
+    local env backend
+    env=$(get_environment)
+    backend=$(get_backend "$env")
+    
+    while true; do
+        echo ""
+        header "Ingest Service Tests" 70
+        
+        # Show test status for ingest subtests
+        local unit_result=$(get_test_result "ingest:unit")
+        local integration_result=$(get_test_result "ingest:integration")
+        local all_result=$(get_test_result "ingest")
+        
+        echo ""
+        echo -e "${BOLD}Test Status:${NC}"
+        if [[ "$unit_result" == "passed" ]]; then
+            echo -e "  Unit: ${GREEN}✓ Passed${NC}"
+        elif [[ "$unit_result" == "failed" ]]; then
+            echo -e "  Unit: ${RED}✗ Failed${NC}"
+        else
+            echo -e "  Unit: ${DIM}Not run${NC}"
+        fi
+        
+        if [[ "$integration_result" == "passed" ]]; then
+            echo -e "  Integration: ${GREEN}✓ Passed${NC}"
+        elif [[ "$integration_result" == "failed" ]]; then
+            echo -e "  Integration: ${RED}✗ Failed${NC}"
+        else
+            echo -e "  Integration: ${DIM}Not run${NC}"
+        fi
+        
+        if [[ "$all_result" == "passed" ]]; then
+            echo -e "  All Tests: ${GREEN}✓ Passed${NC}"
+        elif [[ "$all_result" == "failed" ]]; then
+            echo -e "  All Tests: ${RED}✗ Failed${NC}"
+        else
+            echo -e "  All Tests: ${DIM}Not run${NC}"
+        fi
+        
+        echo ""
+        menu "Ingest Test Options" \
+            "Run All Ingest Tests" \
+            "Run Unit Tests Only" \
+            "Run Integration Tests Only" \
+            "Back to Service Tests"
+        
+        read -p "$(echo -e "${BOLD}Select option [1-4]:${NC} ")" choice
+        
+        case "$choice" in
+            1)
+                echo ""
+                case "$backend" in
+                    docker)
+                        run_docker_test "ingest"
+                        ;;
+                    proxmox)
+                        bash "${SCRIPT_DIR}/test.sh" services ingest
+                        ;;
+                esac
+                pause
+                ;;
+            2)
+                echo ""
+                info "Running unit tests..."
+                case "$backend" in
+                    docker)
+                        run_docker_test "ingest:unit" "tests/unit"
+                        ;;
+                    proxmox)
+                        bash "${SCRIPT_DIR}/test.sh" services ingest "tests/unit"
+                        ;;
+                esac
+                pause
+                ;;
+            3)
+                handle_test_ingest_integration
+                ;;
+            4)
+                return 0
+                ;;
+            *)
+                return 0
+                ;;
+        esac
+    done
+}
+
+# Handle Ingest integration tests with individual file selection
+handle_test_ingest_integration() {
+    local env backend
+    env=$(get_environment)
+    backend=$(get_backend "$env")
+    
+    while true; do
+        echo ""
+        header "Ingest Integration Tests" 70
+        
+        # Show test status for integration test files
+        echo ""
+        echo -e "${BOLD}Test Status:${NC}"
+        
+        local test_files=(
+            "concurrent" "connectivity" "duplicates" "encryption_integration"
+            "errors" "files" "full_pipeline" "health" "markdown_endpoints"
+            "medium_pipeline" "multi_flow" "pipeline" "scope_enforcement"
+            "services" "sse" "status" "upload"
+        )
+        
+        local passed_count=0
+        local failed_count=0
+        
+        for test in "${test_files[@]}"; do
+            local result=$(get_test_result "ingest:integration:$test")
+            if [[ "$result" == "passed" ]]; then
+                ((passed_count++))
+            elif [[ "$result" == "failed" ]]; then
+                ((failed_count++))
+            fi
+        done
+        
+        if [[ $passed_count -gt 0 ]]; then
+            echo -e "  ${GREEN}Passed: $passed_count${NC}"
+        fi
+        if [[ $failed_count -gt 0 ]]; then
+            echo -e "  ${RED}Failed: $failed_count${NC}"
+        fi
+        if [[ $passed_count -eq 0 && $failed_count -eq 0 ]]; then
+            echo -e "  ${DIM}Not run${NC}"
+        fi
+        
+        echo ""
+        menu "Ingest Integration Test Options" \
+            "Run All Integration Tests" \
+            "Run Failed Tests Only" \
+            "─────────────────────" \
+            "Test: concurrent" \
+            "Test: connectivity" \
+            "Test: duplicates" \
+            "Test: encryption_integration" \
+            "Test: errors" \
+            "Test: files" \
+            "Test: full_pipeline" \
+            "Test: health" \
+            "Test: markdown_endpoints" \
+            "Test: medium_pipeline" \
+            "Test: multi_flow" \
+            "Test: pipeline" \
+            "Test: scope_enforcement" \
+            "Test: services" \
+            "Test: sse" \
+            "Test: status" \
+            "Test: upload" \
+            "─────────────────────" \
+            "Back to Ingest Tests"
+        
+        read -p "$(echo -e "${BOLD}Select option [1-21]:${NC} ")" choice
+        
+        case "$choice" in
+            1)
+                echo ""
+                info "Running all integration tests..."
+                case "$backend" in
+                    docker)
+                        run_docker_test "ingest:integration" "tests/integration"
+                        ;;
+                    proxmox)
+                        bash "${SCRIPT_DIR}/test.sh" services ingest "tests/integration"
+                        ;;
+                esac
+                pause
+                ;;
+            2)
+                echo ""
+                local failed_tests=()
+                for test in "${test_files[@]}"; do
+                    if [[ "$(get_test_result "ingest:integration:$test")" == "failed" ]]; then
+                        failed_tests+=("$test")
+                    fi
+                done
+                
+                if [[ ${#failed_tests[@]} -eq 0 ]]; then
+                    warn "No failed tests to rerun"
+                else
+                    info "Running failed tests: ${failed_tests[*]}"
+                    for test in "${failed_tests[@]}"; do
+                        echo ""
+                        case "$backend" in
+                            docker)
+                                run_docker_test "ingest:integration:$test" "tests/integration/test_${test}.py"
+                                ;;
+                            proxmox)
+                                bash "${SCRIPT_DIR}/test.sh" services ingest "tests/integration/test_${test}.py"
+                                ;;
+                        esac
+                    done
+                fi
+                pause
+                ;;
+            3)
+                # Separator, do nothing
+                ;;
+            4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20)
+                local test_idx=$((choice - 4))
+                local test_name="${test_files[$test_idx]}"
+                echo ""
+                info "Running test: $test_name"
+                case "$backend" in
+                    docker)
+                        run_docker_test "ingest:integration:$test_name" "tests/integration/test_${test_name}.py"
+                        ;;
+                    proxmox)
+                        bash "${SCRIPT_DIR}/test.sh" services ingest "tests/integration/test_${test_name}.py"
+                        ;;
+                esac
+                pause
+                ;;
+            21)
+                return 0
+                ;;
+            *)
+                return 0
+                ;;
+        esac
+    done
+}
+
+# Handle Agent service tests with unit/integration submenu
+handle_test_agent() {
+    local env backend
+    env=$(get_environment)
+    backend=$(get_backend "$env")
+    
+    while true; do
+        echo ""
+        header "Agent Service Tests" 70
+        
+        # Show test status for agent subtests
+        local unit_result=$(get_test_result "agent:unit")
+        local integration_result=$(get_test_result "agent:integration")
+        local all_result=$(get_test_result "agent")
+        
+        echo ""
+        echo -e "${BOLD}Test Status:${NC}"
+        if [[ "$unit_result" == "passed" ]]; then
+            echo -e "  Unit: ${GREEN}✓ Passed${NC}"
+        elif [[ "$unit_result" == "failed" ]]; then
+            echo -e "  Unit: ${RED}✗ Failed${NC}"
+        else
+            echo -e "  Unit: ${DIM}Not run${NC}"
+        fi
+        
+        if [[ "$integration_result" == "passed" ]]; then
+            echo -e "  Integration: ${GREEN}✓ Passed${NC}"
+        elif [[ "$integration_result" == "failed" ]]; then
+            echo -e "  Integration: ${RED}✗ Failed${NC}"
+        else
+            echo -e "  Integration: ${DIM}Not run${NC}"
+        fi
+        
+        if [[ "$all_result" == "passed" ]]; then
+            echo -e "  All Tests: ${GREEN}✓ Passed${NC}"
+        elif [[ "$all_result" == "failed" ]]; then
+            echo -e "  All Tests: ${RED}✗ Failed${NC}"
+        else
+            echo -e "  All Tests: ${DIM}Not run${NC}"
+        fi
+        
+        echo ""
+        menu "Agent Test Options" \
+            "Run All Agent Tests" \
+            "Run Unit Tests Only" \
+            "Run Integration Tests Only" \
+            "Back to Service Tests"
+        
+        read -p "$(echo -e "${BOLD}Select option [1-4]:${NC} ")" choice
+        
+        case "$choice" in
+            1)
+                echo ""
+                case "$backend" in
+                    docker)
+                        run_docker_test "agent"
+                        ;;
+                    proxmox)
+                        bash "${SCRIPT_DIR}/test.sh" services agent
+                        ;;
+                esac
+                pause
+                ;;
+            2)
+                echo ""
+                info "Running unit tests..."
+                case "$backend" in
+                    docker)
+                        run_docker_test "agent:unit" "tests/unit"
+                        ;;
+                    proxmox)
+                        bash "${SCRIPT_DIR}/test.sh" services agent "tests/unit"
+                        ;;
+                esac
+                pause
+                ;;
+            3)
+                handle_test_agent_integration
+                ;;
+            4)
+                return 0
+                ;;
+            *)
+                return 0
+                ;;
+        esac
+    done
+}
+
+# Handle Agent integration tests with individual file selection
+handle_test_agent_integration() {
+    local env backend
+    env=$(get_environment)
+    backend=$(get_backend "$env")
+    
+    while true; do
+        echo ""
+        header "Agent Integration Tests" 70
+        
+        # Show test status for integration test files
+        echo ""
+        echo -e "${BOLD}Test Status:${NC}"
+        
+        local test_files=(
+            "api_agents" "api_conversations" "api_runs" "api_schedule"
+            "api_scores" "api_streams" "api_workflows" "attachment_agent"
+            "base_agent_document" "base_agent_web_search" "chat_agent"
+            "chat_flow" "database_agent" "dispatcher_routing" "evaluator_crud"
+            "insights_api" "personal_agents" "real_tools" "tool_crud"
+            "ultimate_chat_flow" "weather_agent" "workflow_crud"
+        )
+        
+        local passed_count=0
+        local failed_count=0
+        
+        for test in "${test_files[@]}"; do
+            local result=$(get_test_result "agent:integration:$test")
+            if [[ "$result" == "passed" ]]; then
+                ((passed_count++))
+            elif [[ "$result" == "failed" ]]; then
+                ((failed_count++))
+            fi
+        done
+        
+        if [[ $passed_count -gt 0 ]]; then
+            echo -e "  ${GREEN}Passed: $passed_count${NC}"
+        fi
+        if [[ $failed_count -gt 0 ]]; then
+            echo -e "  ${RED}Failed: $failed_count${NC}"
+        fi
+        if [[ $passed_count -eq 0 && $failed_count -eq 0 ]]; then
+            echo -e "  ${DIM}Not run${NC}"
+        fi
+        
+        echo ""
+        menu "Agent Integration Test Options" \
+            "Run All Integration Tests" \
+            "Run Failed Tests Only" \
+            "─────────────────────" \
+            "Test: api_agents" \
+            "Test: api_conversations" \
+            "Test: api_runs" \
+            "Test: api_schedule" \
+            "Test: api_scores" \
+            "Test: api_streams" \
+            "Test: api_workflows" \
+            "Test: attachment_agent" \
+            "Test: base_agent_document" \
+            "Test: base_agent_web_search" \
+            "Test: chat_agent" \
+            "Test: chat_flow" \
+            "Test: database_agent" \
+            "Test: dispatcher_routing" \
+            "Test: evaluator_crud" \
+            "Test: insights_api" \
+            "Test: personal_agents" \
+            "Test: real_tools" \
+            "Test: tool_crud" \
+            "Test: ultimate_chat_flow" \
+            "Test: weather_agent" \
+            "Test: workflow_crud" \
+            "─────────────────────" \
+            "Back to Agent Tests"
+        
+        read -p "$(echo -e "${BOLD}Select option [1-26]:${NC} ")" choice
+        
+        case "$choice" in
+            1)
+                echo ""
+                info "Running all integration tests..."
+                case "$backend" in
+                    docker)
+                        run_docker_test "agent:integration" "tests/integration"
+                        ;;
+                    proxmox)
+                        bash "${SCRIPT_DIR}/test.sh" services agent "tests/integration"
+                        ;;
+                esac
+                pause
+                ;;
+            2)
+                echo ""
+                local failed_tests=()
+                for test in "${test_files[@]}"; do
+                    if [[ "$(get_test_result "agent:integration:$test")" == "failed" ]]; then
+                        failed_tests+=("$test")
+                    fi
+                done
+                
+                if [[ ${#failed_tests[@]} -eq 0 ]]; then
+                    warn "No failed tests to rerun"
+                else
+                    info "Running failed tests: ${failed_tests[*]}"
+                    for test in "${failed_tests[@]}"; do
+                        echo ""
+                        case "$backend" in
+                            docker)
+                                run_docker_test "agent:integration:$test" "tests/integration/test_${test}.py"
+                                ;;
+                            proxmox)
+                                bash "${SCRIPT_DIR}/test.sh" services agent "tests/integration/test_${test}.py"
+                                ;;
+                        esac
+                    done
+                fi
+                pause
+                ;;
+            3)
+                # Separator, do nothing
+                ;;
+            4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25)
+                local test_idx=$((choice - 4))
+                local test_name="${test_files[$test_idx]}"
+                echo ""
+                info "Running test: $test_name"
+                case "$backend" in
+                    docker)
+                        run_docker_test "agent:integration:$test" "tests/integration/test_${test_name}.py"
+                        ;;
+                    proxmox)
+                        bash "${SCRIPT_DIR}/test.sh" services agent "tests/integration/test_${test_name}.py"
+                        ;;
+                esac
+                pause
+                ;;
+            26)
+                return 0
+                ;;
+            *)
+                return 0
+                ;;
+        esac
+    done
+}
+
+handle_test_apps() {
+    local env backend
+    env=$(get_environment)
+    backend=$(get_backend "$env")
+    
+    while true; do
+        echo ""
+        header "App Tests" 70
+        echo ""
+        
+        menu "App Test Options" \
+            "Run All App Tests" \
+            "Test AI Portal" \
+            "Test Agent Manager" \
+            "Back to Test Menu"
+        
+        read -p "$(echo -e "${BOLD}Select option [1-4]:${NC} ")" choice
+        
+        case "$choice" in
+            1)
+                echo ""
+                warn "App tests not yet implemented"
+                pause
+                ;;
+            2)
+                echo ""
+                warn "AI Portal tests not yet implemented"
+                pause
+                ;;
+            3)
+                echo ""
+                warn "Agent Manager tests not yet implemented"
+                pause
+                ;;
+            4)
+                return 0
+                ;;
+            *)
+                return 0
+                ;;
+        esac
+    done
 }
 
 handle_rerun() {

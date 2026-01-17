@@ -20,6 +20,7 @@ Or directly on the ingest server:
 
 import json
 import os
+import pytest
 import subprocess
 import sys
 import time
@@ -46,6 +47,9 @@ except ImportError:
         return repo_root / "samples" / "docs"
 
 # Test document definitions
+import pytest
+
+
 TEST_DOCUMENTS = [
     ("doc01_rfp_project_management", "RFP", "low"),
     ("doc02_polymer_nanocapsules_patent", "Patent", "medium"),
@@ -154,6 +158,7 @@ def extract_via_worker(pdf_path: str, timeout: int = 300) -> Dict:
     }
 
 
+@pytest.mark.slow
 def test_pdf_extraction_marker():
     """
     Test Marker-based PDF extraction validates the deployed worker.
@@ -180,11 +185,19 @@ def test_pdf_extraction_marker():
     if not samples_dir.exists():
         # Try without pdf/general suffix (might be the docs dir itself)
         samples_dir = get_test_doc_repo_path()
-    if not samples_dir.exists():
-        pytest.skip(f"Test documents directory not found. Set TEST_DOC_REPO_PATH or SAMPLES_DIR env var. Expected: {samples_dir}")
+    
+    # Check if any test PDFs actually exist
+    test_pdf_found = False
+    for doc_id, _, _ in TEST_DOCUMENTS:
+        pdf_path = samples_dir / doc_id / "source.pdf"
+        if pdf_path.exists():
+            test_pdf_found = True
+            break
+    
+    if not test_pdf_found:
+        pytest.skip(f"Test documents not found in {samples_dir}. Set TEST_DOC_REPO_PATH or SAMPLES_DIR env var to busibox-testdocs directory.")
     
     print(f"Samples directory: {samples_dir}")
-    assert samples_dir.exists(), f"Samples directory not found: {samples_dir}"
     print()
     
     # Check if worker is running

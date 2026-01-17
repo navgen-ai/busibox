@@ -99,6 +99,16 @@
   notify: Restart authz service
   tags: [authz]
 
+- name: Copy shared testing library
+  synchronize:
+    src: "{{ playbook_dir }}/../../srv/shared/testing/"
+    dest: "{{ authz_app_dir }}/src/testing/"
+    delete: yes
+    rsync_opts:
+      - "--exclude=__pycache__"
+      - "--exclude=*.pyc"
+  tags: [authz, authz_tests]
+
 - name: Set ownership on synced source
   file:
     path: "{{ authz_app_dir }}/src"

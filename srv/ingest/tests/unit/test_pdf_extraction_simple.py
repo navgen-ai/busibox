@@ -58,6 +58,7 @@ TEST_DOCUMENTS = [
 ]
 
 
+@pytest.mark.slow
 def test_pdf_extraction():
     """Test basic PDF extraction on all documents."""
     
@@ -66,9 +67,17 @@ def test_pdf_extraction():
     if not samples_dir.exists():
         # Try without pdf/general suffix (might be the docs dir itself)
         samples_dir = get_test_doc_repo_path()
+
+    # Check if any test PDFs actually exist
+    test_pdf_found = False
+    for doc_id, _, _ in TEST_DOCUMENTS:
+        pdf_path = samples_dir / doc_id / "source.pdf"
+        if pdf_path.exists():
+            test_pdf_found = True
+            break
     
-    if not samples_dir.exists():
-        pytest.skip(f"Test documents directory not found. Set TEST_DOC_REPO_PATH or SAMPLES_DIR env var. Expected: {samples_dir}")
+    if not test_pdf_found:
+        pytest.skip(f"Test documents not found in {samples_dir}. Set TEST_DOC_REPO_PATH or SAMPLES_DIR env var to busibox-testdocs directory.")
     
     print("\n" + "="*80)
     print("PDF EXTRACTION TEST - SIMPLE STRATEGY")

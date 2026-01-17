@@ -35,13 +35,16 @@ PYTEST_ARGS="$*"
 
 # FAST mode: skip slow and GPU tests
 # Set via environment variable FAST=1
-# Note: Only add FAST filter if user hasn't specified their own -m filter
+# Note: Only add FAST filter if user hasn't specified their own -m filter or a specific path
 if [[ "${FAST:-}" == "1" ]]; then
-    if [[ "$PYTEST_ARGS" != *"-m "* ]]; then
+    # Don't add FAST filter if user specified a marker filter or a test path
+    if [[ "$PYTEST_ARGS" == *"-m "* ]]; then
+        info "FAST mode: disabled because -m filter was specified in ARGS"
+    elif [[ "$PYTEST_ARGS" =~ ^tests/ ]]; then
+        info "FAST mode: disabled because specific test path was specified"
+    else
         PYTEST_ARGS="-m 'not slow and not gpu' $PYTEST_ARGS"
         info "FAST mode: skipping @pytest.mark.slow and @pytest.mark.gpu tests"
-    else
-        info "FAST mode: disabled because -m filter was specified in ARGS"
     fi
 fi
 
@@ -420,6 +423,9 @@ run_docker_container_tests() {
     local service_dir="${REPO_ROOT}/srv/${service}"
     if [[ -d "${service_dir}/tests" ]]; then
         info "Syncing test files to container..."
+        # Remove old test structure in container first to avoid stale files
+        docker exec "$container_name" sh -c "rm -rf /app/tests/*" 2>/dev/null || true
+        # Copy entire tests directory with new structure
         docker cp "${service_dir}/tests/." "${container_name}:/app/tests/"
     fi
     
@@ -440,15 +446,33 @@ run_docker_container_tests() {
     
     # Install test dependencies and run tests inside container
     # Use a single exec to avoid multiple container connections
+    local test_path="tests"
     local pytest_filter=""
+    
     if [[ -n "$PYTEST_ARGS" ]]; then
-        pytest_filter="$PYTEST_ARGS"
+        # Check if PYTEST_ARGS contains a path (tests/unit, tests/integration, or a specific file)
+        if [[ "$PYTEST_ARGS" =~ ^tests/ ]]; then
+            # PYTEST_ARGS is a path, use it as test_path and no default filter
+            test_path="$PYTEST_ARGS"
+            pytest_filter=""
+        else
+            # PYTEST_ARGS is a filter/option, keep default test path
+            test_path="tests"
+            pytest_filter="$PYTEST_ARGS"
+        fi
     else
         # Default: skip slow and gpu tests
+        test_path="tests"
         pytest_filter="-m 'not slow and not gpu'"
     fi
     
-    info "Running: pytest tests -v $pytest_filter"
+    # Build the actual pytest command
+    local pytest_cmd="python -m pytest $test_path -v"
+    if [[ -n "$pytest_filter" ]]; then
+        pytest_cmd="$pytest_cmd $pytest_filter"
+    fi
+    
+    info "Running: $pytest_cmd"
     echo ""
     
     # Build test database environment variables
@@ -486,10 +510,11 @@ run_docker_container_tests() {
         -e AUTHZ_BOOTSTRAP_CLIENT_ID=ai-portal \
         -e AUTHZ_BOOTSTRAP_CLIENT_SECRET=ai-portal-secret \
         -e AUTHZ_ADMIN_TOKEN=local-admin-token \
+        -e TEST_DOC_REPO_PATH=/testdocs \
         "$container_name" \
         sh -c "pip install -q pytest pytest-asyncio httpx 2>/dev/null; \
                if [ -f /app/requirements.test.txt ]; then pip install -q -r /app/requirements.test.txt 2>/dev/null || true; fi; \
-               cd /app && python -m pytest tests -v $pytest_filter"; then
+               cd /app && $pytest_cmd"; then
         success "$service tests passed!"
         return 0
     else

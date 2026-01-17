@@ -24,7 +24,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Type, Union
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
-from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.models.openai import OpenAIChatModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.core import BusiboxDeps
@@ -201,7 +201,7 @@ class BaseStreamingAgent(StreamingAgent):
         settings = get_settings()
         
         # Create synthesis model
-        self.synthesis_model = OpenAIModel(
+        self.synthesis_model = OpenAIChatModel(
             model_name=settings.default_model,
             provider="openai",
         )
