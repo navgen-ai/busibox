@@ -89,7 +89,7 @@ Here's the complete structure your vault needs:
 ---
 # Network Configuration (Deployment-Specific)
 network_base_octets_production: "10.96.200"
-network_base_octets_test: "10.96.201"
+network_base_octets_staging: "10.96.201"
 
 # Domain Configuration (Deployment-Specific)
 base_domain: "jaycashman.com"
