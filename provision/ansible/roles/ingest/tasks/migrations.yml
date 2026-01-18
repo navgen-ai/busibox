@@ -7,7 +7,7 @@
   postgresql_user:
     name: busibox_user
     password: "{{ secrets.postgresql.password }}"
-    role_attr_flags: LOGIN
+    role_attr_flags: LOGIN,CREATEDB
     state: present
   tags: [ingest, ingest_migrations, ingest_db]
 
