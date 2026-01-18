@@ -38,6 +38,7 @@ Applications are defined in `provision/ansible/group_vars/apps.yml` using the fo
 | `env` | map | `{}` | Non-secret environment variables |
 | `build_command` | string | none | Command to run after deployment |
 | `start_command` | string | auto | Override default start command |
+| `auto_deploy` | boolean | `true` | Auto-deploy during initial provisioning (set to `false` for add-on apps managed via web UI) |
 
 ## Routing Configuration
 
@@ -257,11 +258,36 @@ applications:
 2. Add secrets to `provision/ansible/roles/secrets/vars/vault.yml`
 3. Encrypt vault: `ansible-vault encrypt provision/ansible/roles/secrets/vars/vault.yml`
 4. Run deployment: `make deploy-apps`
-5. Manually trigger initial deployment (or wait for deploywatch timer):
+5. For apps with `auto_deploy: false`, manually trigger deployment (or wait for deploywatch timer):
    ```bash
-   ssh agent-lxc
+   ssh apps-lxc
    bash /srv/deploywatch/apps/<app-name>.sh
    ```
+
+### Auto-Deploy vs Manual Deploy
+
+**Core Applications** (`auto_deploy: true`):
+- Automatically deployed during initial provisioning
+- Examples: `ai-portal`, `agent-client`
+- These are essential services required for system operation
+
+**Add-On Applications** (`auto_deploy: false`):
+- Not deployed during initial provisioning
+- Managed via web UI or manual deployment
+- Examples: `doc-intel`, `foundation`, `project-analysis`, `innovation`
+- Reduces initial deployment time and resource usage
+- Only deployed when explicitly needed
+
+To manually deploy an add-on app:
+```bash
+# Via Ansible with explicit targeting
+cd provision/ansible
+ansible-playbook site.yml --tags app_deployer -e "deploy_app=doc-intel"
+
+# Or directly via deploywatch script
+ssh apps-lxc
+bash /srv/deploywatch/apps/doc-intel.sh
+```
 
 ## Testing
 

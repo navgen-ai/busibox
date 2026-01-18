@@ -13,6 +13,10 @@
 # - 3000-3099: Public web applications
 # - 4000-4099: Internal API services
 # - 8000-8099: LLM/AI services
+#
+# Auto-Deployment:
+# - auto_deploy: true  - Deploy automatically during initial provisioning (default for core apps)
+# - auto_deploy: false - Deploy only via web UI or explicit targeting (default for add-on apps)
 
 applications:
   # ============================================================================
@@ -33,6 +37,7 @@ applications:
     health_endpoint: /api/health
     build_command: "npm run build"
     process_manager: systemd  # Use systemd for consistent logging via journalctl
+    auto_deploy: true  # Deploy by default
     routes:
       - type: path
         domain: "{{ full_domain }}"
@@ -99,6 +104,7 @@ applications:
     health_endpoint: /api/health
     build_command: "npm run build"
     process_manager: systemd  # Use systemd for consistent logging via journalctl
+    auto_deploy: true  # Deploy by default
     routes:
       - type: subdomain
         subdomain: "agents{{ env_subdomain_suffix | default('') }}"
@@ -141,6 +147,7 @@ applications:
     health_endpoint: /api/health
     build_command: "npm run build"
     process_manager: systemd  # Use systemd for consistent logging via journalctl
+    auto_deploy: false  # Deploy via web UI only
     routes:
       - type: subdomain
         subdomain: "docs{{ env_subdomain_suffix | default('') }}"
@@ -173,6 +180,7 @@ applications:
     health_endpoint: /api/health
     build_command: "npm run build"
     process_manager: systemd  # Use systemd for consistent logging via journalctl
+    auto_deploy: false  # Deploy via web UI only
     routes:
       - type: subdomain
         subdomain: "foundation{{ env_subdomain_suffix | default('') }}"
@@ -215,6 +223,7 @@ applications:
     health_endpoint: /api/health
     build_command: "npm run build"
     process_manager: systemd  # Use systemd for consistent logging via journalctl
+    auto_deploy: false  # Deploy via web UI only
     routes:
       - type: subdomain
         subdomain: "projects{{ env_subdomain_suffix | default('') }}"
@@ -257,6 +266,7 @@ applications:
     health_endpoint: /api/health
     build_command: "npm run build"
     process_manager: systemd
+    auto_deploy: false  # Deploy via web UI only
     routes:
       - type: subdomain
         subdomain: "innovation{{ env_subdomain_suffix | default('') }}"
