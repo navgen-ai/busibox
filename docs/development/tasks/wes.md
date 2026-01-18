@@ -85,8 +85,9 @@ currently in fullchat the thinking toggle doesnt't appear immediately, is closed
 
 Future features
 [ ] - agents can manage their own insights/memories and consult when running
-[ ] - integration with whatsapp/sms via twilio
-
+[ ] - integration with whatsapp/sms, signal etc. (bridge service)
+[ ] - make demo
+[ ]
 4 - improve existing agents - chat (has websearch, filesearch, upload), web search (focus on deep research), RAG Search Agent
 
 

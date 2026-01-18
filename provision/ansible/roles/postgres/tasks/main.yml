@@ -279,6 +279,61 @@
   when: "'files' in (app_databases | default([]))"
   tags: [postgres]
 
+- name: Ensure ai_portal database exists with correct owner
+  become_user: postgres
+  postgresql_db:
+    name: ai_portal
+    owner: "{{ postgres_user }}"
+    encoding: UTF8
+    lc_collate: en_US.UTF-8
+    lc_ctype: en_US.UTF-8
+    template: template0
+    state: present
+  tags: [postgres]
+
+- name: Fix ai_portal database permissions
+  become_user: postgres
+  postgresql_query:
+    db: ai_portal
+    query: |
+      -- Grant ownership of database
+      ALTER DATABASE ai_portal OWNER TO {{ postgres_user }};
+      
+      -- Grant ownership of all tables in public schema
+      DO $$
+      DECLARE
+        tbl RECORD;
+      BEGIN
+        FOR tbl IN SELECT tablename FROM pg_tables WHERE schemaname = 'public'
+        LOOP
+          EXECUTE 'ALTER TABLE public.' || quote_ident(tbl.tablename) || ' OWNER TO {{ postgres_user }}';
+        END LOOP;
+      END $$;
+      
+      -- Grant ownership of all sequences
+      DO $$
+      DECLARE
+        seq RECORD;
+      BEGIN
+        FOR seq IN SELECT sequencename FROM pg_sequences WHERE schemaname = 'public'
+        LOOP
+          EXECUTE 'ALTER SEQUENCE public.' || quote_ident(seq.sequencename) || ' OWNER TO {{ postgres_user }}';
+        END LOOP;
+      END $$;
+      
+      -- Grant schema usage
+      GRANT USAGE ON SCHEMA public TO {{ postgres_user }};
+      GRANT CREATE ON SCHEMA public TO {{ postgres_user }};
+      
+      -- Grant all privileges on all tables
+      GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO {{ postgres_user }};
+      GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO {{ postgres_user }};
+      
+      -- Set default privileges for future objects
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO {{ postgres_user }};
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO {{ postgres_user }};
+  tags: [postgres]
+
 - name: Apply database migrations (main database)
   become_user: postgres
   shell: |
