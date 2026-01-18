@@ -173,7 +173,16 @@
   register: npm_install
   failed_when: npm_install.rc != 0
 
-- name: Run Prisma generate (if Prisma is used)
+- name: Create database and run migrations (Prisma apps)
+  shell: "{{ lookup('template', 'prisma-setup.sh.j2') }}"
+  args:
+    executable: /bin/bash
+    chdir: "{{ app_to_deploy.deploy_path }}"
+  delegate_to: "{{ app_to_deploy.container_ip }}"
+  register: db_setup_result
+  failed_when: db_setup_result.rc != 0
+
+- name: Run Prisma generate after database setup (if Prisma is used)
   shell: |
     cd {{ app_to_deploy.deploy_path }}
     if [ -f "prisma/schema.prisma" ]; then
@@ -185,15 +194,6 @@
   delegate_to: "{{ app_to_deploy.container_ip }}"
   register: prisma_result
   failed_when: false  # Don't fail if Prisma isn't used
-
-- name: Create database and run migrations (Prisma apps)
-  shell: "{{ lookup('template', 'prisma-setup.sh.j2') }}"
-  args:
-    executable: /bin/bash
-    chdir: "{{ app_to_deploy.deploy_path }}"
-  delegate_to: "{{ app_to_deploy.container_ip }}"
-  register: db_setup_result
-  failed_when: db_setup_result.rc != 0
 
 - name: Display database setup output
   debug:
