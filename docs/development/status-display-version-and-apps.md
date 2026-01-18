@@ -7,6 +7,8 @@ category: development
 
 # Status Display - Version Tracking and App Detection
 
+> **Note**: This document references `scripts/docker-rebuild-with-version.sh` which has been removed. Version tracking is now automatic in the Makefile - just use `make docker-build`.
+
 ## Issues
 
 After implementing the status display system, two issues remained:

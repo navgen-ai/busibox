@@ -567,6 +567,7 @@ get_sync_indicator() {
     case "$sync_state" in
         synced) echo -e "${GREEN}✓ synced${NC}" ;;
         behind) echo -e "${YELLOW}⚠ behind${NC}" ;;
+        local) echo -e "${BLUE}◆ local${NC}" ;;
         checking) echo -e "${DIM}checking...${NC}" ;;
         unknown) echo -e "${DIM}- unknown${NC}" ;;
         *) echo -e "${DIM}- unknown${NC}" ;;
@@ -600,11 +601,12 @@ render_service_line() {
     status_json=$(get_service_status_from_cache "$service" "$env" 2>/dev/null)
     
     # Parse JSON (using jq if available, otherwise basic parsing)
-    local status health version sync_state response_time
+    local status health version current_version sync_state response_time
     if command -v jq &>/dev/null; then
         status=$(echo "$status_json" | jq -r '.status // "checking"')
         health=$(echo "$status_json" | jq -r '.health // "checking"')
         version=$(echo "$status_json" | jq -r '.version // "checking"')
+        current_version=$(echo "$status_json" | jq -r '.current_version // "checking"')
         sync_state=$(echo "$status_json" | jq -r '.sync_state // "checking"')
         response_time=$(echo "$status_json" | jq -r '.response_time_ms // 0')
     else
@@ -612,6 +614,7 @@ render_service_line() {
         status="checking"
         health="checking"
         version="checking"
+        current_version="checking"
         sync_state="checking"
         response_time=0
     fi
@@ -623,19 +626,36 @@ render_service_line() {
     local sync_indicator=$(get_sync_indicator "$sync_state" "$version")
     local time_display=$(format_response_time "$response_time")
     
-    # Format version (truncate if too long)
+    # Format versions (truncate if too long)
     local version_display="$version"
     if [[ ${#version} -gt 7 ]]; then
         version_display="${version:0:7}"
     fi
     
+    local current_display="$current_version"
+    if [[ ${#current_version} -gt 7 ]]; then
+        current_display="${current_version:0:7}"
+    fi
+    
+    # Show both deployed and current versions
+    local version_info
+    if [[ "$version" == "checking" || "$current_version" == "checking" ]]; then
+        version_info="${version_display}"
+    elif [[ "$version" == "local" ]]; then
+        version_info="local → ${current_display}"
+    elif [[ "$version" == "$current_version" ]]; then
+        version_info="${version_display}"
+    else
+        version_info="${version_display} → ${current_display}"
+    fi
+    
     # Render line with proper spacing
-    # Format: "  ● ServiceName    ✓ up   │ a1b2c3d  ✓ synced  │ 45ms"
-    printf "  %s %-15s %s │ %-7s  %s │ %s\n" \
+    # Format: "  ● ServiceName    ✓ up   │ a1b2c3d → b2c3d4e  ✓ synced  │ 45ms"
+    printf "  %s %-15s %s │ %-18s %s │ %s\n" \
         "$status_symbol" \
         "$display_name" \
         "$health_indicator" \
-        "$version_display" \
+        "$version_info" \
         "$sync_indicator" \
         "$time_display"
 }

@@ -127,7 +127,7 @@ start_services() {
     echo "  - Milvus:         localhost:19530"
     echo "  - Redis:          localhost:6379"
     print_info ""
-    print_info "Use './scripts/setup-local-docker.sh logs' to view logs"
+    print_info "Use './scripts/docker/setup-local-docker.sh logs' to view logs"
 }
 
 # Stop services
@@ -194,7 +194,7 @@ do_setup() {
     print_info ""
     print_info "Next steps:"
     echo "  1. Edit .env.local and add your API keys"
-    echo "  2. Run './scripts/setup-local-docker.sh start' to start services"
+    echo "  2. Run './scripts/docker/setup-local-docker.sh start' to start services"
 }
 
 # Show help
