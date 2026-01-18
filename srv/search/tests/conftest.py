@@ -21,11 +21,12 @@ from typing import Dict, List
 from unittest.mock import Mock, AsyncMock
 
 # Add shared testing library to path
-# When deployed: /opt/search/test_utils/testing/
-# When local: ../../test_utils/testing/
+# When deployed: /opt/search/src/testing/ (via Ansible copy)
+# When local Docker: /app/shared/testing/ (via PYTHONPATH=/app/shared)
+# When local dev: ../../srv/shared/testing/
 _test_utils_paths = [
-    os.path.join(os.path.dirname(__file__), "..", "test_utils"),  # Deployed: /opt/search/test_utils
-    os.path.join(os.path.dirname(__file__), "..", "..", "test_utils"),  # Local: srv/test_utils
+    os.path.join(os.path.dirname(__file__), "..", "src"),  # Deployed: /opt/search/src (contains testing/)
+    os.path.join(os.path.dirname(__file__), "..", "..", "shared"),  # Local: srv/shared (contains testing/)
 ]
 for _path in _test_utils_paths:
     if os.path.exists(_path) and _path not in sys.path:

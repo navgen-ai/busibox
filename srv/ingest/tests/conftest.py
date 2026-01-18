@@ -12,11 +12,12 @@ import sys
 from pathlib import Path
 
 # Add shared testing library to path FIRST (before any other imports)
-# When deployed: /opt/ingest/test_utils/testing/
-# When local: ../../test_utils/testing/
+# When deployed: /srv/ingest/src/testing/ (via PYTHONPATH=/srv/ingest/src)
+# When local Docker: /app/shared/testing/ (via PYTHONPATH=/app/src:/app:/app/shared)
+# When local dev: ../../srv/shared/testing/
 _test_utils_paths = [
-    os.path.join(os.path.dirname(__file__), "..", "test_utils"),  # Deployed: /opt/ingest/test_utils
-    os.path.join(os.path.dirname(__file__), "..", "..", "test_utils"),  # Local: srv/test_utils
+    os.path.join(os.path.dirname(__file__), "..", "src"),  # Deployed: /srv/ingest/src (contains testing/)
+    os.path.join(os.path.dirname(__file__), "..", "..", "shared"),  # Local: srv/shared (contains testing/)
 ]
 for _path in _test_utils_paths:
     if os.path.exists(_path) and _path not in sys.path:
