@@ -259,7 +259,7 @@ get_deployed_version() {
             # Handle host-based services (not in Docker)
             case "$service" in
                 ai-portal)
-                    # Get version from ai-portal repo
+                    # For local dev, deployed = current running version
                     if [[ -d "${REPO_ROOT}/../ai-portal" ]]; then
                         (cd "${REPO_ROOT}/../ai-portal" && git rev-parse --short HEAD 2>/dev/null) || echo "unknown"
                     else
@@ -268,7 +268,7 @@ get_deployed_version() {
                     return
                     ;;
                 agent-manager)
-                    # Get version from agent-manager repo
+                    # For local dev, deployed = current running version
                     if [[ -d "${REPO_ROOT}/../agent-manager" ]]; then
                         (cd "${REPO_ROOT}/../agent-manager" && git rev-parse --short HEAD 2>/dev/null) || echo "unknown"
                     else
@@ -295,11 +295,11 @@ get_deployed_version() {
                 *) container_name="local-${service}" ;;
             esac
             
-            # Try label first
+            # Try label first (set during docker compose build with GIT_COMMIT)
             local version
             version=$(docker inspect "$container_name" --format '{{.Config.Labels.version}}' 2>/dev/null)
             
-            if [[ -n "$version" && "$version" != "<no value>" ]]; then
+            if [[ -n "$version" && "$version" != "<no value>" && "$version" != "unknown" ]]; then
                 echo "$version"
                 return 0
             fi
@@ -320,7 +320,8 @@ get_deployed_version() {
             if [[ -n "$version" ]]; then
                 echo "$version"
             else
-                echo "unknown"
+                # For local Docker, if no version info, return "local" to indicate it's a local build
+                echo "local"
             fi
             ;;
             
@@ -384,12 +385,15 @@ get_current_version() {
 
 # Compare deployed vs current version
 # Usage: compare_versions "a1b2c3d" "a1b2c3d"
-# Returns: "synced", "behind", or "unknown"
+# Returns: "synced", "behind", "local", or "unknown"
 compare_versions() {
     local deployed=$1
     local current=$2
     
-    if [[ "$deployed" == "unknown" || "$current" == "unknown" ]]; then
+    if [[ "$deployed" == "local" ]]; then
+        # Local build without version tracking
+        echo "local"
+    elif [[ "$deployed" == "unknown" || "$current" == "unknown" ]]; then
         echo "unknown"
     elif [[ "$deployed" == "$current" ]]; then
         echo "synced"

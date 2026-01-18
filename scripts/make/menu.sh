@@ -784,7 +784,9 @@ handle_deploy() {
                         if confirm "Build all Docker images (this may take a while)?"; then
                             save_last_command "make docker-build"
                             (cd "$REPO_ROOT" && make docker-build)
-                            set_install_status "configured"
+                            # Don't set status - let health check determine it
+                            # Refresh status cache after build
+                            refresh_all_services_async "$env" "$backend" &
                         fi
                         pause
                         ;;

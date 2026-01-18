@@ -278,17 +278,19 @@ ssl-check:
 
 # Build Docker images
 docker-build: ssl-check _ensure-env
+	$(eval GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown"))
+	@echo "Building with version: $(GIT_COMMIT)"
 ifdef SERVICE
 ifdef NO_CACHE
-	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) build --no-cache $(SERVICE)
+	GIT_COMMIT=$(GIT_COMMIT) docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) build --no-cache $(SERVICE)
 else
-	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) build $(SERVICE)
+	GIT_COMMIT=$(GIT_COMMIT) docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) build $(SERVICE)
 endif
 else
 ifdef NO_CACHE
-	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) build --no-cache
+	GIT_COMMIT=$(GIT_COMMIT) docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) build --no-cache
 else
-	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) build
+	GIT_COMMIT=$(GIT_COMMIT) docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) build
 endif
 endif
 
