@@ -21,16 +21,50 @@
     state: present
     update_cache: yes
 
+- name: Check current deployed version
+  stat:
+    path: /opt/agent-api/.deploy_version
+  register: agent_deploy_version_file
+
+- name: Read current deployed version
+  slurp:
+    path: /opt/agent-api/.deploy_version
+  register: agent_current_version_content
+  when: agent_deploy_version_file.stat.exists
+
+- name: Parse current deployed version
+  set_fact:
+    agent_current_commit: "{{ (agent_current_version_content.content | b64decode | from_json).commit | default('') }}"
+  when: agent_deploy_version_file.stat.exists
+
+- name: Get new version to deploy
+  set_fact:
+    agent_new_commit: "{{ lookup('pipe', 'git rev-parse --short HEAD', cwd=playbook_dir + '/../..') }}"
+
+- name: Check if deployment is needed
+  set_fact:
+    agent_deployment_needed: "{{ not agent_deploy_version_file.stat.exists or agent_current_commit != agent_new_commit }}"
+
+- name: Display version check
+  debug:
+    msg: |
+      Agent API Version Check:
+      - Current deployed: {{ agent_current_commit | default('none') }}
+      - New version: {{ agent_new_commit }}
+      - Deployment needed: {{ agent_deployment_needed }}
+
 - name: Stop agent-api service if running (to allow cleanup)
   systemd:
     name: agent-api
     state: stopped
   ignore_errors: yes
+  when: agent_deployment_needed
 
 - name: Clean up old agent directory (from previous Node.js deployment)
   file:
     path: /srv/agent
     state: absent
+  when: agent_deployment_needed
 
 - name: Create agent directories
   file:
@@ -43,6 +77,7 @@
     - /srv/agent
     - "{{ agent_api_log_path }}"
     - /opt/agent-api
+  when: agent_deployment_needed
 
 - name: Copy agent service source code
   synchronize:
@@ -59,6 +94,7 @@
       - "--exclude=htmlcov"
       - "--exclude=.coverage"
   notify: Restart agent-api
+  when: agent_deployment_needed
 
 - name: Copy shared testing library
   synchronize:
@@ -68,6 +104,7 @@
     rsync_opts:
       - "--exclude=__pycache__"
       - "--exclude=*.pyc"
+  when: agent_deployment_needed
 
 - name: Copy shared busibox_common library
   synchronize:
@@ -78,6 +115,7 @@
       - "--exclude=__pycache__"
       - "--exclude=*.pyc"
   notify: Restart agent-api
+  when: agent_deployment_needed
 
 - name: Fix ownership of agent directory
   file:
@@ -85,6 +123,7 @@
     owner: "{{ agent_api_user }}"
     group: "{{ agent_api_user }}"
     recurse: yes
+  when: agent_deployment_needed
 
 - name: Create Python virtual environment
   command: python3 -m venv "{{ agent_api_venv_path }}"
@@ -92,6 +131,7 @@
     creates: "{{ agent_api_venv_path }}/bin/python"
   become: yes
   become_user: "{{ agent_api_user }}"
+  when: agent_deployment_needed
 
 - name: Upgrade pip in venv
   pip:
@@ -100,6 +140,7 @@
     virtualenv: "{{ agent_api_venv_path }}"
   become: yes
   become_user: "{{ agent_api_user }}"
+  when: agent_deployment_needed
 
 - name: Install agent service dependencies
   pip:
@@ -111,6 +152,7 @@
   become: yes
   become_user: "{{ agent_api_user }}"
   notify: Restart agent-api
+  when: agent_deployment_needed
 
 - name: Install test dependencies
   pip:
@@ -118,6 +160,7 @@
     virtualenv: "{{ agent_api_venv_path }}"
   become: yes
   become_user: "{{ agent_api_user }}"
+  when: agent_deployment_needed
 
 - name: Deploy agent service environment file
   template:
