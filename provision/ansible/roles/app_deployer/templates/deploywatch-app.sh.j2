@@ -354,7 +354,7 @@ EOF
         
         if [[ "$needs_dev" == "true" ]]; then
             log_info "Installing all dependencies (including dev) for migrations/build"
-            if npm install 2>&1 | sed 's/^/[npm] /' >&2; then
+            if npm install --legacy-peer-deps 2>&1 | sed 's/^/[npm] /' >&2; then
                 log_success "Dependencies installed successfully"
                 return 0
             else
@@ -363,7 +363,7 @@ EOF
             fi
         else
             log_info "Installing production dependencies only"
-            if npm install --production 2>&1 | sed 's/^/[npm] /' >&2; then
+            if npm install --production --legacy-peer-deps 2>&1 | sed 's/^/[npm] /' >&2; then
                 log_success "Dependencies installed successfully"
                 return 0
             else

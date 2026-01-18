@@ -40,6 +40,7 @@
     - not item.skipped | default(false)
     - deploy_app is not defined or deploy_app == item.item.name
     - item.item.local_src is not defined
+    - item.item.auto_deploy | default(true)  # Only deploy if auto_deploy is true (default: true for backwards compatibility)
   register: initial_deployment
   failed_when: initial_deployment.rc is defined and initial_deployment.rc != 0
   async: 1800  # 30 minutes timeout for deployment
