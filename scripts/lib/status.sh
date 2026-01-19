@@ -166,23 +166,53 @@ check_service_status() {
             ;;
             
         proxmox)
-            # Check systemd service on container via SSH
+            # Check service on container via SSH
             local container_ip=$(get_service_ip "$service" "$env" "$backend")
-            local service_name
             
-            # Map service names to systemd units
+            # Some services run in Docker containers on Proxmox, others as systemd services
             case "$service" in
-                postgres) service_name="postgresql" ;;
-                minio) service_name="minio" ;;
-                milvus) service_name="milvus-standalone" ;;
-                *) service_name="$service" ;;
+                milvus)
+                    # Milvus runs in Docker
+                    if timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no "root@${container_ip}" "docker ps --filter 'name=milvus-standalone' --filter 'status=running' --format '{{.Names}}' 2>/dev/null" | grep -q "milvus-standalone"; then
+                        echo "up"
+                    else
+                        echo "down"
+                    fi
+                    ;;
+                minio)
+                    # MinIO runs in Docker  
+                    if timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no "root@${container_ip}" "docker ps --filter 'name=minio' --filter 'status=running' --format '{{.Names}}' 2>/dev/null" | grep -q "minio"; then
+                        echo "up"
+                    else
+                        echo "down"
+                    fi
+                    ;;
+                postgres)
+                    # PostgreSQL is systemd
+                    if timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no "root@${container_ip}" "systemctl is-active postgresql" 2>/dev/null | grep -q "^active$"; then
+                        echo "up"
+                    else
+                        echo "down"
+                    fi
+                    ;;
+                agent-manager)
+                    # Agent manager is systemd but service name might be agent-client (legacy)
+                    if timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no "root@${container_ip}" "systemctl is-active agent-manager 2>/dev/null || systemctl is-active agent-client 2>/dev/null" | grep -q "^active$"; then
+                        echo "up"
+                    else
+                        echo "down"
+                    fi
+                    ;;
+                *)
+                    # Default: check systemd with service name matching our service key
+                    local service_name="${service//-/_}"
+                    if timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no "root@${container_ip}" "systemctl is-active ${service_name}" 2>/dev/null | grep -q "^active$"; then
+                        echo "up"
+                    else
+                        echo "down"
+                    fi
+                    ;;
             esac
-            
-            if timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no "root@${container_ip}" "systemctl is-active ${service_name}" 2>/dev/null | grep -q "^active$"; then
-                echo "up"
-            else
-                echo "down"
-            fi
             ;;
             
         *)

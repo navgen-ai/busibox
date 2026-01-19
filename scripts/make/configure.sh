@@ -705,10 +705,11 @@ secrets_configuration() {
             "Generate TOKEN_SERVICE Keys (agent-server)" \
             "Edit Ansible Vault (secrets)" \
             "View Vault Variables (masked)" \
+            "Sync Vault with Example (update structure)" \
             "Back"
         
         local choice=""
-        read -p "$(echo -e "${BOLD}Select option [1-4]:${NC} ")" choice
+        read -p "$(echo -e "${BOLD}Select option [1-5]:${NC} ")" choice
         
         case "${choice:-}" in
             1)
@@ -729,7 +730,11 @@ secrets_configuration() {
                 cd "${REPO_ROOT}"
                 pause
                 ;;
-            4|b|B|"")
+            4)
+                bash "${REPO_ROOT}/scripts/vault/sync-vault.sh" || error "Failed"
+                pause
+                ;;
+            5|b|B|"")
                 return 0
                 ;;
         esac
@@ -749,16 +754,37 @@ docker_menu() {
         echo ""
         menu "Docker Configuration" \
             "App Configuration (admin, OAuth clients)" \
+            "Edit Ansible Vault (secrets)" \
+            "View Vault Variables (masked)" \
+            "Sync Vault with Example (update structure)" \
             "Back to Main Menu"
         
         local choice=""
-        read -p "$(echo -e "${BOLD}Select option [1-2]:${NC} ")" choice
+        read -p "$(echo -e "${BOLD}Select option [1-5]:${NC} ")" choice
         
         case "${choice:-}" in
             1)
                 app_configuration
                 ;;
-            2|b|B|"")
+            2)
+                header "Edit Ansible Vault" 70
+                cd "${REPO_ROOT}/provision/ansible"
+                ansible-vault edit roles/secrets/vars/vault.yml || error "Failed to edit vault"
+                cd "${REPO_ROOT}"
+                pause
+                ;;
+            3)
+                header "View Vault Variables" 70
+                cd "${REPO_ROOT}/provision/ansible"
+                ansible-vault view roles/secrets/vars/vault.yml | grep -E "^[a-z_]+:" | sed 's/:.*$/: <masked>/' || error "Failed"
+                cd "${REPO_ROOT}"
+                pause
+                ;;
+            4)
+                bash "${REPO_ROOT}/scripts/vault/sync-vault.sh" || error "Failed"
+                pause
+                ;;
+            5|b|B|"")
                 return 0
                 ;;
         esac
