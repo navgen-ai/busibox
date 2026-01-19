@@ -563,18 +563,29 @@ get_deployed_version() {
                     ;;
                     
                 minio)
-                    # MinIO often uses "latest" tag
+                    # Read minio_version from deploy file, fallback to docker exec
                     version=$(timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no \
                         "root@${container_ip}" \
-                        "docker inspect minio --format '{{.Config.Image}}' 2>/dev/null | sed 's/.*://'" 2>/dev/null)
-                    [[ "$version" == "" ]] && version="latest"
+                        "cat /opt/minio/.deploy_version 2>/dev/null" 2>/dev/null | jq -r '.minio_version // empty' 2>/dev/null)
+                    # If deploy file doesn't have version, get from running container
+                    if [[ -z "$version" || "$version" == "unknown" ]]; then
+                        version=$(timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no \
+                            "root@${container_ip}" \
+                            "docker exec minio-minio-1 minio --version 2>/dev/null | grep -oE 'RELEASE\.[0-9T-]+' | head -1" 2>/dev/null)
+                    fi
                     ;;
                     
                 litellm)
-                    # LiteLLM runs in Docker on agent-lxc - read .deploy_version file
+                    # Read litellm_version from deploy file, fallback to pip version
                     version=$(timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no \
                         "root@${container_ip}" \
-                        "cat /opt/litellm/.deploy_version 2>/dev/null" 2>/dev/null | jq -r '.commit // empty' 2>/dev/null | cut -c1-7)
+                        "cat /opt/litellm/.deploy_version 2>/dev/null" 2>/dev/null | jq -r '.litellm_version // empty' 2>/dev/null)
+                    # If deploy file doesn't have version, get from pip
+                    if [[ -z "$version" || "$version" == "latest" ]]; then
+                        version=$(timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no \
+                            "root@${container_ip}" \
+                            "/opt/litellm/venv/bin/pip show litellm 2>/dev/null | grep -oE 'Version: [0-9.]+' | sed 's/Version: //'" 2>/dev/null)
+                    fi
                     ;;
                     
                 # Nginx - check version and format as "alpine" to match docker image naming
@@ -622,42 +633,44 @@ get_deployed_version() {
 get_current_version() {
     local service=$1
     
-    # For external services, get expected version from docker-compose.yml (package@config)
+    # For infrastructure services, get expected version
+    # For pinned versions: read from docker-compose
+    # For "latest": query the actual latest version from registry/PyPI
     case "$service" in
         milvus)
-            local pkg_ver=$(grep -A 1 "milvus:" "${REPO_ROOT}/docker-compose.local.yml" | grep "image:" | sed 's/.*milvus://' || echo "unknown")
-            local cfg_ver=$(cd "${REPO_ROOT}" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-            echo "${pkg_ver}@${cfg_ver}"
+            # Milvus has a pinned version in docker-compose
+            local pkg_ver=$(grep -A 2 "milvus:" "${REPO_ROOT}/docker-compose.local.yml" | grep "image:" | sed 's/.*://' || echo "unknown")
+            echo "$pkg_ver"
             return
             ;;
         minio)
-            local pkg_ver=$(grep "image: minio/minio:latest" "${REPO_ROOT}/docker-compose.local.yml" | head -1 | sed 's/.*://' || echo "unknown")
-            local cfg_ver=$(cd "${REPO_ROOT}" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-            echo "${pkg_ver}@${cfg_ver}"
+            # Query Docker Hub for latest MinIO version
+            local latest_ver=$(curl -s "https://hub.docker.com/v2/repositories/minio/minio/tags?page_size=1&name=RELEASE" 2>/dev/null | \
+                jq -r '.results[0].name // empty' 2>/dev/null)
+            echo "${latest_ver:-unknown}"
             return
             ;;
         litellm)
-            local pkg_ver=$(grep "image: ghcr.io/berriai/litellm:" "${REPO_ROOT}/docker-compose.local.yml" | sed 's/.*://' || echo "unknown")
-            local cfg_ver=$(cd "${REPO_ROOT}" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-            echo "${pkg_ver}@${cfg_ver}"
+            # Query PyPI for latest LiteLLM version
+            local latest_ver=$(curl -s "https://pypi.org/pypi/litellm/json" 2>/dev/null | \
+                jq -r '.info.version // empty' 2>/dev/null)
+            echo "${latest_ver:-unknown}"
             return
             ;;
         postgres)
+            # PostgreSQL has a pinned version
             local pkg_ver=$(grep "image: postgres:" "${REPO_ROOT}/docker-compose.local.yml" | head -1 | sed 's/.*://' || echo "unknown")
-            local cfg_ver=$(cd "${REPO_ROOT}" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-            echo "${pkg_ver}@${cfg_ver}"
+            echo "$pkg_ver"
             return
             ;;
         redis)
             local pkg_ver=$(grep "image: redis:" "${REPO_ROOT}/docker-compose.local.yml" | sed 's/.*://' || echo "unknown")
-            local cfg_ver=$(cd "${REPO_ROOT}" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-            echo "${pkg_ver}@${cfg_ver}"
+            echo "$pkg_ver"
             return
             ;;
         nginx)
             local pkg_ver=$(grep "image: nginx:" "${REPO_ROOT}/docker-compose.local.yml" | head -1 | sed 's/.*://' || echo "unknown")
-            local cfg_ver=$(cd "${REPO_ROOT}" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-            echo "${pkg_ver}@${cfg_ver}"
+            echo "$pkg_ver"
             return
             ;;
     esac
@@ -735,24 +748,18 @@ compare_versions() {
     if [[ "$deployed" == "local" ]]; then
         # Local build without version tracking
         echo "local"
-    elif [[ "$deployed" == "unknown" || "$current" == "unknown" ]]; then
+    elif [[ "$deployed" == "unknown" || "$current" == "unknown" || -z "$deployed" || -z "$current" ]]; then
         echo "unknown"
     elif [[ "$deployed" == "$current" ]]; then
         echo "synced"
     else
-        # For external services with package@config format, check if either part differs
-        if [[ "$deployed" == *"@"* && "$current" == *"@"* ]]; then
-            local dep_pkg="${deployed%%@*}"
-            local dep_cfg="${deployed##*@}"
-            local cur_pkg="${current%%@*}"
-            local cur_cfg="${current##*@}"
-            
-            # If either package or config is behind, show as behind
-            if [[ "$dep_pkg" != "$cur_pkg" || "$dep_cfg" != "$cur_cfg" ]]; then
-                echo "behind"
-            else
-                echo "synced"
-            fi
+        # Extract base versions (strip @config suffix if present)
+        local dep_base="${deployed%%@*}"
+        local cur_base="${current%%@*}"
+        
+        # If base versions match, consider synced (config hash can differ)
+        if [[ "$dep_base" == "$cur_base" ]]; then
+            echo "synced"
         else
             echo "behind"
         fi

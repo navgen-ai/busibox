@@ -140,6 +140,12 @@
     mode: '0755'
   tags: [litellm_configure]
 
+- name: Get actual installed LiteLLM version
+  shell: "{{ litellm_venv_dir }}/bin/pip show litellm 2>/dev/null | grep -oE 'Version: [0-9.]+' | sed 's/Version: //'"
+  register: litellm_installed_version
+  changed_when: false
+  tags: [litellm_configure]
+
 - name: Write deployment version file for LiteLLM
   copy:
     content: |
@@ -148,7 +154,7 @@
         "branch": "{{ lookup('pipe', 'git branch --show-current', cwd=playbook_dir + '/../..') }}",
         "timestamp": "{{ ansible_date_time.iso8601 }}",
         "deployed_by": "ansible",
-        "litellm_version": "{{ litellm_version | default('latest') }}"
+        "litellm_version": "{{ litellm_installed_version.stdout | default('unknown') }}"
       }
     dest: /opt/litellm/.deploy_version
     mode: "0644"
