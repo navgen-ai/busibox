@@ -92,21 +92,48 @@
   become_user: "{{ litellm_user }}"
   tags: [litellm_install]
 
-- name: Fix database permissions for LiteLLM (if tables exist with wrong owner)
+- name: Fix database table ownership for LiteLLM (change from test user to configured user)
   shell: |
+    set -e
     # Extract database connection details from URL
     DB_URL="{{ litellm_database_url }}"
     DB_NAME=$(echo "$DB_URL" | sed -n 's|.*@[^/]*/\([^?]*\).*|\1|p')
     DB_USER=$(echo "$DB_URL" | sed -n 's|.*://\([^:]*\):.*|\1|p')
     
-    # Grant all permissions on existing LiteLLM tables to the configured user
-    psql "$DB_URL" -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO ${DB_USER};" 2>/dev/null || true
-    psql "$DB_URL" -c "GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO ${DB_USER};" 2>/dev/null || true
-    psql "$DB_URL" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${DB_USER};" 2>/dev/null || true
+    echo "Fixing ownership for database: $DB_NAME, user: $DB_USER"
+    
+    # Change ownership of all LiteLLM tables to the configured user
+    for table in $(psql "$DB_URL" -t -c "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND (tablename LIKE 'LiteLLM_%' OR tablename = '_prisma_migrations');" 2>/dev/null | tr -d ' '); do
+      if [ -n "$table" ]; then
+        echo "Changing ownership of table: $table"
+        psql "$DB_URL" -c "ALTER TABLE \"$table\" OWNER TO ${DB_USER};" 2>/dev/null || echo "  Failed to change ownership of $table"
+      fi
+    done
+    
+    # Change ownership of all sequences
+    for seq in $(psql "$DB_URL" -t -c "SELECT sequencename FROM pg_sequences WHERE schemaname = 'public';" 2>/dev/null | tr -d ' '); do
+      if [ -n "$seq" ]; then
+        echo "Changing ownership of sequence: $seq"
+        psql "$DB_URL" -c "ALTER SEQUENCE \"$seq\" OWNER TO ${DB_USER};" 2>/dev/null || echo "  Failed to change ownership of $seq"
+      fi
+    done
+    
+    echo "Ownership changes complete"
   args:
     executable: /bin/bash
+  become: yes
+  become_user: root
   when: litellm_enable_database
+  register: ownership_fix
   failed_when: false
+  tags: [litellm_install]
+
+- name: Display ownership fix results
+  debug:
+    msg: "{{ ownership_fix.stdout_lines }}"
+  when: 
+    - litellm_enable_database
+    - ownership_fix.stdout_lines is defined
   tags: [litellm_install]
 
 - name: Generate Prisma binaries for LiteLLM database support
