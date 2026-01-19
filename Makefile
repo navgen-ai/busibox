@@ -1,6 +1,7 @@
 .PHONY: menu help setup configure deploy test test-local test-docker test-security mcp \
         docker-up docker-start docker-down docker-restart docker-build docker-logs docker-ps docker-clean \
-        vault-generate-env vault-migrate vault-sync ssl-check
+        vault-generate-env vault-migrate vault-sync ssl-check \
+        demo demo-warmup demo-clean demo-status
 
 # Default target - interactive menu with health check
 .DEFAULT_GOAL := menu
@@ -329,6 +330,47 @@ docker-clean:
 	else \
 		echo "Cancelled."; \
 	fi
+
+# ============================================================================
+# DEMO MODE
+# ============================================================================
+# One-command demo for investor presentations and air-gap demonstrations.
+# Automatically detects system architecture and RAM to select optimal models.
+#
+# Usage:
+#   make demo-warmup   # Pre-download everything (run with network)
+#   make demo          # Start the full demo (can run offline after warmup)
+#   make demo-clean    # Stop demo and clean up
+#   make demo-status   # Show current demo status
+
+# Run the full demo (start all services with local LLM)
+# Prerequisites: Docker Desktop, 16GB+ RAM
+# For offline mode: run 'make demo-warmup' first
+demo:
+	@bash scripts/demo/check-prereqs.sh
+	@bash scripts/demo/demo.sh
+
+# Pre-download everything for offline demo
+# Requires: GitHub authentication (gh auth login)
+# Downloads: repos, models (MLX or vLLM), Docker images
+demo-warmup:
+	@bash scripts/demo/check-prereqs.sh
+	@bash scripts/demo/warmup.sh
+
+# Stop demo and optionally remove data
+# Use ARGS=--all to remove all data volumes
+demo-clean:
+	@bash scripts/demo/clean.sh $(ARGS)
+
+# Show demo status (system info, running services)
+demo-status:
+	@echo ""
+	@echo "=== Demo System Info ==="
+	@bash scripts/demo/detect-system.sh
+	@echo ""
+	@echo "=== Docker Services ==="
+	@docker compose -f $(COMPOSE_FILE) ps 2>/dev/null || echo "No services running"
+	@echo ""
 
 # ============================================================================
 # VAULT & ENV MANAGEMENT

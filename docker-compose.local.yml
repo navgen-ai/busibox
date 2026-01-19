@@ -852,6 +852,44 @@ services:
       - busibox-net
 
 # ===========================================================================
+  # LOCAL LLM INFERENCE (Demo Mode)
+  # ===========================================================================
+
+  # vLLM - Local LLM Inference (x86/Linux with NVIDIA GPU)
+  # Only starts with: docker compose --profile demo-vllm up
+  # For Apple Silicon, use start-mlx-server.sh instead (runs natively on host)
+  vllm:
+    profiles: ["demo-vllm"]
+    image: vllm/vllm-openai:latest
+    container_name: local-vllm
+    hostname: vllm
+    command: >
+      --model Qwen/Qwen2.5-7B-Instruct-AWQ
+      --quantization awq
+      --max-model-len 8192
+      --host 0.0.0.0
+      --port 8000
+    ports:
+      - "8080:8000"
+    volumes:
+      - vllm_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 120s
+      retries: 5
+    networks:
+      - busibox-net
+
+# ===========================================================================
 # VOLUMES
 # ===========================================================================
 
@@ -868,6 +906,8 @@ volumes:
   # Includes: .cache/huggingface, .cache/datalab, .cache/torch, etc.
   # Persists across container rebuilds and survives docker-compose down
   model_cache:
+  # vLLM cache - for demo mode on x86/Linux with NVIDIA GPU
+  vllm_cache:
 
 # ===========================================================================
 # NETWORKS

@@ -62,3 +62,6 @@ provision/ansible/group_vars/all/model_config.yml
 
 # Busibox state file (user-specific, stores env preferences)
 .busibox-state
+
+# Demo mode generated files
+config/litellm-demo.yaml
