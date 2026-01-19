@@ -120,17 +120,33 @@ applications:
       - session_secret
       - sso_jwt_secret
       - oauth_client_secret
-      - admin_client_id       # OAuth client credentials
-      - admin_client_secret   # OAuth client credentials
+      - admin_client_id       # OAuth client credentials (maps to AUTHZ_CLIENT_ID)
+      - admin_client_secret   # OAuth client credentials (maps to AUTHZ_CLIENT_SECRET)
+      - litellm_api_key       # LiteLLM API key
+    optional_secrets:
+      - resend_api_key        # Email service (optional)
+      - email_from            # Email sender address (optional)
+      - authz_admin_token     # AuthZ admin token (optional, for admin operations)
     env:
       NODE_ENV: "{{ node_env }}"
+      # Agent API Configuration
       MASTRA_API_URL: "http://{{ agent_api_host }}:{{ agent_api_port }}"
       TOKEN_SERVICE_URL: "http://{{ agent_api_host }}:{{ agent_api_port }}"
       AGENT_API_URL: "http://{{ agent_api_host }}:{{ agent_api_port }}"
       NEXT_PUBLIC_AGENT_API_URL: "http://{{ agent_api_host }}:{{ agent_api_port }}"
+      # AI Portal URL
       AI_PORTAL_URL: "https://{{ full_domain }}"
+      NEXT_PUBLIC_AI_PORTAL_URL: "https://{{ full_domain }}"
       NEXT_PUBLIC_APP_URL: "https://{{ full_domain }}/agents"
       NEXT_PUBLIC_BASE_PATH: "/agents"
+      # LiteLLM Configuration
+      LITELLM_BASE_URL: "http://{{ litellm_ip }}:{{ litellm_port }}/v1"
+      # AuthZ Service Configuration
+      AUTHZ_BASE_URL: "http://{{ authz_ip }}:8010"
+      AUTHZ_CLIENT_ID: "agent-manager"
+      # SSO Configuration
+      SSO_TOKEN_EXPIRY: "900"
+      # Application Configuration
       PORT: "3001"
       DEPLOYMENT_MODE: "busibox"
       # OAuth service audiences for multi-service auth
