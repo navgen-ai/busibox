@@ -62,7 +62,7 @@ JWT secrets are used for cross-application authentication. You can:
        redis_url: "redis://..."
        jwt_secret: "a1b2c3d4e5f6..."  # ← ADD THIS (your generated secret)
      
-     agent-client:
+     agent-manager:
        database_url: "postgresql://..."
        agent_api_key: "..."
        session_secret: "..."
@@ -116,7 +116,7 @@ secrets:
     sso_jwt_secret: "YOUR_SSO_JWT_SECRET"
     litellm_api_key: "YOUR_LITELLM_KEY"
   
-  agent-client:
+  agent-manager:
     database_url: "postgresql://busibox_user:YOUR_POSTGRES_PASSWORD@{{ postgres_host }}:{{ postgres_port }}/agent_client"
     agent_api_key: "YOUR_AGENT_API_KEY"
     session_secret: "YOUR_SESSION_SECRET"
@@ -161,7 +161,7 @@ Copy the output and use in your vault file.
 
 ## Important Notes
 
-1. **Shared JWT Secret**: Use the SAME `jwt_secret` for `agent-server`, `agent-client`, `doc-intel`, and `innovation` to enable cross-app authentication (SSO)
+1. **Shared JWT Secret**: Use the SAME `jwt_secret` for `agent-server`, `agent-manager`, `doc-intel`, and `innovation` to enable cross-app authentication (SSO)
 
 2. **Database URLs**: Replace `YOUR_POSTGRES_PASSWORD` with the actual password (or use the variable substitution if it works in your setup)
 
@@ -195,7 +195,7 @@ ansible-vault edit roles/secrets/vars/vault.yml
 # Add jwt_secret to each app:
 # agent-server:
 #   jwt_secret: "paste-the-generated-secret-here"
-# agent-client:
+# agent-manager:
 #   jwt_secret: "paste-the-same-secret-here"
 # doc-intel:
 #   jwt_secret: "paste-the-same-secret-here"

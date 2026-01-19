@@ -117,12 +117,12 @@ applications:
       JWT_ISSUER: "cashman-portal"
   
   # Agent client (subdomain + path routing)
-  - name: agent-client
-    github_repo: jazzmind/agent-client
+  - name: agent-manager
+    github_repo: jazzmind/agent-manager
     container: apps-lxc
     container_ip: 10.96.200.25
     port: 3001
-    deploy_path: /srv/apps/agent-client
+    deploy_path: /srv/apps/agent-manager
     health_endpoint: /health
     build_command: "npm run build"
     routes:
