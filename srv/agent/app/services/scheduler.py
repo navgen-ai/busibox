@@ -35,7 +35,7 @@ class ScheduledJob:
     def __init__(
         self,
         job_id: str,
-        agent_id: uuid.UUID,
+        agent_id: uuid_module.UUID,
         cron: str,
         principal_sub: str,
         next_run_time: Optional[datetime] = None,
@@ -74,7 +74,7 @@ class RunScheduler:
         self,
         session_factory,
         principal: Principal,
-        agent_id: uuid.UUID,
+        agent_id: uuid_module.UUID,
         payload: Dict[str, Any],
         scopes: list[str],
         purpose: str,
