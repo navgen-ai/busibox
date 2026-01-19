@@ -869,7 +869,7 @@ render_service_category() {
         printf "    ${DIM}%-15s\t%-8s\t│ %-18s\t%-10s${NC}\n" \
             "Service" \
             "Status" \
-            "Version" \
+            "Version (deployed → current)" \
             "Sync"
     fi
     

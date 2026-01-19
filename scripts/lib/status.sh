@@ -34,6 +34,80 @@ SSH_TIMEOUT=2
 HEALTH_TIMEOUT=3
 TOTAL_CHECK_TIMEOUT=5
 
+# GitHub token cache (loaded once per session)
+_GITHUB_TOKEN=""
+
+# Get GitHub token for private repo access
+# Checks: environment variable, local file, apps container (Proxmox)
+_get_github_token() {
+    # Return cached token if already loaded
+    if [[ -n "$_GITHUB_TOKEN" ]]; then
+        echo "$_GITHUB_TOKEN"
+        return
+    fi
+    
+    # Try environment variable first
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        _GITHUB_TOKEN="$GITHUB_TOKEN"
+        echo "$_GITHUB_TOKEN"
+        return
+    fi
+    
+    # Try local file
+    if [[ -f "$HOME/.github_token" ]]; then
+        _GITHUB_TOKEN=$(cat "$HOME/.github_token" 2>/dev/null)
+        if [[ -n "$_GITHUB_TOKEN" ]]; then
+            echo "$_GITHUB_TOKEN"
+            return
+        fi
+    fi
+    
+    # Try apps container on Proxmox (container 301 for staging, 201 for prod)
+    local apps_container=301
+    if pct status $apps_container &>/dev/null; then
+        _GITHUB_TOKEN=$(pct exec $apps_container -- cat /root/.github_token 2>/dev/null)
+        if [[ -n "$_GITHUB_TOKEN" ]]; then
+            echo "$_GITHUB_TOKEN"
+            return
+        fi
+    fi
+    
+    # No token found
+    echo ""
+}
+
+# Get GitHub repo name for an app from Ansible config
+# Usage: _get_app_github_repo "ai-portal"
+# Returns: "owner/repo" or empty string
+_get_app_github_repo() {
+    local app_name=$1
+    local apps_config="${REPO_ROOT}/provision/ansible/group_vars/all/apps.yml"
+    
+    if [[ ! -f "$apps_config" ]]; then
+        return
+    fi
+    
+    # Parse YAML to find github_repo for the app
+    # Look for "- name: app_name" followed by "github_repo: owner/repo"
+    awk -v app="$app_name" '
+        /^[[:space:]]*- name:/ {
+            # Extract app name, handling quotes
+            gsub(/^[[:space:]]*- name:[[:space:]]*/, "")
+            gsub(/["'"'"']/, "")
+            gsub(/[[:space:]]*$/, "")
+            current_app = $0
+        }
+        /^[[:space:]]+github_repo:/ && current_app == app {
+            # Extract repo name
+            gsub(/^[[:space:]]+github_repo:[[:space:]]*/, "")
+            gsub(/["'"'"']/, "")
+            gsub(/[[:space:]]*$/, "")
+            print $0
+            exit
+        }
+    ' "$apps_config"
+}
+
 # ============================================================================
 # Cache Management
 # ============================================================================
@@ -491,9 +565,10 @@ get_deployed_version() {
                     ;;
                     
                 litellm)
-                    # LiteLLM runs in Docker - version tracking not yet implemented
-                    # TODO: Create version file during deployment
-                    version=""
+                    # LiteLLM runs in Docker on agent-lxc - read .deploy_version file
+                    version=$(timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no \
+                        "root@${container_ip}" \
+                        "cat /opt/litellm/.deploy_version 2>/dev/null" 2>/dev/null | jq -r '.commit // empty' 2>/dev/null | cut -c1-7)
                     ;;
                     
                 # Nginx - check version and format as "alpine" to match docker image naming
@@ -592,20 +667,23 @@ get_current_version() {
             fi
             return
             ;;
-        # Apps come from their own repos
-        ai-portal)
-            if [[ -d "${REPO_ROOT}/../ai-portal/.git" ]]; then
-                (cd "${REPO_ROOT}/../ai-portal" && git rev-parse --short HEAD 2>/dev/null) || echo "unknown"
+        # Apps come from their own repos - check local first, then remote with token
+        ai-portal|agent-manager)
+            if [[ -d "${REPO_ROOT}/../${service}/.git" ]]; then
+                (cd "${REPO_ROOT}/../${service}" && git rev-parse --short HEAD 2>/dev/null) || echo "unknown"
             else
-                echo "unknown"
-            fi
-            return
-            ;;
-        agent-manager)
-            if [[ -d "${REPO_ROOT}/../agent-manager/.git" ]]; then
-                (cd "${REPO_ROOT}/../agent-manager" && git rev-parse --short HEAD 2>/dev/null) || echo "unknown"
-            else
-                echo "unknown"
+                # Fallback to remote with GitHub token for private repo
+                local github_repo=$(_get_app_github_repo "$service")
+                if [[ -n "$github_repo" ]]; then
+                    local token=$(_get_github_token)
+                    local remote_hash=""
+                    if [[ -n "$token" ]]; then
+                        remote_hash=$(git ls-remote "https://${token}@github.com/${github_repo}.git" HEAD 2>/dev/null | head -1 | cut -c1-7)
+                    fi
+                    echo "${remote_hash:-unknown}"
+                else
+                    echo "unknown"
+                fi
             fi
             return
             ;;
