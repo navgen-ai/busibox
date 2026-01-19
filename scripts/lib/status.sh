@@ -361,21 +361,41 @@ get_deployed_version() {
                     ;;
             esac
             
-            # Handle host-based services (not in Docker)
+            # Handle Next.js apps (can run in Docker or on host)
             case "$service" in
                 ai-portal)
-                    # For local dev, deployed = current running version
-                    if [[ -d "${REPO_ROOT}/../ai-portal" ]]; then
-                        (cd "${REPO_ROOT}/../ai-portal" && git rev-parse --short HEAD 2>/dev/null) || echo "unknown"
+                    # Check if running in Docker first
+                    if docker ps --filter "name=local-ai-portal" --filter "status=running" --format '{{.Names}}' 2>/dev/null | grep -q "^local-ai-portal$"; then
+                        # Running in Docker - read from volume-mounted repo
+                        version=$(docker exec local-ai-portal sh -c "cd /app && git rev-parse --short HEAD 2>/dev/null" 2>/dev/null)
+                    else
+                        # Running on host - read from local repo
+                        if [[ -d "${REPO_ROOT}/../ai-portal" ]]; then
+                            version=$(cd "${REPO_ROOT}/../ai-portal" && git rev-parse --short HEAD 2>/dev/null)
+                        fi
+                    fi
+                    
+                    if [[ -n "$version" ]]; then
+                        echo "$version"
                     else
                         echo "unknown"
                     fi
                     return
                     ;;
                 agent-manager)
-                    # For local dev, deployed = current running version
-                    if [[ -d "${REPO_ROOT}/../agent-manager" ]]; then
-                        (cd "${REPO_ROOT}/../agent-manager" && git rev-parse --short HEAD 2>/dev/null) || echo "unknown"
+                    # Check if running in Docker first
+                    if docker ps --filter "name=local-agent-manager" --filter "status=running" --format '{{.Names}}' 2>/dev/null | grep -q "^local-agent-manager$"; then
+                        # Running in Docker - read from volume-mounted repo
+                        version=$(docker exec local-agent-manager sh -c "cd /app && git rev-parse --short HEAD 2>/dev/null" 2>/dev/null)
+                    else
+                        # Running on host - read from local repo
+                        if [[ -d "${REPO_ROOT}/../agent-manager" ]]; then
+                            version=$(cd "${REPO_ROOT}/../agent-manager" && git rev-parse --short HEAD 2>/dev/null)
+                        fi
+                    fi
+                    
+                    if [[ -n "$version" ]]; then
+                        echo "$version"
                     else
                         echo "unknown"
                     fi
@@ -431,27 +451,86 @@ get_deployed_version() {
             ;;
             
         proxmox)
-            # SSH to container and read .deploy_version
+            # SSH to container and read version info
             local container_ip=$(get_service_ip "$service" "$env" "$backend")
             local version
             
-            # Map service names to actual service paths
-            local service_path
+            # Different version detection strategies based on service type
             case "$service" in
-                authz) service_path="authz" ;;
-                ingest-api) service_path="ingest-api" ;;
-                ingest-worker) service_path="ingest-worker" ;;
-                search-api) service_path="search-api" ;;
-                agent-api) service_path="agent-api" ;;
-                docs-api) service_path="docs-api" ;;
-                ai-portal) service_path="ai-portal" ;;
-                agent-manager) service_path="agent-manager" ;;
-                *) service_path="$service" ;;
+                # Python API services - read .deploy_version file
+                authz|ingest-api|ingest-worker|search-api|agent-api|docs-api)
+                    local service_path
+                    case "$service" in
+                        authz) service_path="authz" ;;
+                        ingest-api) service_path="ingest-api" ;;
+                        ingest-worker) service_path="ingest-worker" ;;
+                        search-api) service_path="search-api" ;;
+                        agent-api) service_path="agent-api" ;;
+                        docs-api) service_path="docs-api" ;;
+                    esac
+                    
+                    version=$(timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no \
+                        "root@${container_ip}" \
+                        "cat /opt/${service_path}/.deploy_version 2>/dev/null" 2>/dev/null | jq -r '.commit // empty' 2>/dev/null)
+                    ;;
+                    
+                # PostgreSQL - check installed version and format as package@config
+                postgres)
+                    local pg_ver=$(timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no \
+                        "root@${container_ip}" \
+                        "psql --version 2>/dev/null | grep -oE '[0-9]+' | head -1" 2>/dev/null)
+                    if [[ -n "$pg_ver" ]]; then
+                        # Format as "16-alpine" to match expected format
+                        version="${pg_ver}-alpine"
+                    fi
+                    ;;
+                    
+                # Docker-based services - check container image tag
+                milvus)
+                    version=$(timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no \
+                        "root@${container_ip}" \
+                        "docker inspect milvus-standalone --format '{{.Config.Image}}' 2>/dev/null | sed 's/.*://'" 2>/dev/null)
+                    ;;
+                    
+                minio)
+                    # MinIO often uses "latest" tag
+                    version=$(timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no \
+                        "root@${container_ip}" \
+                        "docker inspect minio --format '{{.Config.Image}}' 2>/dev/null | sed 's/.*://'" 2>/dev/null)
+                    [[ "$version" == "" ]] && version="latest"
+                    ;;
+                    
+                litellm)
+                    # LiteLLM uses "main-latest" or similar tags
+                    version=$(timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no \
+                        "root@${container_ip}" \
+                        "docker inspect litellm --format '{{.Config.Image}}' 2>/dev/null | sed 's/.*://'" 2>/dev/null)
+                    ;;
+                    
+                # Nginx - check version and format as "alpine" to match docker image naming
+                nginx)
+                    local nginx_ver=$(timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no \
+                        "root@${container_ip}" \
+                        "nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1" 2>/dev/null)
+                    if [[ -n "$nginx_ver" ]]; then
+                        # Format as "alpine" to match docker image tag
+                        version="alpine"
+                    fi
+                    ;;
+                    
+                # Next.js apps - read from .version file created by deploywatch
+                ai-portal|agent-manager)
+                    # Apps are deployed to /srv/apps/{service-name}
+                    local app_path="/srv/apps/${service}"
+                    version=$(timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no \
+                        "root@${container_ip}" \
+                        "cat ${app_path}/.version 2>/dev/null" 2>/dev/null)
+                    ;;
+                    
+                *)
+                    version=""
+                    ;;
             esac
-            
-            version=$(timeout $SSH_TIMEOUT ssh -o ConnectTimeout=$SSH_TIMEOUT -o StrictHostKeyChecking=no \
-                "root@${container_ip}" \
-                "cat /opt/${service_path}/.deploy_version 2>/dev/null" 2>/dev/null | jq -r '.commit // empty' 2>/dev/null)
             
             if [[ -n "$version" ]]; then
                 echo "$version"
