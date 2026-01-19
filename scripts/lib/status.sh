@@ -361,41 +361,31 @@ get_deployed_version() {
                     ;;
             esac
             
-            # Handle Next.js apps (can run in Docker or on host)
+            # Handle Next.js apps (volume-mounted in Docker, so read from host)
             case "$service" in
                 ai-portal)
-                    # Check if running in Docker first
-                    if docker ps --filter "name=local-ai-portal" --filter "status=running" --format '{{.Names}}' 2>/dev/null | grep -q "^local-ai-portal$"; then
-                        # Running in Docker - read from volume-mounted repo
-                        version=$(docker exec local-ai-portal sh -c "cd /app && git rev-parse --short HEAD 2>/dev/null" 2>/dev/null)
-                    else
-                        # Running on host - read from local repo
-                        if [[ -d "${REPO_ROOT}/../ai-portal" ]]; then
-                            version=$(cd "${REPO_ROOT}/../ai-portal" && git rev-parse --short HEAD 2>/dev/null)
+                    # Apps are volume-mounted, so read from host repo
+                    if [[ -d "${REPO_ROOT}/../ai-portal/.git" ]]; then
+                        version=$(cd "${REPO_ROOT}/../ai-portal" && git rev-parse --short HEAD 2>/dev/null)
+                        if [[ -n "$version" ]]; then
+                            echo "$version"
+                        else
+                            echo "unknown"
                         fi
-                    fi
-                    
-                    if [[ -n "$version" ]]; then
-                        echo "$version"
                     else
                         echo "unknown"
                     fi
                     return
                     ;;
                 agent-manager)
-                    # Check if running in Docker first
-                    if docker ps --filter "name=local-agent-manager" --filter "status=running" --format '{{.Names}}' 2>/dev/null | grep -q "^local-agent-manager$"; then
-                        # Running in Docker - read from volume-mounted repo
-                        version=$(docker exec local-agent-manager sh -c "cd /app && git rev-parse --short HEAD 2>/dev/null" 2>/dev/null)
-                    else
-                        # Running on host - read from local repo
-                        if [[ -d "${REPO_ROOT}/../agent-manager" ]]; then
-                            version=$(cd "${REPO_ROOT}/../agent-manager" && git rev-parse --short HEAD 2>/dev/null)
+                    # Apps are volume-mounted, so read from host repo
+                    if [[ -d "${REPO_ROOT}/../agent-manager/.git" ]]; then
+                        version=$(cd "${REPO_ROOT}/../agent-manager" && git rev-parse --short HEAD 2>/dev/null)
+                        if [[ -n "$version" ]]; then
+                            echo "$version"
+                        else
+                            echo "unknown"
                         fi
-                    fi
-                    
-                    if [[ -n "$version" ]]; then
-                        echo "$version"
                     else
                         echo "unknown"
                     fi
@@ -587,6 +577,26 @@ get_current_version() {
             local pkg_ver=$(grep "image: nginx:" "${REPO_ROOT}/docker-compose.local.yml" | head -1 | sed 's/.*://' || echo "unknown")
             local cfg_ver=$(cd "${REPO_ROOT}" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
             echo "${pkg_ver}@${cfg_ver}"
+            return
+            ;;
+    esac
+    
+    # Handle apps with dashes in their names (ai-portal, agent-manager)
+    case "$service" in
+        ai-portal)
+            if [[ -d "${REPO_ROOT}/../ai-portal/.git" ]]; then
+                (cd "${REPO_ROOT}/../ai-portal" && git rev-parse --short HEAD 2>/dev/null) || echo "unknown"
+            else
+                echo "unknown"
+            fi
+            return
+            ;;
+        agent-manager)
+            if [[ -d "${REPO_ROOT}/../agent-manager/.git" ]]; then
+                (cd "${REPO_ROOT}/../agent-manager" && git rev-parse --short HEAD 2>/dev/null) || echo "unknown"
+            else
+                echo "unknown"
+            fi
             return
             ;;
     esac

@@ -704,10 +704,9 @@ services:
   # ===========================================================================
 
   # AI Portal - Main Frontend
-  # NOTE: For local dev, run this with `npm run dev` instead of Docker.
-  # Only use this container for full-stack Docker testing.
+  # Runs in Docker with volume-mounted code for hot-reload
+  # Auto-restarts on crash
   ai-portal:
-    profiles: ["full"]  # Only starts with: docker compose --profile full up
     build:
       context: ../ai-portal
       dockerfile: Dockerfile.local
@@ -715,6 +714,7 @@ services:
         GITHUB_AUTH_TOKEN: ${GITHUB_AUTH_TOKEN:-}
     container_name: local-ai-portal
     hostname: ai-portal
+    restart: unless-stopped
     environment:
       NODE_ENV: development
       PORT: 3000
@@ -766,10 +766,9 @@ services:
       - busibox-net
 
   # Agent Manager - Agent Management UI
-  # NOTE: For local dev, run this with `npm run dev` instead of Docker.
-  # Only use this container for full-stack Docker testing.
+  # Runs in Docker with volume-mounted code for hot-reload
+  # Auto-restarts on crash
   agent-manager:
-    profiles: ["full"]  # Only starts with: docker compose --profile full up
     build:
       context: ../agent-manager
       dockerfile: Dockerfile.local
@@ -777,6 +776,7 @@ services:
         GITHUB_AUTH_TOKEN: ${GITHUB_AUTH_TOKEN:-}
     container_name: local-agent-manager
     hostname: agent-manager
+    restart: unless-stopped
     environment:
       NODE_ENV: development
       PORT: 3001

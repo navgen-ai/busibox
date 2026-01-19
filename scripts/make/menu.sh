@@ -770,16 +770,42 @@ handle_deploy() {
                 box "Build/Deploy" 70
                 echo ""
                 
-                menu "Docker Build Options" \
-                    "Build All Images" \
+                menu "Docker Build & Deploy Options" \
+                    "Start All Services (docker-up)" \
+                    "Stop All Services (docker-down)" \
+                    "Restart All Services (down + up)" \
+                    "Build All Images (docker-build)" \
                     "Build Specific Service" \
                     "Back to Main Menu"
                 
                 local choice=""
-                read -p "$(echo -e "${BOLD}Select option [1-3]:${NC} ")" choice
+                read -p "$(echo -e "${BOLD}Select option [1-6]:${NC} ")" choice
                 
                 case "${choice:-}" in
                     1)
+                        echo ""
+                        info "Starting all Docker services..."
+                        save_last_command "make docker-up"
+                        (cd "$REPO_ROOT" && make docker-up)
+                        set_install_status "deployed"
+                        pause
+                        ;;
+                    2)
+                        echo ""
+                        info "Stopping all Docker services..."
+                        save_last_command "make docker-down"
+                        (cd "$REPO_ROOT" && make docker-down)
+                        pause
+                        ;;
+                    3)
+                        echo ""
+                        info "Restarting all Docker services..."
+                        save_last_command "make docker-restart"
+                        (cd "$REPO_ROOT" && make docker-down && make docker-up)
+                        set_install_status "deployed"
+                        pause
+                        ;;
+                    4)
                         echo ""
                         if confirm "Build all Docker images (this may take a while)?"; then
                             save_last_command "make docker-build"
@@ -790,10 +816,10 @@ handle_deploy() {
                         fi
                         pause
                         ;;
-                    2)
+                    5)
                         deploy_select_service
                         ;;
-                    3|b|B|"")
+                    6|b|B|"")
                         return 0
                         ;;
                 esac
@@ -881,15 +907,11 @@ handle_services() {
                     "Specific Service (with logs)" \
                     "Data Services (postgres, redis, milvus, minio)" \
                     "API Services (authz, ingest, search, agent, worker)" \
-                    "Docker: Start All (docker-up)" \
-                    "Docker: Stop All (docker-down)" \
-                    "Docker: Restart All (down + up)" \
-                    "Docker: Rebuild All (docker-build)" \
                     "Refresh Status" \
                     "Back to Main Menu"
                 
                 local choice=""
-                read -p "$(echo -e "${BOLD}Select option [1-11]:${NC} ")" choice
+                read -p "$(echo -e "${BOLD}Select option [1-6]:${NC} ")" choice
                 
                 case "${choice:-}" in
                     1)
@@ -905,41 +927,10 @@ handle_services() {
                         service_action_menu "api" "authz-api ingest-api ingest-worker search-api agent-api"
                         ;;
                     5)
-                        echo ""
-                        info "Starting all Docker services..."
-                        save_last_command "make docker-up"
-                        (cd "$REPO_ROOT" && make docker-up)
-                        set_install_status "deployed"
-                        pause
-                        ;;
-                    6)
-                        echo ""
-                        info "Stopping all Docker services..."
-                        save_last_command "make docker-down"
-                        (cd "$REPO_ROOT" && make docker-down)
-                        pause
-                        ;;
-                    7)
-                        echo ""
-                        info "Restarting all Docker services..."
-                        save_last_command "make docker-restart"
-                        (cd "$REPO_ROOT" && make docker-down && make docker-up)
-                        set_install_status "deployed"
-                        pause
-                        ;;
-                    8)
-                        echo ""
-                        if confirm "Rebuild all Docker images? (this may take a while)"; then
-                            save_last_command "make docker-build"
-                            (cd "$REPO_ROOT" && make docker-build)
-                        fi
-                        pause
-                        ;;
-                    9)
                         # Just continue loop to refresh
                         continue
                         ;;
-                    10|11|b|B|"")
+                    6|b|B|"")
                         return 0
                         ;;
                 esac
