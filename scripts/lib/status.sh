@@ -399,17 +399,15 @@ get_deployed_version() {
                     return
                     ;;
                 minio)
-                    local pkg_ver=$(docker inspect local-minio --format '{{.Config.Image}}' 2>/dev/null | sed 's/.*://' || echo "unknown")
-                    local cfg_ver=$(docker inspect local-minio --format '{{.Config.Labels.config_version}}' 2>/dev/null || echo "unknown")
-                    [[ "$cfg_ver" == "<no value>" ]] && cfg_ver="unknown"
-                    echo "${pkg_ver}@${cfg_ver}"
+                    # Get actual MinIO version from running container
+                    local version=$(docker exec local-minio minio --version 2>/dev/null | grep -oE 'RELEASE\.[0-9TZ-]+(-cpuv[0-9]+)?' | head -1)
+                    echo "${version:-unknown}"
                     return
                     ;;
                 litellm)
-                    local pkg_ver=$(docker inspect local-litellm --format '{{.Config.Image}}' 2>/dev/null | sed 's/.*://' || echo "unknown")
-                    local cfg_ver=$(docker inspect local-litellm --format '{{.Config.Labels.config_version}}' 2>/dev/null || echo "unknown")
-                    [[ "$cfg_ver" == "<no value>" ]] && cfg_ver="unknown"
-                    echo "${pkg_ver}@${cfg_ver}"
+                    # Get actual LiteLLM version from running container
+                    local version=$(docker exec local-litellm pip show litellm 2>/dev/null | grep -oE 'Version: [0-9.]+' | sed 's/Version: //')
+                    echo "${version:-unknown}"
                     return
                     ;;
                 postgres)

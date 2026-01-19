@@ -458,7 +458,7 @@ dynamic_menu() {
             fi
             
             if [[ "$status" == "configured" || "$status" == "deployed" || "$status" == "healthy" ]]; then
-                options+=("Deploy (build images)"); option_keys+=("deploy")
+                options+=("Deploy"); option_keys+=("deploy")
                 options+=("Services (start/stop/restart)"); option_keys+=("services")
             fi
             
@@ -821,15 +821,23 @@ render_service_line() {
         current_display="${current_version:0:7}"
     fi
     
-    # Show both deployed and current versions
+    # Show both deployed and current versions (always show arrow for consistency)
     local version_info
     if [[ "$version" == "checking" || "$current_version" == "checking" ]]; then
         version_info="${version_display}"
     elif [[ "$version" == "local" ]]; then
         version_info="local → ${current_display}"
-    elif [[ "$version" == "$current_version" ]]; then
-        version_info="${version_display}"
+    elif [[ "$version" == "unknown" || "$current_version" == "unknown" ]]; then
+        # Show whatever we have
+        if [[ "$version" != "unknown" ]]; then
+            version_info="${version_display} → unknown"
+        elif [[ "$current_version" != "unknown" ]]; then
+            version_info="unknown → ${current_display}"
+        else
+            version_info="unknown"
+        fi
     else
+        # Always show both versions for consistency
         version_info="${version_display} → ${current_display}"
     fi
     
