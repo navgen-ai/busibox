@@ -753,11 +753,15 @@ compare_versions() {
     elif [[ "$deployed" == "$current" ]]; then
         echo "synced"
     else
-        # Extract base versions (strip @config suffix if present)
+        # Normalize versions for comparison
+        # - Strip @config suffix
+        # - Strip CPU variant suffixes like -cpuv1
         local dep_base="${deployed%%@*}"
         local cur_base="${current%%@*}"
+        dep_base="${dep_base%%-cpuv*}"
+        cur_base="${cur_base%%-cpuv*}"
         
-        # If base versions match, consider synced (config hash can differ)
+        # If normalized versions match, consider synced
         if [[ "$dep_base" == "$cur_base" ]]; then
             echo "synced"
         else
