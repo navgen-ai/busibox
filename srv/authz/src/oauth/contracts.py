@@ -38,6 +38,13 @@ class OAuthTokenRequest(BaseModel):
         None, 
         description="RFC8693 subject_token_type (e.g. urn:ietf:params:oauth:token-type:jwt)"
     )
+    
+    # App-scoped token exchange
+    # When provided, authz checks if the user has access to this app via RBAC bindings
+    resource_id: Optional[str] = Field(
+        None,
+        description="App resource ID (UUID) - when provided, authz verifies user has app access via bindings"
+    )
 
     # Legacy: Compatibility with existing token-exchange using client credentials
     requested_subject: Optional[str] = Field(None, description="User ID (uuid) - DEPRECATED, use subject_token instead")
