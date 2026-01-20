@@ -485,22 +485,67 @@ async def token(request: Request):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown_subject")
         
         roles = await db.get_user_roles(user_id)
+        
+        # App-scoped token exchange: verify user has access to the app via bindings
+        # resource_id is the app UUID from ai-portal's App table
+        app_roles = None
+        if token_req.resource_id:
+            logger.info(
+                "App-scoped token exchange",
+                user_id=user_id,
+                resource_id=token_req.resource_id,
+                audience=token_req.audience,
+            )
+            
+            # Check if user has access to this app via RBAC bindings
+            has_access = await db.user_can_access_resource(user_id, "app", token_req.resource_id)
+            if not has_access:
+                logger.warning(
+                    "User does not have access to app",
+                    user_id=user_id,
+                    resource_id=token_req.resource_id,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="user_does_not_have_app_access"
+                )
+            
+            # Get roles that grant access to this specific app
+            # This is the intersection of user's roles and roles bound to the app
+            app_role_bindings = await db.get_roles_for_resource("app", token_req.resource_id)
+            app_role_ids = {b["id"] for b in app_role_bindings}  # id is the role_id
+            app_roles = [r for r in roles if r["id"] in app_role_ids]
+            
+            logger.info(
+                "App access verified",
+                user_id=user_id,
+                resource_id=token_req.resource_id,
+                app_roles=[r["name"] for r in app_roles],
+            )
 
         # Build role claims (id + name only, for data access filtering)
+        # Use app_roles if this is an app-scoped exchange, otherwise all user roles
+        effective_roles = app_roles if app_roles is not None else roles
         role_claims = [
             {"id": r["id"], "name": r["name"]}
-            for r in roles
+            for r in effective_roles
         ]
 
-        # Aggregate scopes from all roles (union of all role scopes)
+        # Aggregate scopes from effective roles (union of role scopes)
         all_scopes: set[str] = set()
-        for r in roles:
+        for r in effective_roles:
             role_scopes = r.get("scopes") or []
             all_scopes.update(role_scopes)
         aggregated_scope = " ".join(sorted(all_scopes))
 
         now = int(time.time())
         exp = now + config.access_token_ttl
+        
+        # For app-scoped tokens, include resource_id in claims for the app to verify
+        extra_claims = {}
+        if token_req.resource_id:
+            extra_claims["app_id"] = token_req.resource_id
+        
         claims = AccessTokenClaims(
             iss=config.issuer,
             sub=user_id,
@@ -512,6 +557,9 @@ async def token(request: Request):
             scope=aggregated_scope,
             roles=role_claims,
         ).model_dump()
+        
+        # Add extra claims
+        claims.update(extra_claims)
 
         access_token = await _sign_access_token(claims)
 
@@ -520,15 +568,17 @@ async def token(request: Request):
             actor_id=user_id,
             action="oauth.token.issued",
             resource_type="oauth_token",
-            resource_id=None,
+            resource_id=token_req.resource_id,
             details={
                 "grant_type": TOKEN_EXCHANGE_GRANT,
                 "audience": token_req.audience,
+                "resource_id": token_req.resource_id,
                 "purpose": purpose,
                 "mode": "subject_token" if token_req.subject_token else "client_credentials",
+                "app_scoped": token_req.resource_id is not None,
             },
             user_id=user_id,
-            role_ids=[r["id"] for r in roles],
+            role_ids=[r["id"] for r in effective_roles],
         )
 
         return OAuthTokenResponse(
