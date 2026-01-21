@@ -94,6 +94,8 @@ applications:
       # Search API (deployed to milvus-lxc, colocated with Milvus for low-latency)
       SEARCH_API_HOST: "{{ search_api_ip }}"
       SEARCH_API_PORT: "8003"
+      # Docs API (deployed to authz-lxc)
+      DOCS_API_URL: "http://{{ authz_ip }}:8004"
   
   - name: agent-manager
     github_repo: jazzmind/agent-manager
