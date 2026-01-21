@@ -19,8 +19,16 @@ from pymilvus import Collection, connections, utility
 logger = structlog.get_logger()
 
 
+class MilvusConnectionError(Exception):
+    """Raised when Milvus connection fails or times out."""
+    pass
+
+
 class MilvusService:
     """Service for Milvus vector database operations with role-based partitions."""
+    
+    # Connection timeout in seconds
+    CONNECTION_TIMEOUT = 5
     
     def __init__(self, config: dict):
         """Initialize Milvus service with configuration."""
@@ -34,17 +42,57 @@ class MilvusService:
         
         # Cache of created partitions to avoid repeated checks
         self._partition_cache: set = set()
+        
+        # Track if Milvus is known to be unavailable (avoid repeated connection attempts)
+        self._unavailable = False
+        self._last_connect_attempt = 0
+        self._retry_interval = 30  # Seconds before retrying after failure
     
-    def connect(self):
-        """Connect to Milvus and load collection."""
+    def is_available(self) -> bool:
+        """Check if Milvus is likely available (without blocking)."""
+        import time
+        
+        if self.connected:
+            return True
+        
+        # If we recently failed, don't try again immediately
+        if self._unavailable:
+            if time.time() - self._last_connect_attempt < self._retry_interval:
+                return False
+        
+        return True
+    
+    def connect(self, timeout: Optional[float] = None):
+        """
+        Connect to Milvus and load collection.
+        
+        Args:
+            timeout: Connection timeout in seconds (default: CONNECTION_TIMEOUT)
+        
+        Raises:
+            MilvusConnectionError: If connection fails or times out
+        """
+        import time
+        
         if self.connected:
             return
+        
+        # Check if we should skip due to recent failure
+        if self._unavailable:
+            if time.time() - self._last_connect_attempt < self._retry_interval:
+                raise MilvusConnectionError(
+                    f"Milvus unavailable (last attempt {int(time.time() - self._last_connect_attempt)}s ago, retry in {self._retry_interval}s)"
+                )
+        
+        self._last_connect_attempt = time.time()
+        connect_timeout = timeout or self.CONNECTION_TIMEOUT
         
         try:
             connections.connect(
                 "default",
                 host=self.host,
                 port=self.port,
+                timeout=connect_timeout,
             )
             
             # Check if collection exists
@@ -56,6 +104,8 @@ class MilvusService:
             self.collection.load()
             
             self.connected = True
+            self._unavailable = False
+            
             logger.info(
                 "Connected to Milvus",
                 host=self.host,
@@ -64,14 +114,15 @@ class MilvusService:
             )
         
         except Exception as e:
+            self._unavailable = True
             logger.error(
                 "Failed to connect to Milvus",
                 host=self.host,
                 port=self.port,
                 error=str(e),
-                exc_info=True,
+                timeout=connect_timeout,
             )
-            raise
+            raise MilvusConnectionError(f"Failed to connect to Milvus: {e}")
     
     def close(self):
         """Close Milvus connections."""
@@ -152,11 +203,18 @@ class MilvusService:
             self.ensure_partition_exists(partition_name)
     
     def list_partitions(self) -> List[str]:
-        """List all partitions in the collection."""
-        if not self.connected:
-            self.connect()
+        """List all partitions in the collection. Returns empty list if Milvus unavailable."""
+        try:
+            if not self.connected:
+                self.connect()
+        except MilvusConnectionError:
+            return []
         
-        return [p.name for p in self.collection.partitions]
+        try:
+            return [p.name for p in self.collection.partitions]
+        except Exception as e:
+            logger.warning("Failed to list partitions", error=str(e))
+            return []
     
     def insert_text_chunks(
         self,
@@ -429,9 +487,18 @@ class MilvusService:
         
         Returns:
             List of search results with file_id, chunk_index, text, score, metadata
+            Returns empty list if Milvus is unavailable.
         """
-        if not self.connected:
-            self.connect()
+        try:
+            if not self.connected:
+                self.connect()
+        except MilvusConnectionError as e:
+            logger.warning(
+                "Milvus unavailable for search, returning empty results",
+                user_id=user_id,
+                error=str(e),
+            )
+            return []
         
         # Build partition list if not provided
         if partition_names is None:
@@ -515,14 +582,30 @@ class MilvusService:
             )
             raise
     
-    def delete_file_vectors(self, file_id: str, partition_names: Optional[List[str]] = None):
+    def delete_file_vectors(self, file_id: str, partition_names: Optional[List[str]] = None, raise_on_unavailable: bool = False):
         """
         Delete all vectors for a file from specified partitions.
         
         If partition_names is None, deletes from all partitions (slower but complete).
+        
+        Args:
+            file_id: File ID to delete vectors for
+            partition_names: Specific partitions to delete from (None = all)
+            raise_on_unavailable: If True, raise exception when Milvus unavailable.
+                                  If False (default), log warning and return gracefully.
         """
-        if not self.connected:
-            self.connect()
+        try:
+            if not self.connected:
+                self.connect()
+        except MilvusConnectionError as e:
+            if raise_on_unavailable:
+                raise
+            logger.warning(
+                "Milvus unavailable, skipping vector deletion",
+                file_id=file_id,
+                error=str(e),
+            )
+            return
         
         try:
             expr = f'file_id == "{file_id}"'
@@ -552,7 +635,8 @@ class MilvusService:
                 error=str(e),
                 exc_info=True,
             )
-            raise
+            if raise_on_unavailable:
+                raise
     
     def copy_vectors_to_partition(
         self,

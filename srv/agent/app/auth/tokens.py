@@ -123,7 +123,15 @@ async def exchange_token(
     if not access_token:
         raise ValueError(f"Token exchange failed for audience {audience}")
     
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=840)
+    # Use 3 years expiry for delegation tokens, shorter for regular exchanges
+    # This aligns with the authz service's default access_token_ttl
+    if "delegation" in purpose.lower() or "task" in purpose.lower():
+        # Long-lived delegation tokens (3 years)
+        expires_at = datetime.now(timezone.utc) + timedelta(days=365 * 3)
+    else:
+        # Regular short-lived tokens (15 minutes)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=900)
+    
     return TokenExchangeResponse(
         access_token=access_token,
         token_type="bearer",
@@ -151,3 +159,34 @@ def _audience_for_purpose(purpose: str, scopes: List[str]) -> str:
         if s.startswith("search."):
             return "search-api"
     return "agent-api"
+
+
+async def get_service_token(user_id: str, target_audience: str) -> str:
+    """
+    Get a token for calling a downstream service on behalf of a user.
+    
+    Uses client credentials token exchange to get a token with the correct
+    audience for the target service.
+    
+    Args:
+        user_id: The user ID to impersonate
+        target_audience: The target service audience (e.g., "ingest-api")
+        
+    Returns:
+        Bearer token string (without "Bearer " prefix)
+        
+    Raises:
+        ValueError: If token exchange fails
+    """
+    client = _get_token_exchange_client()
+    
+    access_token = await client.get_token_for_service(
+        user_id=user_id,
+        target_audience=target_audience,
+        scope="read write",
+    )
+    
+    if not access_token:
+        raise ValueError(f"Token exchange failed for audience {target_audience}")
+    
+    return access_token

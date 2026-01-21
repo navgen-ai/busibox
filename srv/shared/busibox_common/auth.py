@@ -259,8 +259,9 @@ def extract_user_context(
 # ============================================================================
 
 # Global token cache for service-to-service token exchange
-# TTL is slightly less than token lifetime to ensure we don't use expired tokens
-_token_cache: TTLCache = TTLCache(maxsize=1000, ttl=840)  # 14 minutes (tokens are 15 min)
+# TTL is set to 1 day to support long-lived delegation tokens while still refreshing periodically
+# For short-lived tokens, a new token will be fetched when needed anyway
+_token_cache: TTLCache = TTLCache(maxsize=1000, ttl=86400)  # 1 day cache
 
 
 class TokenExchangeClient:

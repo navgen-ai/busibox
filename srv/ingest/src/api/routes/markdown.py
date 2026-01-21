@@ -44,10 +44,11 @@ async def _get_file_metadata(postgres_service, file_uuid, user_uuid, fields, req
     user_id = user_uuid if isinstance(user_uuid, uuid_mod.UUID) else uuid_mod.UUID(user_uuid)
     
     async with postgres_service.acquire(request) as conn:
+        # Use owner_id for RLS check, not user_id
         row = await conn.fetchrow(
             f"""SELECT {field_list}
                FROM ingestion_files 
-               WHERE file_id = $1 AND user_id = $2""",
+               WHERE file_id = $1 AND owner_id = $2""",
             file_id,
             user_id
         )
@@ -63,6 +64,10 @@ async def _get_file_metadata(postgres_service, file_uuid, user_uuid, fields, req
 async def get_markdown(fileId: str, request: Request):
     """
     Get markdown content for a file.
+    
+    Supports both:
+    - Processed files with markdown_path (generated from PDF/DOCX/etc)
+    - Native markdown files (task outputs, web research content)
 
     Returns:
         JSON with markdown content and metadata
@@ -78,12 +83,12 @@ async def get_markdown(fileId: str, request: Request):
         file_uuid = uuid.UUID(fileId)
         user_uuid = uuid.UUID(user_id)
 
-        # Get file metadata
+        # Get file metadata - include storage_path and mime_type for native markdown fallback
         file_data = await _get_file_metadata(
             postgres_service, 
             file_uuid, 
             user_uuid,
-            ["file_id", "user_id", "original_filename", "markdown_path", "has_markdown", "image_count"],
+            ["file_id", "owner_id", "original_filename", "markdown_path", "has_markdown", "image_count", "storage_path", "mime_type"],
             request=request
         )
 
@@ -93,14 +98,18 @@ async def get_markdown(fileId: str, request: Request):
                 content={"error": "File not found or unauthorized"}
             )
 
-        if not file_data["has_markdown"] or not file_data["markdown_path"]:
+        # Determine which path to use for markdown content
+        if file_data["has_markdown"] and file_data["markdown_path"]:
+            # Use processed markdown
+            markdown_content = minio_service.get_file_content(file_data["markdown_path"])
+        elif file_data["mime_type"] in ("text/markdown", "text/x-markdown"):
+            # Native markdown file - serve directly from storage_path
+            markdown_content = minio_service.get_file_content(file_data["storage_path"])
+        else:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
                 content={"error": "Markdown not available for this file"}
             )
-
-        # Fetch markdown from MinIO
-        markdown_content = minio_service.get_file_content(file_data["markdown_path"])
 
         return JSONResponse(
             status_code=status.HTTP_200_OK,
@@ -145,6 +154,10 @@ async def get_markdown(fileId: str, request: Request):
 async def get_html(fileId: str, request: Request):
     """
     Get rendered HTML content for a file with table of contents.
+    
+    Supports both:
+    - Processed files with markdown_path (generated from PDF/DOCX/etc)
+    - Native markdown files (task outputs, web research content)
 
     Returns:
         JSON with HTML content and TOC
@@ -160,12 +173,12 @@ async def get_html(fileId: str, request: Request):
         file_uuid = uuid.UUID(fileId)
         user_uuid = uuid.UUID(user_id)
 
-        # Get file metadata
+        # Get file metadata - include storage_path and mime_type for native markdown fallback
         file_data = await _get_file_metadata(
             postgres_service,
             file_uuid,
             user_uuid,
-            ["file_id", "user_id", "original_filename", "markdown_path", "has_markdown", "image_count"],
+            ["file_id", "owner_id", "original_filename", "markdown_path", "has_markdown", "image_count", "storage_path", "mime_type"],
             request=request
         )
 
@@ -175,14 +188,18 @@ async def get_html(fileId: str, request: Request):
                 content={"error": "File not found or unauthorized"}
             )
 
-        if not file_data["has_markdown"] or not file_data["markdown_path"]:
+        # Determine which path to use for markdown content
+        if file_data["has_markdown"] and file_data["markdown_path"]:
+            # Use processed markdown
+            markdown_content = minio_service.get_file_content(file_data["markdown_path"])
+        elif file_data["mime_type"] in ("text/markdown", "text/x-markdown"):
+            # Native markdown file - serve directly from storage_path
+            markdown_content = minio_service.get_file_content(file_data["storage_path"])
+        else:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
                 content={"error": "Markdown not available for this file"}
             )
-
-        # Fetch markdown from MinIO
-        markdown_content = minio_service.get_file_content(file_data["markdown_path"])
 
         # Render to HTML
         renderer = HTMLRenderer()

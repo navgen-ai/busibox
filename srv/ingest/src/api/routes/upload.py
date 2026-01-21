@@ -62,6 +62,7 @@ async def upload_file(
     visibility: str = Form("personal"),
     role_ids: Optional[str] = Form(None),
     force_reprocess: Optional[str] = Form(None),
+    library_id: Optional[str] = Form(None),
 ):
     """
     Upload a document for processing with role-based access control.
@@ -79,6 +80,7 @@ async def upload_file(
         processing_config: Optional JSON processing configuration string
         visibility: 'personal' (default) or 'shared'
         role_ids: Comma-separated role UUIDs (required if visibility='shared')
+        library_id: Optional target library UUID
     
     Returns:
         fileId: UUID for tracking status
@@ -86,6 +88,7 @@ async def upload_file(
         duplicate: Whether this is a duplicate (vectors reused)
         visibility: Document visibility setting
         roles: List of role IDs (if shared)
+        libraryId: Library ID where document was stored
     """
     user_id = request.state.user_id
     
@@ -152,13 +155,29 @@ async def upload_file(
     
     # Initialize services
     from api.main import pg_service  # Use shared PostgresService instance
+    from api.services.library_service import LibraryService
     minio_service = MinIOService(config)
     redis_service = RedisService(config)
     encryption_client = EncryptionClient(config)
+    library_service = LibraryService(pg_service.pool)
     
     await redis_service.connect()
     
     try:
+        # Resolve library_id (auto-create personal library if needed for personal files)
+        resolved_library_id = library_id
+        if visibility == "personal" and not library_id:
+            # Ensure user has a personal DOCS library and use it
+            await library_service.ensure_all_personal_libraries(user_id)
+            personal_libs = await library_service.list_user_libraries(user_id, include_shared=False)
+            docs_lib = next((lib for lib in personal_libs if lib["library_type"] == "DOCS"), None)
+            if docs_lib:
+                resolved_library_id = str(docs_lib["id"])
+                logger.info(
+                    "Auto-assigned to personal DOCS library",
+                    file_id=file_id,
+                    library_id=resolved_library_id,
+                )
         # Determine storage path based on visibility
         # Personal files: personal/{user_id}/{file_id}/{filename}
         # Shared files: role/{primary_role_id}/{file_id}/{filename}
@@ -308,7 +327,7 @@ async def upload_file(
                 file_id=file_id,
             )
         
-        # New file - create record with visibility and roles
+        # New file - create record with visibility, roles, and library
         await pg_service.create_file_record(
             file_id=file_id,
             user_id=user_id,
@@ -322,6 +341,7 @@ async def upload_file(
             visibility=visibility,
             role_ids=parsed_role_ids if visibility == "shared" else None,
             request=request,
+            library_id=resolved_library_id,
         )
         
         # Skip processing queue for video and image files (they're stored but not processed)
@@ -364,6 +384,7 @@ async def upload_file(
                     "message": "File uploaded and queued for processing",
                     "visibility": visibility,
                     "roles": parsed_role_ids if visibility == "shared" else None,
+                    "libraryId": resolved_library_id,
                 }
             )
         else:
@@ -391,6 +412,7 @@ async def upload_file(
                     "message": f"{file_type} file uploaded and stored",
                     "visibility": visibility,
                     "roles": parsed_role_ids if visibility == "shared" else None,
+                    "libraryId": resolved_library_id,
                 }
             )
     

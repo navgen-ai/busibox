@@ -157,7 +157,9 @@ class InsightsService:
         self.config = config
         self.host = config.get("milvus_host", "localhost")
         self.port = config.get("milvus_port", 19530)
-        self.embedding_service_url = config.get("embedding_service_url", "http://10.96.200.206:8002")
+        # Strip trailing slashes to avoid double slashes in URLs
+        embedding_url = config.get("embedding_service_url", "http://10.96.200.206:8002")
+        self.embedding_service_url = str(embedding_url).rstrip("/")
         self.connected = False
         self.collection: Optional[Collection] = None
     
@@ -409,36 +411,48 @@ class InsightsService:
         authorization: Optional[str] = None,
     ) -> List[float]:
         """
-        Generate embedding for text using ingest service.
+        Generate embedding for text using embedding service.
+        
+        The dedicated embedding service (embedding-api) does not require authentication,
+        so the authorization parameter is optional and used only for legacy ingest-api calls.
         
         Args:
             text: Text to embed
-            user_id: User ID for authorization
-            authorization: Bearer token for authorization
+            user_id: User ID (for logging/tracing)
+            authorization: Bearer token (optional - only needed if using ingest-api)
             
         Returns:
             Embedding vector (1024 dimensions)
         """
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # Note: In production, this should use a service-to-service token
-            # For now, pass through the user's authorization if available
+        async with httpx.AsyncClient(timeout=120.0) as client:  # 2 minutes for embedding generation
+            # Check if this is the dedicated embedding service (no auth needed)
+            # or ingest-api (auth required)
+            is_dedicated_embedding_service = "embedding-api" in self.embedding_service_url or ":8005" in self.embedding_service_url
+            
             headers = {}
-            if authorization:
+            if not is_dedicated_embedding_service and authorization:
+                # Only add auth for ingest-api (legacy path)
                 headers["Authorization"] = authorization
             
-            response = await client.post(
-                f"{self.embedding_service_url}/api/embeddings",
-                json={"input": text},  # OpenAI-compatible format
-                headers=headers,
-            )
+            # Use different endpoints based on service type
+            if is_dedicated_embedding_service:
+                # Dedicated embedding-api uses /embed endpoint with OpenAI-compatible format
+                endpoint = f"{self.embedding_service_url}/embed"
+                payload = {"input": text}  # OpenAI-compatible format (same as ingest-api)
+            else:
+                # ingest-api uses OpenAI-compatible /api/embeddings endpoint
+                endpoint = f"{self.embedding_service_url}/api/embeddings"
+                payload = {"input": text}  # OpenAI-compatible format
+            
+            response = await client.post(endpoint, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
             
-            # Parse OpenAI-compatible response format: {"data": [{"embedding": [...]}]}
+            # Both embedding-api and ingest-api return OpenAI-compatible format:
+            # {"data": [{"embedding": [...], "index": 0}], "model": "...", "dimension": ...}
             embedding_data = data.get("data", [])
             if not embedding_data:
                 raise ValueError("No embeddings returned from service")
-            
             return embedding_data[0].get("embedding", [])
     
     async def search_insights(
@@ -1094,7 +1108,10 @@ class InsightsService:
         insight_id = str(uuid.uuid4())
         created_at = int(time.time())
         
-        # Insert into collection
+        # Get the model name from config or environment
+        model_name = os.environ.get("FASTEMBED_MODEL", "bge-large-en-v1.5")
+        
+        # Insert into collection (must match schema: id, taskId, userId, content, embedding, executionId, createdAt, modelName)
         data = [
             [insight_id],  # id
             [task_id],  # taskId
@@ -1103,6 +1120,7 @@ class InsightsService:
             [embedding],  # embedding
             [execution_id],  # executionId
             [created_at],  # createdAt
+            [model_name],  # modelName
         ]
         
         collection.insert(data)

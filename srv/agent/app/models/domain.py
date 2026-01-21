@@ -454,6 +454,12 @@ class AgentTask(Base):
         comment="Insights settings: {enabled: true, max_insights: 50, purge_after_days: 30}"
     )
     
+    # Output saving configuration
+    output_saving_config: Mapped[Optional[dict]] = mapped_column(
+        JSON, nullable=True,
+        comment="Output saving settings: {enabled: false, tags: ['tag1'], library_type: 'TASKS'}"
+    )
+    
     # Execution state
     status: Mapped[str] = mapped_column(
         String(50), default="active", index=True,

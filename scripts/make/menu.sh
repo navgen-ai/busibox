@@ -251,8 +251,8 @@ handle_menu_selection() {
         test)
             handle_test
             ;;
-        migration)
-            handle_migration
+        migration|databases)
+            handle_databases
             ;;
         change_env)
             select_and_save_environment
@@ -631,11 +631,12 @@ handle_install() {
             menu "System Setup - All Requirements Met" \
                 "Refresh SSL Certificates" \
                 "Rebuild Docker Images" \
-                "Update .env.local" \
+                "Edit .env.local" \
+                "Regenerate .env.local from Vault" \
                 "Back to Main Menu"
             
             local choice=""
-            read -p "$(echo -e "${BOLD}Select option [1-4]:${NC} ")" choice
+            read -p "$(echo -e "${BOLD}Select option [1-5]:${NC} ")" choice
             
             case "$choice" in
                 1)
@@ -668,7 +669,14 @@ handle_install() {
                         pause
                     fi
                     ;;
-                4|b|B|"")
+                4)
+                    echo ""
+                    info "Regenerating .env.local from Ansible vault..."
+                    save_last_command "make vault-generate-env"
+                    (cd "$REPO_ROOT" && make vault-generate-env)
+                    pause
+                    ;;
+                5|b|B|"")
                     return 0
                     ;;
             esac
@@ -782,10 +790,11 @@ handle_deploy() {
                     "Restart All Services (down + up)" \
                     "Build All Images (docker-build)" \
                     "Build Specific Service" \
+                    "Regenerate .env.local from Vault" \
                     "Back to Main Menu"
                 
                 local choice=""
-                read -p "$(echo -e "${BOLD}Select option [1-6]:${NC} ")" choice
+                read -p "$(echo -e "${BOLD}Select option [1-7]:${NC} ")" choice
                 
                 case "${choice:-}" in
                     1)
@@ -825,7 +834,19 @@ handle_deploy() {
                     5)
                         deploy_select_service
                         ;;
-                    6|b|B|"")
+                    6)
+                        echo ""
+                        info "Regenerating .env.local from Ansible vault..."
+                        save_last_command "make vault-generate-env"
+                        (cd "$REPO_ROOT" && make vault-generate-env)
+                        echo ""
+                        if confirm "Restart Docker services to apply new configuration?"; then
+                            info "Restarting Docker services..."
+                            (cd "$REPO_ROOT" && make docker-restart ENV="$env")
+                        fi
+                        pause
+                        ;;
+                    7|b|B|"")
                         return 0
                         ;;
                 esac
@@ -1366,15 +1387,15 @@ view_service_logs() {
     fi
 }
 
-# Handle database migration
-handle_migration() {
+# Handle databases menu (renamed from migration)
+handle_databases() {
     local env backend
     
     env=$(get_environment)
     backend=$(get_backend "$env")
     
     echo ""
-    header "Database Migration" 70
+    header "Databases" 70
     echo ""
     
     # Only Docker local environment uses the migration script directly
@@ -1429,7 +1450,7 @@ handle_migration() {
     fi
     
     echo ""
-    menu "Database Migration Options" \
+    menu "Database Options" \
         "Check Migration Status (dry run)" \
         "Verify Existing Migrations" \
         "Migrate AuthZ Service (busibox -> authz)" \
@@ -1439,10 +1460,11 @@ handle_migration() {
         "Check Embedding Model Migration" \
         "Migrate Embeddings (Milvus documents)" \
         "Reset Chat Insights Collection" \
+        "Rebuild Milvus" \
         "Back to Main Menu"
     
     echo ""
-    read -p "$(echo -e "${BOLD}Select option [1-10]:${NC} ")" migration_choice
+    read -p "$(echo -e "${BOLD}Select option [1-11]:${NC} ")" migration_choice
     
     # For Docker execution, we need to copy the script into the container or cat it
     local docker_script_path="/tmp/migrate_db.py"
@@ -1694,6 +1716,217 @@ connections.disconnect('default')
             pause
             ;;
         10)
+            # Rebuild Milvus
+            echo ""
+            header "Rebuild Milvus" 70
+            echo ""
+            warn "This will COMPLETELY REBUILD Milvus from scratch!"
+            warn ""
+            warn "What this does:"
+            echo "  1. Stop Milvus and delete all data (etcd, minio storage)"
+            echo "  2. Restart Milvus with fresh empty collections"
+            echo "  3. Queue ALL documents for re-embedding"
+            echo ""
+            warn "This is safe because:"
+            echo "  - All document text is stored in PostgreSQL (ingestion_chunks)"
+            echo "  - Embeddings can be regenerated from chunk text"
+            echo "  - No data will be lost"
+            echo ""
+            warn "This will take a long time if you have many documents!"
+            echo ""
+            
+            # Determine environment and backend
+            local milvus_host ingest_host deploy_backend
+            deploy_backend="${backend:-docker}"
+            
+            if [[ "$deploy_backend" == "docker" ]] || [[ "$env" == "development" ]] || [[ "$env" == "local" ]] || [[ "$env" == "demo" ]]; then
+                milvus_host="docker:local-milvus"
+                ingest_host="docker:local-ingest-api"
+                info "Using Docker environment"
+            elif [[ "$env" == "staging" ]] || [[ "$env" == "test" ]]; then
+                milvus_host="10.96.201.204"
+                ingest_host="10.96.201.206"
+                info "Using staging/test environment"
+            else
+                milvus_host="10.96.200.204"
+                ingest_host="10.96.200.206"
+                info "Using production environment"
+            fi
+            echo ""
+            
+            if confirm "Are you ABSOLUTELY SURE you want to rebuild Milvus?"; then
+                if confirm "This is your last chance to cancel. Proceed?"; then
+                    echo ""
+                    info "Starting Milvus rebuild..."
+                    
+                    if [[ "$milvus_host" == docker:* ]]; then
+                        # Docker environment
+                        # Only reset the milvus service and milvus_data volume
+                        # etcd and milvus-minio store metadata, not vectors - leave them alone
+                        
+                        info "Step 1/5: Stopping Milvus..."
+                        (cd "$REPO_ROOT" && docker compose -f docker-compose.local.yml --env-file .env.local stop milvus) || {
+                            error "Failed to stop Milvus"
+                            pause
+                            return 1
+                        }
+                        
+                        info "Step 2/5: Removing Milvus container and data volume..."
+                        (cd "$REPO_ROOT" && docker compose -f docker-compose.local.yml --env-file .env.local rm -f milvus) || true
+                        docker volume rm busibox_milvus_data 2>/dev/null || true
+                        
+                        info "Step 3/5: Starting fresh Milvus..."
+                        # etcd and milvus-minio should already be running; just start milvus
+                        (cd "$REPO_ROOT" && docker compose -f docker-compose.local.yml --env-file .env.local up -d milvus) || {
+                            error "Failed to start Milvus"
+                            pause
+                            return 1
+                        }
+                        
+                        info "Waiting for Milvus to be ready..."
+                        # Wait for Milvus health check to pass
+                        local retries=0
+                        while [ $retries -lt 30 ]; do
+                            if docker exec local-milvus curl -sf http://localhost:9091/healthz >/dev/null 2>&1; then
+                                success "Milvus is healthy!"
+                                break
+                            fi
+                            sleep 2
+                            ((retries++))
+                            echo -ne "\r  Waiting... ${retries}/30"
+                        done
+                        echo ""
+                        
+                        if [ $retries -eq 30 ]; then
+                            error "Milvus failed to become healthy after 60 seconds"
+                            pause
+                            return 1
+                        fi
+                        
+                        info "Step 4/5: Creating Milvus schema (collections)..."
+                        # Run the milvus-init container to create schema
+                        (cd "$REPO_ROOT" && docker compose -f docker-compose.local.yml --env-file .env.local run --rm milvus-init) || {
+                            error "Failed to create Milvus schema"
+                            pause
+                            return 1
+                        }
+                        
+                        info "Step 5/5: Queuing all documents for re-embedding..."
+                        # Call the reprocess-all endpoint
+                        docker exec local-ingest-api python -c "
+import asyncio
+import redis.asyncio as redis_async
+import asyncpg
+import os
+
+async def requeue_all():
+    # Connect to PostgreSQL
+    conn = await asyncpg.connect(
+        host=os.environ.get('POSTGRES_HOST', 'postgres'),
+        port=int(os.environ.get('POSTGRES_PORT', 5432)),
+        user=os.environ.get('POSTGRES_USER', 'postgres'),
+        password=os.environ.get('POSTGRES_PASSWORD', 'devpassword'),
+        database=os.environ.get('INGEST_DB', 'files'),
+    )
+    
+    # Get all files that have completed processing
+    # Schema: ingestion_files has file metadata, ingestion_status has processing status
+    files = await conn.fetch('''
+        SELECT f.file_id, f.user_id, f.storage_path, f.original_filename, f.mime_type
+        FROM ingestion_files f
+        JOIN ingestion_status s ON f.file_id = s.file_id
+        WHERE s.stage = 'completed'
+    ''')
+    
+    print(f'Found {len(files)} documents to re-embed')
+    
+    if len(files) == 0:
+        print('No documents to process')
+        await conn.close()
+        return
+    
+    # Connect to Redis
+    redis_client = redis_async.Redis(
+        host=os.environ.get('REDIS_HOST', 'redis'),
+        port=int(os.environ.get('REDIS_PORT', 6379)),
+        decode_responses=True,
+    )
+    
+    # Queue each file for reprocessing from embedding stage
+    stream_name = os.environ.get('REDIS_STREAM', 'jobs:ingestion')
+    
+    for file_row in files:
+        file_id = str(file_row['file_id'])
+        user_id = str(file_row['user_id'])
+        
+        # Reset ingestion status in the ingestion_status table
+        await conn.execute('''
+            UPDATE ingestion_status
+            SET stage = 'queued',
+                progress = 0,
+                updated_at = NOW()
+            WHERE file_id = \$1
+        ''', file_row['file_id'])
+        
+        # Reset vector count in ingestion_files
+        await conn.execute('''
+            UPDATE ingestion_files
+            SET vector_count = 0,
+                updated_at = NOW()
+            WHERE file_id = \$1
+        ''', file_row['file_id'])
+        
+        # Add job to queue
+        job_data = {
+            'job_id': file_id,
+            'file_id': file_id,
+            'user_id': user_id,
+            'storage_path': file_row['storage_path'],
+            'original_filename': file_row['original_filename'],
+            'mime_type': file_row['mime_type'],
+            'reprocess': 'true',
+            'start_stage': 'embedding',
+        }
+        
+        await redis_client.xadd(stream_name, job_data)
+        print(f'Queued: {file_row[\"original_filename\"]}')
+    
+    await redis_client.aclose()
+    await conn.close()
+    print(f'Successfully queued {len(files)} documents for re-embedding')
+
+asyncio.run(requeue_all())
+" || {
+                            error "Failed to queue documents for re-embedding"
+                            pause
+                            return 1
+                        }
+                        
+                        # Restart ingest-worker to pick up the queued jobs
+                        info "Restarting ingest-worker to process queue..."
+                        (cd "$REPO_ROOT" && docker compose -f docker-compose.local.yml --env-file .env.local restart ingest-worker) || true
+                        
+                        success "Milvus rebuild complete!"
+                        echo ""
+                        info "Documents are now being re-embedded in the background."
+                        info "Check ingest-worker logs for progress:"
+                        echo "  docker logs -f local-ingest-worker"
+                        
+                    else
+                        # Proxmox environment
+                        warn "Proxmox Milvus rebuild not yet implemented."
+                        warn "Please run the following manually on the Milvus host ($milvus_host):"
+                        echo ""
+                        echo "  1. systemctl stop milvus-standalone"
+                        echo "  2. rm -rf /var/lib/milvus/*"
+                        echo "  3. systemctl start milvus-standalone"
+                        echo "  4. Then run: make migration -> 'Migrate Embeddings'"
+                    fi
+                fi
+            fi
+            pause
+            ;;
+        11)
             return 0
             ;;
         *)

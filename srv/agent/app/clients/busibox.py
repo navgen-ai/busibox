@@ -79,6 +79,9 @@ class BusiboxClient:
             return resp.json()
 
     async def ingest_document(self, path: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Legacy file-based ingestion (for file paths).
+        """
         # Remove trailing slash from base URL to avoid double slashes
         base_url = str(settings.ingest_api_url).rstrip('/')
         
@@ -87,7 +90,57 @@ class BusiboxClient:
                 f"{base_url}/documents",
                 json={"path": path, "metadata": metadata or {}},
                 headers=self._headers,
-                timeout=60,
+                timeout=180,  # 3 minutes for document ingestion with embedding generation
+            )
+            resp.raise_for_status()
+            return resp.json()
+    
+    async def ingest_content(
+        self,
+        content: str,
+        title: str,
+        url: Optional[str] = None,
+        folder: Optional[str] = None,
+        library_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Ingest text/markdown content as a document.
+        
+        Used by web research workflows to store scraped content.
+        
+        Args:
+            content: Text or markdown content to ingest
+            title: Document title
+            url: Optional source URL
+            folder: Target folder name (e.g., 'personal-research')
+            library_id: Target library ID (alternative to folder)
+            metadata: Additional metadata
+            
+        Returns:
+            Response with fileId, libraryId, status
+        """
+        base_url = str(settings.ingest_api_url).rstrip('/')
+        
+        payload: Dict[str, Any] = {
+            "content": content,
+            "title": title,
+        }
+        if url:
+            payload["url"] = url
+        if folder:
+            payload["folder"] = folder
+        if library_id:
+            payload["library_id"] = library_id
+        if metadata:
+            payload["metadata"] = metadata
+        
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{base_url}/ingest/content",
+                json=payload,
+                headers=self._headers,
+                timeout=180,  # 3 minutes for content ingestion with embedding generation
             )
             resp.raise_for_status()
             return resp.json()

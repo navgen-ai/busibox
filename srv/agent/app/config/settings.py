@@ -47,6 +47,12 @@ class Settings(BaseSettings):
         description="Base URL for RAG/vector database API",
     )
     
+    # Embedding API (dedicated embedding service - no auth required)
+    embedding_api_url: Optional[str] = Field(
+        None,
+        description="Dedicated embedding service URL. If not set, falls back to ingest_api_url",
+    )
+    
     # Milvus configuration (for insights)
     milvus_host: str = Field(
         "10.96.200.204",

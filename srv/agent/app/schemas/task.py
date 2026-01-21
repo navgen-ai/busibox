@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # Trigger types
@@ -45,14 +45,12 @@ class TriggerConfig(BaseModel):
     )
 
 
-class NotificationConfig(BaseModel):
-    """Configuration for task completion notifications."""
+class NotificationChannelConfig(BaseModel):
+    """Configuration for a single notification channel."""
     
-    enabled: bool = Field(True, description="Whether to send notifications")
-    channel: NotificationChannel = Field("email", description="Notification channel")
-    recipient: Optional[str] = Field(None, description="Email address, webhook URL, or channel ID (required if enabled)")
-    include_summary: bool = Field(True, description="Include result summary in notification")
-    include_portal_link: bool = Field(True, description="Include link to portal for details")
+    channel: NotificationChannel = Field(..., description="Notification channel type")
+    recipient: str = Field(..., description="Email address, webhook URL, or channel ID")
+    enabled: bool = Field(True, description="Whether this channel is enabled")
     
     # Channel-specific settings
     email_subject_template: Optional[str] = Field(
@@ -67,19 +65,107 @@ class NotificationConfig(BaseModel):
         None,
         description="Slack message format: text, blocks"
     )
+
+
+class NotificationConfig(BaseModel):
+    """Configuration for task completion notifications.
     
-    @field_validator("recipient")
-    @classmethod
-    def validate_recipient(cls, v, info):
-        """Validate that recipient is provided when notifications are enabled."""
-        # We can't access other fields in field_validator directly in Pydantic v2
-        # So we'll do this validation in the model_validator instead
-        return v
+    Supports both single channel (legacy) and multiple channels:
     
-    def model_post_init(self, __context):
-        """Validate recipient is provided when enabled."""
-        if self.enabled and not self.recipient:
-            raise ValueError("recipient is required when notifications are enabled")
+    Single channel (legacy):
+        {
+            "enabled": true,
+            "channel": "email",
+            "recipient": "user@example.com"
+        }
+    
+    Multiple channels:
+        {
+            "enabled": true,
+            "channels": [
+                {"channel": "email", "recipient": "user@example.com"},
+                {"channel": "teams", "recipient": "https://webhook.teams.com/..."},
+                {"channel": "slack", "recipient": "https://hooks.slack.com/..."}
+            ]
+        }
+    """
+    
+    enabled: bool = Field(True, description="Whether to send notifications")
+    
+    # Legacy single-channel fields (still supported for backward compatibility)
+    channel: Optional[NotificationChannel] = Field(None, description="Notification channel (legacy, use 'channels' for multiple)")
+    recipient: Optional[str] = Field(None, description="Email/webhook URL (legacy, use 'channels' for multiple)")
+    
+    # New multi-channel support
+    channels: Optional[List[NotificationChannelConfig]] = Field(
+        None,
+        description="List of notification channels to send to (preferred over single channel/recipient)"
+    )
+    
+    # Common settings
+    include_summary: bool = Field(True, description="Include result summary in notification")
+    include_portal_link: bool = Field(True, description="Include link to portal for details")
+    on_success: bool = Field(True, description="Send notification on successful completion")
+    on_failure: bool = Field(True, description="Send notification on failure")
+    
+    # Legacy channel-specific settings (for single-channel mode)
+    email_subject_template: Optional[str] = Field(
+        None,
+        description="Custom email subject template (supports {task_name}, {status})"
+    )
+    teams_card_style: Optional[str] = Field(
+        None,
+        description="Teams Adaptive Card style: simple, detailed"
+    )
+    slack_format: Optional[str] = Field(
+        None,
+        description="Slack message format: text, blocks"
+    )
+    
+    @model_validator(mode='after')
+    def validate_channels_or_recipient(self):
+        """Validate that at least one channel is configured when enabled."""
+        if not self.enabled:
+            return self
+        
+        has_channels = self.channels and len(self.channels) > 0
+        has_legacy = self.channel and self.recipient
+        
+        if not has_channels and not has_legacy:
+            raise ValueError(
+                "At least one notification channel must be configured when enabled. "
+                "Either provide 'channels' array or 'channel' + 'recipient'."
+            )
+        
+        return self
+    
+    def get_all_channels(self) -> List[Dict[str, Any]]:
+        """Get all configured channels as a list of dicts."""
+        result = []
+        
+        # Add multi-channel configs
+        if self.channels:
+            for ch in self.channels:
+                if ch.enabled:
+                    result.append({
+                        "channel": ch.channel,
+                        "recipient": ch.recipient,
+                        "email_subject_template": ch.email_subject_template,
+                        "teams_card_style": ch.teams_card_style,
+                        "slack_format": ch.slack_format,
+                    })
+        
+        # Add legacy single-channel config if no channels defined
+        if not result and self.channel and self.recipient:
+            result.append({
+                "channel": self.channel,
+                "recipient": self.recipient,
+                "email_subject_template": self.email_subject_template,
+                "teams_card_style": self.teams_card_style,
+                "slack_format": self.slack_format,
+            })
+        
+        return result
 
 
 class InsightsConfig(BaseModel):
@@ -101,6 +187,32 @@ class InsightsConfig(BaseModel):
         description="Max insights to include in agent context",
         ge=1,
         le=50
+    )
+
+
+class OutputSavingConfig(BaseModel):
+    """Configuration for saving task output to document library.
+    
+    When enabled, task outputs are saved to the user's personal 'Tasks' library
+    as documents that can be searched and referenced later.
+    """
+    
+    enabled: bool = Field(False, description="Whether to save task output to library")
+    library_type: str = Field(
+        "TASKS",
+        description="Library type to save to (TASKS for personal tasks library)"
+    )
+    tags: List[str] = Field(
+        default_factory=list,
+        description="Tags to apply to saved documents for organization"
+    )
+    title_template: Optional[str] = Field(
+        None,
+        description="Template for document title. Supports {task_name}, {date}, {status}"
+    )
+    on_success_only: bool = Field(
+        True,
+        description="Only save output when task succeeds"
     )
 
 
@@ -132,6 +244,12 @@ class TaskCreate(BaseModel):
         description="Task memory/insights settings"
     )
     
+    # Output saving configuration
+    output_saving_config: Optional[OutputSavingConfig] = Field(
+        None,
+        description="Settings for saving task output to document library"
+    )
+    
     # Additional input parameters
     input_config: Dict[str, Any] = Field(
         default_factory=dict,
@@ -154,6 +272,15 @@ class TaskCreate(BaseModel):
         if trigger_type == 'one_time' and not v.run_at:
             raise ValueError("One-time trigger requires 'run_at' datetime in trigger_config")
         return v
+    
+    @model_validator(mode='after')
+    def validate_agent_or_workflow(self):
+        """Validate that either agent_id or workflow_id is provided."""
+        if not self.agent_id and not self.workflow_id:
+            raise ValueError("Either agent_id or workflow_id must be provided")
+        if self.agent_id and self.workflow_id:
+            raise ValueError("Only one of agent_id or workflow_id should be provided, not both")
+        return self
 
 
 class TaskUpdate(BaseModel):
@@ -175,6 +302,9 @@ class TaskUpdate(BaseModel):
     
     # Insights updates
     insights_config: Optional[InsightsConfig] = None
+    
+    # Output saving updates
+    output_saving_config: Optional[OutputSavingConfig] = None
     
     # Status updates
     status: Optional[TaskStatus] = None
@@ -207,6 +337,9 @@ class TaskRead(BaseModel):
     
     # Insights
     insights_config: Dict[str, Any]
+    
+    # Output saving
+    output_saving_config: Optional[Dict[str, Any]] = None
     
     # Input
     input_config: Dict[str, Any]

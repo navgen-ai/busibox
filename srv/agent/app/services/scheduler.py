@@ -29,6 +29,73 @@ from app.services.token_service import get_or_exchange_token
 logger = logging.getLogger(__name__)
 
 
+def _extract_content_from_output(output_summary: Optional[str]) -> str:
+    """
+    Extract the actual content from an output summary, handling dict-like strings
+    and stripping markdown code fences.
+    
+    Handles cases where the output is:
+    - A dict-like string: "{'result': '...'}" 
+    - JSON: '{"result": "..."}'
+    - Markdown with code fences: "```markdown\n...\n```"
+    
+    Returns clean markdown content suitable for storage.
+    """
+    import ast
+    import json
+    
+    if not output_summary:
+        return ""
+    
+    content = output_summary
+    
+    # Try to parse as dict if it looks like one
+    if content.startswith("{") and content.endswith("}"):
+        try:
+            parsed = ast.literal_eval(content)
+            if isinstance(parsed, dict):
+                # Extract the result content
+                result_content = parsed.get("result") or parsed.get("summary") or parsed.get("output")
+                if result_content:
+                    content = str(result_content)
+                else:
+                    # If no standard keys, format as readable key-value pairs
+                    formatted_parts = []
+                    for key, value in parsed.items():
+                        if isinstance(value, str) and len(value) > 500:
+                            value = value[:500] + "..."
+                        formatted_parts.append(f"**{key}:** {value}")
+                    content = "\n".join(formatted_parts)
+        except (ValueError, SyntaxError):
+            # Not a valid dict string, try JSON
+            pass
+    
+    # Also try JSON parsing
+    if content.startswith("{") or content.startswith("["):
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                result_content = parsed.get("result") or parsed.get("summary") or parsed.get("output")
+                if result_content:
+                    content = str(result_content)
+        except json.JSONDecodeError:
+            pass
+    
+    # Strip markdown code fences if present (e.g., ```markdown\n...\n```)
+    content = content.strip()
+    if content.startswith("```"):
+        lines = content.split("\n")
+        # Remove first line (```markdown or ```)
+        if lines:
+            lines = lines[1:]
+        # Remove last line if it's just ```
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        content = "\n".join(lines)
+    
+    return content.strip()
+
+
 class ScheduledJob:
     """Metadata for a scheduled job."""
     
@@ -503,6 +570,11 @@ class TaskSchedulerService:
                         logger.info(f"Task {task_id} is not active, skipping")
                         return
                     
+                    # Validate task has an agent_id or workflow_id
+                    if not task.agent_id and not task.workflow_id:
+                        logger.error(f"Task {task_id} has no agent_id or workflow_id configured")
+                        return
+                    
                     # Create execution record
                     execution = await create_task_execution(
                         session=session,
@@ -524,35 +596,108 @@ class TaskSchedulerService:
                             **(task.input_config or {}),
                         }
                         
-                        # Execute the agent
-                        run_record = await create_run(
-                            session=session,
-                            principal=principal,
-                            agent_id=task.agent_id,
-                            payload=payload,
-                            scopes=task.delegation_scopes or [],
-                            purpose="task-execution",
-                            agent_tier="simple",  # Could be configurable per task
-                        )
+                        # For workflows, also include 'query' mapped from 'prompt' for compatibility
+                        # with workflows that expect $.input.query (like web-research-workflow)
+                        if task.workflow_id and "query" not in payload:
+                            payload["query"] = task.prompt
                         
-                        # Update execution with run result
+                        run_id = None
+                        workflow_execution_id = None
+                        status = None
                         output_summary = None
-                        if run_record.output:
-                            if isinstance(run_record.output, dict):
-                                output_summary = run_record.output.get("result") or run_record.output.get("summary") or str(run_record.output)[:500]
-                            else:
-                                output_summary = str(run_record.output)[:500]
+                        success = False
+                        error_msg = None
                         
-                        success = run_record.status in ("succeeded", "completed")
+                        if task.workflow_id:
+                            # Execute workflow
+                            from app.workflows.enhanced_engine import create_workflow_execution, run_workflow_execution
+                            
+                            workflow_execution = await create_workflow_execution(
+                                session=session,
+                                principal=principal,
+                                workflow_id=task.workflow_id,
+                                input_data=payload,
+                            )
+                            
+                            workflow_execution = await run_workflow_execution(
+                                execution_id=workflow_execution.id,
+                                principal=principal,
+                                scopes=task.delegation_scopes or [],
+                                purpose="task-execution",
+                            )
+                            
+                            # For workflows: don't set run_id (FK to run_records)
+                            # Store workflow execution ID in output_data instead
+                            run_id = None  # No run_id for workflow executions
+                            workflow_execution_id = workflow_execution.id
+                            status = workflow_execution.status
+                            success = workflow_execution.status in ("succeeded", "completed")
+                            
+                            # WorkflowExecution stores outputs in step_outputs dict
+                            if workflow_execution.step_outputs:
+                                last_output = None
+                                if isinstance(workflow_execution.step_outputs, dict):
+                                    last_output = workflow_execution.step_outputs.get("synthesize") or \
+                                                  workflow_execution.step_outputs.get("result") or \
+                                                  list(workflow_execution.step_outputs.values())[-1] if workflow_execution.step_outputs else None
+                                if last_output:
+                                    if isinstance(last_output, dict):
+                                        output_summary = last_output.get("result") or last_output.get("summary") or str(last_output)[:500]
+                                    else:
+                                        output_summary = str(last_output)[:500]
+                            
+                            if not success:
+                                error_msg = workflow_execution.error
+                        else:
+                            # Execute agent
+                            run_record = await create_run(
+                                session=session,
+                                principal=principal,
+                                agent_id=task.agent_id,
+                                payload=payload,
+                                scopes=task.delegation_scopes or [],
+                                purpose="task-execution",
+                                agent_tier="complex",  # Tasks use complex tier (10 min timeout) for LLM processing
+                            )
+                            
+                            run_id = run_record.id
+                            status = run_record.status
+                            success = run_record.status in ("succeeded", "completed")
+                            
+                            if run_record.output:
+                                if isinstance(run_record.output, dict):
+                                    output_summary = run_record.output.get("result") or run_record.output.get("summary") or str(run_record.output)[:500]
+                                else:
+                                    output_summary = str(run_record.output)[:500]
+                            
+                            if not success and isinstance(run_record.output, dict):
+                                error_msg = run_record.output.get("error")
                         
-                        await update_task_execution(
-                            session=session,
-                            execution_id=execution.id,
-                            run_id=run_record.id,
-                            status=run_record.status,
-                            output_summary=output_summary,
-                            error=run_record.output.get("error") if isinstance(run_record.output, dict) and not success else None,
-                        )
+                        # Update task execution - different handling for workflow vs agent
+                        if task.workflow_id:
+                            # For workflow: store workflow execution ID in output_data
+                            await update_task_execution(
+                                session=session,
+                                execution_id=execution.id,
+                                run_id=None,  # No run_id for workflow executions
+                                status=status,
+                                output_summary=output_summary,
+                                error=error_msg,
+                                output_data={
+                                    "workflow_execution_id": str(workflow_execution_id),
+                                    "step_outputs": workflow_execution.step_outputs,
+                                },
+                            )
+                        else:
+                            # For agent: use run_id normally
+                            await update_task_execution(
+                                session=session,
+                                execution_id=execution.id,
+                                run_id=run_id,
+                                status=status,
+                                output_summary=output_summary,
+                                error=error_msg,
+                            )
                         
                         await update_task_after_execution(
                             session=session,
@@ -561,19 +706,45 @@ class TaskSchedulerService:
                             success=success,
                         )
                         
-                        logger.info(f"Task {task_id} execution completed with run {run_record.id}, status: {run_record.status}")
+                        effective_run_id = run_id or workflow_execution_id if task.workflow_id else run_id
+                        logger.info(f"Task {task_id} execution completed with run/workflow {effective_run_id}, status: {status}")
                         
                         # Send notification if configured
                         notification_config = task.notification_config or {}
                         if notification_config.get("enabled") and notification_config.get("recipient"):
+                            # Create a mock run_record for notification (workflow or agent)
+                            class RunResult:
+                                def __init__(self, rid, stat, out):
+                                    self.id = rid
+                                    self.status = stat
+                                    self.output = out
+                            
+                            effective_id = workflow_execution_id if task.workflow_id else run_id
+                            run_result = RunResult(effective_id, status, {"summary": output_summary} if output_summary else {})
                             await self._send_task_notification(
                                 session=session,
                                 task=task,
                                 execution=execution,
-                                run_record=run_record,
+                                run_record=run_result,
                                 success=success,
                                 output_summary=output_summary,
                             )
+                        
+                        # Save insight from execution output (for duplicate detection)
+                        if success and output_summary:
+                            await self._save_task_insight(
+                                task=task,
+                                execution=execution,
+                                output_summary=output_summary,
+                            )
+                        
+                        # Save output to library if configured
+                        await self._save_task_output_to_library(
+                            task=task,
+                            execution=execution,
+                            output_summary=output_summary,
+                            success=success,
+                        )
                         
                     except Exception as e:
                         logger.error(f"Task {task_id} execution failed: {e}", exc_info=True)
@@ -619,17 +790,21 @@ class TaskSchedulerService:
         """
         Send notification for task completion.
         
-        Creates a notification record and attempts delivery via configured channel.
+        Creates notification records and attempts delivery via all configured channels.
+        Supports both single channel (legacy) and multiple channels.
         """
         from app.tools.notification_tool import send_notification
         from app.models.domain import TaskNotification
         
-        notification_config = task.notification_config or {}
-        channel = notification_config.get("channel", "email")
-        recipient = notification_config.get("recipient")
+        def _format_output_for_notification(output: str | None) -> str:
+            """Format output summary for notification display."""
+            # Use top-level content extraction function
+            return _extract_content_from_output(output)
         
-        if not recipient:
-            logger.warning(f"Task {task.id} has notifications enabled but no recipient configured")
+        notification_config = task.notification_config or {}
+        
+        # Check if notifications are enabled
+        if not notification_config.get("enabled", True):
             return
         
         # Only send on configured events
@@ -656,8 +831,9 @@ class TaskSchedulerService:
         ]
         
         if output_summary:
-            # Truncate for notification
-            summary_preview = output_summary[:500] + "..." if len(output_summary) > 500 else output_summary
+            # Format the output for better readability (parse dicts, extract result content)
+            formatted_output = _format_output_for_notification(output_summary)
+            summary_preview = formatted_output[:500] + "..." if len(formatted_output) > 500 else formatted_output
             body_parts.append(f"\n**Result:**\n{summary_preview}")
         
         if not success and execution.error:
@@ -671,70 +847,276 @@ class TaskSchedulerService:
         portal_base = settings.portal_base_url or "https://localhost"
         portal_link = f"{portal_base}/agents/tasks/{task.id}"
         
-        # Try to create notification record (table may not exist yet)
-        notification = None
-        try:
-            notification = TaskNotification(
-                task_id=task.id,
-                execution_id=execution.id,
-                channel=channel,
-                recipient=recipient,
-                subject=subject,
-                body=body,
-                status="pending",
-            )
-            session.add(notification)
-            await session.flush()
-        except Exception as e:
-            logger.warning(f"Could not create notification record (table may not exist): {e}")
-            await session.rollback()
+        # Get all configured channels - support both single channel (legacy) and multiple channels
+        channels_to_notify = []
+        
+        # Check for new multi-channel format: notification_config.channels = [{channel, recipient}, ...]
+        if notification_config.get("channels"):
+            for ch in notification_config["channels"]:
+                if ch.get("enabled", True) and ch.get("recipient"):
+                    channels_to_notify.append({
+                        "channel": ch.get("channel", "email"),
+                        "recipient": ch["recipient"],
+                    })
+        
+        # Fallback to legacy single-channel format
+        if not channels_to_notify and notification_config.get("recipient"):
+            channels_to_notify.append({
+                "channel": notification_config.get("channel", "email"),
+                "recipient": notification_config["recipient"],
+            })
+        
+        if not channels_to_notify:
+            logger.warning(f"Task {task.id} has notifications enabled but no valid channels configured")
+            return
+        
+        # Track overall success for execution record
+        any_success = False
+        last_error = None
+        
+        # Send to all configured channels
+        for ch_config in channels_to_notify:
+            channel = ch_config["channel"]
+            recipient = ch_config["recipient"]
+            
+            # Try to create notification record (table may not exist yet)
             notification = None
+            try:
+                notification = TaskNotification(
+                    task_id=task.id,
+                    execution_id=execution.id,
+                    channel=channel,
+                    recipient=recipient,
+                    subject=subject,
+                    body=body,
+                    status="pending",
+                )
+                session.add(notification)
+                await session.flush()
+            except Exception as e:
+                logger.warning(f"Could not create notification record: {e}")
+                # Continue anyway - we can still send the notification
+            
+            try:
+                # Send the notification
+                result = await send_notification(
+                    channel=channel,
+                    recipient=recipient,
+                    subject=subject,
+                    body=body,
+                    portal_link=portal_link,
+                    metadata={
+                        "task_id": str(task.id),
+                        "execution_id": str(execution.id),
+                        "run_id": str(run_record.id) if run_record else None,
+                        "success": success,
+                    },
+                )
+                
+                # Update notification record if it was created
+                if notification:
+                    notification.status = "sent" if result.success else "failed"
+                    notification.message_id = result.message_id
+                    notification.error = result.error
+                    notification.sent_at = datetime.now() if result.success else None
+                
+                if result.success:
+                    any_success = True
+                    logger.info(f"Sent {channel} notification to {recipient} for task {task.id}")
+                else:
+                    last_error = result.error
+                    logger.error(f"Failed to send {channel} notification to {recipient}: {result.error}")
+                    
+            except Exception as e:
+                logger.error(f"Error sending {channel} notification: {e}", exc_info=True)
+                last_error = str(e)
+                if notification:
+                    notification.status = "failed"
+                    notification.error = str(e)
+        
+        # Update execution's notification tracking (any channel success counts)
+        execution.notification_sent = any_success
+        execution.notification_error = last_error if not any_success else None
         
         try:
-            # Send the notification
-            result = await send_notification(
-                channel=channel,
-                recipient=recipient,
-                subject=subject,
-                body=body,
-                portal_link=portal_link,
-                metadata={
+            await session.commit()
+        except Exception as e:
+            logger.error(f"Error committing notification status: {e}")
+            await session.rollback()
+    
+    async def _save_task_insight(
+        self,
+        task,
+        execution,
+        output_summary: str,
+    ) -> None:
+        """
+        Save task execution output as an insight for duplicate detection.
+        
+        This stores the output summary in Milvus so future executions can
+        check for similar results and avoid sending duplicates.
+        """
+        # Check if insights are enabled for this task
+        insights_config = task.insights_config or {}
+        if not insights_config.get("enabled", True):
+            logger.debug(f"Insights disabled for task {task.id}")
+            return
+        
+        if not output_summary or len(output_summary.strip()) < 10:
+            logger.debug(f"No output summary to save as insight for task {task.id}")
+            return
+        
+        try:
+            from app.api.insights import get_insights_service
+            
+            insights_service = get_insights_service()
+            
+            # Get insight limits from config
+            max_insights = insights_config.get("max_insights", 50)
+            
+            # Check current insight count
+            current_count = insights_service.get_task_insight_count(
+                task_id=str(task.id),
+                user_id=task.user_id,
+            )
+            
+            # Purge old insights if we're at the limit
+            if current_count >= max_insights:
+                purged = insights_service.purge_old_task_insights(
+                    task_id=str(task.id),
+                    user_id=task.user_id,
+                    keep_count=max_insights - 1,  # Make room for new one
+                )
+                logger.info(f"Purged {purged} old insights for task {task.id}")
+            
+            # Get an ingest-api audience token via token exchange
+            # The delegation token has agent-api audience, but we need ingest-api for embeddings
+            try:
+                from app.auth.tokens import get_service_token
+                ingest_token = await get_service_token(
+                    user_id=task.user_id,
+                    target_audience="ingest-api",
+                )
+                access_token = f"Bearer {ingest_token}"
+            except Exception as e:
+                logger.warning(f"Failed to get ingest-api token for task {task.id}: {e}")
+                return
+            
+            # Extract the actual content from the output (unwrap JSON/dict, strip code fences)
+            extracted_content = _extract_content_from_output(output_summary)
+            
+            # Insert the new insight
+            insight_id = await insights_service.insert_task_insight(
+                task_id=str(task.id),
+                user_id=task.user_id,
+                content=extracted_content,
+                execution_id=str(execution.id),
+                authorization=access_token,
+            )
+            
+            logger.info(
+                f"Saved task insight for task {task.id}, insight_id={insight_id}",
+                extra={
                     "task_id": str(task.id),
                     "execution_id": str(execution.id),
-                    "run_id": str(run_record.id) if run_record else None,
+                    "insight_id": insight_id,
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Error saving task insight: {e}", exc_info=True)
+    
+    async def _save_task_output_to_library(
+        self,
+        task,
+        execution,
+        output_summary: str | None,
+        success: bool,
+    ) -> None:
+        """
+        Save task output to the user's personal Tasks library as a document.
+        
+        This allows task outputs to be searched and referenced later.
+        """
+        output_saving_config = task.output_saving_config or {}
+        
+        # Check if output saving is enabled
+        if not output_saving_config.get("enabled", False):
+            return
+        
+        # Check success-only constraint
+        if output_saving_config.get("on_success_only", True) and not success:
+            logger.debug(f"Skipping output save for task {task.id} (failed, on_success_only=true)")
+            return
+        
+        if not output_summary or len(output_summary.strip()) < 10:
+            logger.debug(f"No output to save for task {task.id}")
+            return
+        
+        try:
+            from app.clients.busibox import BusiboxClient
+            from app.config.settings import get_settings
+            from datetime import datetime
+            
+            settings = get_settings()
+            
+            # Use top-level content extraction function
+            formatted_content = _extract_content_from_output(output_summary)
+            
+            # Build title from template or default
+            title_template = output_saving_config.get("title_template") or "{task_name} - {date}"
+            title = title_template.format(
+                task_name=task.name,
+                date=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                status="Success" if success else "Failed",
+            )
+            
+            # Get tags
+            tags = output_saving_config.get("tags", [])
+            
+            # Get an ingest-api audience token via token exchange
+            # The delegation token has agent-api audience, but we need ingest-api for content ingestion
+            try:
+                from app.auth.tokens import get_service_token
+                access_token = await get_service_token(
+                    user_id=task.user_id,
+                    target_audience="ingest-api",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to get ingest-api token for task {task.id} output saving: {e}")
+                return
+            
+            # Use the ingest content API via BusiboxClient
+            client = BusiboxClient(access_token=access_token)
+            
+            # Call the ingest content endpoint with folder="personal-tasks"
+            result = await client.ingest_content(
+                content=formatted_content,
+                title=title,
+                folder="personal-tasks",
+                metadata={
+                    "task_id": str(task.id),
+                    "task_name": task.name,
+                    "execution_id": str(execution.id),
                     "success": success,
+                    "tags": tags,
+                    "source": "task-output",
                 },
             )
             
-            # Update notification record if it was created
-            if notification:
-                notification.status = "sent" if result.success else "failed"
-                notification.message_id = result.message_id
-                notification.error = result.error
-                notification.sent_at = datetime.now() if result.success else None
+            document_id = result.get("document_id") or result.get("id")
             
-            # Update execution's notification tracking
-            execution.notification_sent = result.success
-            execution.notification_error = result.error
+            logger.info(
+                f"Saved task output to library for task {task.id}",
+                extra={
+                    "task_id": str(task.id),
+                    "document_id": document_id,
+                    "tags": tags,
+                }
+            )
             
-            await session.commit()
-            
-            if result.success:
-                logger.info(f"Notification sent for task {task.id} execution {execution.id}")
-            else:
-                logger.error(f"Failed to send notification for task {task.id}: {result.error}")
-                
         except Exception as e:
-            logger.error(f"Error sending notification for task {task.id}: {e}", exc_info=True)
-            if notification:
-                notification.status = "failed"
-                notification.error = str(e)
-            execution.notification_sent = False
-            execution.notification_error = str(e)
-            try:
-                await session.commit()
-            except Exception:
-                await session.rollback()
+            logger.error(f"Error saving task output to library: {e}", exc_info=True)
     
     def schedule_task(
         self,

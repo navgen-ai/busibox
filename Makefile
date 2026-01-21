@@ -1,5 +1,5 @@
 .PHONY: menu help setup configure deploy test test-local test-docker test-security mcp \
-        docker-up docker-up-prod docker-start docker-down docker-restart docker-build docker-logs docker-ps docker-clean \
+        docker-up docker-up-prod docker-start docker-down docker-restart docker-restart-apis docker-restart-ingest docker-build docker-logs docker-ps docker-clean \
         vault-generate-env vault-migrate vault-sync ssl-check \
         demo demo-warmup demo-clean demo-status
 
@@ -316,13 +316,24 @@ docker-down:
 	docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_DEV) down 2>/dev/null || true
 	docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_PROD) down 2>/dev/null || true
 
-# Restart Docker services
+# Restart Docker services (uses up -d to ensure env vars are reloaded)
 docker-restart:
 ifdef SERVICE
-	docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) --env-file $(ENV_FILE) restart $(SERVICE)
+	docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) --env-file $(ENV_FILE) up -d --force-recreate $(SERVICE)
 else
-	docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) --env-file $(ENV_FILE) restart
+	docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) --env-file $(ENV_FILE) up -d --force-recreate
 endif
+
+# Restart only API services (fast, preserves infrastructure like embedding-api, milvus, postgres)
+# Use this when developing - embedding model stays loaded, so restarts are fast
+docker-restart-apis:
+	@echo "Restarting API services (infrastructure tier preserved)..."
+	docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) --env-file $(ENV_FILE) restart authz-api ingest-api ingest-worker search-api agent-api docs-api nginx
+
+# Restart ingest services only
+docker-restart-ingest:
+	@echo "Restarting ingest services..."
+	docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) --env-file $(ENV_FILE) restart ingest-api ingest-worker
 
 # Check/generate SSL certificates
 ssl-check:

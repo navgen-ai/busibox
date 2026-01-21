@@ -77,7 +77,7 @@ from services.milvus_service import MilvusService
 from services.processing_history_service import ProcessingHistoryService
 from processors.text_extractor import TextExtractor, ExtractionResult
 from processors.chunker import Chunker, Chunk
-from processors.embedder import Embedder
+from services.embedding_client import EmbeddingClient
 from processors.classifier import DocumentClassifier
 from processors.metadata_extractor import MetadataExtractor
 # ColPali import is deferred to avoid ONNX initialization at import time
@@ -144,7 +144,7 @@ class IngestWorker:
         # Processors (initialized in connect())
         self.text_extractor: Optional[TextExtractor] = None
         self.chunker: Optional[Chunker] = None
-        self.embedder: Optional[Embedder] = None
+        self.embedder: Optional[EmbeddingClient] = None
         self.classifier: Optional[DocumentClassifier] = None
         self.metadata_extractor: Optional[MetadataExtractor] = None
         self.colpali: Optional[ColPaliEmbedder] = None
@@ -198,7 +198,7 @@ class IngestWorker:
         # Initialize processors
         self.text_extractor = TextExtractor(self.config)
         self.chunker = Chunker(self.config)
-        self.embedder = Embedder(self.config)
+        self.embedder = EmbeddingClient(self.config)
         self.classifier = DocumentClassifier(self.config)
         self.metadata_extractor = MetadataExtractor(self.config)
         
@@ -626,10 +626,10 @@ class IngestWorker:
                 role_count=len(role_ids) if role_ids else 0,
             )
             
-            # Update status to processing immediately
+            # Update status to parsing (first processing stage)
             self.postgres_service.update_status(
                 file_id=file_id,
-                stage="processing",
+                stage="parsing",
                 progress=5,
             )
             
@@ -1321,27 +1321,21 @@ class IngestWorker:
             chunk_texts = [c.text for c in chunks]
             
             text_embed_start = time.time()
-            logger.debug("Generating dense embeddings", file_id=file_id, chunk_count=len(chunk_texts))
-            # Run async embedding in sync context
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                embeddings = loop.run_until_complete(
-                    self.embedder.embed_chunks(chunk_texts)
-                )
-                logger.info(
-                    "Dense embeddings generated",
-                    file_id=file_id,
-                    embedding_count=len(embeddings),
-                )
-                self.history.log_substep(
-                    file_id, "embedding", "text_embeddings",
-                    f"Generated {len(embeddings)} text embeddings (FastEmbed bge-large-en-v1.5 1024-d)",
-                    metadata={"embedding_count": len(embeddings), "model": "bge-large-en-v1.5", "dimension": 1024},
-                    started_at=text_embed_start
-                )
-            finally:
-                loop.close()
+            logger.debug("Generating dense embeddings via embedding-api", file_id=file_id, chunk_count=len(chunk_texts))
+            # Use sync embedding client (no need for async loop)
+            embeddings = self.embedder.embed_chunks_sync(chunk_texts)
+            logger.info(
+                "Dense embeddings generated via embedding-api",
+                file_id=file_id,
+                embedding_count=len(embeddings),
+            )
+            embedding_dimension = self.embedder.get_embedding_dimension()
+            self.history.log_substep(
+                file_id, "embedding", "text_embeddings",
+                f"Generated {len(embeddings)} text embeddings via embedding-api ({embedding_dimension}-d)",
+                metadata={"embedding_count": len(embeddings), "model": "bge-large-en-v1.5", "dimension": embedding_dimension},
+                started_at=text_embed_start
+            )
             
             self.postgres_service.update_status(
                 file_id=file_id,

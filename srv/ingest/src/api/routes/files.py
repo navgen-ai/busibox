@@ -1160,25 +1160,36 @@ async def get_file_markdown(
                     markdown_path,
                     has_markdown,
                     image_count,
+                    storage_path,
+                    mime_type,
                     created_at
                 FROM ingestion_files
                 WHERE file_id = $1
             """, file_uuid)
             
-            if not markdown_row or not markdown_row["has_markdown"] or not markdown_row["markdown_path"]:
+            # Determine which path to use for markdown content
+            import asyncio
+            loop = asyncio.get_event_loop()
+            
+            # If we have a processed markdown file, use it
+            if markdown_row and markdown_row["has_markdown"] and markdown_row["markdown_path"]:
+                markdown_content = await loop.run_in_executor(
+                    None,
+                    minio_service.get_file_content,
+                    markdown_row["markdown_path"]
+                )
+            # If the original file is markdown (e.g., task outputs), serve it directly
+            elif markdown_row and markdown_row["mime_type"] in ("text/markdown", "text/x-markdown"):
+                markdown_content = await loop.run_in_executor(
+                    None,
+                    minio_service.get_file_content,
+                    markdown_row["storage_path"]
+                )
+            else:
                 return JSONResponse(
                     status_code=status.HTTP_404_NOT_FOUND,
                     content={"error": "Markdown not available for this file"}
                 )
-            
-            # Fetch markdown content from MinIO
-            import asyncio
-            loop = asyncio.get_event_loop()
-            markdown_content = await loop.run_in_executor(
-                None,
-                minio_service.get_file_content,
-                markdown_row["markdown_path"]
-            )
             
             return JSONResponse(
                 status_code=status.HTTP_200_OK,

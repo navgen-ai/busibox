@@ -216,6 +216,43 @@ try:
     lines.append('EMAIL_FROM=noreply@localhost')
     lines.append('')
     
+    # SMTP CONFIGURATION (for agent task notifications)
+    lines.append('# =============================================================================')
+    lines.append('# SMTP CONFIGURATION (for agent task notifications)')
+    lines.append('# =============================================================================')
+    lines.append('')
+    if 'smtp' in secrets:
+        smtp = secrets['smtp']
+        smtp_host = smtp.get('host', '')
+        smtp_port = smtp.get('port', '587')
+        smtp_user = smtp.get('user', '')
+        smtp_password = smtp.get('password', '')
+        smtp_from = smtp.get('from_email', 'noreply@localhost')
+        
+        if smtp_host and smtp_host != 'CHANGE_ME_SMTP_HOST':
+            lines.append(f'SMTP_HOST={smtp_host}')
+            lines.append(f'SMTP_PORT={smtp_port}')
+            lines.append(f'SMTP_USERNAME={smtp_user}')
+            lines.append(f'SMTP_PASSWORD={smtp_password}')
+            lines.append(f'SMTP_FROM={smtp_from}')
+        else:
+            lines.append('# SMTP_HOST=')
+            lines.append('# SMTP_PORT=587')
+            lines.append('# SMTP_USERNAME=')
+            lines.append('# SMTP_PASSWORD=')
+            lines.append('# SMTP_FROM=noreply@localhost')
+    else:
+        lines.append('# SMTP_HOST=')
+        lines.append('# SMTP_PORT=587')
+        lines.append('# SMTP_USERNAME=')
+        lines.append('# SMTP_PASSWORD=')
+        lines.append('# SMTP_FROM=noreply@localhost')
+    lines.append('')
+    
+    # Portal URL for notification links
+    lines.append('PORTAL_BASE_URL=https://localhost')
+    lines.append('')
+    
     # AGENT CONFIGURATION
     lines.append('# =============================================================================')
     lines.append('# AGENT CONFIGURATION')

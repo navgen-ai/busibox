@@ -42,7 +42,10 @@ async def health_check():
         postgres_healthy = False
         try:
             from api.main import pg_service
-            async with pg_service.acquire() as conn:
+            # pg_service.acquire() is an async function that returns pool.acquire()
+            # We need to await it to get the async context manager
+            conn_cm = await pg_service.acquire()
+            async with conn_cm as conn:
                 await conn.fetchval("SELECT 1")
             postgres_healthy = True
         except Exception as e:

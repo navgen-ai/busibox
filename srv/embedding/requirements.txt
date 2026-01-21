@@ -1,0 +1,18 @@
+# Busibox Embedding API Requirements
+# Python 3.11+
+
+# API Framework
+fastapi>=0.104.1,<0.120.0
+uvicorn[standard]>=0.24.0,<0.35.0
+
+# Embedding Model
+fastembed>=0.4.2,<1.0.0
+
+# Logging
+structlog>=24.1.0,<25.0.0
+
+# Data Models
+pydantic>=2.5.0,<3.0.0
+
+# Utilities
+python-dotenv>=1.0.0,<2.0.0

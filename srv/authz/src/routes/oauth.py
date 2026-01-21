@@ -619,7 +619,7 @@ class DelegationTokenRequest(BaseModel):
     subject_token: str = Field(..., description="Session JWT to authorize delegation")
     name: str = Field(..., min_length=1, max_length=100, description="Human-readable name for the delegation")
     scopes: List[str] = Field(default_factory=list, description="Scopes to delegate (subset of user's scopes)")
-    expires_in_seconds: int = Field(default=604800, ge=3600, le=2592000, description="TTL in seconds (1 hour to 30 days)")
+    expires_in_seconds: int = Field(default=94608000, ge=3600, le=94608000, description="TTL in seconds (1 hour to 3 years, default 3 years)")
 
 
 class DelegationTokenResponse(BaseModel):

@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.middleware.jwt_auth import JWTAuthMiddleware
 from api.middleware.logging import LoggingMiddleware
-from api.routes import embeddings, extract, files, health, markdown, roles, search, status, upload, authz, test_docs
+from api.routes import content, embeddings, extract, files, health, libraries, markdown, roles, status, upload, authz, test_docs
 from api.services.postgres import PostgresService
 from shared.config import Config
 
@@ -120,6 +120,10 @@ For issues or questions, contact the Busibox infrastructure team.
             "name": "Health",
             "description": "Service health checks and diagnostics",
         },
+        {
+            "name": "Libraries",
+            "description": "Library management - create, list, update, delete document libraries",
+        },
     ],
     contact={
         "name": "Busibox Infrastructure Team",
@@ -145,7 +149,7 @@ app.add_middleware(JWTAuthMiddleware)
 
 # Include routers
 app.include_router(upload.router, prefix="/upload", tags=["Upload"])
-app.include_router(search.router, prefix="/search", tags=["Search"])
+app.include_router(content.router, prefix="/ingest", tags=["Content Ingestion"])
 app.include_router(embeddings.router, prefix="/api", tags=["Embeddings"])
 app.include_router(status.router, prefix="/status", tags=["Status"])
 app.include_router(files.router, prefix="/files", tags=["Files"])
@@ -154,6 +158,7 @@ app.include_router(roles.router, prefix="/files", tags=["Roles"])
 app.include_router(health.router, prefix="/health", tags=["Health"])
 app.include_router(extract.router, tags=["Extract"])  # Remote Marker extraction
 app.include_router(authz.router, prefix="/authz", tags=["Authz"])
+app.include_router(libraries.router, prefix="/libraries", tags=["Libraries"])
 app.include_router(test_docs.router, tags=["Test Docs"])
 
 
@@ -162,6 +167,10 @@ async def startup_event():
     """Initialize services on startup."""
     logger.info("Ingestion API starting up")
     await pg_service.connect()
+    
+    # Run library migration from AI Portal if configured
+    from api.services.library_migration import run_migration_if_needed
+    await run_migration_if_needed(pg_service.pool)
 
 
 @app.on_event("shutdown")

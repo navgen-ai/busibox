@@ -2,19 +2,39 @@
 Embeddings API routes.
 
 Provides embedding generation endpoints for external services.
+Proxies requests to the dedicated embedding-api service.
 """
 
+import os
 from typing import List, Optional
+
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 import structlog
 
-from processors.embedder import Embedder, MODEL_DIMENSIONS
 from shared.config import Config
 
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/embeddings", tags=["embeddings"])
+
+# Config instance
+config = Config()
+
+# Embedding API URL from environment
+EMBEDDING_API_URL = config.embedding_api_url or os.getenv("EMBEDDING_API_URL", "http://embedding-api:8005")
+
+# HTTP client for embedding service calls
+_http_client: Optional[httpx.AsyncClient] = None
+
+
+def get_http_client() -> httpx.AsyncClient:
+    """Get or create HTTP client for embedding API calls."""
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(timeout=60.0)
+    return _http_client
 
 
 class EmbeddingRequest(BaseModel):
@@ -51,15 +71,6 @@ class EmbeddingResponse(BaseModel):
     usage: dict
 
 
-# Initialize embedder (shared across requests)
-config = Config().to_dict()
-embedder = Embedder(config)
-
-# Warm up the model at import time to avoid cold-start latency
-# This downloads/loads the model during app startup instead of first request
-embedder.warmup()
-
-
 @router.post("", response_model=EmbeddingResponse)
 async def create_embeddings(
     embedding_request: EmbeddingRequest,
@@ -69,7 +80,7 @@ async def create_embeddings(
     Generate embeddings for text input.
     
     OpenAI-compatible API endpoint for generating embeddings.
-    Uses FastEmbed with bge-large-en-v1.5 (1024-d).
+    Proxies requests to the dedicated embedding-api service.
     
     Args:
         embedding_request: Embedding request with text input
@@ -102,45 +113,50 @@ async def create_embeddings(
         if not texts:
             raise HTTPException(status_code=400, detail="Input cannot be empty")
         
-        # Validate model - allow the configured model or compatible aliases
-        configured_model = embedder.model_name
-        # Extract base model name without BAAI/ prefix for comparison
-        configured_base = configured_model.replace("BAAI/", "")
-        
-        if embedding_request.model:
-            requested_base = embedding_request.model.replace("BAAI/", "")
-            if requested_base != configured_base and embedding_request.model not in MODEL_DIMENSIONS:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Model '{embedding_request.model}' not supported. Currently configured: '{configured_model}'"
-                )
-        
         logger.info(
-            "Generating embeddings",
+            "Proxying embedding request to embedding-api",
             user_id=user_id,
             text_count=len(texts),
-            model=embedding_request.model,
+            embedding_api_url=EMBEDDING_API_URL,
         )
         
-        # Generate embeddings
-        embeddings = await embedder.embed_chunks(texts)
+        # Call embedding-api service
+        client = get_http_client()
+        response = await client.post(
+            f"{EMBEDDING_API_URL}/embed",
+            json={"input": texts, "model": embedding_request.model},
+        )
         
-        # Format response in OpenAI-compatible format
+        if response.status_code != 200:
+            error_detail = response.text
+            logger.error(
+                "Embedding API returned error",
+                status_code=response.status_code,
+                error=error_detail,
+            )
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Embedding service error: {error_detail}"
+            )
+        
+        result = response.json()
+        
+        # Convert to OpenAI-compatible format
         data = [
             EmbeddingData(
-                embedding=embedding,
-                index=i,
+                embedding=item["embedding"],
+                index=item["index"],
             )
-            for i, embedding in enumerate(embeddings)
+            for item in result["data"]
         ]
         
         # Calculate token usage (rough estimate: 4 chars per token)
         total_chars = sum(len(text) for text in texts)
         prompt_tokens = total_chars // 4
         
-        response = EmbeddingResponse(
+        openai_response = EmbeddingResponse(
             data=data,
-            model=configured_base,
+            model=result.get("model", "bge-large-en-v1.5"),
             usage={
                 "prompt_tokens": prompt_tokens,
                 "total_tokens": prompt_tokens,
@@ -148,20 +164,29 @@ async def create_embeddings(
         )
         
         logger.info(
-            "Embeddings generated successfully",
+            "Embeddings generated successfully via embedding-api",
             user_id=user_id,
-            embedding_count=len(embeddings),
-            dimension=len(embeddings[0]) if embeddings else 0,
+            embedding_count=len(data),
+            dimension=result.get("dimension", len(data[0].embedding) if data else 0),
         )
         
-        return response
+        return openai_response
     
+    except httpx.RequestError as e:
+        logger.error(
+            "Failed to connect to embedding-api",
+            error=str(e),
+            embedding_api_url=EMBEDDING_API_URL,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"Embedding service unavailable: {str(e)}"
+        )
     except HTTPException:
         raise
     except Exception as e:
         logger.error(
             "Embedding generation failed",
-            user_id=user_id,
             error=str(e),
             exc_info=True,
         )
@@ -187,21 +212,47 @@ async def list_models(request: Request):
     if not user_id:
         raise HTTPException(status_code=401, detail="User not authenticated")
     
-    # Return the currently configured model
-    configured_model = embedder.model_name
-    configured_base = configured_model.replace("BAAI/", "")
-    dimension = embedder.dimension
+    try:
+        # Get model info from embedding-api
+        client = get_http_client()
+        response = await client.get(f"{EMBEDDING_API_URL}/info")
+        
+        if response.status_code != 200:
+            # Fallback to default values
+            model = "bge-large-en-v1.5"
+            dimension = config.embedding_dimension
+        else:
+            info = response.json()
+            model = info.get("model", "bge-large-en-v1.5").replace("BAAI/", "")
+            dimension = info.get("dimension", config.embedding_dimension)
+        
+        return {
+            "object": "list",
+            "data": [
+                {
+                    "id": model,
+                    "object": "model",
+                    "owned_by": "BAAI",
+                    "dimension": dimension,
+                    "description": f"FastEmbed {model} ({dimension}-d) via embedding-api",
+                }
+            ]
+        }
     
-    return {
-        "object": "list",
-        "data": [
-            {
-                "id": configured_base,
-                "object": "model",
-                "owned_by": "BAAI",
-                "dimension": dimension,
-                "description": f"FastEmbed {configured_base} ({dimension}-d)",
-            }
-        ]
-    }
-
+    except httpx.RequestError as e:
+        logger.warning(
+            "Failed to get model info from embedding-api, using defaults",
+            error=str(e),
+        )
+        return {
+            "object": "list",
+            "data": [
+                {
+                    "id": "bge-large-en-v1.5",
+                    "object": "model",
+                    "owned_by": "BAAI",
+                    "dimension": config.embedding_dimension,
+                    "description": f"FastEmbed bge-large-en-v1.5 ({config.embedding_dimension}-d)",
+                }
+            ]
+        }
