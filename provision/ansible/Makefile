@@ -78,6 +78,9 @@ agent:
 ingest:
 	ansible-playbook -i $(INV) -l ingest site.yml $(VAULT_FLAGS)
 
+embedding-api:
+	ansible-playbook -i $(INV) -l ingest site.yml --tags embedding_api $(VAULT_FLAGS)
+
 ingest-api:
 	ansible-playbook -i $(INV) -l ingest site.yml --tags ingest_api $(VAULT_FLAGS)
 
