@@ -49,7 +49,12 @@ class Config:
         self.minio_secure = os.getenv("MINIO_SECURE", "false").lower() == "true"
         self.minio_bucket = os.getenv("MINIO_BUCKET", "documents")
         
-        # FastEmbed configuration (local text embeddings)
+        # Embedding API configuration (dedicated embedding service)
+        # When EMBEDDING_API_URL is set, uses remote service instead of local FastEmbed
+        self.embedding_api_url = os.getenv("EMBEDDING_API_URL", "")
+        self.embedding_dimension = int(os.getenv("EMBEDDING_DIMENSION", "1024"))
+        
+        # FastEmbed configuration (local text embeddings - fallback when no API URL)
         self.fastembed_model = os.getenv("FASTEMBED_MODEL", "BAAI/bge-large-en-v1.5")
         self.embedding_batch_size = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
         
@@ -79,6 +84,9 @@ class Config:
         # LiteLLM configuration (for LLM cleanup)
         self.litellm_base_url = os.getenv("LITELLM_BASE_URL", "http://10.96.200.207:4000")
         self.litellm_api_key = os.getenv("LITELLM_API_KEY", "")
+        
+        # AI Portal configuration (for library resolution)
+        self.ai_portal_url = os.getenv("AI_PORTAL_URL", "http://10.96.201.201:3000")
         
         # Processing configuration
         self.chunk_size_min = int(os.getenv("CHUNK_SIZE_MIN", "400"))
@@ -117,6 +125,8 @@ class Config:
             "minio_secret_key": self.minio_secret_key,
             "minio_secure": self.minio_secure,
             "minio_bucket": self.minio_bucket,
+            "embedding_api_url": self.embedding_api_url,
+            "embedding_dimension": self.embedding_dimension,
             "fastembed_model": self.fastembed_model,
             "embedding_batch_size": self.embedding_batch_size,
             "colpali_base_url": self.colpali_base_url,
@@ -140,5 +150,6 @@ class Config:
             "chunk_size_max": self.chunk_size_max,
             "chunk_overlap_pct": self.chunk_overlap_pct,
             "temp_dir": "/tmp/ingest",
+            "ai_portal_url": self.ai_portal_url,
         }
 

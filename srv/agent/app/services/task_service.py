@@ -162,6 +162,11 @@ async def create_task(
     if task_data.insights_config:
         insights_config = task_data.insights_config.model_dump()
     
+    # Build output saving config
+    output_saving_config = None
+    if task_data.output_saving_config:
+        output_saving_config = task_data.output_saving_config.model_dump()
+    
     # Create task
     task = AgentTask(
         name=task_data.name,
@@ -178,6 +183,7 @@ async def create_task(
         delegation_expires_at=delegation_expires_at,
         notification_config=notification_config,
         insights_config=insights_config,
+        output_saving_config=output_saving_config,
         status="active",
         webhook_secret=webhook_secret,
         next_run_at=next_run_at,
@@ -319,6 +325,11 @@ async def update_task(
                 current = dict(task.insights_config or {})
                 current.update(value)
                 task.insights_config = current  # Assign new dict
+            elif field == "output_saving_config" and isinstance(value, dict):
+                # Merge output saving config
+                current = dict(task.output_saving_config or {})
+                current.update(value)
+                task.output_saving_config = current
             else:
                 logger.info(f"Setting {field}={value}")
                 setattr(task, field, value)
@@ -410,6 +421,60 @@ async def resume_task(
     
     logger.info(f"Resumed task {task_id}")
     return task
+
+
+async def refresh_delegation_token(
+    session: AsyncSession,
+    task_id: uuid.UUID,
+    principal: Principal,
+) -> Optional[AgentTask]:
+    """
+    Refresh the delegation token for a task.
+    
+    Creates a new long-lived token (3 years) with the task's configured scopes.
+    
+    Args:
+        session: Database session
+        task_id: Task UUID
+        principal: Authenticated user (task owner)
+        
+    Returns:
+        Updated task with new delegation token, or None if task not found
+    """
+    from app.services.token_service import get_or_exchange_token
+    
+    task = await get_task(session, task_id, principal.sub)
+    if not task:
+        return None
+    
+    # Get the scopes from the task
+    scopes = task.delegation_scopes or []
+    
+    try:
+        # Request a new long-lived delegation token (3 years)
+        token_response = await get_or_exchange_token(
+            session=session,
+            principal=principal,
+            scopes=scopes,
+            purpose="task-delegation",
+        )
+        
+        task.delegation_token = token_response.access_token
+        delegation_expires_at = token_response.expires_at
+        if delegation_expires_at and delegation_expires_at.tzinfo:
+            delegation_expires_at = delegation_expires_at.replace(tzinfo=None)
+        task.delegation_expires_at = delegation_expires_at
+        task.updated_at = _now()
+        
+        await session.commit()
+        await session.refresh(task)
+        
+        logger.info(f"Refreshed delegation token for task {task_id}, expires at {task.delegation_expires_at}")
+        return task
+        
+    except Exception as e:
+        logger.error(f"Failed to refresh delegation token for task {task_id}: {e}")
+        raise
 
 
 async def create_task_execution(
@@ -703,6 +768,7 @@ def task_to_read(
         delegation_expires_at=task.delegation_expires_at,
         notification_config=task.notification_config or {},
         insights_config=task.insights_config or {},
+        output_saving_config=task.output_saving_config,
         input_config=task.input_config or {},
         status=task.status,
         last_run_at=task.last_run_at,

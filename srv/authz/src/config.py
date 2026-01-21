@@ -35,7 +35,9 @@ class Config:
         self.issuer = os.getenv("AUTHZ_ISSUER", os.getenv("JWT_ISSUER", "busibox-authz"))
 
         # Default token TTL for internal access tokens minted by authz (seconds).
-        self.access_token_ttl = int(os.getenv("AUTHZ_ACCESS_TOKEN_TTL", os.getenv("AUTHZ_TOKEN_TTL", "900")))
+        # Default to 3 years (94608000 seconds) to support long-lived delegation tokens for tasks.
+        # For short-lived tokens, set AUTHZ_ACCESS_TOKEN_TTL explicitly.
+        self.access_token_ttl = int(os.getenv("AUTHZ_ACCESS_TOKEN_TTL", os.getenv("AUTHZ_TOKEN_TTL", "94608000")))
         
         # Session JWT TTL (default 7 days = 604800 seconds)
         self.session_token_ttl = int(os.getenv("AUTHZ_SESSION_TOKEN_TTL", "604800"))

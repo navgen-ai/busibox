@@ -67,7 +67,7 @@ class IngestClient:
 
     async def __aenter__(self):
         """Async context manager entry."""
-        self._client = httpx.AsyncClient(timeout=60.0)
+        self._client = httpx.AsyncClient(timeout=180.0)  # 3 minutes for document processing
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -139,7 +139,7 @@ class IngestClient:
                 headers=self._get_headers(),
             )
         else:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=180.0) as client:  # 3 minutes for document processing
                 response = await client.post(
                     f"{self.base_url}/upload",
                     files=files,

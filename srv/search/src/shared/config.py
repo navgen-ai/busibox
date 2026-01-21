@@ -41,10 +41,10 @@ class Config(BaseSettings):
     enable_caching: bool = os.getenv("ENABLE_CACHING", "false").lower() == "true"
     cache_ttl: int = 300  # 5 minutes
     
-    # Embedding service (local FastEmbed on ingest-lxc)
-    embedding_service_url: str = os.getenv("EMBEDDING_SERVICE_URL", "http://10.96.200.206:8002")
+    # Embedding API (dedicated embedding service - no auth required)
+    embedding_api_url: str = os.getenv("EMBEDDING_API_URL", "http://embedding-api:8005")
     embedding_model: str = "bge-large-en-v1.5"
-    embedding_dim: int = 1024
+    embedding_dim: int = int(os.getenv("EMBEDDING_DIMENSION", "1024"))
     
     # LiteLLM (for LLM calls)
     litellm_base_url: str = os.getenv("LITELLM_BASE_URL", "http://10.96.200.207:4000")

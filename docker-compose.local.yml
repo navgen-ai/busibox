@@ -287,6 +287,42 @@ services:
       - busibox-net
 
   # ===========================================================================
+  # EMBEDDING SERVICE (Infrastructure Tier - stays running during dev restarts)
+  # ===========================================================================
+
+  # Embedding API - Dedicated embedding service
+  # Loads FastEmbed model once at startup and provides HTTP API for all consumers.
+  # This service should NOT be restarted frequently - it's in the infrastructure tier.
+  embedding-api:
+    build:
+      context: ./srv/embedding
+      labels:
+        - "version=${GIT_COMMIT:-unknown}"
+    container_name: local-embedding-api
+    hostname: embedding-api
+    labels:
+      - "version=${GIT_COMMIT:-unknown}"
+    volumes:
+      # Model cache - persists downloaded models across container rebuilds
+      - model_cache:/root/.cache
+    environment:
+      # FastEmbed model - use bge-large for consistency with production
+      # Override with FASTEMBED_MODEL=BAAI/bge-small-en-v1.5 for faster dev (384-d, ~134MB vs 1024-d, ~1.3GB)
+      FASTEMBED_MODEL: ${FASTEMBED_MODEL:-BAAI/bge-large-en-v1.5}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-32}
+    ports:
+      - "8005:8005"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s  # Allow time for model download + warmup on first run
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - busibox-net
+
+  # ===========================================================================
   # PYTHON API SERVICES
   # ===========================================================================
 
@@ -393,6 +429,17 @@ services:
       MILVUS_HOST: milvus
       MILVUS_PORT: 19530
       MILVUS_COLLECTION: documents
+      # AI Portal (for library resolution and migration)
+      # Note: In Docker dev, AI Portal typically runs on host, use host.docker.internal
+      # Include /portal base path if AI Portal is configured with basePath
+      AI_PORTAL_URL: ${AI_PORTAL_URL:-http://host.docker.internal:3000/portal}
+      # AI Portal database (for automatic library migration from AI Portal to ingest-api)
+      # If not set, migration is skipped (libraries created on-demand instead)
+      AI_PORTAL_DB_HOST: ${AI_PORTAL_DB_HOST:-postgres}
+      AI_PORTAL_DB_PORT: ${AI_PORTAL_DB_PORT:-5432}
+      AI_PORTAL_DB_NAME: ${AI_PORTAL_DB_NAME:-ai_portal}
+      AI_PORTAL_DB_USER: ${AI_PORTAL_DB_USER:-busibox_user}
+      AI_PORTAL_DB_PASSWORD: ${AI_PORTAL_DB_PASSWORD:-${POSTGRES_PASSWORD:-devpassword}}
       # LiteLLM
       LITELLM_BASE_URL: http://litellm:4000
       LITELLM_API_KEY: ${LITELLM_API_KEY:-sk-local-dev-key}
@@ -405,9 +452,8 @@ services:
       MARKER_USE_GPU: ${MARKER_USE_GPU:-false}
       COLPALI_ENABLED: ${COLPALI_ENABLED:-false}
       LLM_CLEANUP_ENABLED: ${LLM_CLEANUP_ENABLED:-true}
-      # FastEmbed model - use bge-large for consistency with production
-      # Override with FASTEMBED_MODEL=BAAI/bge-small-en-v1.5 for faster dev (384-d, ~134MB vs 1024-d, ~1.3GB)
-      FASTEMBED_MODEL: ${FASTEMBED_MODEL:-BAAI/bge-large-en-v1.5}
+      # Embedding API - dedicated embedding service (no local model loading)
+      EMBEDDING_API_URL: http://embedding-api:8005
       EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1024}
     ports:
       - "8002:8002"
@@ -422,11 +468,13 @@ services:
         condition: service_healthy
       authz-api:
         condition: service_healthy
+      embedding-api:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/')"]
       interval: 10s
       timeout: 5s
-      start_period: 180s  # Allow time for FastEmbed model download + warmup on first run
+      start_period: 30s  # Fast startup - no local model loading needed
       retries: 5
     networks:
       - busibox-net
@@ -481,9 +529,8 @@ services:
       LLM_CLEANUP_ENABLED: ${LLM_CLEANUP_ENABLED:-true}
       # Test documents
       TEST_DOC_REPO_PATH: /testdocs
-      # FastEmbed model - use bge-large for consistency with production
-      # Override with FASTEMBED_MODEL=BAAI/bge-small-en-v1.5 for faster dev (384-d, ~134MB vs 1024-d, ~1.3GB)
-      FASTEMBED_MODEL: ${FASTEMBED_MODEL:-BAAI/bge-large-en-v1.5}
+      # Embedding API - dedicated embedding service (no local model loading)
+      EMBEDDING_API_URL: http://embedding-api:8005
       EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1024}
       # Worker ID (for debugging)
       WORKER_ID: local-worker-1
@@ -499,6 +546,8 @@ services:
       milvus-init:
         condition: service_completed_successfully
       ingest-api:
+        condition: service_healthy
+      embedding-api:
         condition: service_healthy
     # Worker healthcheck - verify the Python worker process is running (PID 1)
     # Uses /proc/1/cmdline since pgrep isn't available in slim image
@@ -553,8 +602,8 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       ENABLE_CACHING: "true"
-      # Embedding service (ingest-api)
-      EMBEDDING_SERVICE_URL: http://ingest-api:8002
+      # Embedding API - dedicated embedding service (direct call, no token exchange needed)
+      EMBEDDING_API_URL: http://embedding-api:8005
       # LiteLLM
       LITELLM_BASE_URL: http://litellm:4000
       LITELLM_API_KEY: ${LITELLM_API_KEY:-sk-local-dev-key}
@@ -580,11 +629,13 @@ services:
         condition: service_healthy
       authz-api:
         condition: service_healthy
+      embedding-api:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/')"]
       interval: 10s
       timeout: 5s
-      start_period: 120s  # Allow time for sentence-transformers model download on first run
+      start_period: 30s  # Fast startup - embedding service handles model loading
       retries: 5
     networks:
       - busibox-net
@@ -627,6 +678,8 @@ services:
       # Milvus
       MILVUS_HOST: milvus
       MILVUS_PORT: 19530
+      # Embedding API - dedicated embedding service (no auth required, used for insights)
+      EMBEDDING_API_URL: http://embedding-api:8005
       # LiteLLM
       LITELLM_BASE_URL: http://litellm:4000/v1
       LITELLM_API_KEY: ${LITELLM_API_KEY:-sk-local-dev-key}
@@ -640,6 +693,14 @@ services:
       # This allows agent-api to exchange tokens for downstream services (search-api, ingest-api)
       AUTH_CLIENT_ID: ${AUTHZ_BOOTSTRAP_CLIENT_ID:-ai-portal}
       AUTH_CLIENT_SECRET: ${AUTHZ_BOOTSTRAP_CLIENT_SECRET:-ai-portal-secret}
+      # SMTP configuration for email notifications
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      EMAIL_FROM: ${SMTP_FROM:-noreply@busibox.local}
+      # Portal URL for notification links
+      PORTAL_BASE_URL: ${PORTAL_BASE_URL:-https://localhost}
     ports:
       - "8000:8000"
     depends_on:
@@ -650,6 +711,8 @@ services:
       milvus:
         condition: service_healthy
       authz-api:
+        condition: service_healthy
+      embedding-api:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]

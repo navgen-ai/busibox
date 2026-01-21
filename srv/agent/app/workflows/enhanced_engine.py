@@ -420,9 +420,23 @@ async def _execute_tool_step(
                 purpose="ingest",
             )
             ingest_client = BusiboxClient(access_token=token_response.access_token)
-            result = await ingest_client.ingest_document(**resolved_args)
         else:
-            result = await busibox_client.ingest_document(**resolved_args)
+            ingest_client = busibox_client
+        
+        # Check if this is content-based ingestion (web research) or file-based
+        if "content" in resolved_args:
+            # Content-based ingestion (for scraped web content)
+            result = await ingest_client.ingest_content(
+                content=resolved_args.get("content", ""),
+                title=resolved_args.get("title", "Untitled"),
+                url=resolved_args.get("url"),
+                folder=resolved_args.get("folder"),
+                library_id=resolved_args.get("library_id"),
+                metadata=resolved_args.get("metadata"),
+            )
+        else:
+            # Legacy file-based ingestion
+            result = await ingest_client.ingest_document(**resolved_args)
     
     # Direct tools from ToolRegistry (no auth needed)
     elif tool_name == "web_search":

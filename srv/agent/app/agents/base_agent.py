@@ -106,6 +106,7 @@ class AgentConfig:
     tool_strategy: ToolStrategy = ToolStrategy.PREDEFINED_PIPELINE
     max_iterations: int = 5
     synthesis_prompt: Optional[str] = None  # Override default synthesis prompt
+    max_tokens: Optional[int] = None  # Max tokens for synthesis (None = model default, no limit)
     
     def get_required_scopes(self) -> List[str]:
         """Get all OAuth scopes required by this agent's tools."""
@@ -221,10 +222,17 @@ class BaseStreamingAgent(StreamingAgent):
             provider="openai",
         )
         
+        # Build model settings - only include max_tokens if explicitly set
+        # If max_tokens is None, don't pass it so the model uses its natural limit
+        model_settings = {}
+        if config.max_tokens is not None:
+            model_settings["max_tokens"] = config.max_tokens
+        
         # Create synthesis agent
         self.synthesis_agent = Agent(
             model=self.synthesis_model,
             system_prompt=config.synthesis_prompt or config.instructions,
+            model_settings=model_settings if model_settings else None,
         )
     
     def pipeline_steps(self, query: str, context: AgentContext) -> List[PipelineStep]:
@@ -689,11 +697,17 @@ class BaseStreamingAgent(StreamingAgent):
             logger.warning(f"No tools registered for {self.name}")
             return
         
+        # Build model settings - only include max_tokens if explicitly set
+        model_settings = {}
+        if self.config.max_tokens is not None:
+            model_settings["max_tokens"] = self.config.max_tokens
+        
         # Create agent with tools
         agent = Agent(
             model=self.synthesis_model,
             tools=tools,
             system_prompt=self.config.instructions,
+            model_settings=model_settings if model_settings else None,
         )
         
         # Run agent

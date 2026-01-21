@@ -366,6 +366,7 @@ class PostgresService:
         visibility: str = "personal",
         role_ids: Optional[List[str]] = None,
         request=None,
+        library_id: Optional[str] = None,
     ) -> str:
         """
         Create file record in ingestion_files table with role-based access control.
@@ -383,6 +384,7 @@ class PostgresService:
             visibility: 'personal' (owner only) or 'shared' (role-based)
             role_ids: List of role IDs (required if visibility='shared')
             request: Optional FastAPI Request for RLS context
+            library_id: Optional library ID to associate the file with
         
         Returns:
             file_id
@@ -390,15 +392,24 @@ class PostgresService:
         import json
         async with self.acquire(request) as conn:
             await self._ensure_document_roles(conn)
+            
+            # Debug: Check RLS session variable
+            rls_user = await conn.fetchval("SELECT current_setting('app.user_id', true)")
+            print(f"[pg_service] RLS app.user_id = {rls_user}")
+            print(f"[pg_service] Inserting file: file_id={file_id}, owner_id={user_id}")
+            
             # Start transaction
             async with conn.transaction():
-                # Create file record with owner_id and visibility
+                # Create file record with owner_id, visibility, and library_id
+                lib_uuid = uuid.UUID(library_id) if library_id else None
+                print(f"[pg_service] Inserting with library_id={library_id}")
+                
                 await conn.execute("""
                     INSERT INTO ingestion_files (
                         file_id, user_id, owner_id, filename, original_filename,
                         mime_type, size_bytes, storage_path, content_hash,
-                        metadata, permissions, visibility
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                        metadata, permissions, visibility, library_id
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 """,
                     uuid.UUID(file_id),
                     uuid.UUID(user_id),
@@ -412,6 +423,7 @@ class PostgresService:
                     json.dumps(metadata) if isinstance(metadata, dict) else (metadata or '{}'),
                     json.dumps({"visibility": visibility}),
                     visibility,
+                    lib_uuid,  # library_id
                 )
                 
                 # Create initial status record

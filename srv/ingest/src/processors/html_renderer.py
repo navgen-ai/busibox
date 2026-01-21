@@ -200,8 +200,9 @@ class HTMLRenderer:
             image_match = re.search(r'image_(\d+)\.\w+', image_path)
             if image_match:
                 image_index = image_match.group(1)
-                # Construct API URL
-                api_url = f"/api/files/{file_id}/images/{image_index}"
+                # Construct API URL - use /api/documents/ path for AI Portal compatibility
+                # AI Portal proxies /api/documents/{fileId}/images/{index} to ingest-api
+                api_url = f"/api/documents/{file_id}/images/{image_index}"
                 return f'![{alt_text}]({api_url})'
             
             return match.group(0)  # Return unchanged if pattern doesn't match

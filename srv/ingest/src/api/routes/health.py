@@ -99,30 +99,55 @@ async def check_redis() -> Dict[str, any]:
 
 
 async def check_milvus() -> Dict[str, any]:
-    """Check Milvus connectivity."""
-    try:
+    """Check Milvus connectivity with timeout protection."""
+    import asyncio
+    import concurrent.futures
+    
+    def _check_milvus_sync():
+        """Synchronous Milvus check to be run in executor."""
         from pymilvus import connections, utility
         
         config = Config().to_dict()
         
         start = time.time()
-        connections.connect(
-            "default",
-            host=config.get("milvus_host", "10.96.200.204"),
-            port=config.get("milvus_port", "19530"),
-            timeout=2,
+        try:
+            connections.connect(
+                "health_check",
+                host=config.get("milvus_host", "10.96.200.204"),
+                port=config.get("milvus_port", "19530"),
+                timeout=2,
+            )
+            
+            # Check if collections exist
+            collections = utility.list_collections()
+            connections.disconnect("health_check")
+            
+            response_time = round((time.time() - start) * 1000, 2)
+            
+            return {
+                "status": "healthy",
+                "response_time_ms": response_time,
+                "collections": len(collections),
+            }
+        except Exception as e:
+            try:
+                connections.disconnect("health_check")
+            except:
+                pass
+            raise e
+    
+    try:
+        loop = asyncio.get_event_loop()
+        # Run with a 3-second timeout
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, _check_milvus_sync),
+            timeout=3.0
         )
-        
-        # Check if collections exist
-        collections = utility.list_collections()
-        connections.disconnect("default")
-        
-        response_time = round((time.time() - start) * 1000, 2)
-        
+        return result
+    except asyncio.TimeoutError:
         return {
-            "status": "healthy",
-            "response_time_ms": response_time,
-            "collections": len(collections),
+            "status": "unhealthy",
+            "error": "Milvus check timed out after 3 seconds",
         }
     except Exception as e:
         return {

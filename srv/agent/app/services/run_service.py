@@ -35,8 +35,8 @@ tracer = trace.get_tracer(__name__)
 
 # Tiered execution limits (timeout in seconds, memory in MB)
 AGENT_LIMITS = {
-    "simple": {"timeout": 30, "memory_mb": 512},
-    "complex": {"timeout": 300, "memory_mb": 2048},  # 5 minutes, 2GB
+    "simple": {"timeout": 60, "memory_mb": 512},  # 1 minute for quick tasks
+    "complex": {"timeout": 600, "memory_mb": 2048},  # 10 minutes, 2GB
     "batch": {"timeout": 1800, "memory_mb": 4096},  # 30 minutes, 4GB
 }
 

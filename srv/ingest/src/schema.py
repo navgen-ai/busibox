@@ -216,6 +216,37 @@ def get_ingest_schema() -> SchemaManager:
     """)
     
     # ==========================================================================
+    # Library Management Tables
+    # ==========================================================================
+    
+    # Libraries table - manages document collections (personal and shared)
+    schema.add_table("""
+        CREATE TABLE IF NOT EXISTS libraries (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name VARCHAR(255) NOT NULL,
+            is_personal BOOLEAN DEFAULT false,
+            user_id UUID,
+            library_type VARCHAR(20),
+            created_by UUID NOT NULL,
+            deleted_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(user_id, library_type)
+        )
+    """)
+    
+    # Library tag cache - caches AI-generated tag groups for libraries
+    schema.add_table("""
+        CREATE TABLE IF NOT EXISTS library_tag_cache (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            library_id UUID UNIQUE REFERENCES libraries(id) ON DELETE CASCADE,
+            version INTEGER DEFAULT 1,
+            groups JSONB,
+            generated_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    
+    # ==========================================================================
     # Indexes
     # ==========================================================================
     
@@ -253,6 +284,16 @@ def get_ingest_schema() -> SchemaManager:
     schema.add_index("CREATE INDEX IF NOT EXISTS idx_strategy_results_file ON processing_strategy_results(file_id)")
     schema.add_index("CREATE INDEX IF NOT EXISTS idx_strategy_results_strategy ON processing_strategy_results(processing_strategy)")
     
+    # libraries indexes
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_libraries_user_id ON libraries(user_id)")
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_libraries_is_personal ON libraries(is_personal)")
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_libraries_created_by ON libraries(created_by)")
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_libraries_deleted_at ON libraries(deleted_at)")
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_libraries_type ON libraries(library_type)")
+    
+    # library_tag_cache indexes
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_library_tag_cache_library ON library_tag_cache(library_id)")
+    
     # ==========================================================================
     # Migrations (Backfill and column additions)
     # ==========================================================================
@@ -272,6 +313,20 @@ def get_ingest_schema() -> SchemaManager:
             ) THEN
                 ALTER TABLE ingestion_files ADD COLUMN group_id UUID REFERENCES groups(id) ON DELETE SET NULL;
                 CREATE INDEX IF NOT EXISTS idx_ingestion_files_group ON ingestion_files(group_id);
+            END IF;
+        END $$
+    """)
+    
+    # Add library_id column to ingestion_files for library association
+    schema.add_migration("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name = 'ingestion_files' AND column_name = 'library_id'
+            ) THEN
+                ALTER TABLE ingestion_files ADD COLUMN library_id UUID REFERENCES libraries(id) ON DELETE SET NULL;
+                CREATE INDEX IF NOT EXISTS idx_ingestion_files_library ON ingestion_files(library_id);
             END IF;
         END $$
     """)
