@@ -32,6 +32,7 @@ Future features
 - agent task creator tool
 - dispatcher can recommend activation of tools, ask questions with yes/no buttons, option lists to click on. e.g. should I create an agent task for this? Yes / No if yes - activates agent task tool. 
 - tasks can be initiated by a document ingest. So we need an event to be emitted that the task manager listens to (webhook?) that gives library folder, keywords and tags for docs. Tasks will trigger based on matching keywords, tags, folders, etc.
+- eliminate client token exchange from authz - there are still vestiges.
 
 Agent tasks:
 2 - make sure all busibox-app tests pass
