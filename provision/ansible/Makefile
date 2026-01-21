@@ -789,6 +789,41 @@ test-all: test-ingest test-search test-agent test-authz test-apps
 	@echo "All service tests passed!"
 	@echo "================================"
 
+# =============================================================================
+# PVT (Post-Deployment Validation) Tests
+# =============================================================================
+# Fast, lightweight tests that verify services are working after deployment.
+# Use client credentials (no admin token required).
+
+pvt-all: pvt-authz pvt-ingest pvt-search pvt-agent
+	@echo "================================"
+	@echo "All PVT tests passed!"
+	@echo "================================"
+
+pvt-authz:
+	@echo "Running AuthZ PVT tests..."
+	@ssh root@$(AUTHZ_IP) 'cd /srv/authz/app && source ../venv/bin/activate && set -a && source /srv/authz/.env && set +a && pytest tests/integration/test_pvt.py -v --tb=short' || (echo "AuthZ PVT FAILED" && exit 1)
+	@echo "✓ AuthZ PVT passed"
+	@echo ""
+
+pvt-ingest:
+	@echo "Running Ingest PVT tests..."
+	@ssh root@$(INGEST_IP) 'cd /srv/ingest && source venv/bin/activate && set -a && source .env && set +a && pytest tests/integration/test_pvt.py -v --tb=short' || (echo "Ingest PVT FAILED" && exit 1)
+	@echo "✓ Ingest PVT passed"
+	@echo ""
+
+pvt-search:
+	@echo "Running Search PVT tests..."
+	@ssh root@$(MILVUS_IP) 'cd /opt/search && source venv/bin/activate && set -a && source .env && set +a && pytest tests/integration/test_pvt.py -v --tb=short' || (echo "Search PVT FAILED" && exit 1)
+	@echo "✓ Search PVT passed"
+	@echo ""
+
+pvt-agent:
+	@echo "Running Agent PVT tests..."
+	@ssh root@$(AGENT_IP) 'cd /srv/agent && source venv/bin/activate && set -a && source .env && set +a && pytest tests/integration/test_pvt.py -v --tb=short' || (echo "Agent PVT FAILED" && exit 1)
+	@echo "✓ Agent PVT passed"
+	@echo ""
+
 # Security Tests (run from admin workstation)
 test-security:
 	@echo "Running security tests against $(INV)..."
