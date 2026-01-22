@@ -324,6 +324,33 @@
     msg: "Build failed with exit code {{ build_result.rc }}. See error output above."
   when: build_result.rc != 0
 
+- name: Copy static files for Next.js standalone mode
+  shell: |
+    cd {{ app_to_deploy.deploy_path }}
+    # Next.js standalone mode requires static files to be copied manually
+    # See: https://nextjs.org/docs/pages/api-reference/config/next-config-js/output#automatically-copying-traced-files
+    if [ -d ".next/standalone" ] && [ -d ".next/static" ]; then
+      echo "Copying static files for standalone mode..."
+      mkdir -p .next/standalone/.next
+      cp -r .next/static .next/standalone/.next/
+      echo "Static files copied successfully"
+      ls -la .next/standalone/.next/
+    else
+      echo "Not a standalone build or no static files - skipping"
+    fi
+    # Also copy public folder if it exists (for favicon, images, etc.)
+    if [ -d ".next/standalone" ] && [ -d "public" ]; then
+      echo "Copying public folder for standalone mode..."
+      cp -r public .next/standalone/
+      echo "Public folder copied successfully"
+    fi
+  delegate_to: "{{ app_to_deploy.container_ip }}"
+  register: static_copy_result
+
+- name: Display static copy result
+  debug:
+    var: static_copy_result.stdout_lines
+
 - name: Write deployment version info
   shell: |
     cd {{ app_to_deploy.deploy_path }}
