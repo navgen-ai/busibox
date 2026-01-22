@@ -47,7 +47,7 @@ litellm_api_key: "{{ vault_litellm_api_key | default('') }}"
 authz_url: "http://{{ hostvars['authz-lxc']['ansible_host'] | default('10.96.200.210') }}:8010"
 
 # Ingest API (for transcript storage)
-ingest_api_url: "http://{{ hostvars['ingest-lxc']['ansible_host'] | default('10.96.200.206') }}:8001"
+ingest_api_url: "http://{{ hostvars['ingest-lxc']['ansible_host'] | default('10.96.200.206') }}:8002"
 
 # Call settings
 max_parallel_calls: 3
