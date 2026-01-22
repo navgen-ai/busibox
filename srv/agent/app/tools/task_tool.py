@@ -243,7 +243,8 @@ async def create_task(
                 trigger_config=trigger_config,
                 notification_config=notification_config,
                 insights_config=insights_config,
-                scopes=agent.scopes or ["search.read", "web_search.read"],
+                # Use execution-only scopes - agent uses Zero Trust exchange for downstream calls
+                scopes=["agent.execute", "workflow.execute"],
             )
             
             task = await create_task_db(session, principal, task_data)

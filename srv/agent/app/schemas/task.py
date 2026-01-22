@@ -256,10 +256,12 @@ class TaskCreate(BaseModel):
         description="Additional input parameters for the agent"
     )
     
-    # Delegation scopes
+    # Delegation scopes - simplified to execution-only
+    # The task only needs permission to execute the agent/workflow
+    # The agent/workflow uses Zero Trust token exchange to get downstream tokens
     scopes: List[str] = Field(
-        default_factory=lambda: ["search.read", "ingest.read", "agent.execute"],
-        description="OAuth scopes to grant the task"
+        default_factory=lambda: ["agent.execute", "workflow.execute"],
+        description="OAuth scopes to grant the task (execution scopes only - downstream calls use Zero Trust exchange)"
     )
     
     @field_validator('trigger_config')
