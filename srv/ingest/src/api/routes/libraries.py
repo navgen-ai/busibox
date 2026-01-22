@@ -20,14 +20,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from api.middleware.jwt_auth import ScopeChecker
-from api.services.postgres import PostgresService
 from api.services.library_service import (
     LibraryService,
     PersonalLibraryTypes,
     PERSONAL_LIBRARY_NAMES,
     library_to_response,
 )
-from shared.config import Config
 
 logger = structlog.get_logger()
 
@@ -94,10 +92,14 @@ def validate_uuid(id_str: str, field_name: str = "ID") -> tuple[Optional[uuid.UU
 
 
 async def get_library_service(request: Request) -> LibraryService:
-    """Get or create library service with database connection."""
-    config = Config()
-    pg_service = PostgresService(config.to_dict(), request=request)
-    await pg_service.connect()
+    """Get library service using the shared database connection pool."""
+    # Use the singleton pg_service from main to avoid creating new pools
+    from api.main import pg_service
+    
+    # Ensure the pool is connected
+    if not pg_service.pool:
+        await pg_service.connect()
+    
     return LibraryService(pg_service.pool)
 
 

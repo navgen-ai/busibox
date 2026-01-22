@@ -16,8 +16,10 @@ import structlog
 from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 
-from api.services.postgres import PostgresService
 from shared.config import Config
+
+# Import singleton postgres service to avoid connection leaks
+from api.main import pg_service
 
 logger = structlog.get_logger()
 
@@ -84,10 +86,10 @@ async def create_token(request: Request):
 
 async def write_audit(actor_id: str, action: str, resource_type: str, resource_id: Optional[str], details: dict, request: Request):
     """Insert audit log entry."""
-    config = Config().to_dict()
-    pg = PostgresService(config, request)
-    await pg.connect()
-    async with pg.acquire(request) as conn:
+    # Use the shared singleton - avoid creating new pools
+    if not pg_service.pool:
+        await pg_service.connect()
+    async with pg_service.acquire(request) as conn:
         await conn.execute(
             """
             INSERT INTO audit_logs (actor_id, action, resource_type, resource_id, details)

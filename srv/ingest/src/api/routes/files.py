@@ -25,11 +25,13 @@ from pydantic import BaseModel, Field
 
 from api.middleware.jwt_auth import ScopeChecker
 from api.services.minio_service import MinIOService
-from api.services.postgres import PostgresService
 from api.services.encryption_client import EncryptionClient
 from services.milvus_service import MilvusService
 from services.processing_history_service import ProcessingHistoryService
 from shared.config import Config
+
+# Import singleton postgres service to avoid connection leaks
+from api.main import pg_service as postgres_service
 
 logger = structlog.get_logger()
 
@@ -196,10 +198,9 @@ async def reprocess_all_files(request: Request, body: BulkReprocessRequest = Non
     user_ids = body.user_ids
     limit = body.limit
     
-    config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
-    
-    await postgres_service.connect()
+    # Use the shared singleton - avoid creating new pools
+    if not postgres_service.pool:
+        await postgres_service.connect()
     
     try:
         async with postgres_service.acquire(request) as conn:
@@ -370,8 +371,9 @@ async def get_file_metadata(fileId: str, request: Request):
     
     user_id = request.state.user_id
     
-    from api.main import pg_service as postgres_service  # Use shared PostgresService instance
-    # Connection is already established in startup
+    # Use the shared singleton - pool is connected on startup
+    if not postgres_service.pool:
+        await postgres_service.connect()
     
     try:
         async with postgres_service.acquire(request) as conn:
@@ -661,11 +663,12 @@ async def download_file(fileId: str, request: Request):
     user_id = request.state.user_id
     
     config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
     minio_service = MinIOService(config)
     encryption_client = EncryptionClient(config)
     
-    await postgres_service.connect()
+    # Use the shared singleton - avoid creating new pools
+    if not postgres_service.pool:
+        await postgres_service.connect()
     
     try:
         async with postgres_service.acquire(request) as conn:
@@ -804,10 +807,11 @@ async def get_presigned_url(fileId: str, request: Request, expiry: int = 3600):
     user_id = request.state.user_id
     
     config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
     minio_service = MinIOService(config)
     
-    await postgres_service.connect()
+    # Use the shared singleton - avoid creating new pools
+    if not postgres_service.pool:
+        await postgres_service.connect()
     
     try:
         async with postgres_service.acquire(request) as conn:
@@ -923,8 +927,9 @@ async def get_file_chunks(
     """
     user_id = request.state.user_id
     
-    from api.main import pg_service as postgres_service  # Use shared PostgresService instance
-    # Connection is already established in startup
+    # Use the shared singleton - pool is connected on startup
+    if not postgres_service.pool:
+        await postgres_service.connect()
     
     try:
         async with postgres_service.acquire(request) as conn:
@@ -1023,8 +1028,9 @@ async def get_file_vectors(
     """
     user_id = request.state.user_id
     
-    from api.main import pg_service as postgres_service  # Use shared PostgresService instance
-    # Connection is already established in startup
+    # Use the shared singleton - pool is connected on startup
+    if not postgres_service.pool:
+        await postgres_service.connect()
     
     try:
         async with postgres_service.acquire(request) as conn:
@@ -1135,9 +1141,11 @@ async def get_file_markdown(
     user_id = request.state.user_id
     
     config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
     minio_service = MinIOService(config)
-    await postgres_service.connect()
+    
+    # Use the shared singleton - avoid creating new pools
+    if not postgres_service.pool:
+        await postgres_service.connect()
     
     try:
         async with postgres_service.acquire(request) as conn:
@@ -1247,10 +1255,11 @@ async def search_within_document(
     user_id = request.state.user_id
     
     config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
     milvus_service = MilvusService(config)
     
-    await postgres_service.connect()
+    # Use the shared singleton - avoid creating new pools
+    if not postgres_service.pool:
+        await postgres_service.connect()
     
     try:
         async with postgres_service.acquire(request) as conn:
@@ -1378,12 +1387,13 @@ async def delete_file(fileId: str, request: Request):
     user_id = request.state.user_id
     
     config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
     minio_service = MinIOService(config)
     milvus_service = MilvusService(config)
     encryption_client = EncryptionClient(config)
     
-    await postgres_service.connect()
+    # Use the shared singleton - avoid creating new pools
+    if not postgres_service.pool:
+        await postgres_service.connect()
     
     try:
         async with postgres_service.acquire(request) as conn:
@@ -1511,8 +1521,9 @@ async def move_file(fileId: str, request: Request):
             content={"error": "roleIds required for shared visibility"},
         )
 
-    from api.main import pg_service as postgres_service  # Use shared PostgresService instance
-    # Connection is already established in startup
+    # Use the shared singleton - pool is connected on startup
+    if not postgres_service.pool:
+        await postgres_service.connect()
 
     # Fetch current record under RLS
     async with postgres_service.acquire(request) as conn:
@@ -1613,10 +1624,11 @@ async def reprocess_file(fileId: str, request: Request):
     stages_needing_vector_delete = ["parsing", "chunking", "cleanup", "embedding", "indexing"]
     
     config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
     milvus_service = MilvusService(config)
     
-    await postgres_service.connect()
+    # Use the shared singleton - avoid creating new pools
+    if not postgres_service.pool:
+        await postgres_service.connect()
     
     try:
         async with postgres_service.acquire(request) as conn:
@@ -1805,10 +1817,9 @@ async def export_file(
     """
     user_id = request.state.user_id
     
-    config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
-    
-    await postgres_service.connect()
+    # Use the shared singleton - avoid creating new pools
+    if not postgres_service.pool:
+        await postgres_service.connect()
     
     try:
         async with postgres_service.acquire(request) as conn:
