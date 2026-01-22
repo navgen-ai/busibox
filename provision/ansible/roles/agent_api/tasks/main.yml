@@ -296,6 +296,13 @@
   failed_when: false
   changed_when: false
 
+- name: Check if agent tables exist
+  shell: |
+    su - postgres -c "psql -d agent_server -tAc \"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'agent_definitions');\""
+  delegate_to: "{{ groups['pg'][0] }}"
+  register: tables_exist
+  changed_when: false
+
 - name: Stamp database with current version if tables exist but no migration history
   shell: |
     cd /srv/agent
@@ -305,7 +312,7 @@
   become_user: "{{ agent_api_user }}"
   environment:
     DATABASE_URL: "{{ secrets['agent-server'].database_url }}"
-  when: alembic_current.rc != 0
+  when: tables_exist.stdout == 't' and (alembic_current.stdout == '' or 'No revision' in alembic_current.stdout)
   register: stamp_result
   failed_when: false
 
