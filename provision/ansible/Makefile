@@ -306,8 +306,10 @@ bridge:
 	ansible-playbook -i $(INV) -l bridge site.yml --tags apis_bridge $(VAULT_FLAGS) || true
 
 # Tailscale VPN (for secure remote access)
+# NOTE: This is a CONFIGURATION step, not part of core deployment
+# Run after initial deployment: make tailscale
 tailscale:
-	ansible-playbook -i $(INV) -l proxy site.yml --tags tailscale $(VAULT_FLAGS)
+	ansible-playbook -i $(INV) -l proxy site.yml --tags configure,tailscale $(VAULT_FLAGS)
 
 # Test Bridge service integration
 test-bridge:
