@@ -60,28 +60,15 @@ async def _generate_insights_background(
     try:
         insights_service = get_insights_service()
         
-        # Zero Trust: Exchange user's token for ingest-api audience
-        ingest_token = None
-        if user_token:
-            ingest_token = await exchange_token_zero_trust(
-                subject_token=user_token,
-                target_audience="ingest-api",
-                user_id=user_id
-            )
-        
-        auth_header = f"Bearer {ingest_token}" if ingest_token else None
-        
-        if not auth_header:
-            logger.warning(
-                f"Failed to get ingest-api token for background insights, embeddings will use fallback (user_id={user_id})"
-            )
+        # Use dedicated embedding-api service (no auth required)
+        embedding_url = settings.embedding_api_url or "http://embedding-api:8005"
         
         new_count, existing_count = await generate_and_store_insights(
             conversation=conversation,
             messages=messages,
             insights_service=insights_service,
-            embedding_service_url=str(settings.ingest_api_url),
-            authorization=auth_header
+            embedding_service_url=str(embedding_url),
+            authorization=None  # embedding-api doesn't require auth
         )
         logger.info(
             f"Background insights: {new_count} new, {existing_count} existing for conversation {conversation.id}"
@@ -871,19 +858,15 @@ async def generate_conversation_insights(
                 user_id=principal.sub
             )
         
-        auth_header = f"Bearer {ingest_token}" if ingest_token else None
-        
-        if not auth_header:
-            logger.warning(
-                f"Failed to get ingest-api token, embeddings will use fallback (user_id={principal.sub})"
-            )
+        # Use dedicated embedding-api service (no auth required)
+        embedding_url = settings.embedding_api_url or "http://embedding-api:8005"
         
         new_count, existing_count = await generate_and_store_insights(
             conversation=conversation,
             messages=messages,
             insights_service=insights_service,
-            embedding_service_url=str(settings.ingest_api_url),
-            authorization=auth_header
+            embedding_service_url=str(embedding_url),
+            authorization=None  # embedding-api doesn't require auth
         )
         
         total_count = new_count + existing_count

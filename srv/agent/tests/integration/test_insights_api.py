@@ -25,7 +25,8 @@ def initialize_insights_service():
         config = {
             "milvus_host": os.getenv("MILVUS_HOST", "localhost"),
             "milvus_port": int(os.getenv("MILVUS_PORT", "19530")),
-            "embedding_service_url": os.getenv("INGEST_API_URL", "http://localhost:8000"),
+            # Use dedicated embedding-api service (no auth required)
+            "embedding_service_url": os.getenv("EMBEDDING_API_URL", "http://embedding-api:8005"),
         }
         init_insights_service(config)
 

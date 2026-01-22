@@ -158,16 +158,14 @@ async def get_embedding(
     expected_dim: Optional[int] = None
 ) -> Tuple[List[float], str]:
     """
-    Get embedding for text from embedding service.
+    Get embedding for text from dedicated embedding-api service.
     
-    Supports both:
-    - Dedicated embedding-api (port 8005) with /embed endpoint
-    - Ingest-api (port 8002) with OpenAI-compatible /api/embeddings endpoint
+    Uses embedding-api:8005 /embed endpoint (no auth required for internal services).
     
     Args:
         text: Text to embed
         embedding_service_url: URL of embedding service (e.g., http://embedding-api:8005)
-        authorization: Optional authorization header
+        authorization: Not used (embedding-api is internal service, no auth required)
         expected_dim: Expected embedding dimension (defaults to EMBEDDING_DIMENSION)
         
     Returns:
@@ -176,33 +174,20 @@ async def get_embedding(
     dim = expected_dim or EMBEDDING_DIMENSION
     
     try:
-        # Check if this is the dedicated embedding service
-        is_dedicated_embedding_service = "embedding-api" in embedding_service_url or ":8005" in embedding_service_url
-        
-        headers = {}
-        if not is_dedicated_embedding_service and authorization:
-            # Only add auth for ingest-api (legacy path)
-            headers["Authorization"] = authorization
-        
         # Remove trailing slash to avoid double slashes
         base_url = embedding_service_url.rstrip('/')
         
         async with httpx.AsyncClient(timeout=120.0) as client:  # 2 minutes for embedding generation
-            # Use different endpoints based on service type
-            if is_dedicated_embedding_service:
-                # Dedicated embedding-api uses /embed endpoint
-                endpoint = f"{base_url}/embed"
-                payload = {"input": text}  # OpenAI-compatible format (same as ingest-api)
-            else:
-                # ingest-api uses OpenAI-compatible /api/embeddings endpoint
-                endpoint = f"{base_url}/api/embeddings"
-                payload = {"input": text}  # OpenAI-compatible format
-            
-            response = await client.post(endpoint, json=payload, headers=headers)
+            # embedding-api uses /embed endpoint with OpenAI-compatible format
+            # No authentication required for internal service
+            response = await client.post(
+                f"{base_url}/embed",
+                json={"input": text},
+            )
             response.raise_for_status()
             data = response.json()
             
-            # Both embedding-api and ingest-api return OpenAI-compatible format:
+            # embedding-api returns OpenAI-compatible format:
             # {"data": [{"embedding": [...], "index": 0}], "model": "...", "dimension": ...}
             model_name = data.get("model", EMBEDDING_MODEL)
             embeddings_data = data.get("data", [])

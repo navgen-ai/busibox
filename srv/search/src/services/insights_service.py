@@ -88,7 +88,8 @@ class InsightsService:
         self.config = config
         self.host = config.get("milvus_host", "localhost")
         self.port = config.get("milvus_port", 19530)
-        self.embedding_service_url = config.get("embedding_service_url", "http://10.96.200.206:8002")
+        # Use dedicated embedding-api service (no auth required for internal services)
+        self.embedding_service_url = config.get("embedding_service_url", "http://embedding-api:8005")
         self.connected = False
         self.collection: Optional[Collection] = None
     
@@ -231,35 +232,32 @@ class InsightsService:
         authorization: Optional[str] = None,
     ) -> List[float]:
         """
-        Generate embedding for text using ingest service.
+        Generate embedding for text using dedicated embedding-api service.
         
         Args:
             text: Text to embed
-            user_id: User ID for authorization
-            authorization: Bearer token for authorization
+            user_id: User ID (for logging/tracing only - embedding-api doesn't require auth)
+            authorization: Bearer token (not used - embedding-api is internal service)
             
         Returns:
             Embedding vector (1024 dimensions)
         """
         async with httpx.AsyncClient(timeout=30.0) as client:
-            headers = {"X-User-Id": user_id}
-            if authorization:
-                headers["Authorization"] = authorization
-            
+            # embedding-api is an internal service that doesn't require auth
+            # Uses OpenAI-compatible format: {"input": "text"} -> {"data": [{"embedding": [...]}]}
             response = await client.post(
-                f"{self.embedding_service_url}/api/embeddings",
-                json={"texts": [text]},
-                headers=headers,
+                f"{self.embedding_service_url}/embed",
+                json={"input": text},
             )
             response.raise_for_status()
             data = response.json()
             
-            # Return first embedding
-            embeddings = data.get("embeddings", [])
-            if not embeddings:
+            # Parse OpenAI-compatible response format
+            embedding_data = data.get("data", [])
+            if not embedding_data:
                 raise ValueError("No embeddings returned from service")
             
-            return embeddings[0]
+            return embedding_data[0].get("embedding", [])
     
     async def search_insights(
         self,

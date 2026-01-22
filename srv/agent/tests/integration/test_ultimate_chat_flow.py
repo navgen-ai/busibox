@@ -44,21 +44,27 @@ def get_insights_service_safe():
 
 async def get_embedding(text: str) -> list:
     """
-    Get embedding from ingest API, or return a mock embedding for testing.
+    Get embedding from embedding-api, or return a mock embedding for testing.
     
     Uses the correct dimension (1024) for the Milvus insights collection.
     """
     import httpx
     try:
+        # Use dedicated embedding-api service (no auth required)
+        embedding_url = settings.embedding_api_url or "http://embedding-api:8005"
         async with httpx.AsyncClient(timeout=30.0) as http_client:
             embed_response = await http_client.post(
-                f"{settings.ingest_api_url}/embed",
-                json={"text": text}
+                f"{embedding_url}/embed",
+                json={"input": text}  # OpenAI-compatible format
             )
             if embed_response.status_code == 200:
-                embedding = embed_response.json().get("embedding")
-                if embedding and len(embedding) == EMBEDDING_DIM:
-                    return embedding
+                data = embed_response.json()
+                # Parse OpenAI-compatible response
+                embedding_data = data.get("data", [])
+                if embedding_data:
+                    embedding = embedding_data[0].get("embedding", [])
+                    if embedding and len(embedding) == EMBEDDING_DIM:
+                        return embedding
     except Exception:
         pass  # Fall through to mock embedding
     

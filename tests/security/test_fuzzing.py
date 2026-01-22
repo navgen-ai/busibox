@@ -385,9 +385,9 @@ class TestBoundaryConditions:
     @pytest.mark.fuzz
     def test_empty_body_post_requests(self, http_client, endpoints, auth_headers):
         """Test POST endpoints handle empty bodies."""
+        # Note: /search endpoint is on search-api (not ingest-api)
         post_endpoints = [
             f"{endpoints.search}/search",
-            f"{endpoints.ingest}/search",
             f"{endpoints.agent}/runs",
         ]
         
