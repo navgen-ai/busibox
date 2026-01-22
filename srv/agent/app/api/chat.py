@@ -719,9 +719,12 @@ async def send_chat_message_stream_agentic(
             ]
             
             # Determine available agents
-            available_agents = ["web_search", "chat"]
+            # Default to chat agent only - it's the versatile general-purpose agent
+            # that can use tools (web search, documents, etc.) when needed
             if payload.selected_agents:
                 available_agents = payload.selected_agents
+            else:
+                available_agents = ["chat"]
             
             # Collect content for storing
             full_content = []

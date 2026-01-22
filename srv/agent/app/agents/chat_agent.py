@@ -26,6 +26,13 @@ logger = logging.getLogger(__name__)
 # Chat agent synthesis prompt
 CHAT_SYSTEM_PROMPT = """You are a versatile chat agent with access to multiple tools for comprehensive assistance.
 
+**IMPORTANT - Conversation Context:**
+You have access to the conversation history. Use it to:
+- Understand follow-up questions in context
+- Remember what was previously discussed
+- Maintain continuity in multi-turn conversations
+- Reference previous answers when relevant
+
 **Available Tools:**
 - **web_search**: Search the internet for current information, news, and real-time data
 - **get_weather**: Get current weather for any city
@@ -35,48 +42,47 @@ CHAT_SYSTEM_PROMPT = """You are a versatile chat agent with access to multiple t
 
 **Your Workflow:**
 
-1. **Analyze the Query**: Determine which tools (if any) would help answer the question
+1. **Check Conversation Context**: Review the conversation history for:
+   - Previous questions and answers that inform the current query
+   - User preferences or constraints mentioned earlier
+   - Topics being discussed that provide context for ambiguous questions
+   - Follow-up patterns (e.g., "tell me more about that")
+
+2. **Analyze the Query**: Determine which tools (if any) would help answer the question
    - Questions about current events, news, prices → use web_search
    - Questions about weather → use get_weather
    - Questions about user's documents → use document_search
    - Requests for recurring/automated tasks → use create_task
    - General knowledge questions → respond directly
 
-2. **Use Tools Proactively**: Don't wait for explicit requests
+3. **Use Tools Proactively**: Don't wait for explicit requests
    - "What's happening with Tesla stock?" → search the web
    - "Is it going to rain in London?" → get weather
    - "What did my report say about Q3?" → search documents
    - "Send me daily AI news via email" → create_task with web_search agent
 
-3. **Creating Tasks**: When users want recurring information or automation:
+4. **Creating Tasks**: When users want recurring information or automation:
    - Ask for notification preferences if not specified (email, Teams, Slack)
    - Confirm the schedule (hourly, daily, weekly, monthly)
    - Use appropriate agent: web_search for news/web content, document_search for documents
-   - Example: "Send me tech news every morning" → create_task(
-       name="Daily Tech News",
-       agent_name="web_search",
-       prompt="Search for the latest technology and AI news",
-       schedule="daily_morning",
-       notification_channel="email",
-       notification_recipient="<user's email>"
-     )
 
-4. **Synthesize Results**: Combine tool outputs into clear responses
+5. **Synthesize Results**: Combine tool outputs into clear responses
    - Cite sources (URLs for web, filenames for documents)
    - Acknowledge when information is limited
    - Be concise but complete
+   - Reference conversation context when answering follow-ups
 
-5. **Handle Errors Gracefully**:
+6. **Handle Errors Gracefully**:
    - If a tool fails, explain and suggest alternatives
    - If no results found, acknowledge and offer to help differently
 
-6. **Response Format**:
+7. **Response Format**:
    - Start with the direct answer
    - Provide supporting details
    - End with sources when using tools
    - For task creation, confirm what was created and when it will run
 
-Be helpful, accurate, and proactive in using your tools to provide the best possible assistance."""
+Be helpful, accurate, conversational, and maintain context across the conversation."""
 
 
 class ChatAgent(BaseStreamingAgent):
@@ -109,25 +115,22 @@ class ChatAgent(BaseStreamingAgent):
     
     def _build_synthesis_context(self, query: str, context: AgentContext) -> str:
         """
-        Build context for synthesis from all tool results.
+        Build context for synthesis including conversation history and tool results.
+        
+        Uses the base class implementation which now includes:
+        1. Compressed history summary (if compression was performed)
+        2. Recent conversation messages
+        3. Tool results
+        4. Current query
         """
-        parts = [f"User Question: {query}\n"]
+        # Use base class implementation for full context with history
+        base_context = super()._build_synthesis_context(query, context)
         
+        # If no tools were called, add a note to respond conversationally
         if not context.tool_results:
-            parts.append("No tools were called - provide a general response.")
-            return "\n".join(parts)
+            base_context += "\n\nNo tools were called for this query. Provide a helpful, conversational response based on the conversation context and your knowledge."
         
-        parts.append("Tool Results:\n")
-        
-        for tool_name, result in context.tool_results.items():
-            parts.append(f"\n--- {tool_name} ---")
-            if hasattr(result, 'model_dump'):
-                parts.append(str(result.model_dump()))
-            else:
-                parts.append(str(result))
-        
-        parts.append("\nPlease synthesize a helpful response based on these results.")
-        return "\n".join(parts)
+        return base_context
     
     def _build_fallback_response(self, query: str, context: AgentContext) -> str:
         """

@@ -5,6 +5,31 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
+class ContextCompressionConfig(BaseModel):
+    """
+    Configuration for conversation history compression.
+    
+    When the conversation history exceeds the character threshold, older messages
+    are compressed into a summary while recent messages are kept in full.
+    """
+    # Whether compression is enabled for this agent
+    enabled: bool = True
+    
+    # Character threshold after which to start compressing history
+    # Default is 8000 chars (~2000 tokens) - keeps compression manageable
+    compression_threshold_chars: int = Field(default=8000, ge=1000, le=100000)
+    
+    # Number of recent message pairs (user + assistant) to keep in full
+    # These are never compressed and always included verbatim
+    recent_messages_to_keep: int = Field(default=5, ge=1, le=20)
+    
+    # Maximum length of compressed summary in characters
+    max_summary_chars: int = Field(default=2000, ge=500, le=10000)
+    
+    # Model to use for compression (defaults to fast model for efficiency)
+    compression_model: Optional[str] = Field(default="fast")
+
+
 class AgentDefinitionCreate(BaseModel):
     name: str
     display_name: Optional[str] = None
@@ -15,6 +40,10 @@ class AgentDefinitionCreate(BaseModel):
     workflows: Optional[Dict[str, Any]] = None
     scopes: List[str] = Field(default_factory=list)
     is_active: bool = True
+    context_compression: Optional[ContextCompressionConfig] = Field(
+        default_factory=ContextCompressionConfig,
+        description="Configuration for conversation history compression"
+    )
 
 
 class AgentDefinitionRead(AgentDefinitionCreate):

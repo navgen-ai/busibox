@@ -316,11 +316,11 @@ Choose the most appropriate single agent for the query.""",
                         streaming_key = agent_id if agent_id in STREAMING_AGENTS else AGENT_TYPE_MAPPING.get(agent_id)
                         resolved_agents.append((agent_id, display_name, streaming_key))
             
-            # If no agents resolved, use defaults
+            # If no agents resolved, default to chat agent only
+            # Chat agent is the versatile general-purpose agent that can use tools when needed
             if not resolved_agents:
                 resolved_agents = [
-                    ("web_search", "Web Search Agent", "web_search"),
-                    ("chat", "Chat Assistant", None),
+                    ("chat", "Chat Assistant", "chat"),
                 ]
             
             # Step 2: Determine which agent to use
