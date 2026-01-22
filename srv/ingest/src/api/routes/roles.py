@@ -17,9 +17,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from api.middleware.jwt_auth import ScopeChecker
-from api.services.postgres import PostgresService
 from services.milvus_service import MilvusService
 from shared.config import Config
+
+# Import singleton postgres service to avoid connection leaks
+from api.main import pg_service as postgres_service
 
 logger = structlog.get_logger()
 
@@ -153,10 +155,11 @@ async def update_document_roles(
     user_update_roles = getattr(request.state, "role_ids_update", [])
     
     config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
     milvus_service = MilvusService(config)
     
-    await postgres_service.connect()
+    # Use the shared singleton - avoid creating new pools
+    if not postgres_service.pool:
+        await postgres_service.connect()
     milvus_service.connect()
     
     try:
@@ -365,10 +368,11 @@ async def share_document(
     user_create_roles = getattr(request.state, "role_ids_create", [])
     
     config = Config().to_dict()
-    postgres_service = PostgresService(config, request)
     milvus_service = MilvusService(config)
     
-    await postgres_service.connect()
+    # Use the shared singleton - avoid creating new pools
+    if not postgres_service.pool:
+        await postgres_service.connect()
     milvus_service.connect()
     
     try:
