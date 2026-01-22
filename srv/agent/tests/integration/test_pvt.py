@@ -52,41 +52,26 @@ def get_authz_base_url() -> str:
 
 
 @pytest.fixture(scope="module")
-def access_token():
-    """Get an access token for the agent API using bootstrap client credentials."""
-    import httpx
+def auth_client():
+    """Get an AuthTestClient for user-scoped token exchange (Zero Trust)."""
+    from testing import AuthTestClient
     
-    client_id = require_env("AUTHZ_BOOTSTRAP_CLIENT_ID", AUTHZ_BOOTSTRAP_CLIENT_ID)
-    client_secret = require_env("AUTHZ_BOOTSTRAP_CLIENT_SECRET", AUTHZ_BOOTSTRAP_CLIENT_SECRET)
-    authz_url = get_authz_base_url()
-    
-    # Token exchange using client credentials grant
-    with httpx.Client() as client:
-        resp = client.post(
-            f"{authz_url}/oauth/token",
-            data={
-                "grant_type": "client_credentials",
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "audience": "agent-api",
-            },
-            timeout=10.0,
-        )
-        
-        if resp.status_code != 200:
-            pytest.fail(f"Failed to get access token: {resp.status_code} - {resp.text}")
-        
-        data = resp.json()
-        if "access_token" not in data:
-            pytest.fail(f"No access_token in response: {data}")
-        
-        return data["access_token"]
+    client = AuthTestClient()
+    client.ensure_test_user_exists()
+    yield client
+    client.cleanup()
 
 
 @pytest.fixture(scope="module")
-def auth_headers(access_token):
-    """Return headers with Bearer token."""
-    return {"Authorization": f"Bearer {access_token}"}
+def access_token(auth_client):
+    """Get an access token for the agent API using user-scoped token exchange."""
+    return auth_client.get_token(audience="agent-api")
+
+
+@pytest.fixture(scope="module")
+def auth_headers(auth_client):
+    """Return headers with Bearer token and X-Test-Mode."""
+    return auth_client.get_auth_header(audience="agent-api")
 
 
 @pytest.mark.pvt
