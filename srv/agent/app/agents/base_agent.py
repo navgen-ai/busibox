@@ -108,6 +108,11 @@ class AgentConfig:
     synthesis_prompt: Optional[str] = None  # Override default synthesis prompt
     max_tokens: Optional[int] = None  # Max tokens for synthesis (None = model default, no limit)
     
+    # Context compression settings
+    enable_history_compression: bool = True  # Whether to compress long conversation history
+    compression_threshold_chars: int = 8000  # Character threshold to trigger compression
+    recent_messages_to_keep: int = 5  # Number of recent message pairs to keep in full
+    
     def get_required_scopes(self) -> List[str]:
         """Get all OAuth scopes required by this agent's tools."""
         scopes = []
@@ -194,6 +199,9 @@ class AgentContext:
     user_id: Optional[str] = None
     agent_id: Optional[str] = None
     conversation_history: List[Dict[str, Any]] = field(default_factory=list)
+    # Compressed history (populated after compression)
+    compressed_history_summary: Optional[str] = None
+    recent_messages: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class BaseStreamingAgent(StreamingAgent):
@@ -493,6 +501,51 @@ class BaseStreamingAgent(StreamingAgent):
                     message=f"Authentication error: {str(e)}"
                 ))
                 return None
+        
+        # Compress conversation history if enabled and history is present
+        if (self.config.enable_history_compression and 
+            agent_context.conversation_history):
+            try:
+                from app.services.context_compression import (
+                    get_compression_service,
+                    ContextCompressionService,
+                )
+                from app.schemas.definitions import ContextCompressionConfig
+                
+                # Create compression config from agent config
+                compression_config = ContextCompressionConfig(
+                    enabled=True,
+                    compression_threshold_chars=self.config.compression_threshold_chars,
+                    recent_messages_to_keep=self.config.recent_messages_to_keep,
+                )
+                
+                compression_service = get_compression_service(compression_config)
+                compression_result = await compression_service.compress_history(
+                    agent_context.conversation_history
+                )
+                
+                # Store results in context
+                agent_context.compressed_history_summary = compression_result.summary
+                agent_context.recent_messages = compression_result.recent_messages
+                
+                if compression_result.was_compressed:
+                    logger.info(
+                        f"{self.name} compressed conversation history: "
+                        f"{compression_result.original_char_count} -> {compression_result.compressed_char_count} chars, "
+                        f"{compression_result.messages_compressed} messages compressed, "
+                        f"{compression_result.messages_kept} messages kept"
+                    )
+                else:
+                    # No compression needed, use original history
+                    agent_context.recent_messages = agent_context.conversation_history
+                    
+            except Exception as e:
+                logger.warning(f"Failed to compress history, using full history: {e}")
+                # Fallback to full history
+                agent_context.recent_messages = agent_context.conversation_history
+        else:
+            # No compression, use full history
+            agent_context.recent_messages = agent_context.conversation_history
         
         return agent_context
     
@@ -813,6 +866,12 @@ class BaseStreamingAgent(StreamingAgent):
         """
         Build context string for synthesis.
         
+        Includes:
+        1. Compressed history summary (if compression was performed)
+        2. Recent conversation messages (kept in full)
+        3. Tool results from current execution
+        4. Current user query
+        
         Override in subclasses for custom context building.
         
         Args:
@@ -822,28 +881,57 @@ class BaseStreamingAgent(StreamingAgent):
         Returns:
             Context string for synthesis agent
         """
-        parts = [f"User Question: {query}\n\nResults:\n"]
+        parts = []
         
-        for tool_name, result in context.tool_results.items():
-            if hasattr(result, 'context'):
-                # Document search style result
-                parts.append(f"\n--- {tool_name} ---\n{result.context}")
-            elif hasattr(result, 'results') and isinstance(result.results, list):
-                # List of results
-                parts.append(f"\n--- {tool_name} ({len(result.results)} items) ---")
-                for i, item in enumerate(result.results[:5], 1):
-                    if hasattr(item, 'model_dump'):
-                        parts.append(f"\n{i}. {item.model_dump()}")
-                    else:
-                        parts.append(f"\n{i}. {item}")
-            elif hasattr(result, 'content'):
-                # Web scraper style result
-                parts.append(f"\n--- {tool_name} ---\n{result.content[:2000]}")
-            else:
-                # Generic result
-                parts.append(f"\n--- {tool_name} ---\n{result}")
+        # 1. Add compressed history summary if present
+        if context.compressed_history_summary:
+            parts.append("## Previous Conversation Summary")
+            parts.append(context.compressed_history_summary)
+            parts.append("")
         
-        parts.append("\n\nPlease answer the user's question based on these results.")
+        # 2. Add recent conversation history
+        if context.recent_messages:
+            parts.append("## Recent Conversation")
+            for msg in context.recent_messages:
+                role = msg.get("role", "unknown")
+                msg_content = msg.get("content", "")
+                if role == "user":
+                    parts.append(f"**User**: {msg_content}")
+                elif role == "assistant":
+                    parts.append(f"**Assistant**: {msg_content}")
+                else:
+                    parts.append(f"**{role}**: {msg_content}")
+            parts.append("")
+        
+        # 3. Add current query
+        parts.append("## Current Query")
+        parts.append(query)
+        parts.append("")
+        
+        # 4. Add tool results
+        if context.tool_results:
+            parts.append("## Tool Results")
+            for tool_name, result in context.tool_results.items():
+                if hasattr(result, 'context'):
+                    # Document search style result
+                    parts.append(f"\n### {tool_name}\n{result.context}")
+                elif hasattr(result, 'results') and isinstance(result.results, list):
+                    # List of results
+                    parts.append(f"\n### {tool_name} ({len(result.results)} items)")
+                    for i, item in enumerate(result.results[:5], 1):
+                        if hasattr(item, 'model_dump'):
+                            parts.append(f"\n{i}. {item.model_dump()}")
+                        else:
+                            parts.append(f"\n{i}. {item}")
+                elif hasattr(result, 'content'):
+                    # Web scraper style result
+                    parts.append(f"\n### {tool_name}\n{result.content[:2000]}")
+                else:
+                    # Generic result
+                    parts.append(f"\n### {tool_name}\n{result}")
+            parts.append("")
+        
+        parts.append("Please answer the user's question based on the conversation history and any tool results provided. Be conversational and reference previous context when relevant.")
         return "\n".join(parts)
     
     def _build_fallback_response(self, query: str, context: AgentContext) -> str:
