@@ -1304,14 +1304,19 @@ class PostgresService:
         """
         Use (consume) a magic link and create a session.
         Returns the user and new session, or None if invalid/expired/used.
+        
+        NOTE: To handle email client link verification (e.g., Outlook Safe Links),
+        we allow a 60-second grace period after first use. If the link was used
+        within the last 60 seconds, we return the most recent session for that user
+        instead of rejecting the request.
         """
         async with self.acquire(None, None) as conn:
-            # Check if link is valid
+            # First, check if link exists and is not expired
             row = await conn.fetchrow(
                 """
-                SELECT id, user_id, email
+                SELECT id, user_id, email, used_at
                 FROM authz_magic_links
-                WHERE token = $1 AND expires_at > now() AND used_at IS NULL
+                WHERE token = $1 AND expires_at > now()
                 """,
                 token,
             )
@@ -1321,12 +1326,48 @@ class PostgresService:
             
             link_id = row["id"]
             user_id = row["user_id"]
+            used_at = row["used_at"]
             
-            # Mark as used
-            await conn.execute(
-                "UPDATE authz_magic_links SET used_at = now() WHERE id = $1",
-                link_id,
-            )
+            # If already used, check if within grace period (60 seconds)
+            if used_at is not None:
+                from datetime import datetime, timezone
+                now = datetime.now(timezone.utc)
+                # Ensure used_at is timezone-aware
+                if used_at.tzinfo is None:
+                    used_at = used_at.replace(tzinfo=timezone.utc)
+                seconds_since_use = (now - used_at).total_seconds()
+                
+                if seconds_since_use > 60:
+                    # Grace period expired - link is truly consumed
+                    return None
+                
+                # Within grace period - return user's most recent active session
+                user = await self.get_user_with_roles(str(user_id))
+                session = await conn.fetchrow(
+                    """
+                    SELECT session_id::text, user_id::text, token, expires_at, ip_address, user_agent
+                    FROM authz_sessions
+                    WHERE user_id = $1 AND expires_at > now() AND revoked_at IS NULL
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    user_id,
+                )
+                
+                if session:
+                    return {
+                        "user": user,
+                        "session": dict(session),
+                    }
+                # No active session found, but link was recently used - this shouldn't happen
+                # Fall through to create a new session anyway
+            
+            # Mark as used (first use or creating new session after grace period lookup failed)
+            if used_at is None:
+                await conn.execute(
+                    "UPDATE authz_magic_links SET used_at = now() WHERE id = $1",
+                    link_id,
+                )
             
             # Update user: activate if pending, set email verified, update last login
             await conn.execute(

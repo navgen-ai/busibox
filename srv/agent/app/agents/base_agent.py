@@ -735,9 +735,10 @@ class BaseStreamingAgent(StreamingAgent):
         Execute tools with LLM deciding which tools to call.
         
         For LLM_DRIVEN strategy, we use PydanticAI's native tool calling.
+        Conversation history is included in the message list for context.
         """
-        # Build tool-calling agent dynamically
         from pydantic_ai import Agent
+        from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, UserPromptPart, TextPart
         
         # Get tool functions for this agent
         tools = []
@@ -763,9 +764,20 @@ class BaseStreamingAgent(StreamingAgent):
             model_settings=model_settings if model_settings else None,
         )
         
-        # Run agent
+        # Build the prompt with conversation history context
+        prompt_with_context = self._build_llm_driven_prompt(query, context)
+        
+        # Log the context being sent for debugging
+        logger.info(
+            f"{self.name} LLM-driven execution: "
+            f"has_summary={context.compressed_history_summary is not None}, "
+            f"recent_messages_count={len(context.recent_messages)}, "
+            f"prompt_length={len(prompt_with_context)}"
+        )
+        
+        # Run agent with context-enriched prompt
         try:
-            result = await agent.run(query, deps=context.deps)
+            result = await agent.run(prompt_with_context, deps=context.deps)
             
             # Store result for synthesis
             context.tool_results["llm_response"] = result.output
@@ -776,6 +788,43 @@ class BaseStreamingAgent(StreamingAgent):
                 source=self.name,
                 message=f"Error: {str(e)}"
             ))
+    
+    def _build_llm_driven_prompt(self, query: str, context: AgentContext) -> str:
+        """
+        Build a prompt that includes conversation history for LLM-driven execution.
+        
+        This ensures the LLM has full context when deciding which tools to use.
+        """
+        parts = []
+        
+        # Add compressed history summary if present
+        if context.compressed_history_summary:
+            parts.append("## Previous Conversation Summary")
+            parts.append(context.compressed_history_summary)
+            parts.append("")
+        
+        # Add recent conversation history
+        if context.recent_messages:
+            parts.append("## Recent Conversation")
+            for msg in context.recent_messages:
+                role = msg.get("role", "unknown")
+                msg_content = msg.get("content", "")
+                if role == "user":
+                    parts.append(f"User: {msg_content}")
+                elif role == "assistant":
+                    parts.append(f"Assistant: {msg_content}")
+            parts.append("")
+        
+        # Add the current query
+        parts.append("## Current Query")
+        parts.append(query)
+        
+        # If there's conversation history, add guidance about using it
+        if context.recent_messages or context.compressed_history_summary:
+            parts.append("")
+            parts.append("Please respond to the current query, using the conversation history above for context. If the query references something from the conversation (like 'it', 'that', 'this topic'), use the history to understand what is being referred to.")
+        
+        return "\n".join(parts)
     
     async def _synthesize(
         self,
