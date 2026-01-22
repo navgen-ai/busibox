@@ -157,8 +157,9 @@ class InsightsService:
         self.config = config
         self.host = config.get("milvus_host", "localhost")
         self.port = config.get("milvus_port", 19530)
+        # Use dedicated embedding-api service (no auth required for internal services)
         # Strip trailing slashes to avoid double slashes in URLs
-        embedding_url = config.get("embedding_service_url", "http://10.96.200.206:8002")
+        embedding_url = config.get("embedding_service_url", "http://embedding-api:8005")
         self.embedding_service_url = str(embedding_url).rstrip("/")
         self.connected = False
         self.collection: Optional[Collection] = None
@@ -411,44 +412,29 @@ class InsightsService:
         authorization: Optional[str] = None,
     ) -> List[float]:
         """
-        Generate embedding for text using embedding service.
+        Generate embedding for text using dedicated embedding-api service.
         
-        The dedicated embedding service (embedding-api) does not require authentication,
-        so the authorization parameter is optional and used only for legacy ingest-api calls.
+        The dedicated embedding service (embedding-api:8005) does not require authentication.
         
         Args:
             text: Text to embed
-            user_id: User ID (for logging/tracing)
-            authorization: Bearer token (optional - only needed if using ingest-api)
+            user_id: User ID (for logging/tracing only - embedding-api doesn't require auth)
+            authorization: Bearer token (not used - embedding-api is internal service)
             
         Returns:
             Embedding vector (1024 dimensions)
         """
         async with httpx.AsyncClient(timeout=120.0) as client:  # 2 minutes for embedding generation
-            # Check if this is the dedicated embedding service (no auth needed)
-            # or ingest-api (auth required)
-            is_dedicated_embedding_service = "embedding-api" in self.embedding_service_url or ":8005" in self.embedding_service_url
-            
-            headers = {}
-            if not is_dedicated_embedding_service and authorization:
-                # Only add auth for ingest-api (legacy path)
-                headers["Authorization"] = authorization
-            
-            # Use different endpoints based on service type
-            if is_dedicated_embedding_service:
-                # Dedicated embedding-api uses /embed endpoint with OpenAI-compatible format
-                endpoint = f"{self.embedding_service_url}/embed"
-                payload = {"input": text}  # OpenAI-compatible format (same as ingest-api)
-            else:
-                # ingest-api uses OpenAI-compatible /api/embeddings endpoint
-                endpoint = f"{self.embedding_service_url}/api/embeddings"
-                payload = {"input": text}  # OpenAI-compatible format
-            
-            response = await client.post(endpoint, json=payload, headers=headers)
+            # embedding-api uses /embed endpoint with OpenAI-compatible format
+            # No authentication required for internal service
+            response = await client.post(
+                f"{self.embedding_service_url}/embed",
+                json={"input": text},
+            )
             response.raise_for_status()
             data = response.json()
             
-            # Both embedding-api and ingest-api return OpenAI-compatible format:
+            # embedding-api returns OpenAI-compatible format:
             # {"data": [{"embedding": [...], "index": 0}], "model": "...", "dimension": ...}
             embedding_data = data.get("data", [])
             if not embedding_data:

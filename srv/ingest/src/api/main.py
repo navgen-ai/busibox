@@ -198,8 +198,6 @@ async def root():
         },
         "endpoints": {
             "upload": "/upload",
-            "search": "/search",
-            "embeddings": "/api/embeddings",
             "status": "/status/{file_id}",
             "files": "/files/{file_id}",
             "health": "/health",

@@ -48,9 +48,9 @@ class Settings(BaseSettings):
     )
     
     # Embedding API (dedicated embedding service - no auth required)
-    embedding_api_url: Optional[str] = Field(
-        None,
-        description="Dedicated embedding service URL. If not set, falls back to ingest_api_url",
+    embedding_api_url: str = Field(
+        "http://embedding-api:8005",
+        description="Dedicated embedding service URL (port 8005). No auth required for internal services.",
     )
     
     # Milvus configuration (for insights)
