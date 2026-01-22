@@ -318,6 +318,29 @@
   register: alembic_version_exists
   changed_when: false
 
+- name: Backup incomplete tables before dropping
+  shell: |
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    BACKUP_DIR="/var/backups/postgres/agent_incomplete_${TIMESTAMP}"
+    mkdir -p "$BACKUP_DIR"
+    
+    su - postgres -c "
+      # Backup each table if it exists
+      for table in agent_definitions conversations runs alembic_version; do
+        if psql -d agent_server -tAc \"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = '\$table');\" | grep -q 't'; then
+          echo \"Backing up \$table...\"
+          pg_dump -d agent_server -t \$table --data-only > \"$BACKUP_DIR/\${table}.sql\" 2>/dev/null || true
+        fi
+      done
+    "
+    
+    echo "Backup saved to: $BACKUP_DIR"
+    ls -lh "$BACKUP_DIR"
+  delegate_to: "{{ groups['pg'][0] }}"
+  when: tables_count.stdout|int > 0 and tables_count.stdout|int < 3
+  register: backup_incomplete
+  changed_when: false
+
 - name: Clear incomplete migration state (drop all tables if count < 3)
   shell: |
     su - postgres -c "psql -d agent_server << 'EOF'
