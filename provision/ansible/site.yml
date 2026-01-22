@@ -40,8 +40,6 @@
       tags: [core, core_nginx, proxy, nginx, secrets]
     - role: nginx
       tags: [core, core_nginx, proxy, nginx]
-    - role: tailscale
-      tags: [core, core_nginx, tailscale]
 
 # 1.2 MinIO (object storage)
 - hosts: files
@@ -311,3 +309,18 @@
   roles:
     - role: nginx
       tags: [apps, apps_openwebui, openwebui, nginx]
+
+# =============================================================================
+# CONFIGURATION: Tailscale VPN (optional - secure remote access)
+# =============================================================================
+# This is a configuration step, not part of core deployment.
+# Run separately: make tailscale
+#
+# Tailscale provides secure remote access to the proxy container.
+# Should be configured after initial deployment, not during core setup.
+
+- hosts: proxy
+  tags: [configure, tailscale]
+  roles:
+    - role: tailscale
+      tags: [configure, tailscale]
