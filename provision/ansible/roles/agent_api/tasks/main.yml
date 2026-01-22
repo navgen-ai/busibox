@@ -318,12 +318,18 @@
   register: alembic_version_exists
   changed_when: false
 
-- name: Clear alembic version if tables are incomplete
+- name: Clear incomplete migration state (drop all tables if count < 3)
   shell: |
-    su - postgres -c "psql -d agent_server -c 'DROP TABLE IF EXISTS alembic_version;'"
+    su - postgres -c "psql -d agent_server << 'EOF'
+    DROP TABLE IF EXISTS alembic_version CASCADE;
+    DROP TABLE IF EXISTS agent_definitions CASCADE;
+    DROP TABLE IF EXISTS conversations CASCADE;
+    DROP TABLE IF EXISTS runs CASCADE;
+    EOF
+    "
   delegate_to: "{{ groups['pg'][0] }}"
-  when: alembic_version_exists.stdout == 't' and tables_count.stdout|int < 3
-  register: clear_alembic
+  when: tables_count.stdout|int > 0 and tables_count.stdout|int < 3
+  register: clear_incomplete
   changed_when: true
 
 - name: Grant database permissions for migrations
@@ -342,7 +348,7 @@
   failed_when: false
   changed_when: false
 
-- name: Stamp database if tables exist but alembic version is missing or empty
+- name: Stamp database if ALL tables exist but alembic version is missing or empty
   shell: |
     cd /srv/agent
     . .venv/bin/activate
@@ -361,7 +367,7 @@
   become_user: "{{ agent_api_user }}"
   environment:
     DATABASE_URL: "{{ secrets['agent-server'].database_url }}"
-  when: tables_count.stdout|int >= 1
+  when: tables_count.stdout|int == 3
   register: stamp_result
   failed_when: false
   changed_when: stamp_result.rc == 0
