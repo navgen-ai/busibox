@@ -456,11 +456,7 @@
     . /srv/agent/.env
     set +a
     cd /srv/agent
-    # Skip auth tests temporarily until Zero Trust authentication is clarified
-    # Tests requiring authentication: test_token_exchange_works, test_authenticated_request_succeeds, 
-    #                                 test_list_agents_with_auth, test_builtin_agents_available
-    .venv/bin/python -m pytest tests/integration/test_pvt.py -v --tb=short \
-      -k "not (test_token_exchange_works or test_authenticated_request_succeeds or test_list_agents_with_auth or test_builtin_agents_available)" 2>&1
+    .venv/bin/python -m pytest tests/integration/test_pvt.py -v --tb=short 2>&1
   args:
     executable: /bin/bash
   register: agent_pvt_result

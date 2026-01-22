@@ -56,53 +56,26 @@ def get_authz_base_url() -> str:
 
 
 @pytest.fixture(scope="module")
-def access_token():
-    """
-    Get an access token for the search API with a real user identity.
+def auth_client():
+    """Get an AuthTestClient for user-scoped token exchange (Zero Trust)."""
+    from testing import AuthTestClient
     
-    Uses token exchange (RFC 8693) to get a token with:
-    - sub = TEST_USER_ID (real user for RLS)
-    - aud = search-api (correct audience)
-    - roles = user's roles from authz database
-    
-    This is required because search needs to do token exchange when calling
-    ingest for embeddings, and that requires a valid UUID user ID.
-    """
-    import httpx
-    
-    client_id = require_env("AUTHZ_BOOTSTRAP_CLIENT_ID", AUTHZ_BOOTSTRAP_CLIENT_ID)
-    client_secret = require_env("AUTHZ_BOOTSTRAP_CLIENT_SECRET", AUTHZ_BOOTSTRAP_CLIENT_SECRET)
-    test_user_id = require_env("TEST_USER_ID", TEST_USER_ID)
-    authz_url = get_authz_base_url()
-    
-    # Token exchange to get a token for a real user
-    with httpx.Client() as client:
-        resp = client.post(
-            f"{authz_url}/oauth/token",
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "requested_subject": test_user_id,
-                "audience": "search-api",
-            },
-            timeout=10.0,
-        )
-        
-        if resp.status_code != 200:
-            pytest.fail(f"Failed to get access token: {resp.status_code} - {resp.text}")
-        
-        data = resp.json()
-        if "access_token" not in data:
-            pytest.fail(f"No access_token in response: {data}")
-        
-        return data["access_token"]
+    client = AuthTestClient()
+    client.ensure_test_user_exists()
+    yield client
+    client.cleanup()
 
 
 @pytest.fixture(scope="module")
-def auth_headers(access_token):
-    """Return headers with Bearer token."""
-    return {"Authorization": f"Bearer {access_token}"}
+def access_token(auth_client):
+    """Get an access token for the search API using user-scoped token exchange."""
+    return auth_client.get_token(audience="search-api")
+
+
+@pytest.fixture(scope="module")
+def auth_headers(auth_client):
+    """Return headers with Bearer token and X-Test-Mode."""
+    return auth_client.get_auth_header(audience="search-api")
 
 
 @pytest.mark.pvt
