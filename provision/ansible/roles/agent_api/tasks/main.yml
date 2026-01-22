@@ -301,7 +301,18 @@
     su - postgres -c "psql -d agent_server -tAc \"
       SELECT COUNT(*) FROM information_schema.tables 
       WHERE table_schema = 'public' 
-      AND table_name IN ('agent_definitions', 'conversations', 'runs');
+      AND table_name IN (
+        'agent_definitions', 
+        'tool_definitions', 
+        'workflow_definitions', 
+        'eval_definitions',
+        'rag_databases',
+        'rag_documents',
+        'run_records',
+        'token_grants',
+        'conversations',
+        'runs'
+      );
     \""
   delegate_to: "{{ groups['pg'][0] }}"
   register: tables_count
@@ -309,7 +320,7 @@
 
 - name: Debug table count
   debug:
-    msg: "Tables count: '{{ tables_count.stdout }}' (int: {{ tables_count.stdout|int }})"
+    msg: "Tables count: '{{ tables_count.stdout }}' (expected: 10, got: {{ tables_count.stdout|int }})"
 
 - name: Check if alembic version table exists
   shell: |
@@ -326,7 +337,7 @@
     
     su - postgres -c "
       # Backup each table if it exists
-      for table in agent_definitions conversations runs alembic_version; do
+      for table in agent_definitions tool_definitions workflow_definitions eval_definitions rag_databases rag_documents run_records token_grants conversations runs alembic_version; do
         if psql -d agent_server -tAc \"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = '\$table');\" | grep -q 't'; then
           echo \"Backing up \$table...\"
           pg_dump -d agent_server -t \$table --data-only > \"$BACKUP_DIR/\${table}.sql\" 2>/dev/null || true
@@ -337,21 +348,28 @@
     echo "Backup saved to: $BACKUP_DIR"
     ls -lh "$BACKUP_DIR"
   delegate_to: "{{ groups['pg'][0] }}"
-  when: tables_count.stdout|int > 0 and tables_count.stdout|int < 3
+  when: tables_count.stdout|int > 0 and tables_count.stdout|int < 10
   register: backup_incomplete
   changed_when: false
 
-- name: Clear incomplete migration state (drop all tables if count < 3)
+- name: Clear incomplete migration state (drop all tables if count < 10)
   shell: |
     su - postgres -c "psql -d agent_server << 'EOF'
     DROP TABLE IF EXISTS alembic_version CASCADE;
+    DROP TABLE IF EXISTS rag_documents CASCADE;
+    DROP TABLE IF EXISTS token_grants CASCADE;
+    DROP TABLE IF EXISTS run_records CASCADE;
+    DROP TABLE IF EXISTS rag_databases CASCADE;
+    DROP TABLE IF EXISTS eval_definitions CASCADE;
+    DROP TABLE IF EXISTS workflow_definitions CASCADE;
+    DROP TABLE IF EXISTS tool_definitions CASCADE;
     DROP TABLE IF EXISTS agent_definitions CASCADE;
     DROP TABLE IF EXISTS conversations CASCADE;
     DROP TABLE IF EXISTS runs CASCADE;
     EOF
     "
   delegate_to: "{{ groups['pg'][0] }}"
-  when: tables_count.stdout|int > 0 and tables_count.stdout|int < 3
+  when: tables_count.stdout|int > 0 and tables_count.stdout|int < 10
   register: clear_incomplete
   changed_when: true
 
@@ -390,7 +408,7 @@
   become_user: "{{ agent_api_user }}"
   environment:
     DATABASE_URL: "{{ secrets['agent-server'].database_url }}"
-  when: tables_count.stdout|int == 3
+  when: tables_count.stdout|int == 10
   register: stamp_result
   failed_when: false
   changed_when: stamp_result.rc == 0
