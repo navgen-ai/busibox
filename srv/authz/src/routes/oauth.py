@@ -100,7 +100,15 @@ async def _ensure_bootstrap_roles() -> None:
         {
             "name": "User", 
             "description": "Standard user access",
-            "scopes": ["search.read", "ingest.read", "agent.execute"],
+            "scopes": [
+                "search.read", 
+                "ingest.read", 
+                "ingest.write",  # Required for document uploads
+                "ingest.delete",  # Required for deleting own documents
+                "agent.execute",
+                "libraries.read",  # Required for library access
+                "libraries.write",  # Required for personal library management
+            ],
         },
     ]
     
@@ -113,8 +121,8 @@ async def _ensure_bootstrap_roles() -> None:
                 scopes=role_def["scopes"],
             )
             logger.info("Bootstrapped role", role_name=role_def["name"], role_id=created.get("id"))
-        elif role_def["name"] == "Admin":
-            # Ensure Admin role has all required scopes (idempotent update)
+        else:
+            # Ensure existing role has all required scopes (idempotent update)
             existing_scopes = set(existing.get("scopes") or [])
             required_scopes = set(role_def["scopes"])
             if not required_scopes.issubset(existing_scopes):
@@ -126,7 +134,7 @@ async def _ensure_bootstrap_roles() -> None:
                     description=None,  # Don't change description
                     scopes=new_scopes,
                 )
-                logger.info("Updated Admin role with wildcard scopes", role_id=existing["id"])
+                logger.info("Updated role with required scopes", role_name=role_def["name"], role_id=existing["id"])
 
 
 async def _ensure_bootstrap_test_user() -> None:

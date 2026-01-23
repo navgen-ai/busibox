@@ -1,9 +1,17 @@
 # Wes's Tasks
+[ ] get busibox live
+[ ] claude code via busibox?
 
 ## Active Tasks
 
 [ ] Deploy to production
 [ ] tags are not working for documents properly. 
+[ ] need "hero" flow: 
+  - upload doc as chat attachment
+  - have it do a doc search to find related
+  - do a web search to get deeper info
+  - summarize
+
 [ ] eliminate client token exchange from authz - there are still 
 [ ]
  
