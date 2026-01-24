@@ -67,6 +67,16 @@ from .llm import (
     get_registry as get_model_registry,
     reset_registry as reset_model_registry,
 )
+from .pool import (
+    # Pool Configuration
+    PoolConfig,
+    # Pool Manager
+    AsyncPGPoolManager,
+    # Module-level convenience functions
+    get_pool,
+    init_pool,
+    reset_pool,
+)
 
 __all__ = [
     # Database
@@ -123,5 +133,13 @@ __all__ = [
     "ModelRegistry",
     "get_model_registry",
     "reset_model_registry",
+    # Pool - Configuration
+    "PoolConfig",
+    # Pool - Manager
+    "AsyncPGPoolManager",
+    # Pool - Module-level convenience functions
+    "get_pool",
+    "init_pool",
+    "reset_pool",
 ]
 __version__ = "0.1.0"

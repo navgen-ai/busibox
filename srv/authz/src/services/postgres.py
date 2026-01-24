@@ -6,6 +6,7 @@ from typing import Any, Optional, List
 import asyncpg
 import structlog
 
+from busibox_common import AsyncPGPoolManager
 from middleware.rls import set_rls_session_vars
 
 logger = structlog.get_logger()
@@ -32,41 +33,32 @@ def validate_uuid(value: str, field_name: str = "id") -> uuid.UUID:
 
 
 class PostgresService:
+    """
+    Authz PostgreSQL service with domain-specific operations.
+    
+    Uses the shared AsyncPGPoolManager for connection pooling.
+    """
+    
     def __init__(self, config: dict):
-        self.host = config.get("postgres_host", "10.96.200.203")
-        self.port = config.get("postgres_port", 5432)
-        self.database = config.get("postgres_db", "busibox")
-        self.user = config.get("postgres_user", "busibox_user")
-        self.password = config.get("postgres_password", "")
+        self._pool_manager = AsyncPGPoolManager.from_config(config)
         self._issuer = config.get("issuer", "busibox-authz")
-        self.pool: Optional[asyncpg.Pool] = None
+
+    @property
+    def pool(self) -> Optional[asyncpg.Pool]:
+        """Access the underlying pool (for compatibility with existing code)."""
+        return self._pool_manager.pool
 
     async def connect(self):
-        if not self.pool:
-            self.pool = await asyncpg.create_pool(
-                host=self.host,
-                port=self.port,
-                database=self.database,
-                user=self.user,
-                password=self.password,
-                min_size=2,
-                max_size=10,
-            )
-            logger.info("Authz PostgreSQL pool created")
-            # Ensure required tables exist (idempotent).
-            await self.ensure_schema()
+        await self._pool_manager.connect()
+        # Ensure required tables exist (idempotent).
+        await self.ensure_schema()
 
     async def disconnect(self):
-        if self.pool:
-            await self.pool.close()
-            self.pool = None
-            logger.info("Authz PostgreSQL pool closed")
+        await self._pool_manager.disconnect()
 
     @asynccontextmanager
     async def acquire(self, user_id: str | None, role_ids: List[str] | None):
-        if not self.pool:
-            await self.connect()
-        async with self.pool.acquire() as conn:
+        async with self._pool_manager.acquire() as conn:
             await set_rls_session_vars(conn, user_id, role_ids)
             yield conn
 
@@ -77,14 +69,14 @@ class PostgresService:
         Uses the shared SchemaManager pattern for idempotent schema creation.
         The schema is defined in schema.py and applied on every startup.
         """
-        if not self.pool:
+        if not self._pool_manager.is_connected:
             # connect() will call ensure_schema() again; avoid recursion
             return
         
         from schema import get_authz_schema
         
         schema = get_authz_schema()
-        async with self.pool.acquire() as conn:
+        async with self._pool_manager.acquire() as conn:
             await schema.apply(conn)
         
         logger.info("Authz schema initialization complete")

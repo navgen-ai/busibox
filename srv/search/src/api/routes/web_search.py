@@ -19,9 +19,9 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 
-def get_pg_service(request: Request):
-    """Get PostgreSQL service from app state."""
-    return request.app.state.pg_service
+def get_pg_pool(request: Request):
+    """Get PostgreSQL pool manager from app state."""
+    return request.app.state.pg_pool
 
 
 @router.post("", response_model=WebSearchResponse)
@@ -41,11 +41,11 @@ async def web_search(
     
     If no provider is specified, uses the default provider from database.
     """
-    pg_service = get_pg_service(request)
+    pg_pool = get_pg_pool(request)
     
     try:
         # Load providers from database
-        async with pg_service.pool.acquire() as conn:
+        async with pg_pool.acquire() as conn:
             # Determine which provider to use
             if search_request.provider:
                 provider_name = search_request.provider.lower()
@@ -141,10 +141,10 @@ async def list_providers(request: Request):
     - Whether it's the default
     - Whether it has required configuration (API keys)
     """
-    pg_service = get_pg_service(request)
+    pg_pool = get_pg_pool(request)
     
     try:
-        async with pg_service.pool.acquire() as conn:
+        async with pg_pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT provider, is_enabled, is_default, api_key
@@ -182,10 +182,10 @@ async def get_provider_status(provider: str, request: Request):
     """
     Get status of a specific provider.
     """
-    pg_service = get_pg_service(request)
+    pg_pool = get_pg_pool(request)
     
     try:
-        async with pg_service.pool.acquire() as conn:
+        async with pg_pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT provider, is_enabled, is_default, api_key
@@ -234,7 +234,7 @@ async def upsert_provider(
     
     Requires admin authentication (checked by middleware).
     """
-    pg_service = get_pg_service(request)
+    pg_pool = get_pg_pool(request)
     
     try:
         # Validate provider name
@@ -252,7 +252,7 @@ async def upsert_provider(
                 detail=f"Provider '{config.provider}' requires an API key",
             )
         
-        async with pg_service.pool.acquire() as conn:
+        async with pg_pool.acquire() as conn:
             # If setting as default, unset current default
             if config.is_default:
                 await conn.execute(
@@ -316,10 +316,10 @@ async def delete_provider(provider: str, request: Request):
     
     Requires admin authentication (checked by middleware).
     """
-    pg_service = get_pg_service(request)
+    pg_pool = get_pg_pool(request)
     
     try:
-        async with pg_service.pool.acquire() as conn:
+        async with pg_pool.acquire() as conn:
             # Check if provider exists
             row = await conn.fetchrow(
                 """
@@ -373,10 +373,10 @@ async def set_default_provider(provider: str, request: Request):
     
     Requires admin authentication (checked by middleware).
     """
-    pg_service = get_pg_service(request)
+    pg_pool = get_pg_pool(request)
     
     try:
-        async with pg_service.pool.acquire() as conn:
+        async with pg_pool.acquire() as conn:
             # Check if provider exists and is enabled
             row = await conn.fetchrow(
                 """

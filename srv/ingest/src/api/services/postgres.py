@@ -2,9 +2,9 @@
 PostgreSQL service for API layer.
 
 Handles database operations for file metadata, status tracking, and role management.
+Uses the shared AsyncPGPoolManager for connection pooling.
 """
 
-import asyncio
 import uuid
 from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 import asyncpg
 import structlog
 
+from busibox_common import AsyncPGPoolManager, PoolConfig
 from api.middleware.jwt_auth import set_rls_session_vars
 
 logger = structlog.get_logger()
@@ -22,7 +23,11 @@ TEST_MODE_HEADER = "X-Test-Mode"
 
 
 class PostgresService:
-    """Service for PostgreSQL operations."""
+    """
+    Ingest PostgreSQL service with domain-specific operations.
+    
+    Uses the shared AsyncPGPoolManager for connection pooling.
+    """
     
     def __init__(self, config: dict, request=None, use_test_db: bool = False):
         """Initialize PostgreSQL connection pool.
@@ -35,56 +40,39 @@ class PostgresService:
         self.config = config
         self.request = request
         
-        # Select database credentials based on test mode
+        # Build pool config based on test mode
         if use_test_db and config.get("test_mode_enabled"):
-            self.host = config.get("postgres_host", "10.96.200.203")
-            self.port = config.get("postgres_port", 5432)
-            self.database = config.get("test_postgres_db", "test_files")
-            self.user = config.get("test_postgres_user", "busibox_test_user")
-            self.password = config.get("test_postgres_password", "testpassword")
+            pool_config = PoolConfig(
+                host=config.get("postgres_host", "10.96.200.203"),
+                port=int(config.get("postgres_port", 5432)),
+                database=config.get("test_postgres_db", "test_files"),
+                user=config.get("test_postgres_user", "busibox_test_user"),
+                password=config.get("test_postgres_password", "testpassword"),
+            )
             self._is_test_db = True
         else:
-            self.host = config.get("postgres_host", "10.96.200.203")
-            self.port = config.get("postgres_port", 5432)
-            self.database = config.get("postgres_db", "busibox")
-            self.user = config.get("postgres_user", "postgres")
-            self.password = config.get("postgres_password", "")
+            pool_config = PoolConfig(
+                host=config.get("postgres_host", "10.96.200.203"),
+                port=int(config.get("postgres_port", 5432)),
+                database=config.get("postgres_db", "busibox"),
+                user=config.get("postgres_user", "postgres"),
+                password=config.get("postgres_password", ""),
+            )
             self._is_test_db = False
         
-        self.pool: Optional[asyncpg.Pool] = None
-        self._pool_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._pool_manager = AsyncPGPoolManager(pool_config)
         self._document_roles_ready: bool = False
-        self._connect_lock: Optional[asyncio.Lock] = None
+    
+    @property
+    def pool(self) -> Optional[asyncpg.Pool]:
+        """Access the underlying pool (for compatibility with existing code)."""
+        return self._pool_manager.pool
     
     async def connect(self):
         """Create connection pool."""
-        current_loop = asyncio.get_running_loop()
-        
-        # Check if we need to reconnect due to event loop change
-        if self.pool and self._pool_loop and self._pool_loop != current_loop:
-            logger.warning("Event loop changed, closing old pool and reconnecting")
-            try:
-                # Try to close the old pool, but don't wait too long
-                await asyncio.wait_for(self.pool.close(), timeout=1.0)
-            except Exception as e:
-                logger.warning("Failed to close old pool", error=str(e))
-            self.pool = None
-            self._pool_loop = None
-        
-        if not self.pool:
-            self.pool = await asyncpg.create_pool(
-                host=self.host,
-                port=self.port,
-                database=self.database,
-                user=self.user,
-                password=self.password,
-                min_size=2,
-                max_size=10,
-            )
-            self._pool_loop = current_loop
-            logger.info("PostgreSQL connection pool created")
-            # Ensure required tables exist (idempotent)
-            await self.ensure_schema()
+        await self._pool_manager.connect()
+        # Ensure required tables exist (idempotent)
+        await self.ensure_schema()
 
     async def ensure_schema(self) -> None:
         """
@@ -93,7 +81,7 @@ class PostgresService:
         Uses the shared SchemaManager pattern for idempotent schema creation.
         The schema is defined in schema.py and applied on every startup.
         """
-        if not self.pool:
+        if not self._pool_manager.is_connected:
             return
         
         # Import schema from parent directory
@@ -106,7 +94,7 @@ class PostgresService:
         from schema import get_ingest_schema
         
         schema = get_ingest_schema()
-        async with self.pool.acquire() as conn:
+        async with self._pool_manager.acquire() as conn:
             await schema.apply(conn)
             
             # Apply additional migrations from the migrations directory
@@ -209,18 +197,7 @@ class PostgresService:
     
     async def disconnect(self):
         """Close connection pool."""
-        if self.pool:
-            try:
-                await self.pool.close()
-            except RuntimeError as e:
-                # Handle "Event loop is closed" during test teardown
-                if "Event loop is closed" in str(e):
-                    logger.warning("Could not close pool - event loop already closed")
-                else:
-                    raise
-            self.pool = None
-            self._pool_loop = None
-            logger.info("PostgreSQL connection pool closed")
+        await self._pool_manager.disconnect()
 
     async def _apply_rls(self, conn, request=None):
         """Set RLS session variables for this connection if request is provided."""
@@ -229,35 +206,18 @@ class PostgresService:
             return
         await set_rls_session_vars(conn, req)
 
-    def _get_lock(self) -> asyncio.Lock:
-        """Get or create a lock for the current event loop."""
-        current_loop = asyncio.get_running_loop()
-        if self._connect_lock is None or self._pool_loop != current_loop:
-            self._connect_lock = asyncio.Lock()
-        return self._connect_lock
-
     @asynccontextmanager
     async def acquire(self, request=None):
         """
         Get a connection from the pool and apply RLS context for the current request.
 
-        NOTE: The previous implementation mistakenly recursed into itself and
-        exhausted the call stack. This version correctly pulls from the pool.
-        
-        Handles event loop changes (common in testing) by reconnecting if needed.
+        Uses the shared AsyncPGPoolManager which handles event loop changes
+        and ensures proper connection pooling.
         
         Args:
             request: FastAPI Request object for RLS context (optional)
         """
-        # Ensure we're connected in the current event loop
-        current_loop = asyncio.get_running_loop()
-        if not self.pool or self._pool_loop != current_loop:
-            async with self._get_lock():
-                # Double-check after acquiring lock
-                if not self.pool or self._pool_loop != current_loop:
-                    await self.connect()
-
-        async with self.pool.acquire() as conn:
+        async with self._pool_manager.acquire() as conn:
             # Use provided request or fall back to instance request (for backward compatibility)
             req = request or self.request
             if req:
