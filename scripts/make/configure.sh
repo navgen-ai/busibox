@@ -742,6 +742,109 @@ secrets_configuration() {
 }
 
 # ========================================================================
+# Configure Dev Apps Directory
+# ========================================================================
+
+configure_dev_apps_dir() {
+    header "Configure Dev Apps Directory" 70
+    
+    local current_dir
+    current_dir=$(get_dev_apps_dir)
+    
+    echo ""
+    info "Dev Apps Directory is used for local development with hot-reload."
+    echo ""
+    echo "When set, you can deploy apps in 'Local Development' mode from AI Portal."
+    echo "The directory should contain your app source code in subdirectories."
+    echo ""
+    echo "Example structure:"
+    echo "  /Users/you/Code/"
+    echo "    ├── estimator/        <- Your app with busibox.json"
+    echo "    ├── project-analysis/ <- Another app"
+    echo "    └── my-app/           <- etc."
+    echo ""
+    
+    if [[ -n "$current_dir" ]]; then
+        success "Current setting: $current_dir"
+        echo ""
+        if [[ -d "$current_dir" ]]; then
+            # List directories that contain busibox.json
+            local apps_found=0
+            echo "Apps found in this directory:"
+            for d in "$current_dir"/*; do
+                if [[ -d "$d" ]] && [[ -f "$d/busibox.json" ]]; then
+                    echo "  ✓ $(basename "$d")"
+                    apps_found=$((apps_found + 1))
+                fi
+            done
+            if [[ $apps_found -eq 0 ]]; then
+                warn "No apps with busibox.json found in $current_dir"
+            fi
+            echo ""
+        else
+            warn "Directory does not exist: $current_dir"
+            echo ""
+        fi
+    else
+        warn "Not configured"
+        echo ""
+    fi
+    
+    echo "Options:"
+    echo "  1) Set/update directory path"
+    echo "  2) Clear setting"
+    echo "  3) Back"
+    echo ""
+    
+    local choice=""
+    read -p "$(echo -e "${BOLD}Select option [1-3]:${NC} ")" choice
+    
+    case "${choice:-}" in
+        1)
+            echo ""
+            read -p "$(echo -e "${BOLD}Enter directory path:${NC} ")" new_dir
+            
+            # Expand ~ to home directory
+            new_dir="${new_dir/#\~/$HOME}"
+            
+            if [[ -z "$new_dir" ]]; then
+                warn "No path entered"
+                return
+            fi
+            
+            if [[ ! -d "$new_dir" ]]; then
+                warn "Directory does not exist: $new_dir"
+                if confirm "Create it?"; then
+                    mkdir -p "$new_dir" || { error "Failed to create directory"; return; }
+                    success "Created: $new_dir"
+                else
+                    return
+                fi
+            fi
+            
+            # Validate it's an absolute path
+            if [[ "$new_dir" != /* ]]; then
+                new_dir="$(cd "$new_dir" 2>/dev/null && pwd)"
+            fi
+            
+            set_dev_apps_dir "$new_dir"
+            success "Dev Apps Directory set to: $new_dir"
+            echo ""
+            info "To use this setting, restart Docker services: make docker-up"
+            ;;
+        2)
+            set_dev_apps_dir ""
+            success "Dev Apps Directory cleared"
+            ;;
+        3|"")
+            return
+            ;;
+    esac
+    
+    pause
+}
+
+# ========================================================================
 # Docker Configuration Menu
 # ========================================================================
 
@@ -751,9 +854,18 @@ docker_menu() {
         box "Configuration - Local Docker" 70
         status_bar "$ENV" "$BACKEND" "$(get_install_status)" 70
         
+        # Show DEV_APPS_DIR status
+        local dev_apps_dir
+        dev_apps_dir=$(get_dev_apps_dir)
+        if [[ -n "$dev_apps_dir" ]]; then
+            echo ""
+            echo -e "  ${DIM}Dev Apps Dir: ${NC}${dev_apps_dir}"
+        fi
+        
         echo ""
         menu "Docker Configuration" \
             "App Configuration (admin, OAuth clients)" \
+            "Configure Dev Apps Directory (local development)" \
             "Edit Ansible Vault (secrets)" \
             "View Vault Variables (masked)" \
             "Sync Vault with Example (update structure)" \
@@ -761,35 +873,38 @@ docker_menu() {
             "Back to Main Menu"
         
         local choice=""
-        read -p "$(echo -e "${BOLD}Select option [1-6]:${NC} ")" choice
+        read -p "$(echo -e "${BOLD}Select option [1-7]:${NC} ")" choice
         
         case "${choice:-}" in
             1)
                 app_configuration
                 ;;
             2)
+                configure_dev_apps_dir
+                ;;
+            3)
                 header "Edit Ansible Vault" 70
                 cd "${REPO_ROOT}/provision/ansible"
                 ansible-vault edit roles/secrets/vars/vault.yml || error "Failed to edit vault"
                 cd "${REPO_ROOT}"
                 pause
                 ;;
-            3)
+            4)
                 header "View Vault Variables" 70
                 cd "${REPO_ROOT}/provision/ansible"
                 ansible-vault view roles/secrets/vars/vault.yml | grep -E "^[a-z_]+:" | sed 's/:.*$/: <masked>/' || error "Failed"
                 cd "${REPO_ROOT}"
                 pause
                 ;;
-            4)
+            5)
                 bash "${REPO_ROOT}/scripts/vault/sync-vault.sh" || error "Failed"
                 pause
                 ;;
-            5)
+            6)
                 bash "${REPO_ROOT}/scripts/vault/generate-env-from-vault.sh" || error "Failed"
                 pause
                 ;;
-            6|b|B|"")
+            7|b|B|"")
                 return 0
                 ;;
         esac

@@ -1,5 +1,12 @@
 # App Deployer Role
 
+> **⚠️ DEPRECATION NOTICE**: The deploywatch-based deployment system is being deprecated in favor of the Deploy API (`srv/deploy/`).
+> 
+> For **core apps** (ai-portal, agent-manager): This role is still used during initial provisioning via Ansible.
+> For **user/external apps**: Use the Deploy API via AI Portal Admin UI instead.
+> 
+> See `docs/development/user-app-dev-mode.md` and `roles/_deprecated/README.md` for more information.
+
 **Purpose**: Automated application deployment from GitHub releases using deploywatch  
 **Requirements**: FR-001, FR-004, FR-005, FR-030, FR-035 (GitHub deployment, health checks, secrets, extensibility, rollback)
 

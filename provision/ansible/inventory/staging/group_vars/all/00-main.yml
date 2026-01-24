@@ -27,15 +27,16 @@ internal_network: "{{ network_base_octets }}.0/21"
 internal_gateway: "{{ network_base_octets }}.1"
 
 # Container IP Addresses (calculated from base)
-# Infrastructure containers: .200-.209
+# Infrastructure containers: .200-.212
 proxy_ip: "{{ network_base_octets }}.200"
-apps_ip: "{{ network_base_octets }}.201"
+core_apps_ip: "{{ network_base_octets }}.201"  # Core apps: ai-portal, agent-manager
 agent_ip: "{{ network_base_octets }}.202"
 postgres_ip: "{{ network_base_octets }}.203"
 milvus_ip: "{{ network_base_octets }}.204"
 search_api_ip: "{{ milvus_ip }}"  # Search API runs on milvus-lxc container (port 8003)
 minio_ip: "{{ network_base_octets }}.205"
 ingest_ip: "{{ network_base_octets }}.206"
+user_apps_ip: "{{ network_base_octets }}.212"  # User/external apps
 
 # LLM Service IPs: .207-.209 (to allow room for more infrastructure)
 litellm_ip: "{{ network_base_octets }}.207"
@@ -157,6 +158,10 @@ litellm_enable_database: true
 # ============================================================================
 # Deployment Configuration
 # ============================================================================
+# NOTE: deploywatch is deprecated for external/user apps.
+# Use the Deploy API (srv/deploy/) via AI Portal Admin UI instead.
+# deploywatch is still used for core apps (ai-portal, agent-manager) during
+# initial provisioning, but will eventually be fully replaced by Deploy API.
 deploywatch_check_interval: 300  # Check more frequently in test (5 minutes)
 deploywatch_apps_dir: /srv/deploywatch/apps
 

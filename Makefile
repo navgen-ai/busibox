@@ -48,6 +48,12 @@ COMPOSE_FILE := docker-compose.local.yml
 COMPOSE_DEV := docker-compose.dev.yml
 COMPOSE_PROD := docker-compose.prod.yml
 ENV_FILE := .env.local
+STATE_FILE := .busibox-state
+
+# Read DEV_APPS_DIR from state file if it exists
+# This is set via: make configure -> Docker Configuration -> Configure Dev Apps Directory
+DEV_APPS_DIR := $(shell grep -s '^DEV_APPS_DIR=' $(STATE_FILE) 2>/dev/null | cut -d'=' -f2- | tr -d '"' || echo "")
+export DEV_APPS_DIR
 
 # Automatically select overlay based on environment
 # development uses dev overlay, everything else uses prod overlay

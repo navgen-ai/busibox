@@ -30,8 +30,8 @@ applications:
   
   - name: ai-portal
     github_repo: jazzmind/ai-portal
-    container: apps-lxc
-    container_ip: "{{ apps_ip }}"
+    container: core-apps-lxc
+    container_ip: "{{ core_apps_ip }}"
     port: 3000
     deploy_path: /srv/apps/ai-portal
     health_endpoint: /api/health
@@ -106,8 +106,8 @@ applications:
   
   - name: agent-manager
     github_repo: jazzmind/agent-manager
-    container: apps-lxc
-    container_ip: "{{ apps_ip }}"
+    container: core-apps-lxc
+    container_ip: "{{ core_apps_ip }}"
     port: 3001
     deploy_path: /srv/apps/agent-manager
     health_endpoint: /api/health

@@ -1,0 +1,2 @@
+# This file ensures the dev-apps directory exists in git
+# Actual app contents are gitignored - this is for local development only
