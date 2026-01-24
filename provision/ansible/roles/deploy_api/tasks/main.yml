@@ -1,0 +1,185 @@
+---
+# Deploy API Service - runs alongside authz in the same container
+
+- name: Install rsync for synchronize module
+  apt:
+    name: rsync
+    state: present
+    update_cache: yes
+  tags: [deploy_api]
+
+- name: Install system dependencies for deployment operations
+  apt:
+    name:
+      - openssh-client
+      - ansible
+      - python3-venv
+      - python3-pip
+    state: present
+  tags: [deploy_api]
+
+- name: Create deploy-api directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ deploy_api_base_dir }}"
+    - "{{ deploy_api_app_dir }}"
+    - "{{ deploy_api_app_dir }}/src"
+  tags: [deploy_api]
+
+# =============================================================================
+# Source Code Deployment
+# =============================================================================
+
+- name: Clean Python cache before source sync
+  shell: find {{ deploy_api_app_dir }}/src -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+  changed_when: false
+  tags: [deploy_api]
+
+- name: Sync deploy-api source (removes stale files)
+  synchronize:
+    src: "{{ deploy_api_src_dir }}/src/"
+    dest: "{{ deploy_api_app_dir }}/src/"
+    delete: yes
+    rsync_opts:
+      - "--exclude=__pycache__"
+      - "--exclude=*.pyc"
+  register: deploy_api_source_sync
+  notify: Restart deploy-api service
+  tags: [deploy_api]
+
+- name: Copy requirements.txt
+  copy:
+    src: "{{ deploy_api_src_dir }}/requirements.txt"
+    dest: "{{ deploy_api_app_dir }}/requirements.txt"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart deploy-api service
+  tags: [deploy_api]
+
+- name: Create virtualenv
+  command: python3 -m venv "{{ deploy_api_venv_dir }}"
+  args:
+    creates: "{{ deploy_api_venv_dir }}/bin/activate"
+  tags: [deploy_api]
+
+- name: Install deploy-api dependencies
+  pip:
+    requirements: "{{ deploy_api_app_dir }}/requirements.txt"
+    virtualenv: "{{ deploy_api_venv_dir }}"
+  register: deploy_api_deps_install
+  notify: Restart deploy-api service
+  tags: [deploy_api]
+
+# =============================================================================
+# SSH Key Setup (for remote operations)
+# =============================================================================
+
+- name: Ensure SSH directory exists
+  file:
+    path: /root/.ssh
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  tags: [deploy_api]
+
+- name: Copy SSH private key for remote operations
+  copy:
+    content: "{{ secrets.ssh.private_key | default('') }}"
+    dest: "{{ deploy_api_ssh_key_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: secrets.ssh is defined and secrets.ssh.private_key is defined
+  tags: [deploy_api]
+
+# =============================================================================
+# Service Configuration
+# =============================================================================
+
+- name: Render env file
+  template:
+    src: deploy-api.env.j2
+    dest: "{{ deploy_api_base_dir }}/.env"
+    owner: root
+    group: root
+    mode: "0600"
+  register: deploy_api_env_file
+  notify: Restart deploy-api service
+  tags: [deploy_api]
+
+- name: Install systemd service
+  template:
+    src: deploy-api.service.j2
+    dest: /etc/systemd/system/{{ deploy_api_service_name }}.service
+    mode: "0644"
+  notify: Restart deploy-api service
+  tags: [deploy_api]
+
+- name: Reload systemd
+  systemd:
+    daemon_reload: true
+  tags: [deploy_api]
+
+- name: Enable deploy-api service
+  systemd:
+    name: "{{ deploy_api_service_name }}"
+    enabled: true
+  tags: [deploy_api]
+
+# =============================================================================
+# Start Service
+# =============================================================================
+
+- name: Start deploy-api service
+  systemd:
+    name: "{{ deploy_api_service_name }}"
+    state: started
+  tags: [deploy_api]
+
+- name: Wait for deploy-api service to start
+  wait_for:
+    port: "{{ deploy_api_service_port }}"
+    host: localhost
+    timeout: 30
+  tags: [deploy_api]
+
+- name: Check deploy-api service health
+  uri:
+    url: "http://localhost:{{ deploy_api_service_port }}/health/live"
+    method: GET
+    status_code: 200
+    timeout: 5
+  register: deploy_api_health_check
+  until: deploy_api_health_check.status == 200
+  retries: 5
+  delay: 2
+  failed_when: false
+  tags: [deploy_api]
+
+- name: Warn if deploy-api service is not healthy
+  debug:
+    msg: "Warning: Deploy API service may not be responding correctly. Check logs with: journalctl -u {{ deploy_api_service_name }} -n 50"
+  when: deploy_api_health_check.status != 200
+  tags: [deploy_api]
+
+- name: Write deployment version file
+  copy:
+    content: |
+      {
+        "commit": "{{ lookup('pipe', 'git rev-parse --short HEAD', cwd=playbook_dir + '/../..') }}",
+        "branch": "{{ lookup('pipe', 'git branch --show-current', cwd=playbook_dir + '/../..') }}",
+        "timestamp": "{{ ansible_date_time.iso8601 }}",
+        "deployed_by": "ansible"
+      }
+    dest: "{{ deploy_api_base_dir }}/.deploy_version"
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [deploy_api]

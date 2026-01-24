@@ -332,7 +332,7 @@ endif
 # Use this when developing - embedding model stays loaded, so restarts are fast
 docker-restart-apis:
 	@echo "Restarting API services (infrastructure tier preserved)..."
-	docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) --env-file $(ENV_FILE) restart authz-api ingest-api ingest-worker search-api agent-api docs-api nginx
+	docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) --env-file $(ENV_FILE) restart authz-api deploy-api ingest-api ingest-worker search-api agent-api docs-api nginx
 
 # Restart ingest services only
 docker-restart-ingest:
