@@ -757,6 +757,65 @@ services:
     networks:
       - busibox-net
 
+  # Deploy API - App Deployment Service
+  # Handles external app deployment, database provisioning, and nginx configuration
+  # Runs alongside authz-api and validates tokens via authz
+  deploy-api:
+    build:
+      context: ./srv/deploy
+      dockerfile: Dockerfile
+      labels:
+        - "version=${GIT_COMMIT:-unknown}"
+    container_name: local-deploy-api
+    hostname: deploy-api
+    labels:
+      - "version=${GIT_COMMIT:-unknown}"
+    # Hot-reload: mount source code and use --reload flag
+    volumes:
+      - ./srv/deploy/src:/app/src:ro
+      - ./provision/ansible:/ansible:ro
+      - ~/.ssh:/root/.ssh:ro  # SSH keys for remote operations
+    command: ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8011", "--reload", "--reload-dir", "/app/src"]
+    environment:
+      # Service
+      DEPLOY_PORT: 8011
+      DEBUG: "true"
+      # Authz (for token validation)
+      AUTHZ_URL: http://authz-api:8010
+      # Ansible
+      ANSIBLE_DIR: /ansible
+      # PostgreSQL (for database provisioning)
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_ADMIN_USER: postgres
+      POSTGRES_ADMIN_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      # Container IPs (use Docker service names in local dev)
+      APPS_CONTAINER_IP: ${APPS_CONTAINER_IP:-host.docker.internal}
+      APPS_CONTAINER_IP_STAGING: ${APPS_CONTAINER_IP_STAGING:-host.docker.internal}
+      # SSH (for remote operations in production)
+      SSH_KEY_PATH: /root/.ssh/id_rsa
+      # Nginx
+      NGINX_HOST: nginx
+      NGINX_CONFIG_DIR: /etc/nginx/sites-available/apps
+      NGINX_ENABLED_DIR: /etc/nginx/sites-enabled
+      # Rate limiting
+      RATE_LIMIT_MINUTES: 5
+    ports:
+      - "8011:8011"
+    depends_on:
+      authz-api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8011/health/live')"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - busibox-net
+
 # ===========================================================================
   # NEXT.JS APPLICATIONS
   # ===========================================================================

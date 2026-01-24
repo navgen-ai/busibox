@@ -890,6 +890,7 @@ deploy_select_service() {
     echo ""
     menu "$title" \
         "authz-api" \
+        "deploy-api" \
         "ingest-api" \
         "ingest-worker" \
         "search-api" \
@@ -907,12 +908,13 @@ deploy_select_service() {
     local svc=""
     case "${choice:-}" in
         1) svc="authz-api" ;;
-        2) svc="ingest-api" ;;
-        3) svc="ingest-worker" ;;
-        4) svc="search-api" ;;
-        5) svc="agent-api" ;;
-        6) svc="docs-api" ;;
-        7) svc="litellm" ;;
+        2) svc="deploy-api" ;;
+        3) svc="ingest-api" ;;
+        4) svc="ingest-worker" ;;
+        5) svc="search-api" ;;
+        6) svc="agent-api" ;;
+        7) svc="docs-api" ;;
+        8) svc="litellm" ;;
         8) svc="nginx" ;;
         9) svc="ai-portal" ;;
         10) svc="agent-manager" ;;
@@ -976,7 +978,7 @@ handle_services() {
                         service_action_menu "data" "postgres redis milvus minio"
                         ;;
                     4)
-                        service_action_menu "api" "authz-api ingest-api ingest-worker search-api agent-api"
+                        service_action_menu "api" "authz-api deploy-api ingest-api ingest-worker search-api agent-api"
                         ;;
                     5)
                         # Just continue loop to refresh
@@ -1118,7 +1120,7 @@ handle_services() {
                             info "Restarting all services..."
                             save_last_command "make service-restart-all INV=${DEPLOY_ENV}"
                             # Restart services in order: core -> APIs -> frontend
-                            local services="postgresql redis authz milvus ingest-worker ingest-api search-api agent-api nginx"
+                            local services="postgresql redis authz deploy-api milvus ingest-worker ingest-api search-api agent-api nginx"
                             for svc in $services; do
                                 info "Restarting $svc..."
                                 (cd "$REPO_ROOT/provision/ansible" && make service-restart SERVICE="$svc" INV="${DEPLOY_ENV}" 2>&1 || echo "  (service may not be deployed)")
@@ -1131,7 +1133,7 @@ handle_services() {
                         echo ""
                         info "Checking status of all services..."
                         echo ""
-                        local services="postgresql redis authz milvus ingest-api ingest-worker search-api agent-api nginx"
+                        local services="postgresql redis authz deploy-api milvus ingest-api ingest-worker search-api agent-api nginx"
                         for svc in $services; do
                             echo -e "${BOLD}$svc:${NC}"
                             (cd "$REPO_ROOT/provision/ansible" && make service-status SERVICE="$svc" INV="${DEPLOY_ENV}" 2>&1 || echo "  (not deployed or unreachable)")
@@ -1265,6 +1267,7 @@ service_select_specific() {
         "milvus"
         "minio"
         "authz-api"
+        "deploy-api"
         "ingest-api"
         "ingest-worker"
         "search-api"
@@ -1281,6 +1284,7 @@ service_select_specific() {
         "milvus" \
         "minio" \
         "authz-api" \
+        "deploy-api" \
         "ingest-api" \
         "ingest-worker" \
         "search-api" \
@@ -1291,7 +1295,7 @@ service_select_specific() {
         "Back"
     
     local choice=""
-    read -p "$(echo -e "${BOLD}Select service [1-13]:${NC} ")" choice
+    read -p "$(echo -e "${BOLD}Select service [1-14]:${NC} ")" choice
     
     case "${choice:-}" in
         1) service_action_menu_with_logs "postgres" "postgres" ;;
@@ -1299,14 +1303,15 @@ service_select_specific() {
         3) service_action_menu_with_logs "milvus" "milvus" ;;
         4) service_action_menu_with_logs "minio" "minio" ;;
         5) service_action_menu_with_logs "authz-api" "authz-api" ;;
-        6) service_action_menu_with_logs "ingest-api" "ingest-api" ;;
-        7) service_action_menu_with_logs "ingest-worker" "ingest-worker" ;;
-        8) service_action_menu_with_logs "search-api" "search-api" ;;
-        9) service_action_menu_with_logs "agent-api" "agent-api" ;;
-        10) service_action_menu_with_logs "litellm" "litellm" ;;
-        11) service_action_menu_with_logs "nginx" "nginx" ;;
-        12) service_action_menu_with_logs "docs" "docs" ;;
-        13|b|B|"") return 0 ;;
+        6) service_action_menu_with_logs "deploy-api" "deploy-api" ;;
+        7) service_action_menu_with_logs "ingest-api" "ingest-api" ;;
+        8) service_action_menu_with_logs "ingest-worker" "ingest-worker" ;;
+        9) service_action_menu_with_logs "search-api" "search-api" ;;
+        10) service_action_menu_with_logs "agent-api" "agent-api" ;;
+        11) service_action_menu_with_logs "litellm" "litellm" ;;
+        12) service_action_menu_with_logs "nginx" "nginx" ;;
+        13) service_action_menu_with_logs "docs" "docs" ;;
+        14|b|B|"") return 0 ;;
     esac
 }
 

@@ -426,6 +426,7 @@ const MAKE_TARGETS: Record<string, { description: string; category: string; requ
   'files': { description: 'Deploy MinIO file storage', category: 'deployment', requiresEnv: true },
   'pg': { description: 'Deploy PostgreSQL database', category: 'deployment', requiresEnv: true },
   'authz': { description: 'Deploy AuthZ service', category: 'deployment', requiresEnv: true },
+  'deploy-api': { description: 'Deploy Deploy API service (app deployment service)', category: 'deployment', requiresEnv: true },
   'litellm': { description: 'Deploy LiteLLM gateway', category: 'deployment', requiresEnv: true },
   'vllm': { description: 'Deploy vLLM inference server', category: 'deployment', requiresEnv: true },
   'vllm-embedding': { description: 'Deploy vLLM embedding model', category: 'deployment', requiresEnv: true },

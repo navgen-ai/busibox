@@ -1,0 +1,21 @@
+[Unit]
+Description=Busibox Deployment Service
+After=network.target authz-api.service
+Wants=authz-api.service
+
+[Service]
+User=root
+Group=root
+WorkingDirectory={{ deploy_api_app_dir }}
+EnvironmentFile={{ deploy_api_base_dir }}/.env
+ExecStart={{ deploy_api_venv_dir }}/bin/uvicorn main:app --host 0.0.0.0 --port {{ deploy_api_service_port }} --app-dir {{ deploy_api_app_dir }}/src
+Restart=always
+RestartSec=5
+
+# Security hardening (but needs root for SSH/Ansible)
+NoNewPrivileges=false
+ProtectSystem=false
+ProtectHome=false
+
+[Install]
+WantedBy=multi-user.target

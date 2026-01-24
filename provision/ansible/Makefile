@@ -242,6 +242,9 @@ pg:
 authz:
 	ansible-playbook -i $(INV) -l authz site.yml --tags apis_authz $(VAULT_FLAGS)
 
+deploy-api:
+	ansible-playbook -i $(INV) -l authz site.yml --tags deploy_api $(VAULT_FLAGS)
+
 litellm:
 	ansible-playbook -i $(INV) -l litellm site.yml --tags llm_litellm $(VAULT_FLAGS)
 

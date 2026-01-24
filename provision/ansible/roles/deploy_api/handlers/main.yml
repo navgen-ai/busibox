@@ -1,0 +1,6 @@
+---
+- name: Restart deploy-api service
+  systemd:
+    name: "{{ deploy_api_service_name }}"
+    state: restarted
+    daemon_reload: true
