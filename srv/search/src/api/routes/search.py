@@ -486,9 +486,9 @@ async def _enrich_results(results: list, request: Request) -> list:
         return results
     
     try:
-        # Use shared PostgresService connection pool
-        from api.main import pg_service
-        async with await pg_service.acquire() as conn:
+        # Use shared AsyncPGPoolManager connection pool
+        from api.main import pg_pool
+        async with pg_pool.acquire() as conn:
             await _set_rls_session_vars(conn, request)
             # Get unique file IDs
             file_ids = list(set(result["file_id"] for result in results))

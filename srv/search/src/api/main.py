@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.middleware.jwt_auth import JWTAuthMiddleware
 from api.middleware.logging import LoggingMiddleware
 from api.routes import search, health, web_search, insights
-from api.services.postgres import PostgresService
+from busibox_common import AsyncPGPoolManager
 from services.insights_service import InsightsService
 from shared.config import config
 
@@ -30,7 +30,8 @@ structlog.configure(
 logger = structlog.get_logger()
 
 # Global service instances (singletons)
-pg_service = PostgresService(config.to_dict())
+# Use shared AsyncPGPoolManager for connection pooling
+pg_pool = AsyncPGPoolManager.from_config(config.to_dict())
 insights_service = InsightsService(config.to_dict())
 
 # Create FastAPI app
@@ -73,7 +74,7 @@ app.add_middleware(LoggingMiddleware)
 app.add_middleware(JWTAuthMiddleware)
 
 # Store services in app state for access in routes
-app.state.pg_service = pg_service
+app.state.pg_pool = pg_pool
 app.state.insights_service = insights_service
 
 # Include routers
@@ -93,14 +94,14 @@ async def startup_event():
         milvus_host=config.milvus_host,
         milvus_collection=config.milvus_collection,
     )
-    await pg_service.connect()
+    await pg_pool.connect()
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown."""
     logger.info("Shutting down Search API")
-    await pg_service.disconnect()
+    await pg_pool.disconnect()
 
 
 @app.get("/")
