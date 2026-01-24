@@ -91,46 +91,64 @@ async def database_exists(db_name: str) -> bool:
     return stdout.strip() == '1'
 
 
+async def user_exists(db_user: str) -> bool:
+    """Check if database user already exists"""
+    sql = f"SELECT 1 FROM pg_roles WHERE rolname='{db_user}'"
+    stdout, stderr, code = await execute_sql(sql)
+    return stdout.strip() == '1'
+
+
 async def create_database(
     db_name: str,
     db_user: str,
     password: str
 ) -> DatabaseProvisionResult:
-    """Create database and user with privileges"""
+    """Create database and user with privileges. Reuses existing if found."""
     if not config.postgres_admin_password:
         return DatabaseProvisionResult(
             success=False,
             error="POSTGRES_ADMIN_PASSWORD not configured"
         )
     
-    logger.info(f"Creating database {db_name} on {config.postgres_host}")
+    logger.info(f"Provisioning database {db_name} on {config.postgres_host}")
     
-    # Check if exists
-    if await database_exists(db_name):
-        return DatabaseProvisionResult(
-            success=False,
-            error=f"Database {db_name} already exists"
-        )
+    db_existed = await database_exists(db_name)
+    user_existed = await user_exists(db_user)
     
-    # Commands to execute
-    commands = [
-        f"CREATE DATABASE {db_name}",
-        f"CREATE USER {db_user} WITH PASSWORD '{password}'",
-        f"GRANT ALL PRIVILEGES ON DATABASE {db_name} TO {db_user}",
-    ]
-    
-    # Execute in postgres database
-    for sql in commands:
-        stdout, stderr, code = await execute_sql(sql)
-        
+    if db_existed:
+        logger.info(f"Database {db_name} already exists - reusing")
+    else:
+        # Create database
+        stdout, stderr, code = await execute_sql(f"CREATE DATABASE {db_name}")
         if code != 0:
             logger.error(f"Database creation failed: {stderr}")
             return DatabaseProvisionResult(
                 success=False,
-                error=f"Failed to execute: {sql}\n{stderr}"
+                error=f"Failed to create database: {stderr}"
             )
     
-    # Grant schema privileges (PostgreSQL 15+)
+    if user_existed:
+        logger.info(f"User {db_user} already exists - updating password")
+        # Update password for existing user
+        stdout, stderr, code = await execute_sql(f"ALTER USER {db_user} WITH PASSWORD '{password}'")
+        if code != 0:
+            logger.warning(f"Failed to update password: {stderr}")
+    else:
+        # Create user
+        stdout, stderr, code = await execute_sql(f"CREATE USER {db_user} WITH PASSWORD '{password}'")
+        if code != 0:
+            logger.error(f"User creation failed: {stderr}")
+            return DatabaseProvisionResult(
+                success=False,
+                error=f"Failed to create user: {stderr}"
+            )
+    
+    # Grant privileges (idempotent)
+    stdout, stderr, code = await execute_sql(f"GRANT ALL PRIVILEGES ON DATABASE {db_name} TO {db_user}")
+    if code != 0:
+        logger.warning(f"Grant privileges warning: {stderr}")
+    
+    # Grant schema privileges (PostgreSQL 15+) - idempotent
     schema_commands = [
         f"GRANT ALL ON SCHEMA public TO {db_user}",
         f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO {db_user}",
@@ -145,7 +163,10 @@ async def create_database(
     # Construct DATABASE_URL
     database_url = f"postgresql://{db_user}:{password}@{config.postgres_host}:{config.postgres_port}/{db_name}"
     
-    logger.info(f"Database {db_name} created successfully")
+    if db_existed:
+        logger.info(f"Database {db_name} reused successfully (password updated)")
+    else:
+        logger.info(f"Database {db_name} created successfully")
     
     return DatabaseProvisionResult(
         success=True,

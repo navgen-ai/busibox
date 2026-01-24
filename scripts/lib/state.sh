@@ -423,6 +423,23 @@ has_failed_tests() {
     [[ -n "$failed" ]]
 }
 
+# ============================================================================
+# Local Development Settings
+# ============================================================================
+
+# Get dev apps directory
+# Usage: dir=$(get_dev_apps_dir)
+get_dev_apps_dir() {
+    get_state "DEV_APPS_DIR" ""
+}
+
+# Set dev apps directory
+# Usage: set_dev_apps_dir "/Users/me/Code"
+set_dev_apps_dir() {
+    local dir="$1"
+    set_state "DEV_APPS_DIR" "$dir"
+}
+
 # Display current state (for debugging)
 show_state() {
     echo "=== Busibox State ==="

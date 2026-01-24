@@ -2,15 +2,23 @@
 Ansible Execution
 
 Executes Ansible playbooks for app deployment.
+In Docker/local environments, skips actual deployment.
 """
 
 import asyncio
 import logging
+import os
 from typing import Dict, Any, List, Tuple
 from .models import BusiboxManifest, DeploymentConfig
 from .config import config
 
 logger = logging.getLogger(__name__)
+
+
+def is_docker_environment() -> bool:
+    """Check if running in Docker (local development)"""
+    # In Docker, POSTGRES_HOST is typically 'postgres' (container name) not an IP
+    return not config.postgres_host.startswith('10.')
 
 
 class AnsibleExecutor:
@@ -59,10 +67,29 @@ class AnsibleExecutor:
         deploy_config: DeploymentConfig,
         database_url: str = None
     ) -> Tuple[bool, List[str]]:
-        """Deploy app via Ansible"""
+        """Deploy app via Ansible (production) or simulate (Docker local)"""
         
         logs = []
         
+        logs.append(f"Deploying {manifest.name} to {deploy_config.environment}")
+        logs.append(f"Repository: {deploy_config.githubRepoOwner}/{deploy_config.githubRepoName}")
+        logs.append(f"Branch: {deploy_config.githubBranch}")
+        
+        # In Docker/local environment, skip actual Ansible deployment
+        # Apps in Docker share the apps container with AI Portal
+        if is_docker_environment():
+            logs.append("📦 Docker/local environment detected")
+            logs.append("⏭️  Skipping Ansible deployment (production only)")
+            logs.append("")
+            logs.append("✅ Database provisioned successfully")
+            if database_url:
+                logs.append(f"   DATABASE_URL: {database_url}")
+            logs.append("")
+            logs.append(f"📍 App will be available at: {manifest.defaultPath}")
+            logs.append("ℹ️  For production: deploy via Ansible from Proxmox host")
+            return True, logs
+        
+        # Production: Use Ansible
         # Determine inventory
         inventory = (
             self.inventory_staging 
@@ -80,10 +107,6 @@ class AnsibleExecutor:
         # Add GitHub token if provided
         if deploy_config.githubToken:
             extra_vars['github_token'] = deploy_config.githubToken
-        
-        logs.append(f"Deploying {manifest.name} to {deploy_config.environment}")
-        logs.append(f"Repository: {deploy_config.githubRepoOwner}/{deploy_config.githubRepoName}")
-        logs.append(f"Branch: {deploy_config.githubBranch}")
         
         # Execute deployment playbook
         stdout, stderr, code = await self.execute_playbook(

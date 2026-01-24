@@ -40,16 +40,20 @@ EXTRA_ARGS=
 # For staging, they use the TEST network (10.96.201.x)
 ifeq ($(INV),inventory/staging)
   # Staging IPs (10.96.201.0/21 network)
+  PROXY_IP = 10.96.201.200
   INGEST_IP = 10.96.201.206
   AGENT_IP = 10.96.201.202
-  APPS_IP = 10.96.201.201
+  CORE_APPS_IP = 10.96.201.201
+  USER_APPS_IP = 10.96.201.212
   MILVUS_IP = 10.96.201.204
   AUTHZ_IP = 10.96.201.210
 else
   # Production IPs (10.96.200.0/21 network)
+  PROXY_IP = 10.96.200.200
   INGEST_IP = 10.96.200.206
   AGENT_IP = 10.96.200.202
-  APPS_IP = 10.96.200.201
+  CORE_APPS_IP = 10.96.200.201
+  USER_APPS_IP = 10.96.200.212
   MILVUS_IP = 10.96.200.204
   AUTHZ_IP = 10.96.200.210
 endif
@@ -89,19 +93,21 @@ env:
 	@if [ "$(INV)" = "inventory/staging" ]; then \
 		echo "Network:   STAGING (10.96.201.x)"; \
 		echo ""; \
-		echo "  Ingest:  $(INGEST_IP)"; \
-		echo "  Agent:   $(AGENT_IP)"; \
-		echo "  Apps:    $(APPS_IP)"; \
-		echo "  Milvus:  $(MILVUS_IP)"; \
-		echo "  AuthZ:   $(AUTHZ_IP)"; \
+		echo "  Ingest:     $(INGEST_IP)"; \
+		echo "  Agent:      $(AGENT_IP)"; \
+		echo "  Core Apps:  $(CORE_APPS_IP)"; \
+		echo "  User Apps:  $(USER_APPS_IP)"; \
+		echo "  Milvus:     $(MILVUS_IP)"; \
+		echo "  AuthZ:      $(AUTHZ_IP)"; \
 	else \
 		echo "Network:   PRODUCTION (10.96.200.x)"; \
 		echo ""; \
-		echo "  Ingest:  $(INGEST_IP)"; \
-		echo "  Agent:   $(AGENT_IP)"; \
-		echo "  Apps:    $(APPS_IP)"; \
-		echo "  Milvus:  $(MILVUS_IP)"; \
-		echo "  AuthZ:   $(AUTHZ_IP)"; \
+		echo "  Ingest:     $(INGEST_IP)"; \
+		echo "  Agent:      $(AGENT_IP)"; \
+		echo "  Core Apps:  $(CORE_APPS_IP)"; \
+		echo "  User Apps:  $(USER_APPS_IP)"; \
+		echo "  Milvus:     $(MILVUS_IP)"; \
+		echo "  AuthZ:      $(AUTHZ_IP)"; \
 	fi
 	@echo "============================================"
 	@echo "State file: $(BUSIBOX_STATE_FILE)"
@@ -380,7 +386,7 @@ verify-health:
 	fi
 	@echo ""
 	@echo "=== Docs API ==="
-	@if curl -f -s http://$(APPS_IP):8004/health/live > /dev/null 2>&1; then \
+	@if curl -f -s http://$(AUTHZ_IP):8004/health/live > /dev/null 2>&1; then \
 		echo "✓ Docs API is healthy"; \
 	else \
 		echo "⚠ Docs API is not responding (may not be deployed yet)"; \
@@ -445,7 +451,7 @@ SERVICE_MAP := \
   search-api=search-api@$(MILVUS_IP) \
   agent-api=agent@$(AGENT_IP) \
   milvus=milvus@$(MILVUS_IP) \
-  nginx=nginx@$(APPS_IP) \
+  nginx=nginx@$(PROXY_IP) \
   postgresql=postgresql@10.96.200.203 \
   redis=redis@$(INGEST_IP)
 
@@ -740,10 +746,10 @@ test-authz:
 
 test-apps:
 	@echo "Running app tests..."
-	@echo "Container: apps-lxc ($(APPS_IP))"
+	@echo "Container: core-apps-lxc ($(CORE_APPS_IP))"
 	@echo ""
 	@echo "=== AI Portal Tests ==="
-	@ssh root@$(APPS_IP) 'cd /srv/apps/ai-portal && npm test' || (echo "AI Portal tests FAILED" && exit 1)
+	@ssh root@$(CORE_APPS_IP) 'cd /srv/apps/ai-portal && npm test' || (echo "AI Portal tests FAILED" && exit 1)
 	@echo "✓ AI Portal tests passed"
 	@echo ""
 

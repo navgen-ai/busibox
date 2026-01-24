@@ -2,6 +2,7 @@
 Nginx Configuration
 
 Automatically configures nginx routes for deployed apps via SSH.
+In Docker/local environments, skips actual configuration.
 """
 
 import asyncio
@@ -12,6 +13,12 @@ from .config import config
 from .database import execute_ssh_command
 
 logger = logging.getLogger(__name__)
+
+
+def is_docker_environment() -> bool:
+    """Check if running in Docker (local development)"""
+    # In Docker, POSTGRES_HOST is typically 'postgres' (container name) not an IP
+    return not config.postgres_host.startswith('10.')
 
 
 class NginxConfigurator:
@@ -157,6 +164,12 @@ ln -s {source} {target}
         container_ip: Optional[str] = None
     ) -> Tuple[bool, str]:
         """Configure nginx for app (write, validate, enable, reload)"""
+        
+        # In Docker/local environment, skip nginx configuration
+        # The local nginx proxy or AI Portal handles routing differently
+        if is_docker_environment():
+            logger.info("Docker environment - skipping nginx configuration")
+            return True, f"Docker environment - nginx config skipped. App path: {manifest.defaultPath}"
         
         if not container_ip:
             container_ip = self.apps_container_ip

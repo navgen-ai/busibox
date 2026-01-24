@@ -29,6 +29,13 @@ class Config:
     postgres_admin_password: str = os.getenv('POSTGRES_ADMIN_PASSWORD', '')
     
     # Container IPs
+    # Core apps container (ai-portal, agent-manager)
+    core_apps_container_ip: str = os.getenv('CORE_APPS_CONTAINER_IP', '10.96.200.201')
+    core_apps_container_ip_staging: str = os.getenv('CORE_APPS_CONTAINER_IP_STAGING', '10.96.201.201')
+    # User apps container (external apps deployed via AI Portal)
+    user_apps_container_ip: str = os.getenv('USER_APPS_CONTAINER_IP', '10.96.200.212')
+    user_apps_container_ip_staging: str = os.getenv('USER_APPS_CONTAINER_IP_STAGING', '10.96.201.212')
+    # Legacy alias for backwards compatibility
     apps_container_ip: str = os.getenv('APPS_CONTAINER_IP', '10.96.200.201')
     apps_container_ip_staging: str = os.getenv('APPS_CONTAINER_IP_STAGING', '10.96.201.201')
     
@@ -40,8 +47,8 @@ class Config:
     nginx_config_dir: str = os.getenv('NGINX_CONFIG_DIR', '/etc/nginx/sites-available/apps')
     nginx_enabled_dir: str = os.getenv('NGINX_ENABLED_DIR', '/etc/nginx/sites-enabled')
     
-    # Rate limiting (1 minute for testing, increase for production)
-    rate_limit_per_app_minutes: int = int(os.getenv('RATE_LIMIT_MINUTES', '1'))
+    # Rate limiting (in seconds for flexibility, default 10 seconds for testing)
+    rate_limit_seconds: int = int(os.getenv('RATE_LIMIT_SECONDS', '10'))
 
 
 config = Config()

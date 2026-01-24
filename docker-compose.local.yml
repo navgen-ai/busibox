@@ -798,8 +798,8 @@ services:
       NGINX_HOST: nginx
       NGINX_CONFIG_DIR: /etc/nginx/sites-available/apps
       NGINX_ENABLED_DIR: /etc/nginx/sites-enabled
-      # Rate limiting
-      RATE_LIMIT_MINUTES: 5
+      # Rate limiting (10 seconds for testing)
+      RATE_LIMIT_SECONDS: 10
     ports:
       - "8011:8011"
     depends_on:
@@ -817,9 +817,39 @@ services:
       - busibox-net
 
 # ===========================================================================
-  # NEXT.JS APPLICATIONS
+  # USER APPS CONTAINER
   # ===========================================================================
-  # Next.js apps (ai-portal, agent-manager) are defined in overlay files:
+  # Container for deploying external/user applications via deploy-api.
+  # This is separate from core apps (ai-portal, agent-manager) for isolation.
+  # Apps are deployed via git clone + npm install + systemd.
+  #
+  # For local development:
+  #   - Place app source in dev-apps/{app-id}/ directory
+  #   - Deploy-api will detect and use dev-apps path instead of git clone
+  # ===========================================================================
+
+  user-apps:
+    image: node:20-slim
+    container_name: local-user-apps
+    hostname: user-apps
+    labels:
+      - "version=${GIT_COMMIT:-unknown}"
+    volumes:
+      - user_apps_data:/srv/apps  # Deployed apps (git cloned by deploy-api)
+    environment:
+      NODE_ENV: production
+    # Container stays running - deploy-api uses docker exec to manage apps
+    command: ["sleep", "infinity"]
+    # Install common tools needed for app deployment
+    entrypoint: ["/bin/bash", "-c", "apt-get update && apt-get install -y git curl procps systemd && exec sleep infinity"]
+    restart: unless-stopped
+    networks:
+      - busibox-net
+
+# ===========================================================================
+  # NEXT.JS APPLICATIONS (Core Apps)
+  # ===========================================================================
+  # Core Next.js apps (ai-portal, agent-manager) are defined in overlay files:
   #   - docker-compose.dev.yml  - Development mode with volume mounts
   #   - docker-compose.prod.yml - Production mode built from GitHub
   #
@@ -923,6 +953,8 @@ volumes:
   model_cache:
   # vLLM cache - for demo mode on x86/Linux with NVIDIA GPU
   vllm_cache:
+  # User apps - persistent storage for deployed external applications
+  user_apps_data:
 
 # ===========================================================================
 # NETWORKS

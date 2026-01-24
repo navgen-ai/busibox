@@ -10,6 +10,7 @@ import logging
 import uuid
 from datetime import datetime
 from typing import Dict
+from pydantic import BaseModel
 from .models import (
     DeployRequest,
     DeploymentResult,
@@ -19,7 +20,8 @@ from .models import (
 )
 from .auth import verify_admin_token
 from .database import provision_database
-from .ansible_executor import AnsibleExecutor, get_container_ip
+from .container_executor import deploy_app as container_deploy_app, is_docker_environment
+from .env_generator import generate_env_vars
 from .nginx_config import NginxConfigurator
 from .config import config
 
@@ -42,7 +44,7 @@ def check_rate_limit(app_id: str) -> None:
     """Check if app can be deployed (rate limiting)"""
     if app_id in last_deployment_times:
         elapsed = (datetime.utcnow() - last_deployment_times[app_id]).total_seconds()
-        limit_seconds = config.rate_limit_per_app_minutes * 60
+        limit_seconds = config.rate_limit_seconds
         if elapsed < limit_seconds:
             remaining = int(limit_seconds - elapsed)
             raise HTTPException(
@@ -101,9 +103,17 @@ async def execute_deployment(
     manifest: BusiboxManifest,
     deploy_config: DeploymentConfig
 ):
-    """Execute deployment asynchronously"""
+    """
+    Execute deployment asynchronously using the new container executor.
+    
+    Flow:
+    1. Provision database (if required)
+    2. Deploy app via container_executor (git clone, npm install, build, migrations, systemd)
+    3. Configure nginx routing
+    """
     
     status = deployment_statuses[deployment_id]
+    database_url = None
     
     try:
         # Step 1: Provision database if required
@@ -122,51 +132,61 @@ async def execute_deployment(
             status.logs.append(f"[{datetime.utcnow().isoformat()}] Database provisioned: {db_result.databaseName}")
             await broadcast_status(deployment_id)
             
-            # Add DATABASE_URL to secrets
-            if db_result.databaseUrl:
-                deploy_config.secrets['DATABASE_URL'] = db_result.databaseUrl
+            database_url = db_result.databaseUrl
+            if database_url:
+                deploy_config.secrets['DATABASE_URL'] = database_url
         
-        # Step 2: Deploy via Ansible
+        # Step 2: Deploy app via container executor
         status.status = 'deploying'
-        status.progress = 30
+        status.progress = 20
         status.currentStep = 'Deploying application'
-        status.logs.append(f"[{datetime.utcnow().isoformat()}] Starting Ansible deployment...")
+        status.logs.append(f"[{datetime.utcnow().isoformat()}] Starting deployment...")
         await broadcast_status(deployment_id)
         
-        executor = AnsibleExecutor()
-        success, logs = await executor.deploy_app(
+        # Collect logs from container executor
+        deploy_logs = []
+        success = await container_deploy_app(
             manifest,
             deploy_config,
-            deploy_config.secrets.get('DATABASE_URL')
+            database_url,
+            deploy_logs
         )
         
-        for log in logs:
+        # Add logs to status
+        for log in deploy_logs:
             status.logs.append(f"[{datetime.utcnow().isoformat()}] {log}")
         await broadcast_status(deployment_id)
         
         if not success:
-            raise Exception("Ansible deployment failed")
+            raise Exception("Application deployment failed")
         
-        status.progress = 70
-        await broadcast_status(deployment_id)
-        
-        # Step 3: Configure nginx
-        status.status = 'configuring_nginx'
         status.progress = 80
-        status.currentStep = 'Configuring nginx'
-        status.logs.append(f"[{datetime.utcnow().isoformat()}] Configuring nginx routing...")
         await broadcast_status(deployment_id)
         
-        container_ip = await get_container_ip(manifest.id, deploy_config.environment)
-        
-        configurator = NginxConfigurator()
-        nginx_success, nginx_msg = await configurator.configure_app(manifest, container_ip)
-        
-        status.logs.append(f"[{datetime.utcnow().isoformat()}] {nginx_msg}")
-        await broadcast_status(deployment_id)
-        
-        if not nginx_success:
-            raise Exception(f"Nginx configuration failed: {nginx_msg}")
+        # Step 3: Configure nginx (only for non-Docker environments)
+        if not is_docker_environment():
+            status.status = 'configuring_nginx'
+            status.currentStep = 'Configuring nginx'
+            status.logs.append(f"[{datetime.utcnow().isoformat()}] Configuring nginx routing...")
+            await broadcast_status(deployment_id)
+            
+            # Get the user apps container IP
+            if deploy_config.environment == 'staging':
+                container_ip = config.user_apps_container_ip_staging
+            else:
+                container_ip = config.user_apps_container_ip
+            
+            configurator = NginxConfigurator()
+            nginx_success, nginx_msg = await configurator.configure_app(manifest, container_ip)
+            
+            status.logs.append(f"[{datetime.utcnow().isoformat()}] {nginx_msg}")
+            await broadcast_status(deployment_id)
+            
+            if not nginx_success:
+                raise Exception(f"Nginx configuration failed: {nginx_msg}")
+        else:
+            status.logs.append(f"[{datetime.utcnow().isoformat()}] ℹ️ Docker environment - nginx config managed externally")
+            await broadcast_status(deployment_id)
         
         # Step 4: Complete
         status.status = 'completed'
@@ -357,3 +377,181 @@ async def list_deployments(
     # Sort by startedAt descending
     deployments.sort(key=lambda x: x['startedAt'], reverse=True)
     return deployments[:50]  # Last 50 deployments
+
+
+class LocalDevValidateRequest(BaseModel):
+    dirName: str
+
+
+class LocalDevValidateResponse(BaseModel):
+    valid: bool
+    manifest: dict | None = None
+    dirPath: str | None = None
+    error: str | None = None
+
+
+@router.post("/validate-local-dev", response_model=LocalDevValidateResponse)
+async def validate_local_dev(
+    request: LocalDevValidateRequest,
+    token_payload: dict = Depends(verify_admin_token)
+):
+    """
+    Validate a local dev directory contains a valid busibox.json manifest.
+    
+    Checks /srv/dev-apps/{dirName}/busibox.json in the user-apps container.
+    """
+    import json
+    
+    dir_name = request.dirName
+    
+    # Security: validate dir name
+    if not dir_name or not all(c.isalnum() or c in '-_' for c in dir_name):
+        return LocalDevValidateResponse(
+            valid=False,
+            error="Invalid directory name. Use only letters, numbers, hyphens, and underscores."
+        )
+    
+    dev_path = f"/srv/dev-apps/{dir_name}"
+    manifest_path = f"{dev_path}/busibox.json"
+    
+    # Check if directory exists
+    from .container_executor import execute_in_container
+    
+    stdout, stderr, code = await execute_in_container(f"test -d {dev_path}")
+    if code != 0:
+        return LocalDevValidateResponse(
+            valid=False,
+            error=f"Directory not found: {dev_path}. Make sure DEV_APPS_DIR is set and the directory exists."
+        )
+    
+    # Check if manifest exists
+    stdout, stderr, code = await execute_in_container(f"test -f {manifest_path}")
+    if code != 0:
+        return LocalDevValidateResponse(
+            valid=False,
+            error=f"No busibox.json found in {dev_path}. Create a manifest file for your app."
+        )
+    
+    # Read and parse manifest
+    stdout, stderr, code = await execute_in_container(f"cat {manifest_path}")
+    if code != 0:
+        return LocalDevValidateResponse(
+            valid=False,
+            error=f"Failed to read manifest: {stderr}"
+        )
+    
+    try:
+        manifest = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        return LocalDevValidateResponse(
+            valid=False,
+            error=f"Invalid JSON in busibox.json: {e}"
+        )
+    
+    # Basic manifest validation
+    required_fields = ['name', 'id', 'version', 'defaultPath', 'defaultPort', 'healthEndpoint']
+    missing = [f for f in required_fields if f not in manifest]
+    if missing:
+        return LocalDevValidateResponse(
+            valid=False,
+            error=f"Missing required fields in manifest: {', '.join(missing)}"
+        )
+    
+    logger.info(f"Validated local dev directory: {dev_path} for app {manifest.get('name')}")
+    
+    return LocalDevValidateResponse(
+        valid=True,
+        manifest=manifest,
+        dirPath=dev_path
+    )
+
+
+class VersionCheckRequest(BaseModel):
+    githubOwner: str
+    githubRepo: str
+    currentVersion: str | None = None
+    githubToken: str | None = None
+
+
+class VersionCheckResponse(BaseModel):
+    latestVersion: str
+    latestReleaseUrl: str | None = None
+    latestReleaseNotes: str | None = None
+    publishedAt: str | None = None
+    updateAvailable: bool
+
+
+@router.post("/version-check", response_model=VersionCheckResponse)
+async def check_version(
+    request: VersionCheckRequest,
+    token_payload: dict = Depends(verify_admin_token)
+):
+    """
+    Check for latest version of a GitHub repo.
+    
+    Looks for GitHub releases first, falls back to latest commit on main/master.
+    """
+    import httpx
+    
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "Busibox-Deploy-Service"
+    }
+    if request.githubToken:
+        headers["Authorization"] = f"token {request.githubToken}"
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            # Try releases first
+            releases_url = f"https://api.github.com/repos/{request.githubOwner}/{request.githubRepo}/releases/latest"
+            response = await client.get(releases_url, headers=headers, timeout=10.0)
+            
+            if response.status_code == 200:
+                release = response.json()
+                latest_version = release.get("tag_name", "")
+                
+                # Determine if update is available
+                update_available = False
+                if request.currentVersion and latest_version:
+                    # Simple version comparison (removes 'v' prefix if present)
+                    current = request.currentVersion.lstrip('v')
+                    latest = latest_version.lstrip('v')
+                    update_available = current != latest
+                
+                return VersionCheckResponse(
+                    latestVersion=latest_version,
+                    latestReleaseUrl=release.get("html_url"),
+                    latestReleaseNotes=release.get("body", "")[:500] if release.get("body") else None,
+                    publishedAt=release.get("published_at"),
+                    updateAvailable=update_available
+                )
+            
+            # No releases, check latest commit
+            commits_url = f"https://api.github.com/repos/{request.githubOwner}/{request.githubRepo}/commits?per_page=1"
+            response = await client.get(commits_url, headers=headers, timeout=10.0)
+            
+            if response.status_code == 200:
+                commits = response.json()
+                if commits:
+                    commit = commits[0]
+                    commit_sha = commit.get("sha", "")[:7]
+                    
+                    update_available = False
+                    if request.currentVersion:
+                        update_available = request.currentVersion != commit_sha
+                    
+                    return VersionCheckResponse(
+                        latestVersion=commit_sha,
+                        latestReleaseUrl=commit.get("html_url"),
+                        latestReleaseNotes=commit.get("commit", {}).get("message", "")[:200],
+                        publishedAt=commit.get("commit", {}).get("author", {}).get("date"),
+                        updateAvailable=update_available
+                    )
+            
+            raise HTTPException(status_code=404, detail="Could not fetch version information")
+            
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="GitHub API timeout")
+    except Exception as e:
+        logger.error(f"Version check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -155,6 +155,20 @@ services:
     networks:
       - busibox-net
 
+  # User Apps - Development Mode
+  # Mount dev-apps directory for local app development with hot-reload
+  user-apps:
+    environment:
+      NODE_ENV: development
+      # Tell deploy-api where to look for dev apps
+      DEV_APPS_DIR: /srv/dev-apps
+    volumes:
+      # Mount DEV_APPS_DIR from env (set in .env.local)
+      # If not set, falls back to local ./dev-apps directory
+      - ${DEV_APPS_DIR:-./dev-apps}:/srv/dev-apps
+      # Mount busibox-app for shared utilities
+      - ../busibox-app:/srv/busibox-app:ro
+
 # Named volumes for node_modules and .next cache
 # These preserve installed dependencies across container restarts
 volumes:
