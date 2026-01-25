@@ -47,10 +47,7 @@ services:
       # =========================================================================
       # Database
       DATABASE_URL: postgresql://${POSTGRES_USER:-busibox_user}:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/ai_portal
-      # Auth - use https://localhost for SSL
-      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-dev-secret-change-in-production}
-      BETTER_AUTH_URL: https://localhost/portal
-      # Email (optional - uses console logging in dev)
+     # Email (optional - uses console logging in dev)
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-noreply@localhost}
       # Admin
