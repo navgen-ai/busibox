@@ -6,9 +6,6 @@ This ensures tests validate actual authentication and authorization behavior.
 
 Required environment variables:
 - AUTHZ_JWKS_URL: URL to authz JWKS endpoint
-- AUTHZ_ADMIN_TOKEN: Admin token for role/scope management
-- AUTHZ_BOOTSTRAP_CLIENT_ID: OAuth client ID (default: ai-portal)
-- AUTHZ_BOOTSTRAP_CLIENT_SECRET: OAuth client secret
 - TEST_USER_ID: UUID of test user (should have NO roles by default)
 """
 

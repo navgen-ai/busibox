@@ -28,8 +28,6 @@ SERVICE_URL = os.getenv("SEARCH_API_URL", f"http://localhost:{SERVICE_PORT}")
 # AuthZ configuration - REQUIRED for token exchange
 # Use bootstrap client (ai-portal) - the standard OAuth client for all services
 AUTHZ_JWKS_URL = os.getenv("AUTHZ_JWKS_URL", "")
-AUTHZ_BOOTSTRAP_CLIENT_ID = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_ID", "ai-portal")
-AUTHZ_BOOTSTRAP_CLIENT_SECRET = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_SECRET", "")
 
 # Test user - for token exchange to get a token with real user identity
 # Required for search since it needs to do token exchange to call ingest

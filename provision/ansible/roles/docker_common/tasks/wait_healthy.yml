@@ -58,5 +58,11 @@
   args:
     chdir: "{{ docker_compose_dir }}"
     executable: /bin/bash
+  environment:
+    # Secrets injected from encrypted Ansible vault at runtime
+    POSTGRES_PASSWORD: "{{ secrets.postgresql.password | default('') }}"
+    MINIO_ACCESS_KEY: "{{ secrets.minio.root_user | default('minioadmin') }}"
+    MINIO_SECRET_KEY: "{{ secrets.minio.root_password | default('') }}"
+    GITHUB_AUTH_TOKEN: "{{ secrets.github.personal_access_token | default('') }}"
   register: wait_result
   changed_when: false

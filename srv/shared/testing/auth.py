@@ -55,9 +55,6 @@ class AuthTestClient:
         
         Args:
             authz_url: Base URL for authz service (default from AUTHZ_JWKS_URL)
-            admin_token: Admin token for authz API (default from AUTHZ_ADMIN_TOKEN)
-            client_id: OAuth client ID (default from AUTHZ_BOOTSTRAP_CLIENT_ID)
-            client_secret: OAuth client secret (default from AUTHZ_BOOTSTRAP_CLIENT_SECRET)
             test_user_id: Test user ID (default from TEST_USER_ID)
         """
         # Get authz URL from JWKS URL
@@ -65,9 +62,6 @@ class AuthTestClient:
         default_url = jwks_url.replace("/.well-known/jwks.json", "") if jwks_url else ""
         
         self.authz_url = authz_url or default_url
-        self.admin_token = admin_token or os.getenv("AUTHZ_ADMIN_TOKEN", "")
-        self.client_id = client_id or os.getenv("AUTHZ_BOOTSTRAP_CLIENT_ID", "ai-portal")
-        self.client_secret = client_secret or os.getenv("AUTHZ_BOOTSTRAP_CLIENT_SECRET", "")
         # Default to the well-known test user ID if not provided
         # This ID is created by bootstrap-test-databases.py
         self.test_user_id = test_user_id or os.getenv("TEST_USER_ID", "00000000-0000-0000-0000-000000000001")
@@ -89,12 +83,8 @@ class AuthTestClient:
         """
         if not self.authz_url:
             pytest.fail("AUTHZ_JWKS_URL not configured")
-        if not self.client_secret:
-            pytest.fail("AUTHZ_BOOTSTRAP_CLIENT_SECRET not configured")
         if not self.test_user_id:
             pytest.fail("TEST_USER_ID not configured")
-        if require_admin and not self.admin_token:
-            pytest.fail("AUTHZ_ADMIN_TOKEN not configured (required for user management operations)")
     
     def _admin_headers(self) -> Dict[str, str]:
         """Get headers for admin API calls. Includes X-Test-Mode header."""

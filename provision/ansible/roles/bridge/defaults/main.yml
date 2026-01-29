@@ -40,10 +40,10 @@ bridge_debug: false
 # Phone number (from vault - Signal-specific)
 signal_bot_phone_number: "{{ secrets.bridge.phone_number | default('') }}"
 
-# Auth configuration (from vault)
-bridge_auth_client_id: "bridge-client"
-bridge_auth_client_secret: "{{ secrets.jwt_secret }}"
-bridge_service_user_id: "{{ secrets.bridge.service_user_id | default('') }}"
+# Auth configuration (Zero Trust - delegation token from vault)
+# The delegation token is created for a signal-bot service account user
+# via the AuthZ /oauth/delegation/create endpoint
+bridge_delegation_token: "{{ secrets.bridge.delegation_token | default('') }}"
 
 # Allowed phone numbers (empty = allow all)
 signal_bot_allowed_numbers: []

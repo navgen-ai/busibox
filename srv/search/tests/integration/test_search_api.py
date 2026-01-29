@@ -10,7 +10,7 @@ Requirements:
 - Milvus running and accessible
 - PostgreSQL running with ingest schema
 - AuthZ service running with test user configured
-- Environment variables set (AUTHZ_JWKS_URL, AUTHZ_ADMIN_TOKEN, AUTHZ_BOOTSTRAP_CLIENT_SECRET, TEST_USER_ID)
+- Environment variables set (AUTHZ_JWKS_URL, TEST_USER_ID)
 
 Run with: pytest tests/integration/test_search_api.py -v
 """

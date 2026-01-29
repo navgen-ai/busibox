@@ -275,9 +275,7 @@ I can help you with questions, web searches, and more!
             async with AgentClient(
                 base_url=str(settings.agent_api_url),
                 auth_token_url=str(settings.auth_token_url),
-                client_id=settings.auth_client_id,
-                client_secret=settings.auth_client_secret,
-                service_user_id=settings.service_user_id,
+                delegation_token=settings.delegation_token,
             ) as agent_client:
                 # Verify connections
                 if not await signal_client.is_registered():

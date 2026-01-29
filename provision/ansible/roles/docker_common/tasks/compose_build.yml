@@ -32,7 +32,18 @@
   args:
     chdir: "{{ docker_compose_dir }}"
   environment:
-    GITHUB_AUTH_TOKEN: "{{ github_token | default('') }}"
+    # Secrets injected from vault
+    POSTGRES_PASSWORD: "{{ secrets.postgresql.password | default('') }}"
+    MINIO_ACCESS_KEY: "{{ secrets.minio.root_user | default('minioadmin') }}"
+    MINIO_SECRET_KEY: "{{ secrets.minio.root_password | default('') }}"
+    SSO_JWT_SECRET: "{{ secrets.jwt_secret | default('') }}"
+    AUTHZ_MASTER_KEY: "{{ secrets.authz_master_key | default('') }}"
+    LITELLM_API_KEY: "{{ secrets.litellm_api_key | default('') }}"
+    LITELLM_MASTER_KEY: "{{ secrets.litellm_api_key | default('') }}"
+    GITHUB_AUTH_TOKEN: "{{ secrets.github.personal_access_token | default(github_token) | default('') }}"
+    ADMIN_EMAIL: "{{ secrets.admin_email | default('') }}"
+    ALLOWED_EMAIL_DOMAINS: "{{ secrets.allowed_email_domains | default('*') }}"
     DOCKER_BUILDKIT: "1"
   register: build_result
   changed_when: "'Building' in build_result.stdout or 'built' in build_result.stdout"
+  no_log: true

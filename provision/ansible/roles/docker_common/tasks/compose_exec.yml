@@ -28,6 +28,25 @@
       {{ docker_exec_service }} {{ docker_exec_command }}
   args:
     chdir: "{{ docker_compose_dir }}"
-  register: exec_result
+  environment:
+    # Secrets injected from encrypted Ansible vault at runtime
+    # NOTE: Zero Trust auth - no client secrets needed
+    POSTGRES_PASSWORD: "{{ secrets.postgresql.password | default('') }}"
+    MINIO_ACCESS_KEY: "{{ secrets.minio.root_user | default('minioadmin') }}"
+    MINIO_SECRET_KEY: "{{ secrets.minio.root_password | default('') }}"
+    SSO_JWT_SECRET: "{{ secrets.jwt_secret | default('') }}"
+    AUTHZ_MASTER_KEY: "{{ secrets.authz_master_key | default('') }}"
+    LITELLM_API_KEY: "{{ secrets.litellm_api_key | default('') }}"
+    LITELLM_MASTER_KEY: "{{ secrets.litellm_api_key | default('') }}"
+    GITHUB_AUTH_TOKEN: "{{ secrets.github.personal_access_token | default('') }}"
+    ADMIN_EMAIL: "{{ secrets.admin_email | default('') }}"
+    ALLOWED_EMAIL_DOMAINS: "{{ secrets.allowed_email_domains | default('*') }}"
+  register: _exec_result
   changed_when: false
-  failed_when: docker_exec_fail_on_error | default(true) and exec_result.rc != 0
+  failed_when: docker_exec_fail_on_error | default(true) and _exec_result.rc != 0
+  no_log: "{{ docker_exec_no_log | default(false) }}"
+
+# Expose result as a fact so callers can access it
+- name: Set exec result fact
+  ansible.builtin.set_fact:
+    exec_result: "{{ _exec_result }}"

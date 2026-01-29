@@ -994,7 +994,10 @@ configure_github_token() {
             fi
             ;;
         3)
-            set_state "GITHUB_AUTH_TOKEN" ""
+            # Clear from vault (source of truth for secrets)
+            if command -v yq &>/dev/null && [[ -f "$VAULT_FILE" ]]; then
+                write_vault_secret "secrets.github.personal_access_token" "" 2>/dev/null || true
+            fi
             
             # Also remove from env file
             local env_file
@@ -1003,6 +1006,9 @@ configure_github_token() {
                 sed -i.bak '/^GITHUB_AUTH_TOKEN=/d' "$env_file"
                 rm -f "${env_file}.bak"
             fi
+            
+            # Clear from environment
+            unset GITHUB_AUTH_TOKEN
             
             success "GitHub token cleared"
             ;;

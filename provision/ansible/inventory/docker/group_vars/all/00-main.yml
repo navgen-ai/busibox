@@ -103,7 +103,16 @@ ssl_mode: selfsigned
 # ============================================================================
 postgres_db: busibox
 postgres_user: busibox_user
+# Password from vault - install.sh syncs generated secrets to vault
 postgres_password: "{{ secrets.postgresql.password | default('devpassword') }}"
+
+# All databases that need to be created for busibox services
+postgres_databases:
+  - busibox       # Main/default database
+  - authz         # AuthZ service (authentication/authorization)
+  - files         # Ingest service (file metadata)
+  - agent_server  # Agent API
+  - litellm       # LiteLLM proxy
 
 # Files/Ingestion database
 files_db: files

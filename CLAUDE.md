@@ -4,7 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) and Cursor AI when w
 
 ## Project Overview
 
-**Busibox** is a local LLM infrastructure platform that provides secure file storage, automated document processing with embeddings, semantic search via RAG (Retrieval Augmented Generation), and AI agent operations—all running on isolated LXC containers with role-based access control.
+**Busibox** is a local LLM infrastructure platform that provides secure file storage, automated document processing with embeddings, semantic search via RAG (Retrieval Augmented Generation), and AI agent operations—all running on isolated containers (Docker or LXC) with role-based access control.
+
+## ⚠️ CRITICAL: Always Use `make` Commands
+
+**NEVER run `docker compose`, `docker`, or `ansible-playbook` commands directly.**
+
+All service operations MUST go through the unified `make` interface because:
+- Secrets are injected from Ansible Vault at runtime
+- Environment is auto-detected from state files
+- Works identically for Docker and Proxmox backends
+
+See `.cursor/rules/010-make-commands.md` for complete details.
 
 ## Quick Start
 
@@ -13,71 +24,74 @@ This file provides guidance to Claude Code (claude.ai/code) and Cursor AI when w
 - **Deployment**: `docs/deployment/` - Deployment guides and procedures
 - **Configuration**: `docs/configuration/` - Setup and configuration guides
 - **Testing**: `TESTING.md` - Testing strategy and procedures
+- **Make Commands**: `.cursor/rules/010-make-commands.md` - Service management reference
 
-### Common Commands
+### Common Commands (from repo root)
 
-**Proxmox Host Setup** (run on Proxmox host as root):
+**Deploy Services**:
 ```bash
-cd /root/busibox/provision/pct
-# For production:
-bash create_lxc_base.sh production
-# For test:
-bash create_lxc_base.sh test
+# Deploy a single service
+make install SERVICE=authz
+
+# Deploy multiple services
+make install SERVICE=authz,agent,ingest
+
+# Deploy service groups
+make install SERVICE=apis            # All API services
+make install SERVICE=infrastructure  # postgres, redis, minio, milvus
+make install SERVICE=all             # Everything
 ```
 
-**Service Deployment** (run from admin workstation):
+**Manage Running Services**:
 ```bash
-cd provision/ansible
+# Restart a service
+make manage SERVICE=authz ACTION=restart
 
-# Deploy all services to test environment:
-make all INV=inventory/test
+# Stop/start services
+make manage SERVICE=authz ACTION=stop
+make manage SERVICE=authz ACTION=start
 
-# Deploy all services to production:
-make all
+# View logs (follows)
+make manage SERVICE=authz ACTION=logs
 
-# Deploy specific service:
-make milvus              # Deploy Milvus vector database
-make search-api          # Deploy search API
-make agent               # Deploy agent service
-make ingest              # Deploy ingest service
-make apps                # Deploy all apps
+# Check status
+make manage SERVICE=authz,postgres ACTION=status
 
-# Deploy individual applications:
-make deploy-ai-portal    # Deploy AI Portal
-make deploy-agent-manager # Deploy Agent Client
-make deploy-doc-intel    # Deploy Doc Intel
-make deploy-foundation   # Deploy Foundation
-make deploy-project-analysis
-make deploy-innovation
+# Full rebuild and redeploy
+make manage SERVICE=authz ACTION=redeploy
+```
+
+**Service Reference**:
+- **Infrastructure**: `postgres`, `redis`, `minio`, `milvus`
+- **APIs**: `authz`, `agent`, `ingest`, `search`, `deploy`, `docs`, `embedding`
+- **LLM**: `litellm`, `ollama`, `vllm`
+- **Frontend**: `core-apps`, `nginx`
+- **Groups**: `infrastructure`, `apis`, `llm`, `frontend`, `all`
+
+**Interactive Menus**:
+```bash
+make                     # Main launcher menu
+make install             # Installation wizard (no SERVICE=)
+make manage              # Service management menu (no SERVICE=)
+make test                # Testing menu
 ```
 
 **Testing**:
 ```bash
-cd provision/ansible
+# Docker testing
+make test-docker SERVICE=authz
 
-# Interactive test menu (recommended):
-make test-menu
+# Remote testing (against staging/production)
+make test-local SERVICE=agent INV=staging
 
-# Run specific tests:
-make test-ingest         # Test ingest service
-make test-search         # Test search service
-make test-agent          # Test agent service
-make test-apps           # Test applications
+# Interactive test menu
+make test
+```
 
-# Run extraction strategy tests:
-make test-extraction-simple   # Basic PDF extraction
-make test-extraction-llm      # LLM-enhanced extraction
-make test-extraction-marker   # Marker extraction (GPU)
-make test-extraction-colpali  # ColPali visual extraction
-
-# Run with coverage:
-make test-ingest-coverage
-make test-search-coverage
-
-# Verification:
-make verify              # Run all health checks
-make verify-health       # Service health checks
-make verify-smoke        # Database smoke tests
+**Proxmox Host Setup** (run ON Proxmox host as root):
+```bash
+cd /root/busibox/provision/pct
+bash create_lxc_base.sh production  # or: staging
 ```
 
 ### MCP Server for Cursor
@@ -213,77 +227,89 @@ Each service runs in an isolated LXC container:
 
 ### Adding a New Service
 
-1. **Create container** in `provision/pct/vars.env`:
+1. **Create container** in `provision/pct/vars.env` (Proxmox only):
    ```bash
    CT_NEWSERVICE=208
    IP_NEWSERVICE=10.96.200.31
    ```
 
-2. **Update creation script** `provision/pct/create_lxc_base.sh`
+2. **Update creation script** `provision/pct/create_lxc_base.sh` (Proxmox only)
 
 3. **Create Ansible role**: `provision/ansible/roles/newservice/`
 
-4. **Add to site.yml** and inventory
+4. **Add to site.yml, docker.yml, and inventory**
 
-5. **Document** in appropriate category under `docs/`
+5. **Add to Makefile** service mappings
+
+6. **Document** in appropriate category under `docs/`
 
 ### Making Changes
 
 1. **Check existing documentation** in `docs/` (organized by category)
 2. **Follow organization rules** in `.cursor/rules/`
 3. **Test locally** if possible
-4. **Validate on test environment** before production
+4. **Validate on staging environment** before production
 5. **Update documentation** in correct category
 6. **Follow naming conventions** from rules
 
 ### Deploying Changes
 
-1. **Test environment first**:
+1. **Deploy to your service**:
    ```bash
-   cd provision/ansible
-   make test
+   make install SERVICE=myservice
    ```
 
-2. **Validate deployment**:
+2. **Check status**:
    ```bash
-   bash scripts/test-infrastructure.sh
+   make manage SERVICE=myservice ACTION=status
    ```
 
-3. **Production deployment**:
+3. **View logs if needed**:
    ```bash
-   cd provision/ansible
-   make production
+   make manage SERVICE=myservice ACTION=logs
    ```
 
 ## Error Handling
 
-### Container Issues
-```bash
-# Check container status:
-pct status <CTID>
+### Service Issues (Docker or Proxmox)
 
-# Check container logs:
-pct enter <CTID>
-journalctl -xe
+```bash
+# Check service status
+make manage SERVICE=authz ACTION=status
+
+# View service logs
+make manage SERVICE=authz ACTION=logs
+
+# Restart a service
+make manage SERVICE=authz ACTION=restart
+
+# Full redeploy (rebuild + restart with fresh secrets)
+make manage SERVICE=authz ACTION=redeploy
 ```
 
-### Service Issues
-```bash
-# SSH into container:
-ssh root@<container-ip>
+### Proxmox-Specific Issues
 
-# Check service:
+```bash
+# Check container status (on Proxmox host):
+pct status <CTID>
+
+# Enter container (on Proxmox host):
+pct enter <CTID>
+
+# Check service inside container:
 systemctl status <service>
 journalctl -u <service> -n 50 --no-pager
 ```
 
-### Ansible Issues
-```bash
-# Test connection:
-ansible -i inventory/test/hosts.yml all -m ping
+### "Password authentication failed" Errors
 
-# Run playbook with verbose output:
-ansible-playbook -i inventory/test/hosts.yml site.yml -vvv
+This usually means secrets weren't injected. **Always use make commands**:
+```bash
+# Wrong - bypasses secrets
+docker compose up -d authz-api  # ❌
+
+# Correct - injects secrets from vault
+make manage SERVICE=authz ACTION=redeploy  # ✅
 ```
 
 ## Best Practices
@@ -342,12 +368,20 @@ If you're unsure about:
 
 ## Important Notes
 
-1. **Read the rules** in `.cursor/rules/` before creating files
-2. **Follow existing patterns** in the codebase
-3. **Test before deploying** to production
-4. **Document your changes** in the appropriate docs category
-5. **Use descriptive names** that indicate purpose and context
-6. **Include context** in script headers and doc metadata
+1. **ALWAYS use `make` commands** - Never run docker/ansible directly
+2. **Read the rules** in `.cursor/rules/` before creating files
+3. **Follow existing patterns** in the codebase
+4. **Test before deploying** to production
+5. **Document your changes** in the appropriate docs category
+6. **Use descriptive names** that indicate purpose and context
+7. **Include context** in script headers and doc metadata
+
+## Key Rules Files
+
+- `.cursor/rules/010-make-commands.md` - **READ THIS FIRST** - Service management
+- `.cursor/rules/001-documentation-organization.md` - Where to put docs
+- `.cursor/rules/002-script-organization.md` - Where to put scripts
+- `.cursor/rules/003-zero-trust-authentication.md` - Auth patterns
 
 
 

@@ -24,8 +24,11 @@
 SAVED_ENV := $(shell grep '^ENVIRONMENT=' .busibox-state 2>/dev/null | cut -d= -f2)
 ENV ?= $(if $(SAVED_ENV),$(SAVED_ENV),development)
 
-# Service for targeted operations
+# Service for targeted operations (comma-separated for multiple)
 SERVICE ?=
+
+# Action for service management (start, stop, restart, logs, redeploy, status)
+ACTION ?=
 
 # Inventory (maps to environment for Ansible)
 # INV=staging maps to inventory/staging, INV=production maps to inventory/production
@@ -118,9 +121,15 @@ help:
 	@echo ""
 	@echo "  make                         # Interactive launcher menu"
 	@echo "  make install                 # Fresh installation wizard"
+	@echo "  make install SERVICE=authz   # Deploy specific service (via Ansible)"
 	@echo "  make update                  # Update existing installation"
-	@echo "  make manage                  # Service management (start/stop/restart)"
+	@echo "  make manage                  # Service management (interactive)"
+	@echo "  make manage SERVICE=authz ACTION=restart  # Direct service action"
 	@echo "  make test                    # Testing menu"
+	@echo ""
+	@echo "  Services: postgres, redis, minio, milvus, authz, agent, ingest,"
+	@echo "            search, deploy, docs, embedding, litellm, core-apps, nginx"
+	@echo "  Actions:  start, stop, restart, logs, redeploy, status"
 	@echo ""
 	@echo "═══════════════════════════════════════════════════════════════════════"
 	@echo "                    OTHER COMMANDS"
@@ -528,12 +537,17 @@ docker-clean-all:
 #   make warmup          # Check cache and download missing models
 #   make warmup FORCE=1  # Re-download (interactive selection)
 
-# Interactive install with wizard
+# Interactive install with wizard OR deploy specific service
 # Usage: make install                      # Full wizard (docker-compose based)
 #        make install VERBOSE=1            # Show all logs
-#        make install USE_ANSIBLE=1        # Use Ansible for Docker deployment
+#        make install SERVICE=authz        # Deploy specific service (uses Ansible)
+#        make install SERVICE=authz,agent  # Deploy multiple services
 install:
+ifdef SERVICE
+	@bash scripts/make/service-deploy.sh "$(SERVICE)"
+else
 	@USE_ANSIBLE_FOR_DOCKER=$(USE_ANSIBLE) bash scripts/make/install.sh $(if $(VERBOSE),-v)
+endif
 
 # Update existing installation
 # Preserves: PostgreSQL, Redis, MinIO, Milvus, model cache, user apps
@@ -548,13 +562,22 @@ install:
 update:
 	@USE_ANSIBLE_FOR_DOCKER=$(USE_ANSIBLE) ENV=$(ENV) INV=$(INV) bash scripts/make/update.sh $(if $(VERBOSE),-v) $(if $(REBUILD),--rebuild-all)
 
-# Service management menu
+# Service management menu OR direct service action
 # Interactive menu for stopping/starting/redeploying services
 # Supports both Docker and Proxmox backends
 #
-# Usage: make manage                       # Interactive management menu
+# Usage: make manage                                   # Interactive menu
+#        make manage SERVICE=authz ACTION=restart      # Restart authz service
+#        make manage SERVICE=authz,agent ACTION=stop   # Stop multiple services
+#        make manage SERVICE=authz ACTION=logs         # View logs
+#
+# Actions: start, stop, restart, logs, redeploy, status
 manage:
+ifdef SERVICE
+	@bash scripts/make/service-manage.sh "$(SERVICE)" "$(ACTION)"
+else
 	@bash scripts/make/manage.sh
+endif
 
 # Generate recovery magic link for admin access
 # Use when browser/passkey access is lost

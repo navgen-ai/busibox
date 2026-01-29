@@ -14,6 +14,10 @@ These rules ensure:
 
 Rules are numbered and categorized:
 
+### ⚠️ CRITICAL: Make Commands (010)
+
+- **010-make-commands.md** - **READ FIRST** - ALWAYS use `make` commands, NEVER docker/ansible directly
+
 ### Organization Rules (001-002)
 
 - **001-documentation-organization.md** - Where to place documentation files
@@ -54,6 +58,30 @@ Rules are loaded from `CLAUDE.md` in project root, which should reference this d
 3. **Specific rules** take precedence over general rules
 
 ## Quick Reference
+
+### "How do I deploy/restart/manage a service?"
+
+**ALWAYS use `make` commands:**
+```bash
+# Deploy/redeploy a service
+make install SERVICE=authz
+
+# Restart/stop/start a service
+make manage SERVICE=authz ACTION=restart
+
+# View logs
+make manage SERVICE=authz ACTION=logs
+
+# Check status
+make manage SERVICE=authz ACTION=status
+```
+
+**NEVER use these directly:**
+```bash
+❌ docker compose up -d authz-api
+❌ docker restart prod-authz-api
+❌ ansible-playbook -i inventory/docker docker.yml --tags authz
+```
 
 ### "Where should I put this documentation?"
 

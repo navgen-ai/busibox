@@ -202,12 +202,7 @@ else
         # Docker: use the known local development values
         ADMIN_TOKEN_FOR_CLIENT="local-admin-token"
         JWT_SECRET="ai-portal-secret"
-    else
-        # Proxmox: fetch from container
-        ADMIN_TOKEN_FOR_CLIENT=$(pct exec ${AUTHZ_CTID} -- grep AUTHZ_ADMIN_TOKEN /srv/authz/.env 2>/dev/null | cut -d= -f2 || echo "")
-        JWT_SECRET=$(pct exec ${AUTHZ_CTID} -- grep AUTHZ_BOOTSTRAP_CLIENT_SECRET /srv/authz/.env 2>/dev/null | cut -d= -f2 || echo "")
-    fi
-    
+   
     if [ -n "$ADMIN_TOKEN_FOR_CLIENT" ] && [ -n "$JWT_SECRET" ]; then
         # Create api-service client via admin API (proper hashing handled by authz)
         CREATE_RESPONSE=$(curl -s -X POST "${AUTHZ_URL}/admin/oauth-clients" \
@@ -264,10 +259,7 @@ echo -e "${BLUE}Verifying token exchange...${NC}"
 if [ "$USE_DOCKER" = true ]; then
     # Docker: use the known local development client secret
     TOKEN_SECRET="ai-portal-secret"
-else
-    # Proxmox: fetch from container
-    TOKEN_SECRET=$(pct exec ${AUTHZ_CTID} -- grep AUTHZ_BOOTSTRAP_CLIENT_SECRET /srv/authz/.env 2>/dev/null | cut -d= -f2 || echo "")
-fi
+
 
 TOKEN_RESPONSE=$(curl -s -X POST "${AUTHZ_URL}/oauth/token" \
     -H "Content-Type: application/x-www-form-urlencoded" \

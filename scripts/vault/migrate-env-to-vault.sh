@@ -214,25 +214,10 @@ try:
     if resend_key:
         vault['secrets']['resend_api_key'] = resend_key
     
-    # OAuth clients
-    ai_portal_client = get_env_value('AUTHZ_BOOTSTRAP_CLIENT_ID')
-    ai_portal_secret = get_env_value('AUTHZ_BOOTSTRAP_CLIENT_SECRET')
-    agent_manager_client = get_env_value('AGENT_MANAGER_CLIENT_ID')
-    agent_manager_secret = get_env_value('AGENT_MANAGER_CLIENT_SECRET')
-    
-    if ai_portal_client:
-        vault['secrets']['oauth_client_id'] = ai_portal_client
-        vault['secrets']['oauth_client_secret'] = ai_portal_secret or ''
-    
     # Agent Manager
     if agent_manager_client or agent_manager_secret:
         if 'agent-manager' not in vault['secrets']:
             vault['secrets']['agent-manager'] = {}
-        if agent_manager_client:
-            vault['secrets']['agent-manager']['admin_client_id'] = agent_manager_client
-        if agent_manager_secret:
-            vault['secrets']['agent-manager']['admin_client_secret'] = agent_manager_secret
-            vault['secrets']['agent-manager']['oauth_client_secret'] = agent_manager_secret
         if litellm_key:
             vault['secrets']['agent-manager']['litellm_api_key'] = litellm_key
     

@@ -76,14 +76,8 @@ class Config(BaseSettings):
     # AuthZ Token URL (for token exchange)
     authz_token_url: str = os.getenv("AUTHZ_TOKEN_URL", "http://authz-api:8010/oauth/token")
     
-    # Service-to-service OAuth client (api-service)
-    # Used for token exchange when calling other services (ingest, agent, etc.)
-    api_service_client_id: str = os.getenv("API_SERVICE_CLIENT_ID", "api-service")
-    api_service_client_secret: str = os.getenv("API_SERVICE_CLIENT_SECRET", "")
-    
-    # Bootstrap client credentials (for PVT tests)
-    authz_bootstrap_client_id: str = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_ID", "ai-portal")
-    authz_bootstrap_client_secret: str = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_SECRET", "")
+    # NOTE: Zero Trust auth - no client IDs or secrets needed
+    # Token exchange uses the incoming user token, not client credentials
     
     # Test user (for integration tests)
     test_user_id: Optional[str] = os.getenv("TEST_USER_ID", None)

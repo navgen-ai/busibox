@@ -4,6 +4,9 @@ Integration tests for Zero Trust token exchange to ingest-api.
 Tests that the agent-api can properly exchange tokens using Zero Trust mode
 (passing the user's JWT as subject_token) to get ingest-api audience tokens
 for embedding generation and content ingestion.
+
+NOTE: Zero Trust auth - no client credentials needed. Tests use pre-created
+test users from bootstrap-test-databases.py.
 """
 
 import pytest
@@ -15,36 +18,25 @@ async def _get_user_token(test_user_id: str) -> str:
     """
     Get a valid user JWT for testing.
     
-    In Zero Trust mode, we need the user's actual JWT to exchange.
-    This gets a token from AuthZ using the bootstrap client.
+    In Zero Trust mode, we use the AuthTestClient which:
+    1. Uses pre-created test users (no client auth)
+    2. Gets tokens via admin-scoped token exchange
     """
-    import httpx
+    # Import the shared testing library
+    import sys
     import os
     
-    authz_url = os.environ.get(
-        "AUTH_TOKEN_URL",
-        os.environ.get("AUTHZ_TOKEN_URL", "http://authz-api:8010/oauth/token")
-    )
-    bootstrap_client_id = os.environ.get("AUTHZ_BOOTSTRAP_CLIENT_ID", "ai-portal")
-    bootstrap_client_secret = os.environ.get("AUTHZ_BOOTSTRAP_CLIENT_SECRET", "")
+    # Add shared testing library to path if not already
+    _agent_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    _testing_path = os.path.join(_agent_root, "src", "testing")
+    if _testing_path not in sys.path and os.path.exists(_testing_path):
+        sys.path.insert(0, _testing_path)
     
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.post(
-            authz_url,
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
-                "client_id": bootstrap_client_id,
-                "client_secret": bootstrap_client_secret,
-                "requested_subject": test_user_id,
-                "audience": "agent-api",
-                "scope": "read write",
-            },
-        )
-        
-        if response.status_code != 200:
-            raise ValueError(f"Failed to get user token: {response.status_code} - {response.text}")
-        
-        return response.json()["access_token"]
+    from testing import AuthTestClient
+    
+    # Use the shared test client to get a token
+    client = AuthTestClient(test_user_id=test_user_id)
+    return client.get_token(audience="agent-api")
 
 
 @pytest.mark.asyncio
