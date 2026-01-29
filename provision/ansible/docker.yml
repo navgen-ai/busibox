@@ -1,0 +1,229 @@
+---
+# Busibox Docker Deployment Playbook
+#
+# This playbook deploys Busibox infrastructure and services via Docker Compose.
+# It mirrors the functionality of site.yml but targets Docker instead of LXC containers.
+#
+# Usage:
+#   # Full deployment
+#   ansible-playbook -i inventory/docker docker.yml
+#
+#   # Deploy specific service groups
+#   ansible-playbook -i inventory/docker docker.yml --tags infrastructure
+#   ansible-playbook -i inventory/docker docker.yml --tags apis
+#   ansible-playbook -i inventory/docker docker.yml --tags frontend
+#
+#   # Deploy specific services
+#   ansible-playbook -i inventory/docker docker.yml --tags postgres
+#   ansible-playbook -i inventory/docker docker.yml --tags authz
+#
+# Environment Variables:
+#   CONTAINER_PREFIX - Container naming prefix (default: dev)
+#   GITHUB_AUTH_TOKEN - GitHub token for private repos
+#   BUSIBOX_ENV - Environment name (development, demo)
+#
+# Tags:
+#   - all: Everything
+#   - infrastructure: postgres, redis, minio, milvus
+#   - apis: authz, ingest, search, agent, docs, deploy
+#   - llm: litellm
+#   - frontend: core-apps, nginx
+#   - user-apps: user-apps container
+
+- name: Busibox Docker Deployment
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  
+  vars:
+    deploy_target: docker
+  
+  pre_tasks:
+    - name: Display deployment information
+      ansible.builtin.debug:
+        msg: |
+          ═══════════════════════════════════════════════════════════════════
+          BUSIBOX DOCKER DEPLOYMENT
+          ═══════════════════════════════════════════════════════════════════
+          Environment: {{ busibox_env | default('development') }}
+          Container Prefix: {{ container_prefix | default('dev') }}
+          Compose Project: {{ compose_project_name | default(container_prefix) }}
+          ═══════════════════════════════════════════════════════════════════
+
+    - name: Load secrets from vault
+      ansible.builtin.include_vars:
+        file: roles/secrets/vars/vault.yml
+      no_log: true
+      ignore_errors: true
+      tags: always
+
+    - name: Initialize Docker common
+      ansible.builtin.include_role:
+        name: docker_common
+      tags: always
+
+    - name: Generate environment file
+      ansible.builtin.include_role:
+        name: docker_common
+        tasks_from: generate_env
+      vars:
+        docker_env_template: docker.env.j2
+      tags: always
+
+  tasks:
+    # =========================================================================
+    # INFRASTRUCTURE - Data stores and supporting services
+    # =========================================================================
+    
+    - name: Deploy PostgreSQL
+      ansible.builtin.include_role:
+        name: postgres
+        tasks_from: docker
+      tags:
+        - infrastructure
+        - postgres
+        - data
+
+    - name: Deploy MinIO
+      ansible.builtin.include_role:
+        name: minio
+        tasks_from: docker
+      tags:
+        - infrastructure
+        - minio
+        - data
+
+    - name: Deploy Milvus
+      ansible.builtin.include_role:
+        name: milvus
+        tasks_from: docker
+      tags:
+        - infrastructure
+        - milvus
+        - data
+
+    # =========================================================================
+    # API SERVICES - Backend services
+    # =========================================================================
+    
+    - name: Deploy AuthZ API
+      ansible.builtin.include_role:
+        name: authz
+        tasks_from: docker
+      tags:
+        - apis
+        - authz
+
+    - name: Deploy Ingest Services
+      ansible.builtin.include_role:
+        name: ingest
+        tasks_from: docker
+      tags:
+        - apis
+        - ingest
+
+    - name: Deploy Search API
+      ansible.builtin.include_role:
+        name: search_api
+        tasks_from: docker
+      tags:
+        - apis
+        - search
+
+    - name: Deploy Agent API
+      ansible.builtin.include_role:
+        name: agent_api
+        tasks_from: docker
+      tags:
+        - apis
+        - agent
+
+    - name: Deploy Docs API
+      ansible.builtin.include_role:
+        name: docs_api
+        tasks_from: docker
+      tags:
+        - apis
+        - docs
+
+    - name: Deploy Deploy API
+      ansible.builtin.include_role:
+        name: deploy_api
+        tasks_from: docker
+      tags:
+        - apis
+        - deploy
+
+    # =========================================================================
+    # LLM SERVICES
+    # =========================================================================
+    
+    - name: Deploy LiteLLM
+      ansible.builtin.include_role:
+        name: litellm
+        tasks_from: docker
+      tags:
+        - llm
+        - litellm
+
+    # =========================================================================
+    # FRONTEND - User-facing applications
+    # =========================================================================
+    
+    - name: Deploy Core Apps (AI Portal, Agent Manager)
+      ansible.builtin.include_role:
+        name: app_deployer
+        tasks_from: docker
+      tags:
+        - frontend
+        - core-apps
+        - apps
+
+    - name: Deploy Nginx
+      ansible.builtin.include_role:
+        name: nginx
+        tasks_from: docker
+      tags:
+        - frontend
+        - nginx
+        - proxy
+
+    # =========================================================================
+    # USER APPS - External application container
+    # =========================================================================
+    
+    - name: Deploy User Apps Container
+      ansible.builtin.include_role:
+        name: user_apps
+        tasks_from: docker
+      tags:
+        - user-apps
+        - apps
+
+  post_tasks:
+    - name: Display deployment summary
+      ansible.builtin.debug:
+        msg: |
+          ═══════════════════════════════════════════════════════════════════
+          DEPLOYMENT COMPLETE
+          ═══════════════════════════════════════════════════════════════════
+          
+          Services deployed:
+            ✓ PostgreSQL      - localhost:5432
+            ✓ Redis           - localhost:6379
+            ✓ MinIO           - localhost:9000 (console: 9001)
+            ✓ Milvus          - localhost:19530
+            ✓ AuthZ API       - localhost:{{ authz_port | default(8010) }}
+            ✓ Ingest API      - localhost:{{ ingest_port | default(8002) }}
+            ✓ Search API      - localhost:{{ search_port | default(8003) }}
+            ✓ Agent API       - localhost:{{ agent_port | default(8000) }}
+            ✓ LiteLLM         - localhost:{{ litellm_port | default(4000) }}
+            ✓ AI Portal       - localhost:{{ ai_portal_port | default(3000) }}
+            ✓ Agent Manager   - localhost:{{ agent_manager_port | default(3001) }}
+            ✓ Nginx           - localhost:80/443
+          
+          Access the AI Portal at:
+            https://{{ base_domain | default('localhost') }}/portal/
+          
+          ═══════════════════════════════════════════════════════════════════
+      tags: always

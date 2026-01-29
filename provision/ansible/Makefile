@@ -896,3 +896,81 @@ migrate-embeddings:
 
 migrate-embeddings-force:
 	@MILVUS_IP=$(MILVUS_IP) bash scripts/check-embedding-migration.sh --migrate --force
+
+# ============================================================================
+# DOCKER DEPLOYMENT
+# ============================================================================
+# Deploy Busibox via Docker Compose using Ansible
+#
+# This provides a unified deployment system for Docker environments,
+# using the same Ansible patterns as LXC deployments.
+#
+# Usage:
+#   make docker                    # Full Docker deployment
+#   make docker-infrastructure     # Deploy data stores only
+#   make docker-apis               # Deploy API services
+#   make docker-frontend           # Deploy frontend apps
+#   make docker-status             # Show container status
+#
+# Environment Variables:
+#   CONTAINER_PREFIX   - Container name prefix (default: dev)
+#   GITHUB_AUTH_TOKEN  - GitHub token for private repos
+#   BUSIBOX_ENV        - Environment name (development, demo)
+
+# Docker inventory path
+DOCKER_INV = inventory/docker
+
+# Docker-specific vault flags (use same vault as LXC)
+DOCKER_VAULT_FLAGS = $(shell [ -f $(VAULT_PASS_FILE) ] && echo "--vault-password-file $(VAULT_PASS_FILE)" || echo "")
+
+# Container prefix (default: dev)
+CONTAINER_PREFIX ?= dev
+
+# Docker deployment variables
+DOCKER_VARS = -e container_prefix=$(CONTAINER_PREFIX) -e busibox_env=$(or $(BUSIBOX_ENV),development)
+
+.PHONY: docker docker-infrastructure docker-apis docker-llm docker-frontend docker-status docker-logs docker-clean
+
+docker:
+	@echo "╔══════════════════════════════════════════════════════════════════════╗"
+	@echo "║                    BUSIBOX DOCKER DEPLOYMENT                          ║"
+	@echo "╚══════════════════════════════════════════════════════════════════════╝"
+	@echo ""
+	@echo "Container prefix: $(CONTAINER_PREFIX)"
+	@echo "Environment: $(or $(BUSIBOX_ENV),development)"
+	@echo ""
+	ansible-playbook -i $(DOCKER_INV) docker.yml $(DOCKER_VAULT_FLAGS) $(DOCKER_VARS) $(EXTRA_ARGS)
+
+docker-infrastructure:
+	@echo "Deploying Docker infrastructure (postgres, redis, minio, milvus)..."
+	ansible-playbook -i $(DOCKER_INV) docker.yml --tags infrastructure $(DOCKER_VAULT_FLAGS) $(DOCKER_VARS) $(EXTRA_ARGS)
+
+docker-apis:
+	@echo "Deploying Docker API services (authz, ingest, search, agent)..."
+	ansible-playbook -i $(DOCKER_INV) docker.yml --tags apis $(DOCKER_VAULT_FLAGS) $(DOCKER_VARS) $(EXTRA_ARGS)
+
+docker-llm:
+	@echo "Deploying Docker LLM services (litellm)..."
+	ansible-playbook -i $(DOCKER_INV) docker.yml --tags llm $(DOCKER_VAULT_FLAGS) $(DOCKER_VARS) $(EXTRA_ARGS)
+
+docker-frontend:
+	@echo "Deploying Docker frontend (core-apps, nginx)..."
+	ansible-playbook -i $(DOCKER_INV) docker.yml --tags frontend $(DOCKER_VAULT_FLAGS) $(DOCKER_VARS) $(EXTRA_ARGS)
+
+docker-status:
+	@echo "Docker Container Status:"
+	@echo "========================"
+	@docker compose -f ../../docker-compose.yml -f ../../docker-compose.local-dev.yml ps 2>/dev/null || echo "No containers running"
+
+docker-logs:
+	@SERVICE=$${SERVICE:-""}; \
+	if [ -n "$$SERVICE" ]; then \
+		docker compose -f ../../docker-compose.yml -f ../../docker-compose.local-dev.yml logs --tail=100 $$SERVICE; \
+	else \
+		docker compose -f ../../docker-compose.yml -f ../../docker-compose.local-dev.yml logs --tail=50; \
+	fi
+
+docker-clean:
+	@echo "Stopping all Docker containers..."
+	@docker compose -f ../../docker-compose.yml -f ../../docker-compose.local-dev.yml down --remove-orphans 2>/dev/null || true
+	@echo "Note: Data volumes are preserved. Use 'docker volume prune' to remove them."

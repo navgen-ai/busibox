@@ -1,0 +1,36 @@
+---
+# Docker Compose Stop Task
+#
+# Usage:
+#   - include_role:
+#       name: docker_common
+#       tasks_from: compose_stop
+#     vars:
+#       docker_services_to_stop: ["nginx", "core-apps"]
+#       docker_remove_volumes: false
+
+- name: Set service list for compose stop
+  ansible.builtin.set_fact:
+    _services_arg: "{{ docker_services_to_stop | default([]) | join(' ') }}"
+
+- name: Stop services with docker compose stop
+  ansible.builtin.shell: |
+    cd {{ docker_compose_dir }}
+    docker compose {{ docker_compose_file_args }} {{ docker_compose_env_args }} \
+      stop {{ _services_arg }}
+  args:
+    chdir: "{{ docker_compose_dir }}"
+  register: stop_result
+  changed_when: "'Stopping' in stop_result.stderr or 'Stopped' in stop_result.stderr"
+  failed_when: false
+
+- name: Remove stopped containers (if requested)
+  ansible.builtin.shell: |
+    cd {{ docker_compose_dir }}
+    docker compose {{ docker_compose_file_args }} {{ docker_compose_env_args }} \
+      rm -f {{ '-v' if docker_remove_volumes | default(false) else '' }} {{ _services_arg }}
+  args:
+    chdir: "{{ docker_compose_dir }}"
+  when: docker_remove_containers | default(false)
+  register: rm_result
+  changed_when: "'Removing' in rm_result.stderr"

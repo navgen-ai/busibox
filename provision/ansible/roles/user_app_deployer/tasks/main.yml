@@ -1,0 +1,37 @@
+---
+# User App Deployer Role - Main Tasks
+#
+# This role deploys user/external applications to the user-apps container.
+# It routes to the appropriate task file based on deploy_target.
+
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - app_id is defined and app_id | length > 0
+      - github_repo is defined and github_repo | length > 0
+    fail_msg: "app_id and github_repo are required"
+
+- name: Validate app_id format
+  ansible.builtin.assert:
+    that:
+      - app_id is match('^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$')
+    fail_msg: "app_id must be lowercase alphanumeric with optional hyphens"
+
+- name: Validate github_repo format
+  ansible.builtin.assert:
+    that:
+      - github_repo is match('^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$')
+    fail_msg: "github_repo must be in owner/repo format"
+
+- name: Set deployment facts
+  ansible.builtin.set_fact:
+    app_path: "{{ user_apps_base_path }}/{{ app_id }}"
+    app_log_path: "{{ user_apps_logs_path }}/{{ app_id }}"
+
+- name: Include Docker deployment tasks
+  ansible.builtin.include_tasks: docker.yml
+  when: deploy_target == 'docker'
+
+- name: Include LXC deployment tasks
+  ansible.builtin.include_tasks: lxc.yml
+  when: deploy_target == 'proxmox'

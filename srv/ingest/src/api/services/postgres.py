@@ -142,6 +142,7 @@ class PostgresService:
             "add_rbac_schema.sql",
             "add_rls_policies.sql",
             "003_security_model.sql",
+            "004_structured_data.sql",
         ]
         
         for migration_file in migration_order:

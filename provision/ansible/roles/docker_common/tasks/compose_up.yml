@@ -1,0 +1,54 @@
+---
+# Docker Compose Up Task
+#
+# Usage:
+#   - include_role:
+#       name: docker_common
+#       tasks_from: compose_up
+#     vars:
+#       docker_services_to_start: ["postgres", "redis"]
+#       docker_build_first: true
+#       docker_wait_for_health: true
+
+- name: Set service list for compose up
+  ansible.builtin.set_fact:
+    _services_arg: "{{ docker_services_to_start | default([]) | join(' ') }}"
+
+- name: Build services (if requested)
+  ansible.builtin.shell: |
+    cd {{ docker_compose_dir }}
+    docker compose {{ docker_compose_file_args }} {{ docker_compose_env_args }} \
+      build {{ '--no-cache' if docker_build_no_cache else '' }} {{ _services_arg }}
+  args:
+    chdir: "{{ docker_compose_dir }}"
+  when: docker_build_first | default(false)
+  register: build_result
+  changed_when: "'Building' in build_result.stdout or 'built' in build_result.stdout"
+
+- name: Start services with docker compose up
+  ansible.builtin.shell: |
+    cd {{ docker_compose_dir }}
+    docker compose {{ docker_compose_file_args }} {{ docker_compose_env_args }} \
+      up -d --no-deps {{ '--force-recreate' if docker_force_recreate else '' }} \
+      {{ '--remove-orphans' if docker_remove_orphans else '' }} \
+      {{ _services_arg }}
+  args:
+    chdir: "{{ docker_compose_dir }}"
+  register: up_result
+  changed_when: "'Creating' in up_result.stderr or 'Recreating' in up_result.stderr or 'Started' in up_result.stderr"
+
+- name: Wait for services to be healthy
+  ansible.builtin.shell: |
+    cd {{ docker_compose_dir }}
+    docker compose {{ docker_compose_file_args }} {{ docker_compose_env_args }} \
+      ps --format json {{ _services_arg }} | jq -r '.[].Health // "none"'
+  args:
+    chdir: "{{ docker_compose_dir }}"
+  register: health_check
+  until: >
+    health_check.stdout_lines | select('equalto', 'starting') | list | length == 0
+  retries: "{{ (docker_health_timeout | int / 5) | int }}"
+  delay: 5
+  when: docker_wait_for_health | default(false)
+  changed_when: false
+  failed_when: false

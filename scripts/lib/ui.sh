@@ -5,7 +5,9 @@
 # This library provides consistent terminal UI functions for all interactive scripts.
 # Usage: source "$(dirname "$0")/lib/ui.sh"
 
-# Colors
+# =============================================================================
+# COLORS
+# =============================================================================
 export RED='\033[0;31m'
 export GREEN='\033[0;32m'
 export YELLOW='\033[1;33m'
@@ -15,7 +17,9 @@ export BOLD='\033[1m'
 export DIM='\033[2m'
 export NC='\033[0m' # No Color
 
-# Status messages
+# =============================================================================
+# STATUS MESSAGES
+# =============================================================================
 info() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
@@ -32,25 +36,325 @@ error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# ASCII box with title
-box() {
-    local title="$1"
-    local width=${2:-120}
+# =============================================================================
+# BOX DRAWING SYSTEM
+# =============================================================================
+# A unified system for drawing consistent boxes across all scripts.
+#
+# Global configuration (can be overridden before calling box functions):
+#   BOX_WIDTH      - Total box width in characters (default: 70)
+#   BOX_STYLE      - Border style: "double" (║) or "single" (│) (default: double)
+#   BOX_COLOR      - Border color (default: CYAN)
+#
+# Main functions:
+#   box_start      - Start a new box (sets state)
+#   box_header     - Top border with optional title and subtitle
+#   box_line       - Content line with automatic padding
+#   box_separator  - Horizontal divider within box
+#   box_empty      - Empty line within box
+#   box_footer     - Bottom border (closes box)
+#   box            - High-level function for simple boxes
+#
+# Usage:
+#   box_header "TITLE" "subtitle"
+#   box_line "Content here"
+#   box_line "Centered content" "center"
+#   box_line "  • Bullet item"
+#   box_separator
+#   box_line "More content"
+#   box_footer
+# =============================================================================
+
+# Default box configuration
+BOX_WIDTH="${BOX_WIDTH:-70}"
+BOX_STYLE="${BOX_STYLE:-double}"
+BOX_COLOR="${BOX_COLOR:-$CYAN}"
+
+# Internal state
+_BOX_ACTIVE=false
+
+# -----------------------------------------------------------------------------
+# Helper: Strip ANSI escape codes from a string
+# Handles both literal \033[...m and actual escape sequences
+# -----------------------------------------------------------------------------
+_strip_ansi() {
+    local text="$1"
+    # First, interpret the string with echo -e to convert \033 to actual escapes
+    # Then strip the actual escape sequences
+    # Handle both literal \033[...m format AND actual ^[[...m format
+    echo -e "$text" | sed -E 's/\x1b\[[0-9;]*m//g'
+}
+
+# -----------------------------------------------------------------------------
+# Helper: Get visible length of string (excluding ANSI codes)
+# -----------------------------------------------------------------------------
+_visible_length() {
+    local stripped
+    stripped=$(_strip_ansi "$1")
+    printf '%d' "${#stripped}"
+}
+
+# -----------------------------------------------------------------------------
+# Helper: Generate a repeated character string
+# -----------------------------------------------------------------------------
+_repeat_char() {
+    local char="$1"
+    local count="$2"
+    local result=""
+    for ((i=0; i<count; i++)); do
+        result+="$char"
+    done
+    printf '%s' "$result"
+}
+
+# -----------------------------------------------------------------------------
+# Helper: Get border characters based on style
+# -----------------------------------------------------------------------------
+_get_border_chars() {
+    local style="${1:-$BOX_STYLE}"
+    if [[ "$style" == "single" ]]; then
+        echo "┌ ┐ └ ┘ │ ─ ├ ┤ ┬ ┴ ┼"
+    else
+        echo "╔ ╗ ╚ ╝ ║ ═ ╠ ╣ ╦ ╩ ╬"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# box_start - Initialize box state (optional, called automatically)
+# Usage: box_start [width] [style] [color]
+# -----------------------------------------------------------------------------
+box_start() {
+    BOX_WIDTH="${1:-${BOX_WIDTH:-70}}"
+    BOX_STYLE="${2:-${BOX_STYLE:-double}}"
+    BOX_COLOR="${3:-${BOX_COLOR:-$CYAN}}"
+    _BOX_ACTIVE=true
+}
+
+# -----------------------------------------------------------------------------
+# box_header - Draw top border with optional title and subtitle
+# Usage: box_header [title] [subtitle] [title_align]
+#   title_align: "center" (default) or "left"
+# -----------------------------------------------------------------------------
+box_header() {
+    local title="${1:-}"
+    local subtitle="${2:-}"
+    local title_align="${3:-center}"
     
-    # Calculate padding for centered title
-    local title_len=${#title}
-    local total_padding=$((width - title_len - 2))
-    local left_padding=$((total_padding / 2))
-    local right_padding=$((total_padding - left_padding))
+    # Auto-start if not active
+    [[ "$_BOX_ACTIVE" != "true" ]] && box_start
+    
+    # Get border characters
+    local chars
+    read -ra chars <<< "$(_get_border_chars "$BOX_STYLE")"
+    local TL="${chars[0]}" TR="${chars[1]}" SIDE="${chars[4]}" HORIZ="${chars[5]}"
+    
+    local inner_width=$((BOX_WIDTH - 2))
+    local horiz_line
+    horiz_line=$(_repeat_char "$HORIZ" "$inner_width")
     
     # Top border
-    echo -e "${CYAN}╔$(printf '═%.0s' $(seq 1 $((width - 2))))╗${NC}"
+    echo -e "${BOX_COLOR}${TL}${horiz_line}${TR}${NC}"
     
-    # Title line
-    printf "${CYAN}║${NC}%${left_padding}s${BOLD}%s${NC}%${right_padding}s${CYAN}║${NC}\n" "" "$title" ""
+    # Title line (if provided)
+    if [[ -n "$title" ]]; then
+        box_line "${BOLD}${title}${NC}" "$title_align"
+    fi
     
-    # Bottom border
-    echo -e "${CYAN}╚$(printf '═%.0s' $(seq 1 $((width - 2))))╝${NC}"
+    # Subtitle line (if provided)
+    if [[ -n "$subtitle" ]]; then
+        box_line "${DIM}${subtitle}${NC}" "$title_align"
+    fi
+    
+    # Separator after title
+    if [[ -n "$title" ]] || [[ -n "$subtitle" ]]; then
+        box_separator
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# box_line - Draw a content line with automatic padding
+# Usage: box_line [content] [align] [indent]
+#   content: Text to display (can include ANSI codes)
+#   align:   "left" (default), "center", or "right"
+#   indent:  Number of spaces to indent (default: 0)
+# -----------------------------------------------------------------------------
+box_line() {
+    local content="${1:-}"
+    local align="${2:-left}"
+    local indent="${3:-0}"
+    
+    # Auto-start if not active
+    [[ "$_BOX_ACTIVE" != "true" ]] && box_start
+    
+    # Get border character
+    local chars
+    read -ra chars <<< "$(_get_border_chars "$BOX_STYLE")"
+    local SIDE="${chars[4]}"
+    
+    # Calculate dimensions
+    local inner_width=$((BOX_WIDTH - 2))
+    local visible_len
+    visible_len=$(_visible_length "$content")
+    
+    # Add indent to content length calculation
+    local content_len=$((visible_len + indent))
+    local total_padding=$((inner_width - content_len))
+    [[ $total_padding -lt 0 ]] && total_padding=0
+    
+    # Build indent spaces
+    local indent_spaces=""
+    indent_spaces=$(_repeat_char " " "$indent")
+    
+    # Build padding based on alignment
+    local left_pad="" right_pad=""
+    case "$align" in
+        center)
+            local left_count=$((total_padding / 2))
+            local right_count=$((total_padding - left_count))
+            left_pad=$(_repeat_char " " "$left_count")
+            right_pad=$(_repeat_char " " "$right_count")
+            echo -e "${BOX_COLOR}${SIDE}${NC}${left_pad}${content}${right_pad}${BOX_COLOR}${SIDE}${NC}"
+            ;;
+        right)
+            left_pad=$(_repeat_char " " "$total_padding")
+            echo -e "${BOX_COLOR}${SIDE}${NC}${left_pad}${indent_spaces}${content}${BOX_COLOR}${SIDE}${NC}"
+            ;;
+        *)  # left (default)
+            right_pad=$(_repeat_char " " "$total_padding")
+            echo -e "${BOX_COLOR}${SIDE}${NC}${indent_spaces}${content}${right_pad}${BOX_COLOR}${SIDE}${NC}"
+            ;;
+    esac
+}
+
+# -----------------------------------------------------------------------------
+# box_empty - Draw an empty line within the box
+# Usage: box_empty
+# -----------------------------------------------------------------------------
+box_empty() {
+    box_line ""
+}
+
+# -----------------------------------------------------------------------------
+# box_separator - Draw a horizontal divider within the box
+# Usage: box_separator [style]
+#   style: "light" (default) or "heavy"
+# -----------------------------------------------------------------------------
+box_separator() {
+    local style="${1:-light}"
+    
+    # Auto-start if not active
+    [[ "$_BOX_ACTIVE" != "true" ]] && box_start
+    
+    # Get border characters
+    local chars
+    read -ra chars <<< "$(_get_border_chars "$BOX_STYLE")"
+    local SIDE="${chars[4]}" HORIZ="${chars[5]}" LEFT="${chars[6]}" RIGHT="${chars[7]}"
+    
+    # Use lighter character for internal separators
+    local sep_char="─"
+    [[ "$style" == "heavy" ]] && sep_char="${HORIZ}"
+    
+    local inner_width=$((BOX_WIDTH - 2))
+    local sep_line
+    sep_line=$(_repeat_char "$sep_char" "$inner_width")
+    
+    # For double style, use ╟ and ╢ for light separators
+    if [[ "$BOX_STYLE" == "double" ]] && [[ "$style" == "light" ]]; then
+        echo -e "${BOX_COLOR}╟${sep_line}╢${NC}"
+    else
+        echo -e "${BOX_COLOR}${LEFT}${sep_line}${RIGHT}${NC}"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# box_footer - Draw the bottom border
+# Usage: box_footer
+# -----------------------------------------------------------------------------
+box_footer() {
+    # Auto-start if not active (shouldn't happen but handle gracefully)
+    [[ "$_BOX_ACTIVE" != "true" ]] && box_start
+    
+    # Get border characters
+    local chars
+    read -ra chars <<< "$(_get_border_chars "$BOX_STYLE")"
+    local BL="${chars[2]}" BR="${chars[3]}" HORIZ="${chars[5]}"
+    
+    local inner_width=$((BOX_WIDTH - 2))
+    local horiz_line
+    horiz_line=$(_repeat_char "$HORIZ" "$inner_width")
+    
+    echo -e "${BOX_COLOR}${BL}${horiz_line}${BR}${NC}"
+    
+    _BOX_ACTIVE=false
+}
+
+# -----------------------------------------------------------------------------
+# box - High-level function to draw a complete box
+# Usage: box "title" [subtitle] [content_lines...]
+#   OR with named parameters using associative array:
+#   declare -A params=(
+#       [title]="My Title"
+#       [subtitle]="Optional subtitle"
+#       [content]="Line 1\nLine 2\nLine 3"
+#       [title_align]="center"
+#       [content_align]="left"
+#       [width]=70
+#       [style]="double"
+#       [color]="$CYAN"
+#   )
+#   box_render params
+# -----------------------------------------------------------------------------
+box() {
+    local title="$1"
+    local subtitle="${2:-}"
+    shift 2 2>/dev/null || shift 1 2>/dev/null || true
+    
+    box_header "$title" "$subtitle"
+    
+    # Remaining args are content lines
+    for line in "$@"; do
+        box_line "$line"
+    done
+    
+    # If no content was provided, add an empty line
+    [[ $# -eq 0 ]] && [[ -z "$subtitle" ]] && box_empty
+    
+    box_footer
+}
+
+# -----------------------------------------------------------------------------
+# box_render - Render a box from an associative array of parameters
+# Usage: declare -A params=([title]="..." [content]="..."); box_render params
+# -----------------------------------------------------------------------------
+box_render() {
+    local -n _params=$1
+    
+    # Extract parameters with defaults
+    local title="${_params[title]:-}"
+    local subtitle="${_params[subtitle]:-}"
+    local content="${_params[content]:-}"
+    local title_align="${_params[title_align]:-center}"
+    local content_align="${_params[content_align]:-left}"
+    local width="${_params[width]:-$BOX_WIDTH}"
+    local style="${_params[style]:-$BOX_STYLE}"
+    local color="${_params[color]:-$BOX_COLOR}"
+    
+    # Set box configuration
+    BOX_WIDTH="$width"
+    BOX_STYLE="$style"
+    BOX_COLOR="$color"
+    
+    # Draw box
+    box_header "$title" "$subtitle" "$title_align"
+    
+    # Process content (split by newlines)
+    if [[ -n "$content" ]]; then
+        while IFS= read -r line; do
+            box_line "$line" "$content_align"
+        done <<< "$content"
+    fi
+    
+    box_footer
 }
 
 # Section header

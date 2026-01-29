@@ -1150,7 +1150,100 @@ run_migrations() {
     fi
 }
 
+# Update Docker using Ansible playbook
+# This provides idempotent, unified deployment across all environments
+update_docker_ansible() {
+    local container_prefix
+    container_prefix=$(get_container_prefix)
+    
+    info "Updating via Ansible (unified deployment system)..."
+    
+    # Set environment variables for Ansible
+    export CONTAINER_PREFIX="$container_prefix"
+    export COMPOSE_PROJECT_NAME="${container_prefix}-busibox"
+    export BUSIBOX_HOST_PATH="${REPO_ROOT}"
+    
+    # Load GitHub token
+    local github_token=""
+    if type ensure_github_token &>/dev/null; then
+        github_token=$(bash scripts/lib/github.sh get 2>/dev/null || echo "")
+    fi
+    export GITHUB_AUTH_TOKEN="$github_token"
+    
+    # Navigate to Ansible directory
+    local ansible_dir="${REPO_ROOT}/provision/ansible"
+    
+    if [[ ! -d "$ansible_dir" ]]; then
+        error "Ansible directory not found: $ansible_dir"
+        return 1
+    fi
+    
+    cd "$ansible_dir"
+    
+    # Check for vault password file
+    local vault_args=""
+    if [[ -f "${HOME}/.vault_pass" ]]; then
+        vault_args="--vault-password-file=${HOME}/.vault_pass"
+    elif [[ -f "${HOME}/.busibox-vault-pass-${container_prefix}" ]]; then
+        vault_args="--vault-password-file=${HOME}/.busibox-vault-pass-${container_prefix}"
+    fi
+    
+    # Pull latest code first
+    show_stage 20 "Pulling Latest Code" "Fetching updates from Git repositories."
+    cd "$REPO_ROOT"
+    pull_latest_code
+    cd "$ansible_dir"
+    
+    # Build ansible-playbook command
+    local playbook_cmd="ansible-playbook -i inventory/docker docker.yml"
+    playbook_cmd+=" -e container_prefix=${container_prefix}"
+    playbook_cmd+=" -e busibox_env=${ENVIRONMENT:-development}"
+    playbook_cmd+=" -e github_token=${GITHUB_AUTH_TOKEN:-}"
+    playbook_cmd+=" -e docker_force_rebuild=true"
+    
+    if [[ -n "$vault_args" ]]; then
+        playbook_cmd+=" $vault_args"
+    fi
+    
+    # Run deployment
+    show_stage 40 "Deploying Updates" "Running Ansible playbook for Docker deployment."
+    info "Running: ansible-playbook -i inventory/docker docker.yml"
+    
+    if [[ "$VERBOSE" == true ]]; then
+        $playbook_cmd
+    else
+        $playbook_cmd 2>&1 | tail -30 || true
+    fi
+    
+    # Wait for AI Portal
+    show_stage 95 "Verifying Services" "Checking service health..."
+    info "Waiting for AI Portal to be healthy..."
+    local max_attempts=60
+    local attempt=0
+    while [[ $attempt -lt $max_attempts ]]; do
+        if curl -sf http://localhost:3000/portal/api/health &>/dev/null; then
+            success "AI Portal is ready"
+            break
+        fi
+        sleep 2
+        ((attempt++))
+    done
+    
+    if [[ $attempt -ge $max_attempts ]]; then
+        warn "AI Portal health check timed out, but it may still be starting"
+    fi
+    
+    cd "${REPO_ROOT}"
+    return 0
+}
+
 update_docker() {
+    # Use Ansible-based deployment if USE_ANSIBLE_FOR_DOCKER is set
+    if [[ "${USE_ANSIBLE_FOR_DOCKER:-false}" == "true" ]]; then
+        info "Using Ansible for Docker update (unified deployment system)"
+        return update_docker_ansible
+    fi
+    
     # Verify installation (lenient)
     if ! verify_docker_installation; then
         return 1

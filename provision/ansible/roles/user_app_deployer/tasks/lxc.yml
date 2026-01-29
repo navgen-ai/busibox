@@ -1,0 +1,174 @@
+---
+# User App Deployer - LXC Tasks
+#
+# Deploys user apps to the user-apps LXC container via SSH.
+# Uses systemd for process management.
+
+- name: Ensure SSH connectivity to user-apps LXC
+  ansible.builtin.wait_for_connection:
+    timeout: 30
+  delegate_to: "{{ groups['user_apps'][0] }}"
+
+- name: Create app directory
+  ansible.builtin.file:
+    path: "{{ app_path }}"
+    state: directory
+    mode: '0755'
+  delegate_to: "{{ groups['user_apps'][0] }}"
+
+- name: Create log directory
+  ansible.builtin.file:
+    path: "{{ app_log_path }}"
+    state: directory
+    mode: '0755'
+  delegate_to: "{{ groups['user_apps'][0] }}"
+
+- name: Check if app already exists
+  ansible.builtin.stat:
+    path: "{{ app_path }}/.git"
+  register: app_exists
+  delegate_to: "{{ groups['user_apps'][0] }}"
+
+- name: Build GitHub clone URL
+  ansible.builtin.set_fact:
+    git_url: "{{ 'https://' + github_token + '@github.com/' + github_repo + '.git' if github_token else 'https://github.com/' + github_repo + '.git' }}"
+  no_log: true
+
+- name: Clone repository (new app)
+  ansible.builtin.git:
+    repo: "{{ git_url }}"
+    dest: "{{ app_path }}"
+    version: "{{ deploy_branch }}"
+    depth: 1
+    force: true
+  when: not app_exists.stat.exists
+  delegate_to: "{{ groups['user_apps'][0] }}"
+  no_log: true
+
+- name: Update repository (existing app)
+  ansible.builtin.git:
+    repo: "{{ git_url }}"
+    dest: "{{ app_path }}"
+    version: "{{ deploy_branch }}"
+    force: true
+  when: app_exists.stat.exists
+  delegate_to: "{{ groups['user_apps'][0] }}"
+  no_log: true
+
+- name: Check for package.json
+  ansible.builtin.stat:
+    path: "{{ app_path }}/package.json"
+  register: has_package_json
+  delegate_to: "{{ groups['user_apps'][0] }}"
+
+- name: Install Node.js dependencies
+  ansible.builtin.command:
+    cmd: "{{ install_command }}"
+    chdir: "{{ app_path }}"
+  when: has_package_json.stat.exists
+  delegate_to: "{{ groups['user_apps'][0] }}"
+  changed_when: true
+
+- name: Check for build script
+  ansible.builtin.shell:
+    cmd: "grep -q '\"build\"' package.json"
+    chdir: "{{ app_path }}"
+  register: has_build
+  changed_when: false
+  failed_when: false
+  delegate_to: "{{ groups['user_apps'][0] }}"
+  when: has_package_json.stat.exists
+
+- name: Run build
+  ansible.builtin.command:
+    cmd: "{{ build_command }}"
+    chdir: "{{ app_path }}"
+  when: has_package_json.stat.exists and has_build.rc == 0
+  delegate_to: "{{ groups['user_apps'][0] }}"
+  changed_when: true
+
+- name: Allocate port if not specified
+  block:
+    - name: Find available port
+      ansible.builtin.shell:
+        cmd: |
+          for p in $(seq {{ port_range_start }} {{ port_range_end }}); do
+            if ! ss -tuln | grep -q ":$p "; then
+              echo $p
+              break
+            fi
+          done
+      register: available_port
+      changed_when: false
+      delegate_to: "{{ groups['user_apps'][0] }}"
+    
+    - name: Set allocated port
+      ansible.builtin.set_fact:
+        app_port: "{{ available_port.stdout | trim }}"
+  when: app_port == "" or app_port is not defined
+
+- name: Create environment file
+  ansible.builtin.copy:
+    content: |
+      PORT={{ app_port }}
+      NODE_ENV=production
+      APP_ID={{ app_id }}
+    dest: "{{ app_path }}/.env"
+    mode: '0600'
+  delegate_to: "{{ groups['user_apps'][0] }}"
+
+- name: Determine start command
+  ansible.builtin.shell:
+    cmd: "grep -oP '\"start\":\\s*\"\\K[^\"]+' package.json || echo 'node server.js'"
+    chdir: "{{ app_path }}"
+  register: detected_start_command
+  when: start_command == "" and has_package_json.stat.exists
+  changed_when: false
+  delegate_to: "{{ groups['user_apps'][0] }}"
+
+- name: Set final start command
+  ansible.builtin.set_fact:
+    final_start_command: "{{ start_command if start_command else (detected_start_command.stdout | default('npm start')) }}"
+
+- name: Create systemd service file
+  ansible.builtin.template:
+    src: user-app.service.j2
+    dest: "/etc/systemd/system/{{ app_id }}.service"
+    mode: '0644'
+  delegate_to: "{{ groups['user_apps'][0] }}"
+  notify: Reload systemd
+
+- name: Enable and start app service
+  ansible.builtin.systemd:
+    name: "{{ app_id }}"
+    state: restarted
+    enabled: true
+    daemon_reload: true
+  delegate_to: "{{ groups['user_apps'][0] }}"
+
+- name: Wait for app to be healthy
+  ansible.builtin.uri:
+    url: "http://localhost:{{ app_port }}{{ health_check_path }}"
+    method: GET
+    status_code: [200, 201, 204]
+  register: health_check
+  retries: "{{ health_check_retries }}"
+  delay: "{{ health_check_delay }}"
+  until: health_check.status in [200, 201, 204]
+  delegate_to: "{{ groups['user_apps'][0] }}"
+  failed_when: false
+
+- name: Report deployment status
+  ansible.builtin.debug:
+    msg: |
+      User App Deployment Complete
+      ============================
+      App ID: {{ app_id }}
+      Repository: {{ github_repo }}
+      Branch: {{ deploy_branch }}
+      Port: {{ app_port }}
+      Path: {{ app_path }}
+      Health Check: {{ 'PASSED' if health_check.status | default(0) in [200, 201, 204] else 'FAILED (app may still be starting)' }}
+      
+      Service: systemctl status {{ app_id }}
+      Logs: journalctl -u {{ app_id }} -f

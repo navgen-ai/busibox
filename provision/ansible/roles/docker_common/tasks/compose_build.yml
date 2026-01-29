@@ -1,0 +1,31 @@
+---
+# Docker Compose Build Task
+#
+# Usage:
+#   - include_role:
+#       name: docker_common
+#       tasks_from: compose_build
+#     vars:
+#       docker_services_to_build: ["agent-api", "ingest-api"]
+#       docker_build_no_cache: false
+#       docker_build_pull: true
+
+- name: Set service list for compose build
+  ansible.builtin.set_fact:
+    _services_arg: "{{ docker_services_to_build | default([]) | join(' ') }}"
+
+- name: Build services with docker compose build
+  ansible.builtin.shell: |
+    cd {{ docker_compose_dir }}
+    docker compose {{ docker_compose_file_args }} {{ docker_compose_env_args }} \
+      build \
+      {{ '--no-cache' if docker_build_no_cache | default(false) else '' }} \
+      {{ '--pull' if docker_build_pull | default(true) else '' }} \
+      {{ _services_arg }}
+  args:
+    chdir: "{{ docker_compose_dir }}"
+  environment:
+    GITHUB_AUTH_TOKEN: "{{ github_token | default('') }}"
+    DOCKER_BUILDKIT: "1"
+  register: build_result
+  changed_when: "'Building' in build_result.stdout or 'built' in build_result.stdout"

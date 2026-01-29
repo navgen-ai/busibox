@@ -2,7 +2,9 @@
         docker-up docker-up-prod docker-start docker-down docker-down-all docker-restart docker-restart-apis docker-restart-ingest docker-build docker-logs docker-ps docker-ps-all docker-clean docker-clean-all \
         vault-generate-env vault-migrate vault-sync ssl-check \
         github-check github-ensure \
-        install update recover-admin demo warmup demo-clean demo-status \
+        install update manage recover-admin demo warmup demo-clean demo-status \
+        docker-deploy docker-deploy-infra docker-deploy-apis docker-deploy-llm docker-deploy-frontend \
+        deploy-user-app undeploy-user-app list-user-apps user-app-logs user-app-status \
         mlx-status mlx-start mlx-stop mlx-restart host-agent-status host-agent-start host-agent-stop host-agent-restart
 
 # Default target - interactive menu with health check
@@ -93,11 +95,11 @@ export BUSIBOX_ENV = $(ENV)
 # ============================================================================
 # MAIN MENU (Default)
 # ============================================================================
-# Interactive menu with environment selection and health checks
+# Interactive launcher menu - the main entry point
 # Usage: make              # Full interactive menu
 #        make ENV=staging  # Start with staging environment selected
 menu:
-	@bash scripts/make/menu.sh $(ENV)
+	@bash scripts/make/launcher.sh
 
 # ============================================================================
 # HELP
@@ -111,27 +113,23 @@ help:
 	@echo "Usage: make <target> [OPTIONS]"
 	@echo ""
 	@echo "═══════════════════════════════════════════════════════════════════════"
-	@echo "                         QUICK START"
+	@echo "                         MAIN COMMANDS"
 	@echo "═══════════════════════════════════════════════════════════════════════"
 	@echo ""
-	@echo "  make                         # Interactive menu (recommended)"
-	@echo "  make ENV=development         # Start menu with development environment"
-	@echo "  make ENV=demo                # Start menu with demo environment"
-	@echo "  make ENV=staging             # Start menu with staging environment"
-	@echo "  make ENV=production          # Start menu with production environment"
+	@echo "  make                         # Interactive launcher menu"
+	@echo "  make install                 # Fresh installation wizard"
+	@echo "  make update                  # Update existing installation"
+	@echo "  make manage                  # Service management (start/stop/restart)"
+	@echo "  make test                    # Testing menu"
 	@echo ""
 	@echo "═══════════════════════════════════════════════════════════════════════"
-	@echo "                    DIRECT COMMANDS"
+	@echo "                    OTHER COMMANDS"
 	@echo "═══════════════════════════════════════════════════════════════════════"
 	@echo ""
 	@echo "  setup         - Initial setup (install dependencies)"
 	@echo "  configure     - Configure models, GPUs, secrets"
-	@echo "  deploy        - Deploy services"
-	@echo "  test          - Run tests (see testing section)"
+	@echo "  deploy        - Deploy services (via Ansible)"
 	@echo "  mcp           - Build MCP server for Cursor AI"
-	@echo ""
-	@echo "  install       - Fresh installation (interactive wizard)"
-	@echo "  update        - Update existing installation (preserves data)"
 	@echo "  warmup        - Check cache and download missing models"
 	@echo ""
 	@echo "═══════════════════════════════════════════════════════════════════════"
@@ -245,14 +243,14 @@ endif
 # TESTING
 # ============================================================================
 
-# Run tests on containers (via SSH)
-# Interactive: make test
+# Run tests - interactive menu or direct service test
+# Interactive: make test              # Opens test menu
 # Direct:      make test SERVICE=authz INV=staging
 test:
 ifdef SERVICE
 	@PYTEST_ARGS="$(ARGS)" bash scripts/make/test.sh $(SERVICE) $(INV) $(MODE)
 else
-	@bash scripts/make/test.sh
+	@bash scripts/make/test-menu.sh
 endif
 
 # Run tests locally against remote containers
@@ -531,27 +529,138 @@ docker-clean-all:
 #   make warmup FORCE=1  # Re-download (interactive selection)
 
 # Interactive install with wizard
-# Usage: make install              # Full wizard
-#        make install VERBOSE=1    # Show all logs
+# Usage: make install                      # Full wizard (docker-compose based)
+#        make install VERBOSE=1            # Show all logs
+#        make install USE_ANSIBLE=1        # Use Ansible for Docker deployment
 install:
-	@bash scripts/make/install.sh $(if $(VERBOSE),-v)
+	@USE_ANSIBLE_FOR_DOCKER=$(USE_ANSIBLE) bash scripts/make/install.sh $(if $(VERBOSE),-v)
 
 # Update existing installation
 # Preserves: PostgreSQL, Redis, MinIO, Milvus, model cache, user apps
 # Updates: APIs, apps, nginx, runs migrations
 # Supports both Docker and Proxmox (auto-detected)
 #
-# Usage: make update               # Interactive update (auto-detect platform)
-#        make update ENV=staging   # Update staging environment
-#        make update VERBOSE=1     # Show all logs
-#        make update REBUILD=1     # Force rebuild all containers (Docker only)
+# Usage: make update                       # Interactive update (auto-detect platform)
+#        make update ENV=staging           # Update staging environment
+#        make update VERBOSE=1             # Show all logs
+#        make update REBUILD=1             # Force rebuild all containers (Docker only)
+#        make update USE_ANSIBLE=1         # Use Ansible for Docker deployment
 update:
-	@ENV=$(ENV) INV=$(INV) bash scripts/make/update.sh $(if $(VERBOSE),-v) $(if $(REBUILD),--rebuild-all)
+	@USE_ANSIBLE_FOR_DOCKER=$(USE_ANSIBLE) ENV=$(ENV) INV=$(INV) bash scripts/make/update.sh $(if $(VERBOSE),-v) $(if $(REBUILD),--rebuild-all)
+
+# Service management menu
+# Interactive menu for stopping/starting/redeploying services
+# Supports both Docker and Proxmox backends
+#
+# Usage: make manage                       # Interactive management menu
+manage:
+	@bash scripts/make/manage.sh
 
 # Generate recovery magic link for admin access
 # Use when browser/passkey access is lost
 recover-admin:
 	@bash scripts/make/recover-admin.sh
+
+# ============================================================================
+# ANSIBLE-BASED DOCKER DEPLOYMENT
+# ============================================================================
+# These targets use Ansible for Docker deployment, providing:
+# - Idempotent operations
+# - Unified patterns with LXC deployment
+# - Better secrets management via Ansible Vault
+#
+# Usage: make docker-deploy              # Full deployment via Ansible
+#        make docker-deploy-infra        # Deploy infrastructure only
+#        make docker-deploy-apis         # Deploy API services
+#        make docker-deploy-frontend     # Deploy frontend apps
+
+docker-deploy:
+	@cd provision/ansible && $(MAKE) docker CONTAINER_PREFIX=$(CONTAINER_PREFIX) BUSIBOX_ENV=$(ENV)
+
+docker-deploy-infra:
+	@cd provision/ansible && $(MAKE) docker-infrastructure CONTAINER_PREFIX=$(CONTAINER_PREFIX) BUSIBOX_ENV=$(ENV)
+
+docker-deploy-apis:
+	@cd provision/ansible && $(MAKE) docker-apis CONTAINER_PREFIX=$(CONTAINER_PREFIX) BUSIBOX_ENV=$(ENV)
+
+docker-deploy-llm:
+	@cd provision/ansible && $(MAKE) docker-llm CONTAINER_PREFIX=$(CONTAINER_PREFIX) BUSIBOX_ENV=$(ENV)
+
+docker-deploy-frontend:
+	@cd provision/ansible && $(MAKE) docker-frontend CONTAINER_PREFIX=$(CONTAINER_PREFIX) BUSIBOX_ENV=$(ENV)
+
+# ============================================================================
+# USER APP DEPLOYMENT
+# ============================================================================
+# Deploy user/external applications to the user-apps container.
+# These are untrusted apps that run in an isolated container.
+#
+# Usage:
+#   make deploy-user-app APP_ID=myapp REPO=owner/repo
+#   make deploy-user-app APP_ID=myapp REPO=owner/repo BRANCH=develop
+#   make deploy-user-app APP_ID=myapp REPO=owner/repo ENV=staging
+#   make undeploy-user-app APP_ID=myapp
+#
+# Variables:
+#   APP_ID   - Unique identifier for the app (required)
+#   REPO     - GitHub repository in owner/repo format (required for deploy)
+#   BRANCH   - Branch to deploy (default: main)
+#   PORT     - Port the app listens on (default: auto-assigned)
+#   ENV      - Target environment: docker, staging, production
+
+# App deployment variables
+APP_ID ?=
+REPO ?=
+BRANCH ?= main
+APP_PORT ?=
+
+.PHONY: deploy-user-app undeploy-user-app list-user-apps user-app-logs user-app-status
+
+deploy-user-app:
+	@if [ -z "$(APP_ID)" ]; then echo "ERROR: APP_ID is required"; exit 1; fi
+	@if [ -z "$(REPO)" ]; then echo "ERROR: REPO is required (format: owner/repo)"; exit 1; fi
+	@echo "Deploying user app: $(APP_ID) from $(REPO)"
+	@cd provision/ansible && ansible-playbook \
+		-i inventory/$(if $(filter docker,$(ENV)),docker,$(if $(filter staging production,$(ENV)),$(ENV),docker)) \
+		user-app-deploy.yml \
+		-e "app_id=$(APP_ID)" \
+		-e "github_repo=$(REPO)" \
+		-e "deploy_branch=$(BRANCH)" \
+		$(if $(APP_PORT),-e "app_port=$(APP_PORT)") \
+		$(if $(GITHUB_TOKEN),-e "github_token=$(GITHUB_TOKEN)") \
+		$(EXTRA_ARGS)
+
+undeploy-user-app:
+	@if [ -z "$(APP_ID)" ]; then echo "ERROR: APP_ID is required"; exit 1; fi
+	@echo "Undeploying user app: $(APP_ID)"
+	@cd provision/ansible && ansible-playbook \
+		-i inventory/$(if $(filter docker,$(ENV)),docker,$(if $(filter staging production,$(ENV)),$(ENV),docker)) \
+		user-app-undeploy.yml \
+		-e "app_id=$(APP_ID)" \
+		$(EXTRA_ARGS)
+
+list-user-apps:
+	@echo "Listing deployed user apps..."
+	@cd provision/ansible && ansible-playbook \
+		-i inventory/$(if $(filter docker,$(ENV)),docker,$(if $(filter staging production,$(ENV)),$(ENV),docker)) \
+		user-app-list.yml \
+		$(EXTRA_ARGS)
+
+user-app-logs:
+	@if [ -z "$(APP_ID)" ]; then echo "ERROR: APP_ID is required"; exit 1; fi
+	@if [ "$(ENV)" = "docker" ] || [ -z "$(ENV)" ]; then \
+		docker exec $(CONTAINER_PREFIX)-user-apps sh -c "cd /srv/apps/$(APP_ID) && tail -f logs/*.log 2>/dev/null || echo 'No logs found'"; \
+	else \
+		cd provision/ansible && ansible user_apps -i inventory/$(ENV) -m shell -a "cd /srv/apps/$(APP_ID) && tail -100 logs/*.log 2>/dev/null || journalctl -u $(APP_ID) -n 100"; \
+	fi
+
+user-app-status:
+	@if [ -z "$(APP_ID)" ]; then echo "ERROR: APP_ID is required"; exit 1; fi
+	@if [ "$(ENV)" = "docker" ] || [ -z "$(ENV)" ]; then \
+		docker exec $(CONTAINER_PREFIX)-user-apps sh -c "ps aux | grep -E '$(APP_ID)|node' | grep -v grep || echo 'App not running'"; \
+	else \
+		cd provision/ansible && ansible user_apps -i inventory/$(ENV) -m shell -a "systemctl status $(APP_ID) 2>/dev/null || echo 'Service not found'"; \
+	fi
 
 # ============================================================================
 # MODEL WARMUP

@@ -1,0 +1,159 @@
+---
+# User App Deployer - Docker Tasks
+#
+# Deploys user apps to the user-apps container via docker exec.
+# All operations happen inside the container for security isolation.
+
+- name: Ensure user-apps container is running
+  ansible.builtin.command:
+    cmd: docker ps --format '{{ '{{' }}.Names{{ '}}' }}' --filter name={{ user_apps_container }}
+  register: container_check
+  changed_when: false
+  failed_when: false
+
+- name: Fail if user-apps container not running
+  ansible.builtin.fail:
+    msg: "user-apps container ({{ user_apps_container }}) is not running. Start it first."
+  when: user_apps_container not in container_check.stdout
+
+- name: Create app directory
+  ansible.builtin.command:
+    cmd: docker exec {{ user_apps_container }} mkdir -p {{ app_path }}
+  changed_when: true
+
+- name: Create log directory
+  ansible.builtin.command:
+    cmd: docker exec {{ user_apps_container }} mkdir -p {{ app_log_path }}
+  changed_when: true
+
+- name: Check if app already exists
+  ansible.builtin.command:
+    cmd: docker exec {{ user_apps_container }} test -d {{ app_path }}/.git
+  register: app_exists
+  changed_when: false
+  failed_when: false
+
+- name: Build GitHub clone URL
+  ansible.builtin.set_fact:
+    git_url: "{{ 'https://' + github_token + '@github.com/' + github_repo + '.git' if github_token else 'https://github.com/' + github_repo + '.git' }}"
+  no_log: true
+
+- name: Clone repository (new app)
+  ansible.builtin.command:
+    cmd: >
+      docker exec {{ user_apps_container }} 
+      git clone --branch {{ deploy_branch }} --depth 1 {{ git_url }} {{ app_path }}
+  when: app_exists.rc != 0
+  no_log: true
+  register: clone_result
+
+- name: Update repository (existing app)
+  ansible.builtin.command:
+    cmd: >
+      docker exec {{ user_apps_container }}
+      sh -c "cd {{ app_path }} && git fetch origin {{ deploy_branch }} && git reset --hard origin/{{ deploy_branch }}"
+  when: app_exists.rc == 0
+  register: update_result
+
+- name: Install dependencies
+  ansible.builtin.command:
+    cmd: >
+      docker exec {{ user_apps_container }}
+      sh -c "cd {{ app_path }} && {{ install_command }}"
+  register: install_result
+  changed_when: true
+
+- name: Check for build script in package.json
+  ansible.builtin.command:
+    cmd: >
+      docker exec {{ user_apps_container }}
+      sh -c "cd {{ app_path }} && cat package.json | grep -q '\"build\"'"
+  register: has_build
+  changed_when: false
+  failed_when: false
+
+- name: Run build
+  ansible.builtin.command:
+    cmd: >
+      docker exec {{ user_apps_container }}
+      sh -c "cd {{ app_path }} && {{ build_command }}"
+  when: has_build.rc == 0
+  register: build_result
+  changed_when: true
+
+- name: Determine start command from package.json
+  ansible.builtin.command:
+    cmd: >
+      docker exec {{ user_apps_container }}
+      sh -c "cd {{ app_path }} && cat package.json | grep -oP '\"start\":\\s*\"\\K[^\"]+' || echo 'node server.js'"
+  register: detected_start_command
+  when: start_command == ""
+  changed_when: false
+
+- name: Set final start command
+  ansible.builtin.set_fact:
+    final_start_command: "{{ start_command if start_command else detected_start_command.stdout | default('npm start') }}"
+
+- name: Allocate port if not specified
+  block:
+    - name: Find available port
+      ansible.builtin.command:
+        cmd: >
+          docker exec {{ user_apps_container }}
+          sh -c "for p in $(seq {{ port_range_start }} {{ port_range_end }}); do ! ss -tuln | grep -q \":$p \" && echo $p && break; done"
+      register: available_port
+      changed_when: false
+    
+    - name: Set allocated port
+      ansible.builtin.set_fact:
+        app_port: "{{ available_port.stdout | trim }}"
+  when: app_port == "" or app_port is not defined
+
+- name: Stop existing app process
+  ansible.builtin.command:
+    cmd: >
+      docker exec {{ user_apps_container }}
+      sh -c "pkill -f 'node.*{{ app_id }}' || true"
+  changed_when: true
+  failed_when: false
+
+- name: Create environment file
+  ansible.builtin.command:
+    cmd: >
+      docker exec {{ user_apps_container }}
+      sh -c "cat > {{ app_path }}/.env << 'EOF'
+      PORT={{ app_port }}
+      NODE_ENV=production
+      APP_ID={{ app_id }}
+      EOF"
+  changed_when: true
+
+- name: Start app with nohup
+  ansible.builtin.command:
+    cmd: >
+      docker exec {{ user_apps_container }}
+      sh -c "cd {{ app_path }} && nohup npm start > {{ app_log_path }}/app.log 2>&1 &"
+  changed_when: true
+
+- name: Wait for app to start
+  ansible.builtin.command:
+    cmd: >
+      docker exec {{ user_apps_container }}
+      sh -c "for i in $(seq 1 {{ health_check_retries }}); do curl -sf http://localhost:{{ app_port }}{{ health_check_path }} && exit 0; sleep {{ health_check_delay }}; done; exit 1"
+  register: health_check
+  changed_when: false
+  failed_when: false
+
+- name: Report deployment status
+  ansible.builtin.debug:
+    msg: |
+      User App Deployment Complete
+      ============================
+      App ID: {{ app_id }}
+      Repository: {{ github_repo }}
+      Branch: {{ deploy_branch }}
+      Port: {{ app_port }}
+      Path: {{ app_path }}
+      Health Check: {{ 'PASSED' if health_check.rc == 0 else 'FAILED (app may still be starting)' }}
+      
+      Access via: http://localhost:{{ app_port }}

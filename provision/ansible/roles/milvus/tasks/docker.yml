@@ -1,0 +1,42 @@
+---
+# Milvus Docker Deployment Tasks
+#
+# Deploys Milvus (with etcd and minio backend) via Docker Compose
+# Used when deploy_target == 'docker'
+
+- name: Start Milvus infrastructure (etcd, milvus-minio)
+  include_role:
+    name: docker_common
+    tasks_from: compose_up
+  vars:
+    docker_services_to_start:
+      - etcd
+      - milvus-minio
+    docker_wait_for_health: false
+
+- name: Wait for etcd to be ready
+  ansible.builtin.pause:
+    seconds: 5
+
+- name: Start Milvus standalone
+  include_role:
+    name: docker_common
+    tasks_from: compose_up
+  vars:
+    docker_services_to_start:
+      - milvus
+    docker_wait_for_health: true
+
+- name: Wait for Milvus to be ready
+  include_role:
+    name: docker_common
+    tasks_from: wait_healthy
+  vars:
+    docker_wait_service: milvus
+    docker_wait_timeout: 120
+
+- name: Display Milvus status
+  ansible.builtin.debug:
+    msg: |
+      Milvus is running and ready
+      gRPC: localhost:{{ milvus_port }}

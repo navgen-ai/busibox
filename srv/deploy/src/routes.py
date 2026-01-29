@@ -2,6 +2,14 @@
 Deployment Service Routes
 
 API endpoints for app deployment operations.
+
+Architecture:
+- Core apps (ai-portal, agent-manager, etc.) are deployed via bridge script -> Makefile -> Ansible
+- User apps (external/untrusted) are deployed via docker exec into user-apps container
+
+This provides security isolation:
+- Core apps have full host access through Ansible
+- User apps are sandboxed in the user-apps container
 """
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Request
@@ -23,6 +31,7 @@ from .models import (
 from .auth import verify_admin_token
 from .database import provision_database
 from .container_executor import deploy_app as container_deploy_app, is_docker_environment, undeploy_app as container_undeploy_app, stop_app as container_stop_app
+from .bridge_executor import is_core_app, deploy_core_app, undeploy_core_app, execute_via_bridge
 from .env_generator import generate_env_vars
 from .nginx_config import NginxConfigurator
 from .config import config
@@ -109,18 +118,29 @@ async def execute_deployment(
     deploy_config: DeploymentConfig
 ):
     """
-    Execute deployment asynchronously using the new container executor.
+    Execute deployment asynchronously.
+    
+    Routes to appropriate executor based on app type:
+    - Core apps: Bridge executor -> Makefile -> Ansible (trusted path)
+    - User apps: Container executor -> docker exec (sandboxed path)
     
     Flow:
-    1. Provision database (if required)
-    2. Deploy app via container_executor (git clone, npm install, build, migrations, systemd)
-    3. Configure nginx routing
+    1. Determine if core app or user app
+    2. Provision database (if required)
+    3. Deploy via appropriate executor
+    4. Configure nginx routing
     """
     
     status = deployment_statuses[deployment_id]
     database_url = None
     
+    # Determine deployment path
+    app_is_core = is_core_app(manifest.id)
+    
     try:
+        status.logs.append(f"[{datetime.utcnow().isoformat()}] App type: {'Core (trusted)' if app_is_core else 'User (sandboxed)'}")
+        await broadcast_status(deployment_id)
+        
         # Step 1: Provision database if required
         if manifest.database and manifest.database.required:
             status.status = 'provisioning_db'
@@ -141,67 +161,96 @@ async def execute_deployment(
             if database_url:
                 deploy_config.secrets['DATABASE_URL'] = database_url
         
-        # Step 2: Deploy app via container executor
+        # Step 2: Deploy app via appropriate executor
         status.status = 'deploying'
         status.progress = 20
         status.currentStep = 'Deploying application'
         status.logs.append(f"[{datetime.utcnow().isoformat()}] Starting deployment...")
         await broadcast_status(deployment_id)
         
-        logger.info(f"Calling container_deploy_app for {manifest.name}")
-        
-        # Collect logs from container executor
         deploy_logs = []
-        try:
-            success = await container_deploy_app(
-                manifest,
-                deploy_config,
-                database_url,
-                deploy_logs
+        
+        if app_is_core:
+            # Core app: Deploy via bridge script -> Makefile -> Ansible
+            logger.info(f"Deploying core app {manifest.name} via bridge executor")
+            status.logs.append(f"[{datetime.utcnow().isoformat()}] Using bridge executor for trusted deployment")
+            await broadcast_status(deployment_id)
+            
+            # Determine environment
+            environment = deploy_config.environment or "docker"
+            branch = deploy_config.branch if hasattr(deploy_config, 'branch') else None
+            
+            success, message = await deploy_core_app(
+                app_name=manifest.id,
+                environment=environment,
+                branch=branch,
+                force_rebuild=getattr(deploy_config, 'forceRebuild', False),
+                logs=deploy_logs
             )
-            logger.info(f"container_deploy_app returned: success={success}, logs={len(deploy_logs)}")
-        except Exception as e:
-            logger.error(f"container_deploy_app raised exception: {e}", exc_info=True)
-            raise
+            
+            if not success:
+                raise Exception(f"Core app deployment failed: {message}")
+                
+        else:
+            # User app: Deploy via container executor (sandboxed)
+            logger.info(f"Deploying user app {manifest.name} via container executor")
+            status.logs.append(f"[{datetime.utcnow().isoformat()}] Using container executor for sandboxed deployment")
+            await broadcast_status(deployment_id)
+            
+            try:
+                success = await container_deploy_app(
+                    manifest,
+                    deploy_config,
+                    database_url,
+                    deploy_logs
+                )
+                logger.info(f"container_deploy_app returned: success={success}, logs={len(deploy_logs)}")
+            except Exception as e:
+                logger.error(f"container_deploy_app raised exception: {e}", exc_info=True)
+                raise
+            
+            if not success:
+                # Find the last error log (starts with ❌)
+                error_logs = [log for log in deploy_logs if '❌' in log]
+                error_detail = error_logs[-1] if error_logs else "Unknown error - check logs"
+                raise Exception(f"Deployment failed: {error_detail}")
         
         # Add logs to status
         for log in deploy_logs:
             status.logs.append(f"[{datetime.utcnow().isoformat()}] {log}")
         await broadcast_status(deployment_id)
         
-        if not success:
-            # Find the last error log (starts with ❌)
-            error_logs = [log for log in deploy_logs if '❌' in log]
-            error_detail = error_logs[-1] if error_logs else "Unknown error - check logs"
-            raise Exception(f"Deployment failed: {error_detail}")
-        
         status.progress = 80
         await broadcast_status(deployment_id)
         
-        # Step 3: Configure nginx routing
-        status.status = 'configuring_nginx'
-        status.currentStep = 'Configuring nginx'
-        status.logs.append(f"[{datetime.utcnow().isoformat()}] Configuring nginx routing...")
-        await broadcast_status(deployment_id)
-        
-        configurator = NginxConfigurator()
-        
-        if is_docker_environment():
-            # Docker: use service name
-            nginx_success, nginx_msg = await configurator.configure_app(manifest, None)
-        else:
-            # LXC: use container IP
-            if deploy_config.environment == 'staging':
-                container_ip = config.user_apps_container_ip_staging
+        # Step 3: Configure nginx routing (only for user apps - core apps handle their own nginx)
+        if not app_is_core:
+            status.status = 'configuring_nginx'
+            status.currentStep = 'Configuring nginx'
+            status.logs.append(f"[{datetime.utcnow().isoformat()}] Configuring nginx routing...")
+            await broadcast_status(deployment_id)
+            
+            configurator = NginxConfigurator()
+            
+            if is_docker_environment():
+                # Docker: use service name
+                nginx_success, nginx_msg = await configurator.configure_app(manifest, None)
             else:
-                container_ip = config.user_apps_container_ip
-            nginx_success, nginx_msg = await configurator.configure_app(manifest, container_ip)
-        
-        status.logs.append(f"[{datetime.utcnow().isoformat()}] {nginx_msg}")
-        await broadcast_status(deployment_id)
-        
-        if not nginx_success:
-            raise Exception(f"Nginx configuration failed: {nginx_msg}")
+                # LXC: use container IP
+                if deploy_config.environment == 'staging':
+                    container_ip = config.user_apps_container_ip_staging
+                else:
+                    container_ip = config.user_apps_container_ip
+                nginx_success, nginx_msg = await configurator.configure_app(manifest, container_ip)
+            
+            status.logs.append(f"[{datetime.utcnow().isoformat()}] {nginx_msg}")
+            await broadcast_status(deployment_id)
+            
+            if not nginx_success:
+                raise Exception(f"Nginx configuration failed: {nginx_msg}")
+        else:
+            status.logs.append(f"[{datetime.utcnow().isoformat()}] Nginx configured by Ansible for core app")
+            await broadcast_status(deployment_id)
         
         # Step 4: Complete
         status.status = 'completed'
@@ -790,9 +839,13 @@ async def undeploy_app(
     """
     Undeploy an app, removing all associated resources.
     
+    Routes to appropriate executor based on app type:
+    - Core apps: Bridge executor (limited - typically just stops service)
+    - User apps: Container executor (full cleanup)
+    
     This endpoint:
     1. Stops the running application
-    2. Removes Docker volumes (node_modules, .next cache)
+    2. Removes Docker volumes (node_modules, .next cache) - user apps only
     3. Removes nginx configuration
     4. Cleans up build artifacts
     
@@ -808,28 +861,63 @@ async def undeploy_app(
     
     logger.info(f"Starting undeploy for {app_id} by user {token_payload.get('user_id')}")
     
+    # Determine if core app or user app
+    app_is_core = is_core_app(app_id)
+    logs.append(f"App type: {'Core (trusted)' if app_is_core else 'User (sandboxed)'}")
+    
     try:
-        success = await container_undeploy_app(
-            app_id=app_id,
-            logs=logs,
-            remove_volumes=request.removeVolumes
-        )
-        
-        if success:
-            logger.info(f"Undeploy completed successfully for {app_id}")
-            return UndeployResponse(
-                success=True,
-                appId=app_id,
+        if app_is_core:
+            # Core apps: Use bridge executor (limited operations)
+            logger.info(f"Undeploying core app {app_id} via bridge executor")
+            logs.append("Using bridge executor for core app")
+            
+            # For core apps, we typically don't fully undeploy - just stop
+            success, message = await undeploy_core_app(
+                app_name=app_id,
+                environment="docker",  # TODO: Get from request
                 logs=logs
             )
+            
+            if success:
+                logger.info(f"Core app {app_id} stopped successfully")
+                return UndeployResponse(
+                    success=True,
+                    appId=app_id,
+                    logs=logs
+                )
+            else:
+                return UndeployResponse(
+                    success=False,
+                    appId=app_id,
+                    logs=logs,
+                    error=message
+                )
         else:
-            logger.error(f"Undeploy failed for {app_id}")
-            return UndeployResponse(
-                success=False,
-                appId=app_id,
+            # User apps: Use container executor (full cleanup)
+            logger.info(f"Undeploying user app {app_id} via container executor")
+            logs.append("Using container executor for user app")
+            
+            success = await container_undeploy_app(
+                app_id=app_id,
                 logs=logs,
-                error="Undeploy operation failed. Check logs for details."
+                remove_volumes=request.removeVolumes
             )
+            
+            if success:
+                logger.info(f"Undeploy completed successfully for {app_id}")
+                return UndeployResponse(
+                    success=True,
+                    appId=app_id,
+                    logs=logs
+                )
+            else:
+                logger.error(f"Undeploy failed for {app_id}")
+                return UndeployResponse(
+                    success=False,
+                    appId=app_id,
+                    logs=logs,
+                    error="Undeploy operation failed. Check logs for details."
+                )
             
     except Exception as e:
         logger.error(f"Undeploy error for {app_id}: {e}")

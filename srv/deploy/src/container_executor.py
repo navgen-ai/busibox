@@ -1,8 +1,23 @@
 """
-Container Executor
+Container Executor - User App Deployment (Sandboxed)
+====================================================
 
-Executes commands in containers via SSH (Proxmox LXC) or docker exec (Docker).
-Handles the full app deployment lifecycle: git clone, npm install, build, migrations, systemd.
+This module handles deployment of USER APPS (untrusted/external applications).
+All operations are executed inside the user-apps container for security isolation.
+
+For CORE APPS (ai-portal, agent-manager, etc.), use bridge_executor.py instead,
+which delegates to Makefile/Ansible with full host access.
+
+Security Model:
+- User apps run in isolated user-apps container
+- No direct host access from user app code
+- GitHub clone happens inside container
+- npm install/build happens inside container
+- Prevents untrusted code from infecting host
+
+Execution Methods:
+- Docker: Uses `docker exec` to run commands in user-apps container
+- LXC: Uses SSH to run commands in user-apps-lxc container
 
 Volume Management for Dev Apps (Docker):
 ----------------------------------------

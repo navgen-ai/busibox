@@ -206,6 +206,197 @@ BUILTIN_TOOL_METADATA = {
             }
         }
     },
+    # Data management tools for structured data documents
+    "data_tool_create": {
+        "name": "create_data_document",
+        "description": "Create a new structured data document for storing records (like a database table or Notion database).",
+        "entrypoint": "app.tools.data_tool:create_data_document",
+        "scopes": ["ingest:write"],
+        "version": 1,
+        "schema": {
+            "input": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name for the data document"},
+                    "schema": {"type": "object", "description": "Optional schema definition with field types"},
+                    "initial_records": {"type": "array", "description": "Optional initial records to insert"},
+                    "visibility": {"type": "string", "description": "Visibility: 'personal' or 'shared'", "default": "personal"}
+                },
+                "required": ["name"]
+            },
+            "output": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"},
+                    "document_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "record_count": {"type": "integer"},
+                    "error": {"type": "string"}
+                }
+            }
+        }
+    },
+    "data_tool_query": {
+        "name": "query_data",
+        "description": "Query records from a data document with SQL-like filtering, sorting, and pagination.",
+        "entrypoint": "app.tools.data_tool:query_data",
+        "scopes": ["ingest:read"],
+        "version": 1,
+        "schema": {
+            "input": {
+                "type": "object",
+                "properties": {
+                    "document_id": {"type": "string", "description": "UUID of the data document"},
+                    "select": {"type": "array", "description": "Fields to return (default: all)"},
+                    "where": {"type": "object", "description": "Filter conditions"},
+                    "order_by": {"type": "array", "description": "Sort specification"},
+                    "limit": {"type": "integer", "description": "Max records (default: 50)", "default": 50},
+                    "offset": {"type": "integer", "description": "Pagination offset", "default": 0}
+                },
+                "required": ["document_id"]
+            },
+            "output": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"},
+                    "records": {"type": "array"},
+                    "total": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                    "offset": {"type": "integer"},
+                    "error": {"type": "string"}
+                }
+            }
+        }
+    },
+    "data_tool_insert": {
+        "name": "insert_records",
+        "description": "Insert records into a data document.",
+        "entrypoint": "app.tools.data_tool:insert_records",
+        "scopes": ["ingest:write"],
+        "version": 1,
+        "schema": {
+            "input": {
+                "type": "object",
+                "properties": {
+                    "document_id": {"type": "string", "description": "UUID of the data document"},
+                    "records": {"type": "array", "description": "Records to insert"}
+                },
+                "required": ["document_id", "records"]
+            },
+            "output": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"},
+                    "count": {"type": "integer"},
+                    "record_ids": {"type": "array"},
+                    "error": {"type": "string"}
+                }
+            }
+        }
+    },
+    "data_tool_update": {
+        "name": "update_records",
+        "description": "Update records in a data document matching a filter.",
+        "entrypoint": "app.tools.data_tool:update_records",
+        "scopes": ["ingest:write"],
+        "version": 1,
+        "schema": {
+            "input": {
+                "type": "object",
+                "properties": {
+                    "document_id": {"type": "string", "description": "UUID of the data document"},
+                    "updates": {"type": "object", "description": "Field updates to apply"},
+                    "where": {"type": "object", "description": "Filter for which records to update"}
+                },
+                "required": ["document_id", "updates"]
+            },
+            "output": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"},
+                    "count": {"type": "integer"},
+                    "error": {"type": "string"}
+                }
+            }
+        }
+    },
+    "data_tool_delete": {
+        "name": "delete_records",
+        "description": "Delete records from a data document by filter or IDs.",
+        "entrypoint": "app.tools.data_tool:delete_records",
+        "scopes": ["ingest:write"],
+        "version": 1,
+        "schema": {
+            "input": {
+                "type": "object",
+                "properties": {
+                    "document_id": {"type": "string", "description": "UUID of the data document"},
+                    "where": {"type": "object", "description": "Filter for records to delete"},
+                    "record_ids": {"type": "array", "description": "Specific record IDs to delete"}
+                },
+                "required": ["document_id"]
+            },
+            "output": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"},
+                    "count": {"type": "integer"},
+                    "error": {"type": "string"}
+                }
+            }
+        }
+    },
+    "data_tool_list": {
+        "name": "list_data_documents",
+        "description": "List available data documents accessible to the user.",
+        "entrypoint": "app.tools.data_tool:list_data_documents",
+        "scopes": ["ingest:read"],
+        "version": 1,
+        "schema": {
+            "input": {
+                "type": "object",
+                "properties": {
+                    "visibility": {"type": "string", "description": "Filter: 'personal' or 'shared'"},
+                    "limit": {"type": "integer", "description": "Max documents (default: 20)", "default": 20}
+                },
+                "required": []
+            },
+            "output": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"},
+                    "documents": {"type": "array"},
+                    "total": {"type": "integer"},
+                    "error": {"type": "string"}
+                }
+            }
+        }
+    },
+    "data_tool_get": {
+        "name": "get_data_document",
+        "description": "Get a data document with schema, metadata, and optionally all records.",
+        "entrypoint": "app.tools.data_tool:get_data_document",
+        "scopes": ["ingest:read"],
+        "version": 1,
+        "schema": {
+            "input": {
+                "type": "object",
+                "properties": {
+                    "document_id": {"type": "string", "description": "UUID of the data document"},
+                    "include_records": {"type": "boolean", "description": "Include all records", "default": True}
+                },
+                "required": ["document_id"]
+            },
+            "output": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"},
+                    "document": {"type": "object"},
+                    "error": {"type": "string"}
+                }
+            }
+        }
+    },
 }
 
 
@@ -307,6 +498,14 @@ def get_tool_executor(tool_name: str) -> Optional[Callable]:
         "get_weather": ("app.tools.weather_tool", "get_weather"),
         "ingest_document": ("app.tools.ingestion_tool", "ingest_document"),
         "web_scraper": ("app.tools.web_scraper_tool", "scrape_webpage"),
+        # Data management tools
+        "create_data_document": ("app.tools.data_tool", "create_data_document"),
+        "query_data": ("app.tools.data_tool", "query_data"),
+        "insert_records": ("app.tools.data_tool", "insert_records"),
+        "update_records": ("app.tools.data_tool", "update_records"),
+        "delete_records": ("app.tools.data_tool", "delete_records"),
+        "list_data_documents": ("app.tools.data_tool", "list_data_documents"),
+        "get_data_document": ("app.tools.data_tool", "get_data_document"),
     }
     
     if tool_name not in executors:

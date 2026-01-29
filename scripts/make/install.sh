@@ -56,6 +56,9 @@ DEMO_MODE=false
 NO_PROMPT=false
 WARMUP_ONLY=false
 VERBOSE=false
+REINSTALL=false
+ENV_FROM_LAUNCHER=""
+BACKEND_FROM_LAUNCHER=""
 
 # Installation config (set by wizard or demo defaults)
 ENVIRONMENT=""
@@ -86,6 +89,18 @@ parse_args() {
             -v|--verbose)
                 VERBOSE=true
                 shift
+                ;;
+            --reinstall)
+                REINSTALL=true
+                shift
+                ;;
+            --env)
+                ENV_FROM_LAUNCHER="$2"
+                shift 2
+                ;;
+            --backend)
+                BACKEND_FROM_LAUNCHER="$2"
+                shift 2
                 ;;
             *)
                 shift
@@ -250,6 +265,37 @@ detect_system() {
 # =============================================================================
 
 wizard_environment() {
+    # If environment passed from launcher, confirm it instead of asking
+    if [[ -n "$ENV_FROM_LAUNCHER" ]]; then
+        ENVIRONMENT="$ENV_FROM_LAUNCHER"
+        # Also set PLATFORM from launcher backend
+        if [[ -n "$BACKEND_FROM_LAUNCHER" ]]; then
+            PLATFORM="$BACKEND_FROM_LAUNCHER"
+        fi
+        
+        echo ""
+        echo -e "┌─ ${BOLD}ENVIRONMENT${NC} ────────────────────────────────────────────────────────────────┐"
+        box_line "" "single"
+        box_line "  Environment: ${CYAN}$(ucfirst "$ENVIRONMENT")${NC}" "single"
+        if [[ -n "$PLATFORM" ]]; then
+            box_line "  Platform:    ${CYAN}$(ucfirst "$PLATFORM")${NC}" "single"
+        fi
+        box_line "" "single"
+        echo -e "└──────────────────────────────────────────────────────────────────────────────┘"
+        echo ""
+        
+        read -p "$(echo -e "${BOLD}Continue with this configuration? [Y/n]:${NC} ")" confirm
+        if [[ "${confirm:-y}" =~ ^[Nn] ]]; then
+            # User wants to change - clear launcher values and show full menu
+            ENV_FROM_LAUNCHER=""
+            BACKEND_FROM_LAUNCHER=""
+            ENVIRONMENT=""
+            PLATFORM=""
+            wizard_environment
+        fi
+        return
+    fi
+    
     echo ""
     echo -e "┌─ ${BOLD}ENVIRONMENT${NC} ────────────────────────────────────────────────────────────────┐"
     box_line "" "single"
@@ -275,6 +321,16 @@ wizard_platform() {
     # Development environment always uses Docker - skip the prompt
     if [[ "$ENVIRONMENT" == "development" ]]; then
         PLATFORM="docker"
+        return
+    fi
+    
+    # If platform already set from launcher, skip
+    if [[ -n "$PLATFORM" ]]; then
+        # Validate proxmox requires root
+        if [[ "$PLATFORM" == "proxmox" && "$(id -u)" != "0" ]]; then
+            error "Proxmox installation must be run as root on the Proxmox host"
+            exit 1
+        fi
         return
     fi
     
@@ -331,9 +387,9 @@ wizard_llm_backend() {
         box_line "                  - Complete data privacy - nothing leaves your machine" "single"
         _wizard_line "                - $tier_text"
         box_line "" "single"
-        box_line "  ${CYAN}2)${NC} cloud        Use AWS Bedrock" "single"
+        box_line "  ${CYAN}2)${NC} cloud        Use cloud AI provider" "single"
+        box_line "                  - OpenAI, Anthropic, OpenRouter, or AWS Bedrock" "single"
         box_line "                  - No local GPU/memory requirements" "single"
-        box_line "                  - Requires AWS credentials" "single"
     elif [[ "$DETECTED_LLM_BACKEND" == "vllm" ]]; then
         local detected_text="Detected: x86_64 Linux - ${DETECTED_RAM_GB}GB RAM - NVIDIA GPU"
         local tier_text="Selected tier: $(ucfirst "$DETECTED_LLM_TIER")"
@@ -344,15 +400,15 @@ wizard_llm_backend() {
         box_line "                  - Complete data privacy" "single"
         _wizard_line "                - $tier_text"
         box_line "" "single"
-        box_line "  ${CYAN}2)${NC} cloud        Use AWS Bedrock" "single"
-        box_line "                  - No local GPU requirements" "single"
+        box_line "  ${CYAN}2)${NC} cloud        Use cloud AI provider" "single"
+        box_line "                  - OpenAI, Anthropic, OpenRouter, or AWS Bedrock" "single"
     else
         local detected_text="Detected: ${DETECTED_ARCH} - No GPU detected"
         
         _wizard_line "$detected_text"
         box_line "" "single"
         box_line "  Local AI requires Apple Silicon (MLX) or NVIDIA GPU (vLLM)." "single"
-        box_line "  Using AWS Bedrock for LLM inference." "single"
+        box_line "  Using cloud AI provider for LLM inference." "single"
     fi
     
     box_line "" "single"
@@ -361,7 +417,7 @@ wizard_llm_backend() {
     
     if [[ "$DETECTED_LLM_BACKEND" == "cloud" ]]; then
         LLM_BACKEND="cloud"
-        wizard_aws_credentials
+        wizard_cloud_provider
     else
         while true; do
             read -p "$(echo -e "${BOLD}Choice [1]:${NC} ")" choice
@@ -373,7 +429,7 @@ wizard_llm_backend() {
                     ;;
                 2) 
                     LLM_BACKEND="cloud"
-                    wizard_aws_credentials
+                    wizard_cloud_provider
                     break
                     ;;
                 *) echo "Invalid choice. Please enter 1 or 2." ;;
@@ -382,23 +438,181 @@ wizard_llm_backend() {
     fi
 }
 
+# Cloud provider selection and credential collection
+CLOUD_PROVIDER=""
+CLOUD_API_KEY=""
+CLOUD_API_BASE=""
+
+wizard_cloud_provider() {
+    echo ""
+    echo -e "┌─ ${BOLD}CLOUD AI PROVIDER${NC} ──────────────────────────────────────────────────────────┐"
+    box_line "" "single"
+    box_line "  ${CYAN}1)${NC} OpenAI       GPT-4o, GPT-4 Turbo, GPT-3.5" "single"
+    box_line "                  - Most popular, excellent for general use" "single"
+    box_line "" "single"
+    box_line "  ${CYAN}2)${NC} Anthropic    Claude 3.5 Sonnet, Claude 3 Opus" "single"
+    box_line "                  - Strong reasoning, longer context" "single"
+    box_line "" "single"
+    box_line "  ${CYAN}3)${NC} OpenRouter   Access to 100+ models via single API" "single"
+    box_line "                  - Pay-per-use, no commitments" "single"
+    box_line "" "single"
+    box_line "  ${CYAN}4)${NC} AWS Bedrock  Claude, Titan, Llama via AWS" "single"
+    box_line "                  - Enterprise, uses AWS credentials" "single"
+    box_line "" "single"
+    echo -e "└──────────────────────────────────────────────────────────────────────────────┘"
+    echo ""
+    
+    while true; do
+        read -p "$(echo -e "${BOLD}Choice [1]:${NC} ")" choice
+        case "${choice:-1}" in
+            1) 
+                CLOUD_PROVIDER="openai"
+                wizard_openai_credentials
+                break
+                ;;
+            2) 
+                CLOUD_PROVIDER="anthropic"
+                wizard_anthropic_credentials
+                break
+                ;;
+            3) 
+                CLOUD_PROVIDER="openrouter"
+                wizard_openrouter_credentials
+                break
+                ;;
+            4) 
+                CLOUD_PROVIDER="bedrock"
+                wizard_aws_credentials
+                break
+                ;;
+            *) echo "Invalid choice. Please enter 1, 2, 3, or 4." ;;
+        esac
+    done
+    
+    # Save provider to state
+    set_state "CLOUD_PROVIDER" "$CLOUD_PROVIDER"
+}
+
+wizard_openai_credentials() {
+    echo ""
+    echo -e "  ${BOLD}OpenAI API Configuration${NC}"
+    echo -e "  ${DIM}Get your API key from: https://platform.openai.com/api-keys${NC}"
+    echo ""
+    
+    read -sp "  API Key (sk-...): " CLOUD_API_KEY
+    echo ""
+    
+    if [[ -z "$CLOUD_API_KEY" ]]; then
+        error "API key is required"
+        wizard_openai_credentials
+        return
+    fi
+    
+    if [[ ! "$CLOUD_API_KEY" =~ ^sk- ]]; then
+        warn "API key doesn't look like an OpenAI key (should start with 'sk-')"
+        read -p "  Continue anyway? [y/N]: " confirm
+        if [[ ! "${confirm:-n}" =~ ^[Yy] ]]; then
+            wizard_openai_credentials
+            return
+        fi
+    fi
+    
+    # Optional: custom base URL for Azure OpenAI or proxies
+    read -p "  Custom API base URL (leave empty for default): " CLOUD_API_BASE
+    
+    export OPENAI_API_KEY="$CLOUD_API_KEY"
+    [[ -n "$CLOUD_API_BASE" ]] && export OPENAI_API_BASE="$CLOUD_API_BASE"
+    
+    set_state "OPENAI_API_KEY" "$CLOUD_API_KEY"
+    [[ -n "$CLOUD_API_BASE" ]] && set_state "OPENAI_API_BASE" "$CLOUD_API_BASE"
+    
+    success "OpenAI credentials saved"
+}
+
+wizard_anthropic_credentials() {
+    echo ""
+    echo -e "  ${BOLD}Anthropic API Configuration${NC}"
+    echo -e "  ${DIM}Get your API key from: https://console.anthropic.com/settings/keys${NC}"
+    echo ""
+    
+    read -sp "  API Key (sk-ant-...): " CLOUD_API_KEY
+    echo ""
+    
+    if [[ -z "$CLOUD_API_KEY" ]]; then
+        error "API key is required"
+        wizard_anthropic_credentials
+        return
+    fi
+    
+    if [[ ! "$CLOUD_API_KEY" =~ ^sk-ant- ]]; then
+        warn "API key doesn't look like an Anthropic key (should start with 'sk-ant-')"
+        read -p "  Continue anyway? [y/N]: " confirm
+        if [[ ! "${confirm:-n}" =~ ^[Yy] ]]; then
+            wizard_anthropic_credentials
+            return
+        fi
+    fi
+    
+    export ANTHROPIC_API_KEY="$CLOUD_API_KEY"
+    set_state "ANTHROPIC_API_KEY" "$CLOUD_API_KEY"
+    
+    success "Anthropic credentials saved"
+}
+
+wizard_openrouter_credentials() {
+    echo ""
+    echo -e "  ${BOLD}OpenRouter API Configuration${NC}"
+    echo -e "  ${DIM}Get your API key from: https://openrouter.ai/keys${NC}"
+    echo ""
+    
+    read -sp "  API Key (sk-or-...): " CLOUD_API_KEY
+    echo ""
+    
+    if [[ -z "$CLOUD_API_KEY" ]]; then
+        error "API key is required"
+        wizard_openrouter_credentials
+        return
+    fi
+    
+    export OPENROUTER_API_KEY="$CLOUD_API_KEY"
+    set_state "OPENROUTER_API_KEY" "$CLOUD_API_KEY"
+    
+    # OpenRouter uses OpenAI-compatible API
+    export OPENAI_API_KEY="$CLOUD_API_KEY"
+    export OPENAI_API_BASE="https://openrouter.ai/api/v1"
+    set_state "OPENAI_API_KEY" "$CLOUD_API_KEY"
+    set_state "OPENAI_API_BASE" "https://openrouter.ai/api/v1"
+    
+    success "OpenRouter credentials saved"
+}
+
 wizard_aws_credentials() {
     echo ""
-    echo -e "  ${BOLD}AWS Credentials:${NC}"
-    read -p "    Access Key ID: " AWS_ACCESS_KEY_ID
-    read -sp "    Secret Access Key: " AWS_SECRET_ACCESS_KEY
+    echo -e "  ${BOLD}AWS Bedrock Configuration${NC}"
+    echo -e "  ${DIM}Requires IAM user with Bedrock access${NC}"
     echo ""
-    read -p "    Region [us-east-1]: " AWS_REGION
+    
+    read -p "  Access Key ID: " AWS_ACCESS_KEY_ID
+    read -sp "  Secret Access Key: " AWS_SECRET_ACCESS_KEY
+    echo ""
+    read -p "  Region [us-east-1]: " AWS_REGION
     AWS_REGION="${AWS_REGION:-us-east-1}"
     
-    # Validate credentials
-    info "Validating AWS credentials..."
-    # TODO: Actually validate credentials
-    success "AWS credentials validated"
+    if [[ -z "$AWS_ACCESS_KEY_ID" || -z "$AWS_SECRET_ACCESS_KEY" ]]; then
+        error "Both Access Key ID and Secret Access Key are required"
+        wizard_aws_credentials
+        return
+    fi
     
     export AWS_ACCESS_KEY_ID
     export AWS_SECRET_ACCESS_KEY
     export AWS_REGION
+    
+    set_state "AWS_ACCESS_KEY_ID" "$AWS_ACCESS_KEY_ID"
+    set_state "AWS_SECRET_ACCESS_KEY" "$AWS_SECRET_ACCESS_KEY"
+    set_state "AWS_REGION" "$AWS_REGION"
+    
+    success "AWS Bedrock credentials saved"
 }
 
 wizard_network() {
@@ -714,12 +928,49 @@ EOF
     if [[ "$LLM_BACKEND" == "cloud" ]]; then
         cat >> "$env_file" << EOF
 
+# Cloud LLM Provider
+CLOUD_PROVIDER=${CLOUD_PROVIDER:-openai}
+LLM_BACKEND=cloud
+EOF
+        
+        # Add provider-specific credentials
+        case "${CLOUD_PROVIDER:-openai}" in
+            openai)
+                cat >> "$env_file" << EOF
+
+# OpenAI
+OPENAI_API_KEY=${OPENAI_API_KEY:-}
+EOF
+                if [[ -n "${OPENAI_API_BASE:-}" ]]; then
+                    echo "OPENAI_API_BASE=${OPENAI_API_BASE}" >> "$env_file"
+                fi
+                ;;
+            anthropic)
+                cat >> "$env_file" << EOF
+
+# Anthropic
+ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+EOF
+                ;;
+            openrouter)
+                cat >> "$env_file" << EOF
+
+# OpenRouter (OpenAI-compatible)
+OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+OPENAI_API_KEY=${OPENAI_API_KEY:-}
+OPENAI_API_BASE=https://openrouter.ai/api/v1
+EOF
+                ;;
+            bedrock)
+                cat >> "$env_file" << EOF
+
 # AWS Bedrock
 AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
 AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
 AWS_REGION_NAME=${AWS_REGION:-us-east-1}
-BEDROCK_API_KEY=${AWS_ACCESS_KEY_ID:-}:${AWS_SECRET_ACCESS_KEY:-}
 EOF
+                ;;
+        esac
     else
         cat >> "$env_file" << EOF
 
@@ -821,7 +1072,344 @@ get_vault_pass_file() {
 }
 
 # =============================================================================
-# DOCKER BOOTSTRAP
+# DOCKER BOOTSTRAP (Ansible-based)
+# =============================================================================
+
+# Bootstrap Docker using Ansible playbook
+# This provides idempotent, unified deployment across all environments
+bootstrap_docker_ansible() {
+    local container_prefix
+    container_prefix=$(get_container_prefix)
+    
+    info "Deploying via Ansible (unified deployment system)..."
+    
+    # Set environment variables for Ansible
+    export CONTAINER_PREFIX="$container_prefix"
+    export COMPOSE_PROJECT_NAME="${container_prefix}-busibox"
+    export BUSIBOX_HOST_PATH="${REPO_ROOT}"
+    export LLM_BACKEND="${LLM_BACKEND:-}"
+    export GITHUB_AUTH_TOKEN="${GITHUB_AUTH_TOKEN:-}"
+    export ADMIN_EMAIL="${ADMIN_EMAIL:-}"
+    
+    # Navigate to Ansible directory
+    local ansible_dir="${REPO_ROOT}/provision/ansible"
+    
+    if [[ ! -d "$ansible_dir" ]]; then
+        error "Ansible directory not found: $ansible_dir"
+        return 1
+    fi
+    
+    cd "$ansible_dir"
+    
+    # Check if Docker inventory exists
+    if [[ ! -d "inventory/docker" ]]; then
+        error "Docker inventory not found. Run from the repository root."
+        return 1
+    fi
+    
+    # Generate environment file first (needed by Docker Compose)
+    local env_file
+    env_file=$(get_env_file)
+    info "Using env file: ${env_file}"
+    
+    # Check for vault password file
+    local vault_args=""
+    if [[ -f "${HOME}/.vault_pass" ]]; then
+        vault_args="--vault-password-file=${HOME}/.vault_pass"
+    elif [[ -f "${HOME}/.busibox-vault-pass-${container_prefix}" ]]; then
+        vault_args="--vault-password-file=${HOME}/.busibox-vault-pass-${container_prefix}"
+    fi
+    
+    # Build ansible-playbook command
+    local playbook_cmd="ansible-playbook -i inventory/docker docker.yml"
+    playbook_cmd+=" -e container_prefix=${container_prefix}"
+    playbook_cmd+=" -e busibox_env=${ENVIRONMENT:-development}"
+    playbook_cmd+=" -e github_token=${GITHUB_AUTH_TOKEN:-}"
+    playbook_cmd+=" -e admin_email=${ADMIN_EMAIL:-}"
+    
+    if [[ -n "$vault_args" ]]; then
+        playbook_cmd+=" $vault_args"
+    fi
+    
+    # Helper function to run ansible with proper output handling
+    run_ansible() {
+        local tags="$1"
+        local log_file="${REPO_ROOT}/.ansible-${container_prefix}-${tags}.log"
+        
+        if [[ "$VERBOSE" == true ]]; then
+            # Verbose mode: show all output with colors
+            ANSIBLE_FORCE_COLOR=1 $playbook_cmd --tags "$tags" 2>&1 | tee "$log_file"
+        else
+            # Quiet mode: run and show summary, save full log
+            echo ""
+            ANSIBLE_FORCE_COLOR=1 $playbook_cmd --tags "$tags" 2>&1 | tee "$log_file" | grep -E "^(TASK|PLAY|ok:|changed:|failed:|fatal:|skipping:|included:|\s+[✓✗]|localhost)" || true
+            local exit_code=${PIPESTATUS[0]}
+            if [[ $exit_code -ne 0 ]]; then
+                error "Ansible failed. See log: $log_file"
+                tail -30 "$log_file"
+                return 1
+            fi
+        fi
+    }
+    
+    # Run deployment phases with progress display
+    
+    # Phase 1: Infrastructure
+    show_stage 40 "Deploying Infrastructure" "PostgreSQL, Redis, MinIO, Milvus via Ansible."
+    info "Running: ansible-playbook ... --tags infrastructure"
+    if ! run_ansible "infrastructure"; then
+        error "Infrastructure deployment failed"
+        return 1
+    fi
+    
+    # Phase 2: AuthZ API (needed for admin user creation)
+    show_stage 55 "Deploying AuthZ API" "Zero-trust authentication with OAuth 2.0."
+    info "Running: ansible-playbook ... --tags authz"
+    if ! run_ansible "authz"; then
+        error "AuthZ deployment failed"
+        return 1
+    fi
+    
+    # Wait for AuthZ to be ready before creating admin user
+    info "Waiting for AuthZ API to be healthy..."
+    local max_attempts=30
+    local attempt=0
+    while [[ $attempt -lt $max_attempts ]]; do
+        if curl -sf http://localhost:8010/health/live &>/dev/null; then
+            success "AuthZ API is ready"
+            break
+        fi
+        sleep 2
+        ((attempt++))
+    done
+    
+    # Phase 3: Create Admin User
+    show_stage 65 "Creating Admin User" "Setting up admin account with magic link."
+    if create_admin_user "$ADMIN_EMAIL"; then
+        success "Admin user created successfully"
+    else
+        warn "Could not create admin user - you'll need to sign up manually"
+    fi
+    
+    # Phase 4: Remaining APIs
+    show_stage 70 "Deploying API Services" "Ingest, Search, Agent, Docs, Deploy APIs."
+    info "Running: ansible-playbook ... --tags apis"
+    if ! run_ansible "apis"; then
+        error "API deployment failed"
+        return 1
+    fi
+    
+    # Phase 5: LLM Services
+    show_stage 80 "Deploying LLM Services" "LiteLLM gateway for unified LLM access."
+    info "Running: ansible-playbook ... --tags llm"
+    if ! run_ansible "llm"; then
+        error "LLM deployment failed"
+        return 1
+    fi
+    
+    # Phase 6: Frontend
+    show_stage 90 "Deploying Frontend" "AI Portal, Agent Manager, Nginx."
+    info "Running: ansible-playbook ... --tags frontend"
+    if ! run_ansible "frontend"; then
+        error "Frontend deployment failed"
+        return 1
+    fi
+    
+    # Phase 7: Wait for AI Portal
+    show_stage 95 "Waiting for AI Portal" "Verifying services are healthy..."
+    info "Waiting for AI Portal to be healthy..."
+    max_attempts=90
+    attempt=0
+    while [[ $attempt -lt $max_attempts ]]; do
+        if curl -sf http://localhost:3000/portal/api/health &>/dev/null; then
+            success "AI Portal is ready"
+            break
+        fi
+        sleep 2
+        ((attempt++))
+    done
+    
+    if [[ $attempt -ge $max_attempts ]]; then
+        warn "AI Portal health check timed out, but it may still be starting"
+    fi
+    
+    cd "${REPO_ROOT}"
+}
+
+# =============================================================================
+# PROXMOX BOOTSTRAP (Ansible-based)
+# =============================================================================
+
+# Bootstrap Proxmox LXC containers using Ansible playbook
+# This provides idempotent, unified deployment across all environments
+bootstrap_proxmox_ansible() {
+    info "Deploying to Proxmox via Ansible (unified deployment system)..."
+    
+    # Determine inventory based on environment
+    local inventory_name
+    case "$ENVIRONMENT" in
+        production) inventory_name="production" ;;
+        staging) inventory_name="staging" ;;
+        *)
+            error "Proxmox deployment requires production or staging environment"
+            return 1
+            ;;
+    esac
+    
+    # Set environment variables for Ansible
+    export BUSIBOX_ENV="$ENVIRONMENT"
+    export GITHUB_AUTH_TOKEN="${GITHUB_AUTH_TOKEN:-}"
+    export ADMIN_EMAIL="${ADMIN_EMAIL:-}"
+    
+    # Navigate to Ansible directory
+    local ansible_dir="${REPO_ROOT}/provision/ansible"
+    
+    if [[ ! -d "$ansible_dir" ]]; then
+        error "Ansible directory not found: $ansible_dir"
+        return 1
+    fi
+    
+    cd "$ansible_dir"
+    
+    # Check if inventory exists
+    if [[ ! -d "inventory/${inventory_name}" ]]; then
+        error "Inventory not found: inventory/${inventory_name}"
+        return 1
+    fi
+    
+    # Check for vault password file
+    local vault_args=""
+    if [[ -f "${HOME}/.vault_pass" ]]; then
+        vault_args="--vault-password-file=${HOME}/.vault_pass"
+    elif [[ -f "${HOME}/.busibox-vault-pass" ]]; then
+        vault_args="--vault-password-file=${HOME}/.busibox-vault-pass"
+    else
+        warn "No vault password file found. Ansible may fail if vault is encrypted."
+    fi
+    
+    # Build ansible-playbook command
+    local playbook_cmd="ansible-playbook -i inventory/${inventory_name} site.yml"
+    playbook_cmd+=" -e busibox_env=${ENVIRONMENT}"
+    playbook_cmd+=" -e github_token=${GITHUB_AUTH_TOKEN:-}"
+    playbook_cmd+=" -e admin_email=${ADMIN_EMAIL:-}"
+    
+    if [[ -n "$vault_args" ]]; then
+        playbook_cmd+=" $vault_args"
+    fi
+    
+    # Helper function to run ansible with proper output handling
+    run_ansible_proxmox() {
+        local tags="$1"
+        local log_file="${REPO_ROOT}/.ansible-${inventory_name}-${tags}.log"
+        
+        if [[ "$VERBOSE" == true ]]; then
+            # Verbose mode: show all output with colors
+            ANSIBLE_FORCE_COLOR=1 $playbook_cmd --tags "$tags" 2>&1 | tee "$log_file"
+        else
+            # Quiet mode: run and show summary, save full log
+            echo ""
+            ANSIBLE_FORCE_COLOR=1 $playbook_cmd --tags "$tags" 2>&1 | tee "$log_file" | grep -E "^(TASK|PLAY|ok:|changed:|failed:|fatal:|skipping:|included:|\s+[✓✗])" || true
+            local exit_code=${PIPESTATUS[0]}
+            if [[ $exit_code -ne 0 ]]; then
+                error "Ansible failed. See log: $log_file"
+                tail -30 "$log_file"
+                return 1
+            fi
+        fi
+    }
+    
+    # Run deployment phases with progress display
+    
+    # Phase 1: Core Infrastructure (nginx first for web-driven recovery)
+    show_stage 30 "Deploying Core Infrastructure" "Nginx, MinIO, PostgreSQL, Milvus via Ansible."
+    info "Running: ansible-playbook ... --tags core"
+    if ! run_ansible_proxmox "core"; then
+        error "Core infrastructure deployment failed"
+        return 1
+    fi
+    
+    # Phase 2: LLM Services
+    show_stage 50 "Deploying LLM Services" "vLLM, LiteLLM, ColPali via Ansible."
+    info "Running: ansible-playbook ... --tags llm"
+    if ! run_ansible_proxmox "llm"; then
+        error "LLM deployment failed"
+        return 1
+    fi
+    
+    # Phase 3: API Services
+    show_stage 65 "Deploying API Services" "AuthZ, Ingest, Search, Agent, Deploy APIs."
+    info "Running: ansible-playbook ... --tags apis"
+    if ! run_ansible_proxmox "apis"; then
+        error "API deployment failed"
+        return 1
+    fi
+    
+    # Wait for AuthZ to be ready before creating admin user
+    local authz_ip
+    case "$ENVIRONMENT" in
+        production) authz_ip="10.96.200.210" ;;
+        staging) authz_ip="10.96.201.210" ;;
+    esac
+    
+    info "Waiting for AuthZ API to be healthy at ${authz_ip}..."
+    local max_attempts=30
+    local attempt=0
+    while [[ $attempt -lt $max_attempts ]]; do
+        if curl -sf "http://${authz_ip}:8010/health/live" &>/dev/null; then
+            success "AuthZ API is ready"
+            break
+        fi
+        sleep 2
+        ((attempt++))
+    done
+    
+    # Phase 4: Create Admin User
+    show_stage 75 "Creating Admin User" "Setting up admin account with magic link."
+    # For Proxmox, we need to call the remote AuthZ API
+    export AUTHZ_BASE_URL="http://${authz_ip}:8010"
+    if create_admin_user "$ADMIN_EMAIL"; then
+        success "Admin user created successfully"
+    else
+        warn "Could not create admin user - you'll need to sign up manually"
+    fi
+    
+    # Phase 5: Frontend Apps
+    show_stage 85 "Deploying Frontend Apps" "AI Portal, Agent Manager via Ansible."
+    info "Running: ansible-playbook ... --tags apps"
+    if ! run_ansible_proxmox "apps"; then
+        error "Frontend deployment failed"
+        return 1
+    fi
+    
+    # Phase 6: Wait for AI Portal
+    local portal_ip
+    case "$ENVIRONMENT" in
+        production) portal_ip="10.96.200.201" ;;
+        staging) portal_ip="10.96.201.201" ;;
+    esac
+    
+    show_stage 95 "Waiting for AI Portal" "Verifying services are healthy..."
+    info "Waiting for AI Portal to be healthy at ${portal_ip}..."
+    max_attempts=90
+    attempt=0
+    while [[ $attempt -lt $max_attempts ]]; do
+        if curl -sf "http://${portal_ip}:3000/portal/api/health" &>/dev/null; then
+            success "AI Portal is ready"
+            break
+        fi
+        sleep 2
+        ((attempt++))
+    done
+    
+    if [[ $attempt -ge $max_attempts ]]; then
+        warn "AI Portal health check timed out, but it may still be starting"
+    fi
+    
+    cd "${REPO_ROOT}"
+}
+
+# =============================================================================
+# DOCKER BOOTSTRAP (Legacy docker-compose based)
 # =============================================================================
 
 bootstrap_docker() {
@@ -2322,10 +2910,20 @@ main() {
     set_install_phase "bootstrap_started"
     
     if [[ "$PLATFORM" == "docker" ]]; then
-        bootstrap_docker
+        # Use Ansible for unified deployment (default)
+        # Set USE_LEGACY_DOCKER=true to use old docker-compose approach
+        if [[ "${USE_LEGACY_DOCKER:-false}" == "true" ]]; then
+            warn "Using legacy docker-compose deployment (deprecated)"
+            bootstrap_docker
+        else
+            info "Using Ansible for Docker deployment (unified deployment system)"
+            bootstrap_docker_ansible
+        fi
+    elif [[ "$PLATFORM" == "proxmox" ]]; then
+        info "Using Ansible for Proxmox deployment"
+        bootstrap_proxmox_ansible
     else
-        # TODO: Implement Proxmox bootstrap
-        error "Proxmox bootstrap not yet implemented"
+        error "Unknown platform: $PLATFORM"
         exit 1
     fi
     

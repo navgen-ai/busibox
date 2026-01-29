@@ -1,0 +1,44 @@
+---
+# Docker Common Role - Main Tasks
+#
+# This role provides wrapper tasks for Docker Compose operations.
+# Include this role to set up Docker prerequisites before service deployment.
+
+- name: Verify Docker is installed
+  ansible.builtin.command: docker --version
+  register: docker_version
+  changed_when: false
+  failed_when: docker_version.rc != 0
+
+- name: Verify Docker Compose is available
+  ansible.builtin.command: docker compose version
+  register: docker_compose_version
+  changed_when: false
+  failed_when: docker_compose_version.rc != 0
+
+- name: Display Docker versions
+  ansible.builtin.debug:
+    msg: |
+      Docker: {{ docker_version.stdout }}
+      Docker Compose: {{ docker_compose_version.stdout }}
+
+- name: Ensure Docker network exists
+  community.docker.docker_network:
+    name: "{{ docker_network }}"
+    state: present
+  when: docker_network is defined
+
+- name: Check if environment file exists
+  ansible.builtin.stat:
+    path: "{{ docker_env_file }}"
+  register: env_file_stat
+
+- name: Warn if environment file missing
+  ansible.builtin.debug:
+    msg: "WARNING: Environment file {{ docker_env_file }} not found. Using defaults."
+  when: not env_file_stat.stat.exists
+
+- name: Set compose file arguments
+  ansible.builtin.set_fact:
+    docker_compose_file_args: "{{ docker_compose_files_list | map('regex_replace', '^(.*)$', '-f \\1') | join(' ') }}"
+    docker_compose_env_args: "{{ '--env-file ' ~ docker_env_file if env_file_stat.stat.exists else '' }}"

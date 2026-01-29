@@ -1,0 +1,38 @@
+---
+# User App Undeploy Playbook
+#
+# Removes a user/external application from the user-apps container.
+#
+# Usage:
+#   ansible-playbook -i inventory/docker user-app-undeploy.yml \
+#     -e "app_id=myapp"
+#
+# Required Variables:
+#   app_id - Unique identifier for the app to remove
+
+- name: Undeploy User Application
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  vars:
+    deploy_target: "{{ hostvars['localhost']['deploy_target'] | default('docker') }}"
+  
+  pre_tasks:
+    - name: Display undeploy info
+      ansible.builtin.debug:
+        msg: |
+          ═══════════════════════════════════════════════════════════════════
+          USER APP UNDEPLOY
+          ═══════════════════════════════════════════════════════════════════
+          App ID: {{ app_id }}
+          Target: {{ deploy_target }}
+          ═══════════════════════════════════════════════════════════════════
+  
+  tasks:
+    - name: Run undeploy tasks
+      ansible.builtin.include_role:
+        name: user_app_deployer
+        tasks_from: undeploy
+      vars:
+        app_id: "{{ app_id }}"

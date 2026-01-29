@@ -1,0 +1,82 @@
+---
+# User App Deployer - Undeploy Tasks
+#
+# Removes a user app from the user-apps container.
+
+- name: Validate app_id
+  ansible.builtin.assert:
+    that:
+      - app_id is defined and app_id | length > 0
+    fail_msg: "app_id is required for undeploy"
+
+- name: Set app path
+  ansible.builtin.set_fact:
+    app_path: "{{ user_apps_base_path }}/{{ app_id }}"
+    app_log_path: "{{ user_apps_logs_path }}/{{ app_id }}"
+
+# Docker undeploy
+- name: Undeploy from Docker
+  when: deploy_target == 'docker'
+  block:
+    - name: Stop app process (Docker)
+      ansible.builtin.command:
+        cmd: >
+          docker exec {{ user_apps_container }}
+          sh -c "pkill -f 'node.*{{ app_id }}' || true"
+      changed_when: true
+      failed_when: false
+
+    - name: Remove app directory (Docker)
+      ansible.builtin.command:
+        cmd: docker exec {{ user_apps_container }} rm -rf {{ app_path }}
+      changed_when: true
+      failed_when: false
+
+    - name: Remove log directory (Docker)
+      ansible.builtin.command:
+        cmd: docker exec {{ user_apps_container }} rm -rf {{ app_log_path }}
+      changed_when: true
+      failed_when: false
+
+# LXC undeploy
+- name: Undeploy from LXC
+  when: deploy_target == 'proxmox'
+  block:
+    - name: Stop and disable service (LXC)
+      ansible.builtin.systemd:
+        name: "{{ app_id }}"
+        state: stopped
+        enabled: false
+      delegate_to: "{{ groups['user_apps'][0] }}"
+      failed_when: false
+
+    - name: Remove systemd service file (LXC)
+      ansible.builtin.file:
+        path: "/etc/systemd/system/{{ app_id }}.service"
+        state: absent
+      delegate_to: "{{ groups['user_apps'][0] }}"
+
+    - name: Reload systemd (LXC)
+      ansible.builtin.systemd:
+        daemon_reload: true
+      delegate_to: "{{ groups['user_apps'][0] }}"
+
+    - name: Remove app directory (LXC)
+      ansible.builtin.file:
+        path: "{{ app_path }}"
+        state: absent
+      delegate_to: "{{ groups['user_apps'][0] }}"
+
+    - name: Remove log directory (LXC)
+      ansible.builtin.file:
+        path: "{{ app_log_path }}"
+        state: absent
+      delegate_to: "{{ groups['user_apps'][0] }}"
+
+- name: Report undeploy status
+  ansible.builtin.debug:
+    msg: |
+      User App Undeployed
+      ===================
+      App ID: {{ app_id }}
+      Removed: {{ app_path }}

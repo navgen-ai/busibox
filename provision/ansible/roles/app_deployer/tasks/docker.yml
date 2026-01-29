@@ -1,0 +1,64 @@
+---
+# Core Apps Docker Deployment Tasks
+#
+# Deploys AI Portal and Agent Manager via Docker Compose
+# Used when deploy_target == 'docker'
+
+- name: Build core-apps container
+  include_role:
+    name: docker_common
+    tasks_from: compose_build
+  vars:
+    docker_services_to_build:
+      - core-apps
+    docker_build_no_cache: "{{ docker_force_rebuild | default(false) }}"
+
+- name: Start core-apps container
+  include_role:
+    name: docker_common
+    tasks_from: compose_up
+  vars:
+    docker_services_to_start:
+      - core-apps
+    docker_wait_for_health: true
+
+- name: Wait for core-apps to be ready
+  include_role:
+    name: docker_common
+    tasks_from: wait_healthy
+  vars:
+    docker_wait_service: core-apps
+    docker_wait_timeout: 120
+
+- name: Run AI Portal database migrations
+  include_role:
+    name: docker_common
+    tasks_from: compose_exec
+  vars:
+    docker_exec_service: core-apps
+    docker_exec_command: "sh -c 'cd /srv/ai-portal && npx prisma db push --accept-data-loss'"
+    docker_exec_fail_on_error: false
+  register: migration_result
+
+- name: Display migration result
+  ansible.builtin.debug:
+    msg: "{{ migration_result.exec_result.stdout | default('Migration completed') }}"
+  when: migration_result is defined
+
+- name: Verify AI Portal health endpoint
+  ansible.builtin.uri:
+    url: "http://localhost:{{ ai_portal_port }}/api/health"
+    method: GET
+    status_code: [200]
+  register: portal_health
+  retries: 10
+  delay: 5
+  until: portal_health.status == 200
+  failed_when: false
+
+- name: Display core-apps status
+  ansible.builtin.debug:
+    msg: |
+      Core apps are running and ready
+      AI Portal: http://localhost:{{ ai_portal_port }}
+      Agent Manager: http://localhost:{{ agent_manager_port }}
