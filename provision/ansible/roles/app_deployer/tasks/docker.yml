@@ -38,12 +38,11 @@
     docker_exec_service: core-apps
     docker_exec_command: "sh -c 'cd /srv/ai-portal && npx prisma db push --accept-data-loss'"
     docker_exec_fail_on_error: false
-  register: migration_result
 
 - name: Display migration result
   ansible.builtin.debug:
-    msg: "{{ migration_result.exec_result.stdout | default('Migration completed') }}"
-  when: migration_result is defined
+    msg: "{{ exec_result.stdout | default('Migration completed') }}"
+  when: exec_result is defined
 
 - name: Verify AI Portal health endpoint
   ansible.builtin.uri:

@@ -203,8 +203,6 @@ try:
     # Bootstrap client - uses jwt_secret as the shared secret (same as deployed services)
     # ai-portal client is created with jwt_secret as its secret
     jwt_secret = secrets.get('jwt_secret', '')
-    print(f"AUTHZ_BOOTSTRAP_CLIENT_ID=ai-portal")
-    print(f"AUTHZ_BOOTSTRAP_CLIENT_SECRET={jwt_secret}")
     
     # Test credentials
     test_creds = secrets.get('test_credentials', {})

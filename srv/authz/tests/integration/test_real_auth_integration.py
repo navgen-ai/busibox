@@ -45,10 +45,6 @@ TEST_DB_PASSWORD = os.getenv("TEST_DB_PASSWORD", "testpassword")
 TEST_AUTHZ_URL = os.getenv("TEST_AUTHZ_URL", "http://10.96.201.210:8010")
 ADMIN_TOKEN = os.getenv("AUTHZ_ADMIN_TOKEN", "")
 
-# OAuth client credentials
-BOOTSTRAP_CLIENT_ID = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_ID", "ai-portal")
-BOOTSTRAP_CLIENT_SECRET = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_SECRET", "")
-
 
 def skip_if_no_credentials():
     """Skip tests if credentials are not set."""
@@ -61,10 +57,7 @@ def skip_if_no_credentials():
 def skip_if_no_oauth_credentials():
     """Skip tests if OAuth client credentials are not set."""
     skip_if_no_credentials()
-    if not BOOTSTRAP_CLIENT_SECRET:
-        pytest.skip("AUTHZ_BOOTSTRAP_CLIENT_SECRET not set - cannot test OAuth flows")
-
-
+ 
 # ============================================================================
 # Fixtures
 # ============================================================================
@@ -1824,8 +1817,6 @@ class TestOAuthTokenExchange:
                 f"{TEST_AUTHZ_URL}/oauth/token",
                 json={
                     "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
-                    "client_id": BOOTSTRAP_CLIENT_ID,
-                    "client_secret": BOOTSTRAP_CLIENT_SECRET,
                     "audience": "ingest-api",
                     "requested_subject": str(user_id),
                     "requested_purpose": "integration-test",
@@ -1936,8 +1927,6 @@ class TestOAuthTokenExchange:
                 headers=admin_headers,
                 json={
                     "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
-                    "client_id": BOOTSTRAP_CLIENT_ID,
-                    "client_secret": BOOTSTRAP_CLIENT_SECRET,
                     "audience": "search-api",
                     "requested_subject": str(user_id),
                 },
@@ -1979,8 +1968,6 @@ class TestOAuthTokenExchange:
                 headers=admin_headers,
                 json={
                     "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
-                    "client_id": BOOTSTRAP_CLIENT_ID,
-                    "client_secret": BOOTSTRAP_CLIENT_SECRET,
                     "audience": "ingest-api",
                     "requested_subject": fake_user_id,
                 },
@@ -2014,8 +2001,6 @@ class TestOAuthTokenExchange:
                 f"{TEST_AUTHZ_URL}/oauth/token",
                 json={
                     "grant_type": "client_credentials",
-                    "client_id": BOOTSTRAP_CLIENT_ID,
-                    "client_secret": BOOTSTRAP_CLIENT_SECRET,
                     "audience": "agent-api",
                 },
                 timeout=30.0,
@@ -2087,8 +2072,6 @@ class TestJWKSEndpoint:
                 f"{TEST_AUTHZ_URL}/oauth/token",
                 json={
                     "grant_type": "client_credentials",
-                    "client_id": BOOTSTRAP_CLIENT_ID,
-                    "client_secret": BOOTSTRAP_CLIENT_SECRET,
                     "audience": "agent-api",
                 },
                 timeout=30.0,

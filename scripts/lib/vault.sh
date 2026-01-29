@@ -396,6 +396,234 @@ generate_secret() {
     openssl rand -base64 "$length" | tr -d '/+=' | head -c "$length"
 }
 
+# Write a secret to the vault
+# Usage: write_vault_secret "secrets.postgresql.password" "my-password"
+# Note: Requires yq to be installed
+write_vault_secret() {
+    local key_path="$1"
+    local value="$2"
+    local vault_pass_file="${ANSIBLE_VAULT_PASSWORD_FILE:-}"
+    
+    if [[ -z "$key_path" ]] || [[ -z "$value" ]]; then
+        _vault_error "Key path and value required"
+        return 1
+    fi
+    
+    # Check if yq is available (required for writing)
+    if ! command -v yq &>/dev/null; then
+        _vault_error "yq is required for writing vault secrets. Install with: brew install yq"
+        return 1
+    fi
+    
+    local was_encrypted=false
+    local tmp_file=""
+    
+    # Check if vault is encrypted
+    if is_vault_encrypted; then
+        was_encrypted=true
+        
+        if [[ -z "$vault_pass_file" ]]; then
+            _vault_error "Vault is encrypted but no password file set. Call ensure_vault_access first."
+            return 1
+        fi
+        
+        # Decrypt to temp file
+        tmp_file=$(mktemp)
+        if ! ansible-vault decrypt --vault-password-file="$vault_pass_file" --output="$tmp_file" "$VAULT_FILE" 2>/dev/null; then
+            _vault_error "Failed to decrypt vault"
+            rm -f "$tmp_file"
+            return 1
+        fi
+    else
+        tmp_file="$VAULT_FILE"
+    fi
+    
+    # Convert dot notation to yq path (e.g., secrets.postgresql.password -> .secrets.postgresql.password)
+    local yq_path=".$key_path"
+    
+    # Update the value using yq
+    if ! yq -i "$yq_path = \"$value\"" "$tmp_file" 2>/dev/null; then
+        _vault_error "Failed to update vault secret: $key_path"
+        [[ "$was_encrypted" == "true" ]] && rm -f "$tmp_file"
+        return 1
+    fi
+    
+    # Re-encrypt if it was encrypted
+    if [[ "$was_encrypted" == "true" ]]; then
+        # Copy back and encrypt in place to avoid vault-id conflicts
+        cp "$tmp_file" "$VAULT_FILE"
+        rm -f "$tmp_file"
+        if ! ansible-vault encrypt --vault-password-file="$vault_pass_file" --encrypt-vault-id default "$VAULT_FILE" 2>/dev/null; then
+            _vault_error "Failed to re-encrypt vault"
+            return 1
+        fi
+    fi
+    
+    return 0
+}
+
+# Update multiple vault secrets at once
+# Usage: update_vault_secrets "secrets.postgresql.password=pass1" "secrets.minio.root_user=admin"
+update_vault_secrets() {
+    local vault_pass_file="${ANSIBLE_VAULT_PASSWORD_FILE:-}"
+    local was_encrypted=false
+    local tmp_file=""
+    
+    if [[ $# -eq 0 ]]; then
+        _vault_error "At least one key=value pair required"
+        return 1
+    fi
+    
+    # Check if yq is available (required for writing)
+    if ! command -v yq &>/dev/null; then
+        _vault_error "yq is required for writing vault secrets. Install with: brew install yq"
+        return 1
+    fi
+    
+    # Check if vault is encrypted
+    if is_vault_encrypted; then
+        was_encrypted=true
+        
+        if [[ -z "$vault_pass_file" ]]; then
+            _vault_error "Vault is encrypted but no password file set. Call ensure_vault_access first."
+            return 1
+        fi
+        
+        # Decrypt to temp file
+        tmp_file=$(mktemp)
+        if ! ansible-vault decrypt --vault-password-file="$vault_pass_file" --output="$tmp_file" "$VAULT_FILE" 2>/dev/null; then
+            _vault_error "Failed to decrypt vault"
+            rm -f "$tmp_file"
+            return 1
+        fi
+    else
+        tmp_file="$VAULT_FILE"
+    fi
+    
+    # Process each key=value pair
+    for pair in "$@"; do
+        local key_path="${pair%%=*}"
+        local value="${pair#*=}"
+        local yq_path=".$key_path"
+        
+        if ! yq -i "$yq_path = \"$value\"" "$tmp_file" 2>/dev/null; then
+            _vault_error "Failed to update vault secret: $key_path"
+            [[ "$was_encrypted" == "true" ]] && rm -f "$tmp_file"
+            return 1
+        fi
+    done
+    
+    # Re-encrypt if it was encrypted
+    if [[ "$was_encrypted" == "true" ]]; then
+        # Copy back and encrypt in place to avoid vault-id conflicts
+        cp "$tmp_file" "$VAULT_FILE"
+        rm -f "$tmp_file"
+        if ! ansible-vault encrypt --vault-password-file="$vault_pass_file" --encrypt-vault-id default "$VAULT_FILE" 2>/dev/null; then
+            _vault_error "Failed to re-encrypt vault"
+            return 1
+        fi
+    fi
+    
+    return 0
+}
+
+# Sync secrets and protected config from environment variables to vault
+# This is called by install.sh after generating secrets
+# Usage: sync_secrets_to_vault
+#
+# The vault contains:
+# 1. Secrets (passwords, API keys, tokens) - for security
+# 2. Protected config (admin_email, allowed_domains) - for integrity/anti-tampering
+sync_secrets_to_vault() {
+    _vault_info "Syncing secrets and protected config to vault..."
+    
+    # Build list of values to update
+    local values_to_update=()
+    
+    # ==========================================================================
+    # SECRETS (security-sensitive)
+    # ==========================================================================
+    
+    # PostgreSQL
+    if [[ -n "${POSTGRES_PASSWORD:-}" ]]; then
+        values_to_update+=("secrets.postgresql.password=${POSTGRES_PASSWORD}")
+    fi
+    
+    # MinIO
+    if [[ -n "${MINIO_ACCESS_KEY:-}" ]]; then
+        values_to_update+=("secrets.minio.root_user=${MINIO_ACCESS_KEY}")
+    fi
+    if [[ -n "${MINIO_SECRET_KEY:-}" ]]; then
+        values_to_update+=("secrets.minio.root_password=${MINIO_SECRET_KEY}")
+    fi
+    
+    # Auth secrets
+    if [[ -n "${SSO_JWT_SECRET:-}" ]]; then
+        values_to_update+=("secrets.jwt_secret=${SSO_JWT_SECRET}")
+        values_to_update+=("secrets.better_auth_secret=${SSO_JWT_SECRET}")
+        values_to_update+=("secrets.session_secret=${SSO_JWT_SECRET}")
+    fi
+    
+    # AuthZ
+    if [[ -n "${AUTHZ_MASTER_KEY:-}" ]]; then
+        values_to_update+=("secrets.authz_master_key=${AUTHZ_MASTER_KEY}")
+    fi
+    
+    # LiteLLM
+    if [[ -n "${LITELLM_API_KEY:-}" ]]; then
+        values_to_update+=("secrets.litellm_api_key=${LITELLM_API_KEY}")
+    fi
+    
+    # GitHub
+    if [[ -n "${GITHUB_AUTH_TOKEN:-}" ]]; then
+        values_to_update+=("secrets.github.personal_access_token=${GITHUB_AUTH_TOKEN}")
+    fi
+    
+    # Cloud LLM credentials
+    if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+        values_to_update+=("secrets.openai_api_key=${OPENAI_API_KEY}")
+    fi
+    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+        values_to_update+=("secrets.anthropic_api_key=${ANTHROPIC_API_KEY}")
+    fi
+    if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
+        values_to_update+=("secrets.openrouter_api_key=${OPENROUTER_API_KEY}")
+    fi
+    if [[ -n "${AWS_ACCESS_KEY_ID:-}" ]]; then
+        values_to_update+=("secrets.aws.access_key_id=${AWS_ACCESS_KEY_ID}")
+    fi
+    if [[ -n "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
+        values_to_update+=("secrets.aws.secret_access_key=${AWS_SECRET_ACCESS_KEY}")
+    fi
+    
+    # ==========================================================================
+    # PROTECTED CONFIG (integrity-sensitive, anti-tampering)
+    # These are under secrets.* to match vault.example.yml structure
+    # ==========================================================================
+    
+    # Admin configuration - stored in vault to prevent unauthorized changes
+    if [[ -n "${ADMIN_EMAIL:-}" ]]; then
+        values_to_update+=("secrets.admin_email=${ADMIN_EMAIL}")
+    fi
+    if [[ -n "${ALLOWED_DOMAINS:-}" ]]; then
+        values_to_update+=("secrets.allowed_email_domains=${ALLOWED_DOMAINS}")
+    fi
+    
+    if [[ ${#values_to_update[@]} -eq 0 ]]; then
+        _vault_warn "No values to sync"
+        return 0
+    fi
+    
+    # Update all values at once
+    if update_vault_secrets "${values_to_update[@]}"; then
+        _vault_success "Synced ${#values_to_update[@]} values to vault"
+        return 0
+    else
+        _vault_error "Failed to sync values to vault"
+        return 1
+    fi
+}
+
 # Generate all required secrets and update vault (interactive)
 setup_vault_secrets() {
     if ! ensure_vault_access; then
@@ -413,16 +641,43 @@ setup_vault_secrets() {
         return 1
     fi
     
-    # This is a placeholder - actual implementation would:
-    # 1. Decrypt vault
-    # 2. Update YAML with generated secrets
-    # 3. Re-encrypt vault
+    # Generate secrets
+    local new_secrets=()
     
-    _vault_warn "Interactive secret generation not yet implemented."
-    echo "Please edit the vault file manually:"
-    echo "  1. Decrypt: ansible-vault decrypt $VAULT_FILE"
-    echo "  2. Edit: $VAULT_FILE"
-    echo "  3. Encrypt: ansible-vault encrypt $VAULT_FILE"
+    if ! has_vault_secret "secrets.postgresql.password"; then
+        new_secrets+=("secrets.postgresql.password=$(generate_secret 24)")
+    fi
+    if ! has_vault_secret "secrets.minio.root_user"; then
+        new_secrets+=("secrets.minio.root_user=minioadmin")
+    fi
+    if ! has_vault_secret "secrets.minio.root_password"; then
+        new_secrets+=("secrets.minio.root_password=$(generate_secret 24)")
+    fi
+    if ! has_vault_secret "secrets.jwt_secret"; then
+        local jwt=$(generate_secret 32)
+        new_secrets+=("secrets.jwt_secret=$jwt")
+        new_secrets+=("secrets.better_auth_secret=$jwt")
+        new_secrets+=("secrets.session_secret=$jwt")
+    fi
+    if ! has_vault_secret "secrets.authz_master_key"; then
+        new_secrets+=("secrets.authz_master_key=$(openssl rand -base64 32)")
+    fi
+    if ! has_vault_secret "secrets.litellm_api_key"; then
+        new_secrets+=("secrets.litellm_api_key=sk-$(generate_secret 16)")
+    fi
     
-    return 1
+    if [[ ${#new_secrets[@]} -eq 0 ]]; then
+        _vault_success "All secrets already configured"
+        return 0
+    fi
+    
+    _vault_info "Generating ${#new_secrets[@]} secrets..."
+    
+    if update_vault_secrets "${new_secrets[@]}"; then
+        _vault_success "Vault secrets configured"
+        return 0
+    else
+        _vault_error "Failed to setup vault secrets"
+        return 1
+    fi
 }

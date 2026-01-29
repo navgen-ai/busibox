@@ -27,6 +27,11 @@
       stop {{ _services_arg }}
   args:
     chdir: "{{ docker_compose_dir }}"
+  environment:
+    POSTGRES_PASSWORD: "{{ secrets.postgresql.password | default('') }}"
+    MINIO_ACCESS_KEY: "{{ secrets.minio.root_user | default('minioadmin') }}"
+    MINIO_SECRET_KEY: "{{ secrets.minio.root_password | default('') }}"
+    GITHUB_AUTH_TOKEN: "{{ secrets.github.personal_access_token | default('') }}"
   register: stop_result
   changed_when: "'Stopping' in stop_result.stderr or 'Stopped' in stop_result.stderr"
   failed_when: false
@@ -38,6 +43,11 @@
       rm -f {{ '-v' if docker_remove_volumes | default(false) else '' }} {{ _services_arg }}
   args:
     chdir: "{{ docker_compose_dir }}"
+  environment:
+    POSTGRES_PASSWORD: "{{ secrets.postgresql.password | default('') }}"
+    MINIO_ACCESS_KEY: "{{ secrets.minio.root_user | default('minioadmin') }}"
+    MINIO_SECRET_KEY: "{{ secrets.minio.root_password | default('') }}"
+    GITHUB_AUTH_TOKEN: "{{ secrets.github.personal_access_token | default('') }}"
   when: docker_remove_containers | default(false)
   register: rm_result
   changed_when: "'Removing' in rm_result.stderr"

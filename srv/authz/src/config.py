@@ -6,10 +6,16 @@ class Config:
     """
     Config for authz service.
 
-    `srv/authz` is evolving into the Busibox internal Authorization Server:
+    `srv/authz` is the Busibox internal Authorization Server:
     - Issues internal access tokens (asymmetric signing + JWKS)
-    - Supports OAuth2 token exchange / client credentials flows
+    - Supports Zero Trust token exchange (no client authentication)
     - Stores internal RBAC (users, roles, bindings) in PostgreSQL
+    
+    Authentication Model (Zero Trust):
+    - No client IDs or client secrets - services don't authenticate to authz
+    - Users authenticate via magic link, passkey, or TOTP
+    - Tokens are exchanged based on user identity, not client credentials
+    - All service-to-service communication validated via JWKS
     
     Test Mode:
     - When X-Test-Mode: true header is sent, use test database instead
@@ -50,29 +56,11 @@ class Config:
         # If unset, keys are stored unencrypted in PostgreSQL (internal-only deployments only).
         self.key_encryption_passphrase: Optional[str] = os.getenv("AUTHZ_KEY_ENCRYPTION_PASSPHRASE")
 
-        # Optional: bootstrap an OAuth client (e.g. ai-portal) on startup.
-        # This client is used for login flows (magic link, TOTP, passkey auth).
-        self.bootstrap_client_id: Optional[str] = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_ID")
-        self.bootstrap_client_secret: Optional[str] = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_SECRET")
-        self.bootstrap_client_allowed_audiences: List[str] = [
+        # Allowed audiences for token exchange (Zero Trust).
+        # These are the services that can receive exchanged tokens.
+        self.allowed_audiences: List[str] = [
             s.strip()
-            for s in (os.getenv("AUTHZ_BOOTSTRAP_ALLOWED_AUDIENCES", "ingest-api,search-api,agent-api,authz-api").split(","))
-            if s.strip()
-        ]
-        self.bootstrap_client_allowed_scopes: List[str] = [
-            s.strip()
-            for s in (os.getenv("AUTHZ_BOOTSTRAP_ALLOWED_SCOPES", "").split(","))
-            if s.strip()
-        ]
-        
-        # Optional: bootstrap a system service account for background operations.
-        # This client is used for audit logging during login, cleanup jobs, etc.
-        # Has limited scopes compared to admin users.
-        self.system_client_id: Optional[str] = os.getenv("AUTHZ_SYSTEM_CLIENT_ID")
-        self.system_client_secret: Optional[str] = os.getenv("AUTHZ_SYSTEM_CLIENT_SECRET")
-        self.system_client_allowed_scopes: List[str] = [
-            s.strip()
-            for s in (os.getenv("AUTHZ_SYSTEM_CLIENT_SCOPES", "authz.audit.write,authz.users.read").split(","))
+            for s in (os.getenv("AUTHZ_ALLOWED_AUDIENCES", "ingest-api,search-api,agent-api,authz-api").split(","))
             if s.strip()
         ]
 
@@ -117,13 +105,7 @@ class Config:
             "signing_alg": self.signing_alg,
             "rsa_key_size": self.rsa_key_size,
             "key_encryption_passphrase": self.key_encryption_passphrase,
-            "bootstrap_client_id": self.bootstrap_client_id,
-            "bootstrap_client_secret": self.bootstrap_client_secret,
-            "bootstrap_client_allowed_audiences": self.bootstrap_client_allowed_audiences,
-            "bootstrap_client_allowed_scopes": self.bootstrap_client_allowed_scopes,
-            "system_client_id": self.system_client_id,
-            "system_client_secret": self.system_client_secret,
-            "system_client_allowed_scopes": self.system_client_allowed_scopes,
+            "allowed_audiences": self.allowed_audiences,
             "admin_token": self.admin_token,
             "master_key": self.master_key,
             "test_mode_enabled": self.test_mode_enabled,

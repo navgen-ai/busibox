@@ -28,10 +28,8 @@ API_PORT = os.getenv("API_PORT", "8002")
 SERVICE_URL = os.getenv("INGEST_API_URL", f"http://localhost:{API_PORT}")
 
 # AuthZ configuration - REQUIRED for token exchange
-# Use bootstrap client (ai-portal) - the standard OAuth client for all services
+# NOTE: Zero Trust auth - no client authentication required
 AUTHZ_JWKS_URL = os.getenv("AUTHZ_JWKS_URL", "")
-AUTHZ_BOOTSTRAP_CLIENT_ID = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_ID", "ai-portal")
-AUTHZ_BOOTSTRAP_CLIENT_SECRET = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_SECRET", "")
 
 # Dependencies - REQUIRED
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "")

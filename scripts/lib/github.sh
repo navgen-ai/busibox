@@ -159,22 +159,41 @@ validate_github_token() {
 # Token Retrieval
 # =============================================================================
 
-# Get GitHub token from state file or environment
+# Get GitHub token from vault, environment, or state file (legacy)
 # Usage: token=$(get_github_token)
 # Returns: token string or empty
 get_github_token() {
-    # First check state file
+    # First check environment variable (may be set by install.sh from vault)
+    if [[ -n "${GITHUB_AUTH_TOKEN:-}" ]]; then
+        echo "$GITHUB_AUTH_TOKEN"
+        return 0
+    fi
+    
+    # Try to read from vault (source of truth for secrets)
+    # Determine vault file path if not already set
+    local vault_file="${VAULT_FILE:-}"
+    if [[ -z "$vault_file" ]]; then
+        # Try to find the vault file relative to this script
+        local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        local repo_root="$(cd "$script_dir/../.." && pwd)"
+        vault_file="${repo_root}/provision/ansible/roles/secrets/vars/vault.yml"
+    fi
+    
+    if command -v get_vault_secret &>/dev/null && [[ -f "$vault_file" ]]; then
+        local vault_token
+        vault_token=$(get_vault_secret "secrets.github.personal_access_token" 2>/dev/null || echo "")
+        if [[ -n "$vault_token" ]] && [[ "$vault_token" != "null" ]] && [[ "$vault_token" != "CHANGE_ME"* ]]; then
+            echo "$vault_token"
+            return 0
+        fi
+    fi
+    
+    # Legacy: check state file (for backwards compatibility during migration)
     local saved_token
     saved_token=$(get_state "GITHUB_AUTH_TOKEN" "" 2>/dev/null)
     
     if [[ -n "$saved_token" ]]; then
         echo "$saved_token"
-        return 0
-    fi
-    
-    # Fall back to environment variable
-    if [[ -n "${GITHUB_AUTH_TOKEN:-}" ]]; then
-        echo "$GITHUB_AUTH_TOKEN"
         return 0
     fi
     
@@ -236,8 +255,7 @@ ensure_github_token() {
         
         if validate_github_token "$input_token"; then
             export GITHUB_AUTH_TOKEN="$input_token"
-            # Save to state for future use
-            set_state "GITHUB_AUTH_TOKEN" "$GITHUB_AUTH_TOKEN" 2>/dev/null || true
+            # Token will be saved to vault via sync_secrets_to_vault (not state file)
             return 0
         fi
         

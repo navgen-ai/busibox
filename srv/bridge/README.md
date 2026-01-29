@@ -51,9 +51,11 @@ SIGNAL_PHONE_NUMBER=+12025551234
 # Agent API configuration
 AGENT_API_URL=http://agent-lxc:8000
 AUTH_TOKEN_URL=http://authz-lxc:8010/oauth/token
-AUTH_CLIENT_ID=bridge-client
-AUTH_CLIENT_SECRET=your-client-secret
-SERVICE_USER_ID=bridge-service
+
+# Zero Trust Authentication - Delegation Token
+# Pre-issued delegation token for the signal-bot service account.
+# Create via: POST /oauth/delegation/create with a valid admin session token
+DELEGATION_TOKEN=eyJhbGciOiJSUzI1NiIs...
 
 # Bot behavior (Signal-specific)
 ENABLE_WEB_SEARCH=true
@@ -137,28 +139,53 @@ To add a new communication channel:
 3. **Configuration**: Add channel-specific env vars to Ansible templates
 4. **Register**: Update `app/main.py` to initialize and run the new adapter
 
-## API Integration
+## API Integration (Zero Trust)
 
-The bridge service authenticates with the Agent API using OAuth2 client credentials:
+The bridge service uses **delegation tokens** for Zero Trust authentication:
+
+### 1. Create Delegation Token for Service Account
+
+First, create a "signal-bot" user in AuthZ and issue a delegation token:
+
+```bash
+# Using an admin session token
+curl -X POST http://authz-lxc:8010/oauth/delegation/create \
+  -H "Authorization: Bearer ${ADMIN_SESSION_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "signal-bot-service",
+    "scopes": ["agent.execute", "chat.write", "chat.read"],
+    "expires_in_seconds": 94608000
+  }'
+```
+
+This returns a long-lived delegation token for the service account.
+
+### 2. Token Exchange for Service-Scoped Tokens
+
+At runtime, the bridge service exchanges its delegation token for agent-api-scoped tokens:
 
 ```python
-# Get access token
+# Exchange delegation token for agent-api token
 POST http://authz-lxc:8010/oauth/token
 {
-  "grant_type": "client_credentials",
-  "client_id": "bridge-client",
-  "client_secret": "..."
+  "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+  "subject_token": "<delegation_token>",
+  "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+  "audience": "agent-api",
+  "scope": "agent.execute chat.write chat.read"
 }
 
-# Call Agent API
+# Call Agent API with exchanged token
 POST http://agent-lxc:8000/agents/{agent_id}/chat
-Authorization: Bearer {access_token}
+Authorization: Bearer {agent_api_token}
 {
   "message": "User message",
-  "user_id": "signal:+12025551234",
   "conversation_id": "optional-existing-id"
 }
 ```
+
+**Note**: No `client_id`/`client_secret` is used - the delegation token carries the service account's identity.
 
 ## Monitoring
 
@@ -207,9 +234,10 @@ journalctl -u bridge -n 50
 
 ### Authentication failures
 
-1. Verify AuthZ service is running
-2. Check client credentials in vault
-3. Verify service user exists in AuthZ database
+1. Verify AuthZ service is running: `curl http://authz-lxc:8010/health/live`
+2. Check delegation token is valid: Decode the JWT and verify it hasn't expired
+3. Verify the service user exists and has appropriate roles in AuthZ
+4. Check token exchange logs in AuthZ for detailed errors
 
 ### Rate limiting
 

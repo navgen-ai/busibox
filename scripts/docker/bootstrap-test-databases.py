@@ -42,13 +42,8 @@ TEST_DB_USER = os.getenv("TEST_DB_USER", "busibox_test_user")
 TEST_DB_PASSWORD = os.getenv("TEST_DB_PASSWORD", "testpassword")
 
 # Bootstrap OAuth client configuration (same as production)
-BOOTSTRAP_CLIENT_ID = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_ID", "ai-portal")
-BOOTSTRAP_CLIENT_SECRET = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_SECRET", "ai-portal-secret")
 BOOTSTRAP_ALLOWED_AUDIENCES = ["ingest-api", "search-api", "agent-api"]
 BOOTSTRAP_ALLOWED_SCOPES = ["read", "write", "search.read", "ingest.write", "ingest.read", "agent.execute"]
-
-# Admin token for test access
-ADMIN_TOKEN = os.getenv("AUTHZ_ADMIN_TOKEN", "local-admin-token")
 
 # Consistent test user credentials - used by all integration tests
 # Using a fixed UUID ensures tests can rely on this user existing
@@ -142,25 +137,6 @@ async def create_bootstrap_data(conn):
             print("    ⚠ cryptography not installed, skipping signing key creation")
     else:
         print(f"    ✓ Signing key exists: {existing_key}")
-    
-    # Create bootstrap OAuth client
-    existing_client = await conn.fetchval(
-        "SELECT client_id FROM authz_oauth_clients WHERE client_id = $1",
-        BOOTSTRAP_CLIENT_ID
-    )
-    if not existing_client:
-        # Hash the client secret
-        secret_hash = hashlib.sha256(BOOTSTRAP_CLIENT_SECRET.encode()).hexdigest()
-        
-        await conn.execute("""
-            INSERT INTO authz_oauth_clients (client_id, client_secret_hash, allowed_audiences, allowed_scopes, is_active)
-            VALUES ($1, $2, $3, $4, true)
-            ON CONFLICT (client_id) DO NOTHING
-        """, BOOTSTRAP_CLIENT_ID, secret_hash, BOOTSTRAP_ALLOWED_AUDIENCES, BOOTSTRAP_ALLOWED_SCOPES)
-        
-        print(f"    ✓ Created OAuth client: {BOOTSTRAP_CLIENT_ID}")
-    else:
-        print(f"    ✓ OAuth client exists: {existing_client}")
     
     # Allow test.example.com domain for tests
     # Use separate INSERT statements to ensure both domains are added

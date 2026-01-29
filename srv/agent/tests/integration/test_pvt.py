@@ -30,8 +30,6 @@ SERVICE_URL = os.getenv("AGENT_API_URL", f"http://localhost:{SERVICE_PORT}")
 # AuthZ configuration - REQUIRED for token exchange
 # Use bootstrap client (ai-portal) - the standard OAuth client for all services
 AUTH_JWKS_URL = os.getenv("AUTH_JWKS_URL", "")
-AUTHZ_BOOTSTRAP_CLIENT_ID = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_ID", "ai-portal")
-AUTHZ_BOOTSTRAP_CLIENT_SECRET = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_SECRET", "")
 
 # Dependencies - REQUIRED
 LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "")

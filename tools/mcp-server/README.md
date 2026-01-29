@@ -43,7 +43,7 @@ The server exposes the following resources:
 
 ### Tools (23)
 
-#### Testing Tools (NEW in v2.2.0)
+#### Service & Testing Tools
 
 | Tool | Description |
 |------|-------------|
@@ -51,10 +51,14 @@ The server exposes the following resources:
 | `run_docker_tests` | Run tests against local Docker services |
 | `run_remote_tests` | Run tests locally against remote staging/production |
 | `run_container_tests` | Run tests directly on containers via SSH |
-| `docker_control` | Control Docker services (up, down, restart, logs, etc.) |
+| `docker_control` | ⚠️ **DEPRECATED** - Use `make manage SERVICE=x ACTION=y` instead |
 | `init_test_databases` | Initialize test databases for testing |
 | `check_test_databases` | Verify test databases are ready |
 | `get_testing_guide` | Get comprehensive testing documentation |
+
+> **Important**: For all service deployment and management, use `make` commands:
+> - Deploy: `make install SERVICE=authz`
+> - Manage: `make manage SERVICE=authz ACTION=restart`
 
 #### Git & Deployment Tools
 
@@ -188,22 +192,46 @@ Add to Cursor MCP settings (Settings > MCP Servers):
 
 ## Usage Examples
 
-### Testing (NEW in v2.2.0)
+### Service Deployment and Management (UPDATED)
+
+**IMPORTANT**: Always use `make` commands from the repo root. Never run `docker compose` or `ansible-playbook` directly.
+
+```
+"Deploy the authz service"
+"Restart the agent API"
+"Check the status of postgres and redis"
+"View logs for the ingest service"
+"Redeploy all APIs"
+```
+
+The MCP server guides you to use the correct commands:
+
+1. **Deploy Services** - Install or redeploy via Ansible with vault secrets
+   ```bash
+   make install SERVICE=authz           # Single service
+   make install SERVICE=authz,agent     # Multiple services
+   make install SERVICE=apis            # Service group
+   ```
+
+2. **Manage Running Services** - Start, stop, restart, logs, status
+   ```bash
+   make manage SERVICE=authz ACTION=restart
+   make manage SERVICE=authz ACTION=logs
+   make manage SERVICE=authz ACTION=status
+   ```
+
+### Testing
 
 ```
 "How do I run tests for the agent service?"
 "Run agent tests against Docker"
 "What's the testing workflow for staging?"
-"Initialize the test databases"
-"Get help with testing"
 ```
 
-The MCP server provides comprehensive testing guidance:
+Testing commands:
 
 1. **Docker Tests** - For local development
    ```bash
-   make docker-up          # Start Docker
-   make test-db-init       # Initialize test DBs
    make test-docker SERVICE=agent
    ```
 

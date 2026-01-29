@@ -9,6 +9,9 @@
 #       docker_services_to_start: ["postgres", "redis"]
 #       docker_build_first: true
 #       docker_wait_for_health: true
+#
+# Secrets are injected from the encrypted Ansible vault at runtime.
+# No secrets are stored in .env files.
 
 - name: Check if environment file exists
   ansible.builtin.stat:
@@ -28,9 +31,23 @@
       build {{ '--no-cache' if docker_build_no_cache else '' }} {{ _services_arg }}
   args:
     chdir: "{{ docker_compose_dir }}"
+  environment: &docker_secrets_env
+    # Secrets injected from encrypted Ansible vault at runtime
+    # These override any values in the .env file
+    POSTGRES_PASSWORD: "{{ secrets.postgresql.password | default('') }}"
+    MINIO_ACCESS_KEY: "{{ secrets.minio.root_user | default('minioadmin') }}"
+    MINIO_SECRET_KEY: "{{ secrets.minio.root_password | default('') }}"
+    SSO_JWT_SECRET: "{{ secrets.jwt_secret | default('') }}"
+    AUTHZ_MASTER_KEY: "{{ secrets.authz_master_key | default('') }}"
+    LITELLM_API_KEY: "{{ secrets.litellm_api_key | default('') }}"
+    LITELLM_MASTER_KEY: "{{ secrets.litellm_api_key | default('') }}"
+    GITHUB_AUTH_TOKEN: "{{ secrets.github.personal_access_token | default('') }}"
+    ADMIN_EMAIL: "{{ secrets.admin_email | default('') }}"
+    ALLOWED_EMAIL_DOMAINS: "{{ secrets.allowed_email_domains | default('*') }}"
   when: docker_build_first | default(false)
   register: build_result
   changed_when: "'Building' in build_result.stdout or 'built' in build_result.stdout"
+  no_log: true
 
 - name: Show docker compose command (debug)
   ansible.builtin.debug:
@@ -38,19 +55,21 @@
       Running: docker compose {{ docker_compose_file_args }} {{ docker_compose_env_args }} up -d --no-deps {{ _services_arg }}
       Compose dir: {{ docker_compose_dir }}
       Env file: {{ docker_env_file }} (exists: {{ _env_file_stat.stat.exists }})
+      Note: Secrets are injected from vault at runtime (not shown)
 
 - name: Start services with docker compose up
   ansible.builtin.shell: |
     cd {{ docker_compose_dir }}
-    echo "Starting services: {{ _services_arg }}"
     docker compose {{ docker_compose_file_args }} {{ docker_compose_env_args }} \
       up -d --no-deps {{ '--force-recreate' if docker_force_recreate else '' }} \
       {{ '--remove-orphans' if docker_remove_orphans else '' }} \
       {{ _services_arg }} 2>&1
   args:
     chdir: "{{ docker_compose_dir }}"
+  environment: *docker_secrets_env
   register: up_result
   changed_when: "'Creating' in up_result.stdout or 'Recreating' in up_result.stdout or 'Started' in up_result.stdout or 'Creating' in up_result.stderr or 'Recreating' in up_result.stderr"
+  no_log: true
 
 - name: Show docker compose output
   ansible.builtin.debug:
@@ -67,6 +86,7 @@
     echo "$json_output" | jq -r 'if type == "array" then .[].Health else .Health end // "none"'
   args:
     chdir: "{{ docker_compose_dir }}"
+  environment: *docker_secrets_env
   register: health_check
   until: >
     health_check.stdout_lines | select('equalto', 'starting') | list | length == 0

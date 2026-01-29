@@ -2,13 +2,13 @@
 Agent API Client
 
 Handles communication with Busibox Agent API for AI chat functionality.
+Uses Zero Trust authentication via delegation tokens and token exchange.
 """
 
 import json
 import logging
-import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
@@ -30,35 +30,34 @@ class AgentClient:
     """
     Client for Busibox Agent API.
     
+    Uses Zero Trust authentication:
+    - Accepts a pre-issued delegation token for the service account
+    - Exchanges the delegation token for agent-api-scoped tokens
+    - No client_id/client_secret required
+    
     Provides methods for:
     - Chat messaging (streaming and non-streaming)
     - Conversation management
-    - Authentication
+    - Authentication via token exchange
     """
 
     def __init__(
         self,
         base_url: str,
         auth_token_url: str,
-        client_id: str,
-        client_secret: str,
-        service_user_id: str,
+        delegation_token: str,
     ):
         """
-        Initialize Agent API client.
+        Initialize Agent API client with Zero Trust authentication.
         
         Args:
             base_url: Base URL of Agent API
-            auth_token_url: OAuth token endpoint
-            client_id: OAuth client ID
-            client_secret: OAuth client secret
-            service_user_id: Service user ID for API calls
+            auth_token_url: OAuth token endpoint for token exchange
+            delegation_token: Pre-issued delegation token for service account
         """
         self.base_url = base_url.rstrip("/")
         self.auth_token_url = auth_token_url
-        self.client_id = client_id
-        self.client_secret = client_secret
-        self.service_user_id = service_user_id
+        self.delegation_token = delegation_token
         
         self._client: Optional[httpx.AsyncClient] = None
         self._token: Optional[str] = None
@@ -83,10 +82,15 @@ class AgentClient:
 
     async def _get_token(self) -> str:
         """
-        Get a valid OAuth token, refreshing if needed.
+        Get a valid agent-api token via token exchange.
+        
+        Uses the delegation token to exchange for an agent-api-scoped token.
+        This follows the Zero Trust model where:
+        - The delegation token represents the service account identity
+        - Token exchange produces a short-lived, audience-scoped token
         
         Returns:
-            Bearer token string
+            Bearer token string for agent-api
         """
         now = datetime.now(timezone.utc)
         
@@ -94,14 +98,15 @@ class AgentClient:
         if self._token and self._token_expires and now < self._token_expires:
             return self._token
         
-        # Request new token
+        # Request new token via token exchange
         try:
             response = await self.client.post(
                 self.auth_token_url,
                 data={
-                    "grant_type": "client_credentials",
-                    "client_id": self.client_id,
-                    "client_secret": self.client_secret,
+                    "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+                    "subject_token": self.delegation_token,
+                    "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+                    "audience": "agent-api",
                     "scope": "agent.execute chat.write chat.read",
                 },
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -113,13 +118,14 @@ class AgentClient:
             
             # Parse expiry (default to 1 hour if not provided)
             expires_in = data.get("expires_in", 3600)
-            self._token_expires = now.replace(
-                tzinfo=timezone.utc
-            ) + __import__("datetime").timedelta(seconds=expires_in - 60)
+            self._token_expires = now + timedelta(seconds=expires_in - 60)
             
-            logger.info("Obtained new Agent API token")
+            logger.info("Obtained agent-api token via token exchange")
             return self._token
             
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Token exchange failed: {e.response.status_code} - {e.response.text}")
+            raise
         except Exception as e:
             logger.error(f"Failed to get auth token: {e}")
             raise
@@ -130,7 +136,7 @@ class AgentClient:
         return {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            "X-User-ID": self.service_user_id,
+            # Note: X-User-ID is no longer needed - the token carries the user identity
         }
 
     def get_conversation_id(self, sender: str) -> Optional[str]:

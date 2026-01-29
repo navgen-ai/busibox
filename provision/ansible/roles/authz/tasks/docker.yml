@@ -32,7 +32,7 @@
 
 - name: Verify AuthZ API health endpoint
   ansible.builtin.uri:
-    url: "http://localhost:{{ authz_port }}/health"
+    url: "http://localhost:{{ authz_port }}/health/live"
     method: GET
     status_code: [200]
   register: authz_health
@@ -44,5 +44,5 @@
   ansible.builtin.debug:
     msg: |
       AuthZ API is running and ready
-      Health: http://localhost:{{ authz_port }}/health
+      Health: http://localhost:{{ authz_port }}/health/live
       API: http://localhost:{{ authz_port }}

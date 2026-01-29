@@ -316,74 +316,7 @@ async def _ensure_bootstrap() -> None:
         )
         logger.info("Generated initial authz signing key", kid=sk.kid, alg=sk.alg)
 
-    # 2) bootstrap client (optional) - used for login flows
-    from oauth.client_auth import hash_client_secret, verify_client_secret
-    
-    if config.bootstrap_client_id and config.bootstrap_client_secret:
-        existing = await _pg.get_oauth_client(config.bootstrap_client_id)
-        desired_hash = hash_client_secret(config.bootstrap_client_secret)
-        if not existing:
-            await _pg.upsert_oauth_client(
-                client_id=config.bootstrap_client_id,
-                client_secret_hash=desired_hash,
-                allowed_audiences=config.bootstrap_client_allowed_audiences,
-                allowed_scopes=config.bootstrap_client_allowed_scopes,
-                is_active=True,
-            )
-            logger.info("Bootstrapped authz OAuth client", client_id=config.bootstrap_client_id)
-        else:
-            # Check if secret or audiences have changed
-            secret_changed = not verify_client_secret(config.bootstrap_client_secret, existing.get("client_secret_hash", ""))
-            existing_audiences = set(existing.get("allowed_audiences") or [])
-            desired_audiences = set(config.bootstrap_client_allowed_audiences)
-            audiences_changed = existing_audiences != desired_audiences
-            existing_scopes = set(existing.get("allowed_scopes") or [])
-            desired_scopes = set(config.bootstrap_client_allowed_scopes)
-            scopes_changed = existing_scopes != desired_scopes
-            
-            if secret_changed or audiences_changed or scopes_changed:
-                await _pg.upsert_oauth_client(
-                    client_id=config.bootstrap_client_id,
-                    client_secret_hash=desired_hash,
-                    allowed_audiences=config.bootstrap_client_allowed_audiences,
-                    allowed_scopes=config.bootstrap_client_allowed_scopes,
-                    is_active=True,
-                )
-                reasons = []
-                if secret_changed:
-                    reasons.append("secret")
-                if audiences_changed:
-                    reasons.append(f"audiences ({existing_audiences} -> {desired_audiences})")
-                if scopes_changed:
-                    reasons.append(f"scopes ({existing_scopes} -> {desired_scopes})")
-                logger.info("Updated bootstrap OAuth client", client_id=config.bootstrap_client_id, changes=", ".join(reasons))
-    
-    # 3) system service account (optional) - used for background operations
-    if config.system_client_id and config.system_client_secret:
-        existing = await _pg.get_oauth_client(config.system_client_id)
-        desired_hash = hash_client_secret(config.system_client_secret)
-        # System account can only talk to authz-api with limited scopes
-        system_audiences = ["authz-api"]
-        if not existing:
-            await _pg.upsert_oauth_client(
-                client_id=config.system_client_id,
-                client_secret_hash=desired_hash,
-                allowed_audiences=system_audiences,
-                allowed_scopes=config.system_client_allowed_scopes,
-                is_active=True,
-            )
-            logger.info("Bootstrapped system service account", client_id=config.system_client_id)
-        elif not verify_client_secret(config.system_client_secret, existing.get("client_secret_hash", "")):
-            # Client exists but secret has changed - update it
-            await _pg.upsert_oauth_client(
-                client_id=config.system_client_id,
-                client_secret_hash=desired_hash,
-                allowed_audiences=system_audiences,
-                allowed_scopes=config.system_client_allowed_scopes,
-                is_active=True,
-            )
-            logger.info("Updated system service account secret", client_id=config.system_client_id)
-    
+
     # 4) bootstrap essential roles
     await _ensure_bootstrap_roles()
     

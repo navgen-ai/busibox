@@ -1217,8 +1217,6 @@ run_container_tests() {
             test_env="${test_env} AUTHZ_MASTER_KEY=${AUTHZ_MASTER_KEY}"
             test_env="${test_env} AUTHZ_SERVICE_URL=http://${authz_ip}:8010"
             test_env="${test_env} TEST_AUTHZ_URL=http://${authz_ip}:8010"
-            test_env="${test_env} AUTHZ_BOOTSTRAP_CLIENT_ID=ai-portal"
-            test_env="${test_env} AUTHZ_BOOTSTRAP_CLIENT_SECRET=${JWT_SECRET}"
             
             # Run tests via SSH
             if ssh "root@${authz_ip}" "cd /srv/authz/app && source ../venv/bin/activate && export PYTHONPATH=/srv/authz/app/src && source /srv/authz/.env && export ${test_env} && python -m pytest tests/ -v --tb=short"; then
@@ -1272,9 +1270,6 @@ run_container_tests() {
             test_env="${test_env} MINIO_SECRET_KEY=${MINIO_SECRET_KEY}"
             test_env="${test_env} AUTHZ_URL=http://${authz_ip}:8010"
             test_env="${test_env} AUTHZ_JWKS_URL=http://${authz_ip}:8010/.well-known/jwks.json"
-            test_env="${test_env} AUTHZ_BOOTSTRAP_CLIENT_ID=ai-portal"
-            test_env="${test_env} AUTHZ_BOOTSTRAP_CLIENT_SECRET=${JWT_SECRET}"
-            test_env="${test_env} AUTHZ_ADMIN_TOKEN=${AUTHZ_ADMIN_TOKEN}"
             test_env="${test_env} TEST_USER_ID=${TEST_USER_ID}"
             
             # Parse additional pytest args
@@ -1322,8 +1317,6 @@ run_container_tests() {
             test_env="${test_env} AUTHZ_URL=http://${authz_ip}:8010"
             test_env="${test_env} AUTHZ_JWKS_URL=http://${authz_ip}:8010/.well-known/jwks.json"
             test_env="${test_env} AUTHZ_ADMIN_TOKEN=${AUTHZ_ADMIN_TOKEN}"
-            test_env="${test_env} AUTHZ_BOOTSTRAP_CLIENT_ID=ai-portal"
-            test_env="${test_env} AUTHZ_BOOTSTRAP_CLIENT_SECRET=${JWT_SECRET}"
             test_env="${test_env} TEST_USER_ID=${TEST_USER_ID}"
             
             # Parse additional pytest args
@@ -1372,9 +1365,6 @@ run_container_tests() {
             test_env="${test_env} TEST_DATABASE_URL=${agent_test_db_url}"
             test_env="${test_env} AUTHZ_URL=http://${authz_ip}:8010"
             test_env="${test_env} AUTHZ_JWKS_URL=http://${authz_ip}:8010/.well-known/jwks.json"
-            test_env="${test_env} AUTHZ_ADMIN_TOKEN=${AUTHZ_ADMIN_TOKEN}"
-            test_env="${test_env} AUTHZ_BOOTSTRAP_CLIENT_ID=ai-portal"
-            test_env="${test_env} AUTHZ_BOOTSTRAP_CLIENT_SECRET=${JWT_SECRET}"
             test_env="${test_env} TEST_USER_ID=${TEST_USER_ID}"
             test_env="${test_env} INGEST_URL=http://${ingest_ip}:8000"
             test_env="${test_env} SEARCH_URL=http://${search_ip}:8003"  # Search is on port 8003

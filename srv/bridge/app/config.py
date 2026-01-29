@@ -37,23 +37,17 @@ class Settings(BaseSettings):
         description="Base URL for Busibox Agent API",
     )
 
-    # Auth configuration for Agent API
-    # Service account credentials for the bot
+    # Auth configuration for Agent API (Zero Trust)
+    # Uses delegation token for service account authentication
     auth_token_url: AnyHttpUrl = Field(
         "http://10.96.200.210:8010/oauth/token",
-        description="Token endpoint for OAuth2",
+        description="Token endpoint for OAuth2 token exchange",
     )
-    auth_client_id: str = Field(
-        "signal-bot-client",
-        description="OAuth client ID for Signal bot",
-    )
-    auth_client_secret: str = Field(
+    # Delegation token for the signal-bot service account
+    # Created via authz /oauth/delegation/create endpoint for long-lived background tasks
+    delegation_token: str = Field(
         ...,
-        description="OAuth client secret for Signal bot",
-    )
-    service_user_id: str = Field(
-        "signal-bot-service",
-        description="Service user ID for agent API calls",
+        description="Pre-issued delegation token for signal-bot service account",
     )
 
     # Bot behavior

@@ -16,7 +16,8 @@ IMPORTANT: These tests require REAL services - no mocks allowed.
 IMPORTANT: All tests MUST pass - skipped tests indicate deployment issues.
 
 Authentication:
-PVT tests use OAuth client credentials (bootstrap client) for authenticated operations.
+Zero Trust mode - no client credentials. Token exchange uses subject_token
+(user's JWT) to exchange for service-specific tokens.
 """
 
 import os
@@ -28,10 +29,6 @@ import httpx
 # For local testing: Set TEST_AUTHZ_URL to the remote container's URL
 SERVICE_PORT = os.getenv("SERVICE_PORT", "8010")
 SERVICE_URL = os.getenv("TEST_AUTHZ_URL", f"http://localhost:{SERVICE_PORT}")
-
-# Bootstrap client credentials (for authenticated operations)
-AUTHZ_BOOTSTRAP_CLIENT_ID = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_ID", "ai-portal")
-AUTHZ_BOOTSTRAP_CLIENT_SECRET = os.getenv("AUTHZ_BOOTSTRAP_CLIENT_SECRET", "")
 
 # Database config - REQUIRED
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "")
@@ -158,7 +155,13 @@ class TestPVTAuth:
 
 @pytest.mark.pvt
 class TestPVTTokenExchange:
-    """Token exchange tests - verify OAuth2 flow works."""
+    """Token exchange tests - verify OAuth2 flow works.
+    
+    NOTE: Zero Trust auth - no client credentials. Tests verify:
+    - Token endpoint exists and responds appropriately
+    - Client credentials grant is rejected (Zero Trust)
+    - Token exchange requires valid subject_token
+    """
     
     @pytest.mark.asyncio
     async def test_token_endpoint_exists(self):
@@ -173,51 +176,37 @@ class TestPVTTokenExchange:
             assert resp.status_code in [400, 401, 403], f"Expected 400/401/403, got {resp.status_code}"
     
     @pytest.mark.asyncio
-    async def test_bootstrap_client_token_exchange(self):
-        """Can get access token using bootstrap client credentials."""
-        client_id = require_env("AUTHZ_BOOTSTRAP_CLIENT_ID", AUTHZ_BOOTSTRAP_CLIENT_ID)
-        client_secret = require_env("AUTHZ_BOOTSTRAP_CLIENT_SECRET", AUTHZ_BOOTSTRAP_CLIENT_SECRET)
-        
+    async def test_client_credentials_rejected(self):
+        """Client credentials grant type should be rejected in Zero Trust mode."""
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{SERVICE_URL}/oauth/token",
                 data={
                     "grant_type": "client_credentials",
-                    "client_id": client_id,
-                    "client_secret": client_secret,
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
                     "audience": "agent-api",
                 },
                 timeout=10.0,
             )
-            assert resp.status_code == 200, f"Token exchange failed: {resp.text}"
-            data = resp.json()
-            assert "access_token" in data, "No access_token in response"
-            assert len(data["access_token"]) > 0
+            # Should be rejected - Zero Trust doesn't support client_credentials
+            assert resp.status_code in [400, 401, 403], f"Expected rejection, got {resp.status_code}"
     
     @pytest.mark.asyncio
-    async def test_bootstrap_client_multiple_audiences(self):
-        """Bootstrap client can get tokens for different audiences."""
-        client_id = require_env("AUTHZ_BOOTSTRAP_CLIENT_ID", AUTHZ_BOOTSTRAP_CLIENT_ID)
-        client_secret = require_env("AUTHZ_BOOTSTRAP_CLIENT_SECRET", AUTHZ_BOOTSTRAP_CLIENT_SECRET)
-        
-        # Test multiple allowed audiences
-        audiences = ["agent-api", "ingest-api", "search-api"]
-        
+    async def test_token_exchange_requires_subject_token(self):
+        """Token exchange without subject_token should be rejected."""
         async with httpx.AsyncClient() as client:
-            for audience in audiences:
-                resp = await client.post(
-                    f"{SERVICE_URL}/oauth/token",
-                    data={
-                        "grant_type": "client_credentials",
-                        "client_id": client_id,
-                        "client_secret": client_secret,
-                        "audience": audience,
-                    },
-                    timeout=10.0,
-                )
-                assert resp.status_code == 200, f"Token exchange failed for audience {audience}: {resp.text}"
-                data = resp.json()
-                assert "access_token" in data, f"No access_token for audience {audience}"
+            resp = await client.post(
+                f"{SERVICE_URL}/oauth/token",
+                data={
+                    "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+                    "audience": "agent-api",
+                    # Missing subject_token - should fail
+                },
+                timeout=10.0,
+            )
+            # Should get 400 (bad request) for missing subject_token
+            assert resp.status_code in [400, 401], f"Expected 400/401, got {resp.status_code}"
 
 
 @pytest.mark.pvt

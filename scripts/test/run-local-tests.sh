@@ -115,8 +115,6 @@ if [[ "$ENV" == "docker" ]]; then
     export AUTHZ_ISSUER=busibox-authz
     export AUTHZ_TOKEN_URL=http://localhost:8010/oauth/token
     export AUTHZ_ADMIN_TOKEN=local-admin-token
-    export AUTHZ_BOOTSTRAP_CLIENT_ID=ai-portal
-    export AUTHZ_BOOTSTRAP_CLIENT_SECRET=ai-portal-secret
     export TEST_AUTHZ_URL=http://localhost:8010
     export LITELLM_BASE_URL=http://localhost:4000
     export LITELLM_API_KEY=sk-local-dev-key
@@ -516,8 +514,6 @@ run_docker_container_tests() {
         -e TEST_AUTHZ_URL=http://authz-api:8010 \
         -e AUTHZ_JWKS_URL=http://authz-api:8010/.well-known/jwks.json \
         -e TEST_USER_ID="$test_user_id" \
-        -e AUTHZ_BOOTSTRAP_CLIENT_ID=ai-portal \
-        -e AUTHZ_BOOTSTRAP_CLIENT_SECRET=ai-portal-secret \
         -e AUTHZ_ADMIN_TOKEN=local-admin-token \
         -e TEST_DOC_REPO_PATH=/testdocs \
         "$container_name" \

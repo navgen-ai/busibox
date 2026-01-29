@@ -193,8 +193,6 @@ try:
     # Bootstrap OAuth client
     oauth_client = secrets.get('oauth_client_id', 'ai-portal')
     oauth_secret = secrets.get('oauth_client_secret', 'ai-portal-secret')
-    lines.append(f'AUTHZ_BOOTSTRAP_CLIENT_ID={oauth_client}')
-    lines.append(f'AUTHZ_BOOTSTRAP_CLIENT_SECRET={oauth_secret}')
     lines.append('')
     
     # AI PORTAL CONFIGURATION
@@ -202,7 +200,6 @@ try:
     lines.append('# AI PORTAL CONFIGURATION')
     lines.append('# =============================================================================')
     lines.append('')
-    lines.append(f'BETTER_AUTH_SECRET={secrets.get(\"better_auth_secret\", \"dev-secret-change-in-production\")}')
     lines.append(f'SSO_JWT_SECRET={secrets.get(\"jwt_secret\", \"dev-sso-secret\")}')
     lines.append(f'ADMIN_EMAIL={secrets.get(\"admin_email\", \"admin@localhost\")}')
     lines.append(f'ALLOWED_EMAIL_DOMAINS={secrets.get(\"allowed_email_domains\", \"*\")}')
