@@ -42,7 +42,7 @@ else
 fi
 
 echo ""
-echo "Edit provision/pct/vars.env or provision/pct/test-vars.env and set:"
+echo "Edit provision/pct/vars.env or provision/pct/stage-vars.env and set:"
 echo "  STORAGE=<storage-name>"
 echo ""
 

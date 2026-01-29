@@ -41,7 +41,7 @@ echo ""
 
 # Source the appropriate vars
 if [[ "$MODE" == "staging" ]]; then
-    VARS_FILE="${SCRIPT_DIR}/provision/pct/test-vars.env"
+    VARS_FILE="${SCRIPT_DIR}/provision/pct/stage-vars.env"
     INVENTORY="test"
 else
     VARS_FILE="${SCRIPT_DIR}/provision/pct/vars.env"

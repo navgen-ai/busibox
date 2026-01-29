@@ -31,18 +31,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PCT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Source configuration
-if [[ "$MODE == "staging"" ]]; then
-  echo "==> Creating data services in TEST mode"
-  source "${PCT_DIR}/test-vars.env"
-  PREFIX="${TEST_PREFIX}"
+if [[ "$MODE" == "staging" ]]; then
+  echo "==> Creating data services in STAGING mode"
+  source "${PCT_DIR}/stage-vars.env"
+  PREFIX="${STAGE_PREFIX}"
   
-  CT_PG="$CT_PG_TEST"
-  CT_MILVUS="$CT_MILVUS_TEST"
-  CT_FILES="$CT_FILES_TEST"
+  CT_PG="$CT_PG_STAGING"
+  CT_MILVUS="$CT_MILVUS_STAGING"
+  CT_FILES="$CT_FILES_STAGING"
   
-  IP_PG="$IP_PG_TEST"
-  IP_MILVUS="$IP_MILVUS_TEST"
-  IP_FILES="$IP_FILES_TEST"
+  IP_PG="$IP_PG_STAGING"
+  IP_MILVUS="$IP_MILVUS_STAGING"
+  IP_FILES="$IP_FILES_STAGING"
 else
   echo "==> Creating data services in PRODUCTION mode"
   source "${PCT_DIR}/vars.env"

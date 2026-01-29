@@ -28,12 +28,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PCT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Source configuration
-if [[ "$MODE == "staging"" ]]; then
-  echo "==> Creating vLLM container in TEST mode"
-  source "${PCT_DIR}/test-vars.env"
-  CTID="$CT_VLLM_TEST"
-  IP="$IP_VLLM_TEST"
-  NAME="${TEST_PREFIX}vllm-lxc"
+if [[ "$MODE" == "staging" ]]; then
+  echo "==> Creating vLLM container in STAGING mode"
+  source "${PCT_DIR}/stage-vars.env"
+  CTID="$CT_VLLM_STAGING"
+  IP="$IP_VLLM_STAGING"
+  NAME="${STAGE_PREFIX}vllm-lxc"
 else
   echo "==> Creating vLLM container in PRODUCTION mode"
   source "${PCT_DIR}/vars.env"

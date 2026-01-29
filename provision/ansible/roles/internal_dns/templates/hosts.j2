@@ -52,18 +52,18 @@ ff02::2     ip6-allrouters
 # Environment-Specific Aliases
 # =============================================================================
 {% if busibox_env == 'staging' %}
-# Staging environment - add TEST- prefixed aliases for clarity
-{{ postgres_ip }}       TEST-pg-lxc
-{{ minio_ip }}          TEST-files-lxc
-{{ milvus_ip }}         TEST-milvus-lxc
-{{ proxy_ip }}          TEST-proxy-lxc
-{{ authz_ip }}          TEST-authz-lxc
-{{ ingest_ip }}         TEST-ingest-lxc
-{{ agent_ip }}           TEST-agent-lxc
-{{ litellm_ip }}        TEST-litellm-lxc
-{{ ollama_ip }}         TEST-ollama-lxc
-{{ core_apps_ip }}      TEST-core-apps-lxc
-{{ user_apps_ip }}      TEST-user-apps-lxc
+# Staging environment - add STAGE- prefixed aliases for clarity
+{{ postgres_ip }}       STAGE-pg-lxc
+{{ minio_ip }}          STAGE-files-lxc
+{{ milvus_ip }}         STAGE-milvus-lxc
+{{ proxy_ip }}          STAGE-proxy-lxc
+{{ authz_ip }}          STAGE-authz-lxc
+{{ ingest_ip }}         STAGE-ingest-lxc
+{{ agent_ip }}          STAGE-agent-lxc
+{{ litellm_ip }}        STAGE-litellm-lxc
+{{ ollama_ip }}         STAGE-ollama-lxc
+{{ core_apps_ip }}      STAGE-core-apps-lxc
+{{ user_apps_ip }}      STAGE-user-apps-lxc
 {% endif %}
 
 # =============================================================================

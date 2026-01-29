@@ -33,12 +33,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PCT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Source configuration
-if [[ "$MODE == "staging"" ]]; then
-  echo "==> Creating Ollama container in TEST mode"
-  source "${PCT_DIR}/test-vars.env"
-  CTID="$CT_OLLAMA_TEST"
-  IP="$IP_OLLAMA_TEST"
-  NAME="${TEST_PREFIX}ollama-lxc"
+if [[ "$MODE" == "staging" ]]; then
+  echo "==> Creating Ollama container in STAGING mode"
+  source "${PCT_DIR}/stage-vars.env"
+  CTID="$CT_OLLAMA_STAGING"
+  IP="$IP_OLLAMA_STAGING"
+  NAME="${STAGE_PREFIX}ollama-lxc"
 else
   echo "==> Creating Ollama container in PRODUCTION mode"
   source "${PCT_DIR}/vars.env"

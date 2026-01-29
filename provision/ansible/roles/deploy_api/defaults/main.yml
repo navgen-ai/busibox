@@ -23,8 +23,9 @@ deploy_api_postgres_admin_user: postgres
 deploy_api_postgres_admin_password: "{{ secrets.postgres.admin_password | default('') }}"
 
 # Container IPs
-deploy_api_apps_container_ip: "{{ hostvars[groups['apps'][0]]['ansible_host'] | default('10.96.200.201') }}"
-deploy_api_apps_container_ip_staging: "{{ hostvars[groups['apps'][0]]['ansible_host'] | default('10.96.201.201') }}"
+# Note: Use core_apps group (not apps) - staging/production inventories use this group name
+deploy_api_apps_container_ip: "{{ hostvars[groups['core_apps'][0]]['ansible_host'] | default('10.96.200.201') }}"
+deploy_api_apps_container_ip_staging: "{{ hostvars[groups['core_apps'][0]]['ansible_host'] | default('10.96.201.201') }}"
 
 # SSH key for remote operations
 deploy_api_ssh_key_path: /root/.ssh/id_rsa

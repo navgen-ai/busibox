@@ -43,6 +43,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 source "${SCRIPT_DIR}/../lib/ui.sh"
 source "${SCRIPT_DIR}/../lib/state.sh"
 
+# Source vault.sh for secure secret access
+if [[ -f "${SCRIPT_DIR}/../lib/vault.sh" ]]; then
+    source "${SCRIPT_DIR}/../lib/vault.sh"
+fi
+
 # Source github.sh only if it exists (not required for Proxmox)
 if [[ -f "${SCRIPT_DIR}/../lib/github.sh" ]]; then
     source "${SCRIPT_DIR}/../lib/github.sh"
@@ -410,9 +415,119 @@ show_stage() {
 # PROXMOX UPDATE FUNCTIONS
 # =============================================================================
 
+# Check for missing containers in Proxmox mode
+# Uses the staging inventory to determine expected containers
+check_missing_containers_proxmox() {
+    local environment
+    environment=$(get_environment)
+    
+    # Only check on Proxmox host (has pct command)
+    if ! command -v pct &>/dev/null; then
+        # We're on admin workstation, can't check container existence
+        return 0
+    fi
+    
+    info "Checking for expected LXC containers..."
+    
+    # Expected containers for staging (STAGE-) or production (no prefix)
+    local prefix=""
+    local expected_containers=()
+    
+    if [[ "$environment" == "staging" ]]; then
+        prefix="STAGE-"
+        expected_containers=(
+            "300:${prefix}proxy-lxc"
+            "301:${prefix}core-apps-lxc"
+            "302:${prefix}agent-lxc"
+            "303:${prefix}pg-lxc"
+            "304:${prefix}milvus-lxc"
+            "305:${prefix}files-lxc"
+            "306:${prefix}ingest-lxc"
+            "307:${prefix}litellm-lxc"
+            "310:${prefix}authz-lxc"
+            "312:${prefix}user-apps-lxc"
+        )
+    else
+        # Production
+        expected_containers=(
+            "200:proxy-lxc"
+            "201:core-apps-lxc"
+            "202:agent-lxc"
+            "203:pg-lxc"
+            "204:milvus-lxc"
+            "205:files-lxc"
+            "206:ingest-lxc"
+            "207:litellm-lxc"
+            "210:authz-lxc"
+            "212:user-apps-lxc"
+        )
+    fi
+    
+    local missing=()
+    local existing=()
+    
+    for entry in "${expected_containers[@]}"; do
+        local ctid="${entry%%:*}"
+        local name="${entry##*:}"
+        
+        if pct status "$ctid" &>/dev/null; then
+            existing+=("$name ($ctid)")
+        else
+            missing+=("$name ($ctid)")
+        fi
+    done
+    
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        warn "Missing containers:"
+        for m in "${missing[@]}"; do
+            echo "  - $m"
+        done
+        echo ""
+        echo "  These containers need to be created before deployment."
+        echo ""
+        
+        if [[ "$NO_PROMPT" != true ]]; then
+            echo "  To create missing containers, run:"
+            echo "    cd provision/pct/containers"
+            echo "    bash create_lxc_base.sh ${environment}"
+            echo ""
+            
+            if ! confirm "Continue with update anyway? (some services will fail)"; then
+                return 1
+            fi
+        else
+            warn "Continuing with missing containers - some services may fail"
+        fi
+    else
+        success "All ${#existing[@]} expected containers found"
+    fi
+    
+    return 0
+}
+
 update_proxmox() {
     local environment
     environment=$(get_environment)
+    
+    # Ensure vault access (for Proxmox, we always need vault)
+    if type ensure_vault_access &>/dev/null; then
+        show_stage 5 "Vault Access" "Checking Ansible vault configuration."
+        
+        if ! ensure_vault_access; then
+            error "Cannot access vault. Update requires vault secrets."
+            echo ""
+            echo "  The vault contains secrets needed by Ansible:"
+            echo "    - Database passwords"
+            echo "    - Auth secrets (JWT, session keys)"
+            echo "    - MinIO credentials"
+            echo ""
+            echo "  To set up vault:"
+            echo "    1. Copy example: cp provision/ansible/roles/secrets/vars/vault.example.yml provision/ansible/roles/secrets/vars/vault.yml"
+            echo "    2. Edit with your secrets"
+            echo "    3. Encrypt: ansible-vault encrypt provision/ansible/roles/secrets/vars/vault.yml"
+            return 1
+        fi
+    fi
     
     # Change to ansible directory FIRST (inventory paths are relative to this)
     cd "${REPO_ROOT}/provision/ansible"
@@ -437,6 +552,12 @@ update_proxmox() {
         echo "  Available inventories:"
         ls -1 inventory/ 2>/dev/null | sed 's/^/    - /'
         echo ""
+        return 1
+    fi
+    
+    # Check for missing containers (on Proxmox host)
+    cd "$REPO_ROOT"
+    if ! check_missing_containers_proxmox; then
         return 1
     fi
     
