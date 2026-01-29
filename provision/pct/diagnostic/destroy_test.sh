@@ -12,7 +12,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(dirname "$0")"
-source "${SCRIPT_DIR}/test-vars.env"
+source "${SCRIPT_DIR}/stage-vars.env"
 
 # Parse arguments
 FORCE=false

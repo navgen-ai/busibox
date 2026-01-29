@@ -316,7 +316,7 @@ validate_env() {
     echo "ERROR: Missing required environment variables:"
     printf '  - %s\n' "${missing_vars[@]}"
     echo ""
-    echo "Please source vars.env or test-vars.env before running this script"
+    echo "Please source vars.env or stage-vars.env before running this script"
     return 1
   fi
   

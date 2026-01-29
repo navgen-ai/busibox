@@ -26,16 +26,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PCT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Source configuration
-if [[ "$MODE == "staging"" ]]; then
-  echo "==> Creating worker services in TEST mode"
-  source "${PCT_DIR}/test-vars.env"
-  PREFIX="${TEST_PREFIX}"
+if [[ "$MODE" == "staging" ]]; then
+  echo "==> Creating worker services in STAGING mode"
+  source "${PCT_DIR}/stage-vars.env"
+  PREFIX="${STAGE_PREFIX}"
   
-  CT_INGEST="$CT_INGEST_TEST"
-  CT_LITELLM="$CT_LITELLM_TEST"
+  CT_INGEST="$CT_INGEST_STAGING"
+  CT_LITELLM="$CT_LITELLM_STAGING"
   
-  IP_INGEST="$IP_INGEST_TEST"
-  IP_LITELLM="$IP_LITELLM_TEST"
+  IP_INGEST="$IP_INGEST_STAGING"
+  IP_LITELLM="$IP_LITELLM_STAGING"
 else
   echo "==> Creating worker services in PRODUCTION mode"
   source "${PCT_DIR}/vars.env"

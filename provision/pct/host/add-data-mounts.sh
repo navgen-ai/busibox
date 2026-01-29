@@ -23,7 +23,7 @@ MODE="${1:-production}"
 # Load variables from parent directory (provision/pct/)
 PCT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 if [[ "$MODE" == "staging" ]]; then
-    source "${PCT_DIR}/test-vars.env"
+    source "${PCT_DIR}/stage-vars.env"
     CT_PG="$CT_PG_TEST"
     CT_FILES="$CT_FILES_TEST"
     CT_MILVUS="$CT_MILVUS_TEST"

@@ -34,7 +34,7 @@ PCT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Source configuration
 if [[ "$MODE" == "staging" ]]; then
-  source "${PCT_DIR}/test-vars.env"
+  source "${PCT_DIR}/stage-vars.env"
   CT_VLLM="$CT_VLLM_TEST"
 else
   source "${PCT_DIR}/vars.env"
