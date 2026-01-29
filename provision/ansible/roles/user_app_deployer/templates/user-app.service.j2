@@ -1,0 +1,38 @@
+[Unit]
+Description=User App - {{ app_id }}
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory={{ app_path }}
+ExecStart=/usr/bin/npm start
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier={{ app_id }}
+
+# Environment
+Environment=NODE_ENV=production
+Environment=PORT={{ app_port }}
+Environment=APP_ID={{ app_id }}
+EnvironmentFile=-{{ app_path }}/.env
+
+# Resource limits
+{% if cpu_limit is defined %}
+CPUQuota={{ (cpu_limit | float * 100) | int }}%
+{% endif %}
+{% if memory_limit is defined %}
+MemoryLimit={{ memory_limit }}
+{% endif %}
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{ app_path }} {{ app_log_path }}
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

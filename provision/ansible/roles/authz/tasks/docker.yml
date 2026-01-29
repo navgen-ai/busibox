@@ -1,0 +1,48 @@
+---
+# AuthZ API Docker Deployment Tasks
+#
+# Deploys AuthZ API via Docker Compose
+# Used when deploy_target == 'docker'
+
+- name: Build AuthZ API container
+  include_role:
+    name: docker_common
+    tasks_from: compose_build
+  vars:
+    docker_services_to_build:
+      - authz-api
+    docker_build_no_cache: "{{ docker_force_rebuild | default(false) }}"
+
+- name: Start AuthZ API container
+  include_role:
+    name: docker_common
+    tasks_from: compose_up
+  vars:
+    docker_services_to_start:
+      - authz-api
+    docker_wait_for_health: true
+
+- name: Wait for AuthZ API to be ready
+  include_role:
+    name: docker_common
+    tasks_from: wait_healthy
+  vars:
+    docker_wait_service: authz-api
+    docker_wait_timeout: 60
+
+- name: Verify AuthZ API health endpoint
+  ansible.builtin.uri:
+    url: "http://localhost:{{ authz_port }}/health"
+    method: GET
+    status_code: [200]
+  register: authz_health
+  retries: 5
+  delay: 3
+  until: authz_health.status == 200
+
+- name: Display AuthZ API status
+  ansible.builtin.debug:
+    msg: |
+      AuthZ API is running and ready
+      Health: http://localhost:{{ authz_port }}/health
+      API: http://localhost:{{ authz_port }}

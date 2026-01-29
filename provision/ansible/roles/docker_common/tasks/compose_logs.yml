@@ -1,0 +1,30 @@
+---
+# Docker Compose Logs Task
+#
+# Usage:
+#   - include_role:
+#       name: docker_common
+#       tasks_from: compose_logs
+#     vars:
+#       docker_logs_service: "agent-api"
+#       docker_logs_lines: 100
+#       docker_logs_follow: false
+
+- name: Get container logs
+  ansible.builtin.shell: |
+    cd {{ docker_compose_dir }}
+    docker compose {{ docker_compose_file_args }} {{ docker_compose_env_args }} \
+      logs {{ '--tail=' ~ (docker_logs_lines | default(100)) }} \
+      {{ '--follow' if docker_logs_follow | default(false) else '' }} \
+      {{ docker_logs_service | default('') }}
+  args:
+    chdir: "{{ docker_compose_dir }}"
+  register: logs_result
+  changed_when: false
+  async: "{{ 30 if docker_logs_follow | default(false) else 0 }}"
+  poll: "{{ 0 if docker_logs_follow | default(false) else 5 }}"
+
+- name: Display logs
+  ansible.builtin.debug:
+    var: logs_result.stdout_lines
+  when: not docker_logs_follow | default(false)

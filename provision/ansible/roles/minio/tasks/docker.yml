@@ -1,0 +1,39 @@
+---
+# MinIO Docker Deployment Tasks
+#
+# Deploys MinIO via Docker Compose
+# Used when deploy_target == 'docker'
+
+- name: Start MinIO container
+  include_role:
+    name: docker_common
+    tasks_from: compose_up
+  vars:
+    docker_services_to_start:
+      - minio
+    docker_wait_for_health: true
+
+- name: Wait for MinIO to be ready
+  include_role:
+    name: docker_common
+    tasks_from: wait_healthy
+  vars:
+    docker_wait_service: minio
+    docker_wait_timeout: 60
+
+- name: Check if default bucket exists
+  ansible.builtin.uri:
+    url: "http://localhost:{{ minio_port }}/minio/health/live"
+    method: GET
+    status_code: [200]
+  register: minio_health
+  retries: 5
+  delay: 3
+  until: minio_health.status == 200
+
+- name: Display MinIO status
+  ansible.builtin.debug:
+    msg: |
+      MinIO is running and ready
+      Console: http://localhost:{{ minio_console_port }}
+      API: http://localhost:{{ minio_port }}

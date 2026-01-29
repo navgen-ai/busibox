@@ -1,0 +1,50 @@
+---
+# User App Deployment Playbook
+#
+# Deploys a user/external application to the user-apps container.
+#
+# Usage:
+#   ansible-playbook -i inventory/docker user-app-deploy.yml \
+#     -e "app_id=myapp" \
+#     -e "github_repo=owner/repo" \
+#     -e "deploy_branch=main"
+#
+# Required Variables:
+#   app_id        - Unique identifier for the app
+#   github_repo   - GitHub repository in owner/repo format
+#
+# Optional Variables:
+#   deploy_branch - Branch to deploy (default: main)
+#   app_port      - Port to run on (default: auto-assigned)
+#   github_token  - GitHub token for private repos
+
+- name: Deploy User Application
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  vars:
+    # Inherit deploy_target from inventory
+    deploy_target: "{{ hostvars['localhost']['deploy_target'] | default('docker') }}"
+  
+  pre_tasks:
+    - name: Display deployment info
+      ansible.builtin.debug:
+        msg: |
+          ═══════════════════════════════════════════════════════════════════
+          USER APP DEPLOYMENT
+          ═══════════════════════════════════════════════════════════════════
+          App ID: {{ app_id }}
+          Repository: {{ github_repo }}
+          Branch: {{ deploy_branch | default('main') }}
+          Target: {{ deploy_target }}
+          ═══════════════════════════════════════════════════════════════════
+  
+  roles:
+    - role: user_app_deployer
+      vars:
+        app_id: "{{ app_id }}"
+        github_repo: "{{ github_repo }}"
+        deploy_branch: "{{ deploy_branch | default('main') }}"
+        app_port: "{{ app_port | default('') }}"
+        github_token: "{{ github_token | default('') }}"

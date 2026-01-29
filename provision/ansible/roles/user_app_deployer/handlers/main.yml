@@ -1,0 +1,8 @@
+---
+# User App Deployer Role - Handlers
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+  delegate_to: "{{ groups['user_apps'][0] }}"
+  when: deploy_target == 'proxmox'

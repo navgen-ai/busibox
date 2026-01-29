@@ -1,0 +1,23 @@
+---
+# Docker Compose Exec Task
+#
+# Usage:
+#   - include_role:
+#       name: docker_common
+#       tasks_from: compose_exec
+#     vars:
+#       docker_exec_service: "postgres"
+#       docker_exec_command: "pg_isready -U postgres"
+#       docker_exec_user: "root"  # optional
+
+- name: Execute command in container
+  ansible.builtin.shell: |
+    cd {{ docker_compose_dir }}
+    docker compose {{ docker_compose_file_args }} {{ docker_compose_env_args }} \
+      exec {{ '-u ' ~ docker_exec_user if docker_exec_user is defined else '' }} \
+      {{ docker_exec_service }} {{ docker_exec_command }}
+  args:
+    chdir: "{{ docker_compose_dir }}"
+  register: exec_result
+  changed_when: false
+  failed_when: docker_exec_fail_on_error | default(true) and exec_result.rc != 0

@@ -1,0 +1,50 @@
+---
+# User App Deployer Role - Default Variables
+#
+# This role deploys user/external applications to the user-apps container.
+# These are untrusted apps that run in an isolated environment.
+
+# Required variables (must be provided)
+# app_id: ""              # Unique identifier for the app
+# github_repo: ""         # GitHub repo in owner/repo format
+
+# Optional variables with defaults
+deploy_branch: "main"
+app_port: ""              # Auto-assigned if not provided
+github_token: ""          # For private repos
+
+# Deployment paths
+user_apps_base_path: "/srv/apps"
+user_apps_logs_path: "/var/log/user-apps"
+
+# Container settings (Docker mode)
+user_apps_container: "{{ container_prefix | default('dev') }}-user-apps"
+
+# LXC settings (Proxmox mode)
+user_apps_lxc_ip: "{{ hostvars[groups['user_apps'][0]]['ansible_host'] | default('10.96.200.212') }}"
+
+# Build settings
+build_command: "npm run build"
+install_command: "npm ci --legacy-peer-deps"
+start_command: ""         # Auto-detected from package.json
+
+# Health check settings
+health_check_path: "/api/health"
+health_check_timeout: 60
+health_check_retries: 12
+health_check_delay: 5
+
+# Port allocation range (for auto-assignment)
+port_range_start: 4000
+port_range_end: 4999
+
+# Resource limits (Docker mode)
+cpu_limit: "1.0"          # CPU cores
+memory_limit: "1g"        # Memory limit
+
+# Process management
+process_manager: "{{ 'nohup' if deploy_target == 'docker' else 'systemd' }}"
+
+# Nginx configuration
+configure_nginx: true
+nginx_route_prefix: "/apps/{{ app_id }}"

@@ -1,0 +1,48 @@
+---
+# Agent API Docker Deployment Tasks
+#
+# Deploys Agent API via Docker Compose
+# Used when deploy_target == 'docker'
+
+- name: Build Agent API container
+  include_role:
+    name: docker_common
+    tasks_from: compose_build
+  vars:
+    docker_services_to_build:
+      - agent-api
+    docker_build_no_cache: "{{ docker_force_rebuild | default(false) }}"
+
+- name: Start Agent API container
+  include_role:
+    name: docker_common
+    tasks_from: compose_up
+  vars:
+    docker_services_to_start:
+      - agent-api
+    docker_wait_for_health: true
+
+- name: Wait for Agent API to be ready
+  include_role:
+    name: docker_common
+    tasks_from: wait_healthy
+  vars:
+    docker_wait_service: agent-api
+    docker_wait_timeout: 60
+
+- name: Verify Agent API health endpoint
+  ansible.builtin.uri:
+    url: "http://localhost:{{ agent_port }}/health"
+    method: GET
+    status_code: [200]
+  register: agent_health
+  retries: 5
+  delay: 3
+  until: agent_health.status == 200
+
+- name: Display Agent API status
+  ansible.builtin.debug:
+    msg: |
+      Agent API is running and ready
+      Health: http://localhost:{{ agent_port }}/health
+      API: http://localhost:{{ agent_port }}

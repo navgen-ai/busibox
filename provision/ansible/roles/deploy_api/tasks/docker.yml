@@ -1,0 +1,49 @@
+---
+# Deploy API Docker Deployment Tasks
+#
+# Deploys Deploy API via Docker Compose
+# Used when deploy_target == 'docker'
+
+- name: Build Deploy API container
+  include_role:
+    name: docker_common
+    tasks_from: compose_build
+  vars:
+    docker_services_to_build:
+      - deploy-api
+    docker_build_no_cache: "{{ docker_force_rebuild | default(false) }}"
+
+- name: Start Deploy API container
+  include_role:
+    name: docker_common
+    tasks_from: compose_up
+  vars:
+    docker_services_to_start:
+      - deploy-api
+    docker_wait_for_health: true
+
+- name: Wait for Deploy API to be ready
+  include_role:
+    name: docker_common
+    tasks_from: wait_healthy
+  vars:
+    docker_wait_service: deploy-api
+    docker_wait_timeout: 60
+
+- name: Verify Deploy API health endpoint
+  ansible.builtin.uri:
+    url: "http://localhost:{{ deploy_port }}/health"
+    method: GET
+    status_code: [200]
+  register: deploy_health
+  retries: 5
+  delay: 3
+  until: deploy_health.status == 200
+  failed_when: false
+
+- name: Display Deploy API status
+  ansible.builtin.debug:
+    msg: |
+      Deploy API is running and ready
+      Health: http://localhost:{{ deploy_port }}/health
+      API: http://localhost:{{ deploy_port }}

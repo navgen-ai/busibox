@@ -1,0 +1,37 @@
+---
+# Docs API Docker Deployment Tasks
+#
+# Deploys Docs API via Docker Compose
+# Used when deploy_target == 'docker'
+
+- name: Build Docs API container
+  include_role:
+    name: docker_common
+    tasks_from: compose_build
+  vars:
+    docker_services_to_build:
+      - docs-api
+    docker_build_no_cache: "{{ docker_force_rebuild | default(false) }}"
+
+- name: Start Docs API container
+  include_role:
+    name: docker_common
+    tasks_from: compose_up
+  vars:
+    docker_services_to_start:
+      - docs-api
+    docker_wait_for_health: true
+
+- name: Wait for Docs API to be ready
+  include_role:
+    name: docker_common
+    tasks_from: wait_healthy
+  vars:
+    docker_wait_service: docs-api
+    docker_wait_timeout: 60
+
+- name: Display Docs API status
+  ansible.builtin.debug:
+    msg: |
+      Docs API is running and ready
+      API: http://localhost:{{ docs_port }}

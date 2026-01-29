@@ -1,0 +1,87 @@
+---
+# User App List Playbook
+#
+# Lists all deployed user applications.
+#
+# Usage:
+#   ansible-playbook -i inventory/docker user-app-list.yml
+
+- name: List User Applications
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  vars:
+    deploy_target: "{{ hostvars['localhost']['deploy_target'] | default('docker') }}"
+    user_apps_base_path: "/srv/apps"
+    user_apps_container: "{{ container_prefix | default('dev') }}-user-apps"
+  
+  tasks:
+    - name: List apps (Docker)
+      when: deploy_target == 'docker'
+      block:
+        - name: Get app directories
+          ansible.builtin.command:
+            cmd: docker exec {{ user_apps_container }} ls -1 {{ user_apps_base_path }}
+          register: app_list
+          changed_when: false
+          failed_when: false
+
+        - name: Get app details
+          ansible.builtin.command:
+            cmd: >
+              docker exec {{ user_apps_container }}
+              sh -c "for app in $(ls {{ user_apps_base_path }}); do
+                echo \"App: $app\";
+                if [ -f {{ user_apps_base_path }}/$app/.env ]; then
+                  grep PORT {{ user_apps_base_path }}/$app/.env || true;
+                fi;
+                ps aux | grep -E \"$app|node\" | grep -v grep | head -1 || echo 'Status: not running';
+                echo '---';
+              done"
+          register: app_details
+          changed_when: false
+          failed_when: false
+
+        - name: Display app list (Docker)
+          ansible.builtin.debug:
+            msg: |
+              ═══════════════════════════════════════════════════════════════════
+              DEPLOYED USER APPS (Docker)
+              ═══════════════════════════════════════════════════════════════════
+              {{ app_details.stdout | default('No apps deployed') }}
+
+    - name: List apps (LXC)
+      when: deploy_target == 'proxmox'
+      block:
+        - name: Get app directories (LXC)
+          ansible.builtin.command:
+            cmd: ls -1 {{ user_apps_base_path }}
+          register: app_list
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ groups['user_apps'][0] }}"
+
+        - name: Get systemd service status for each app
+          ansible.builtin.shell:
+            cmd: |
+              for app in $(ls {{ user_apps_base_path }}); do
+                echo "App: $app"
+                systemctl is-active $app 2>/dev/null || echo "Status: not a service"
+                if [ -f {{ user_apps_base_path }}/$app/.env ]; then
+                  grep PORT {{ user_apps_base_path }}/$app/.env || true
+                fi
+                echo "---"
+              done
+          register: app_details
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ groups['user_apps'][0] }}"
+
+        - name: Display app list (LXC)
+          ansible.builtin.debug:
+            msg: |
+              ═══════════════════════════════════════════════════════════════════
+              DEPLOYED USER APPS (LXC)
+              ═══════════════════════════════════════════════════════════════════
+              {{ app_details.stdout | default('No apps deployed') }}

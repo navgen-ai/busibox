@@ -16,7 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.middleware.jwt_auth import JWTAuthMiddleware
 from api.middleware.logging import LoggingMiddleware
-from api.routes import content, embeddings, extract, files, health, libraries, markdown, roles, status, upload, authz, test_docs
+from api.routes import content, data, embeddings, extract, files, health, libraries, markdown, roles, status, upload, authz, test_docs
+from api.services.redis_service import RedisService
 from api.services.postgres import PostgresService
 from shared.config import Config
 
@@ -40,18 +41,20 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
-# Global PostgresService instance (singleton)
+# Global service instances (singletons)
 config = Config().to_dict()
 pg_service = PostgresService(config)
+redis_service = RedisService(config)
 
 # Create FastAPI application
 app = FastAPI(
-    title="Busibox Ingestion Service API",
+    title="Busibox Data Service API",
     description="""
-## Document Ingestion & Processing API
+## Data Management API (formerly Ingestion Service)
 
-This API provides endpoints for uploading, processing, and tracking documents through
-the Busibox ingestion pipeline.
+This API provides endpoints for managing both unstructured documents (files) and
+structured data (like Notion/Coda databases). It handles file uploads, processing,
+and tracking, as well as structured data document operations.
 
 ### Features
 
@@ -59,6 +62,8 @@ the Busibox ingestion pipeline.
 - **Real-time Status**: Server-Sent Events (SSE) for processing updates
 - **Hybrid Search**: Dense semantic + sparse BM25 + visual ColPali embeddings
 - **Content Deduplication**: Automatic detection and vector reuse
+- **Structured Data**: Create and query data documents with SQL-like queries
+- **Redis Caching**: High-performance caching for frequently accessed data
 - **Health Monitoring**: Service health checks
 
 ### Pipeline Stages
@@ -124,6 +129,10 @@ For issues or questions, contact the Busibox infrastructure team.
             "name": "Libraries",
             "description": "Library management - create, list, update, delete document libraries",
         },
+        {
+            "name": "Data",
+            "description": "Structured data documents - create, query, and manage data like Notion/Coda databases",
+        },
     ],
     contact={
         "name": "Busibox Infrastructure Team",
@@ -159,6 +168,7 @@ app.include_router(health.router, prefix="/health", tags=["Health"])
 app.include_router(extract.router, tags=["Extract"])  # Remote Marker extraction
 app.include_router(authz.router, prefix="/authz", tags=["Authz"])
 app.include_router(libraries.router, prefix="/libraries", tags=["Libraries"])
+app.include_router(data.router, prefix="/data", tags=["Data"])
 app.include_router(test_docs.router, tags=["Test Docs"])
 
 
@@ -167,6 +177,13 @@ async def startup_event():
     """Initialize services on startup."""
     logger.info("Ingestion API starting up")
     await pg_service.connect()
+    
+    # Connect Redis for data document caching
+    try:
+        await redis_service.connect()
+        logger.info("Redis service connected for data caching")
+    except Exception as e:
+        logger.warning("Redis connection failed (caching disabled)", error=str(e))
     
     # Run library migration from AI Portal if configured
     from api.services.library_migration import run_migration_if_needed
@@ -177,6 +194,7 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup on shutdown."""
     logger.info("Ingestion API shutting down")
+    await redis_service.disconnect()
     await pg_service.disconnect()
 
 
@@ -188,8 +206,8 @@ async def root():
     Returns basic API information and links to documentation.
     """
     return {
-        "service": "busibox-ingestion-api",
-        "version": "1.0.0",
+        "service": "busibox-data-api",
+        "version": "2.0.0",
         "status": "running",
         "documentation": {
             "swagger_ui": "/docs",
@@ -197,9 +215,17 @@ async def root():
             "openapi_json": "/openapi.json",
         },
         "endpoints": {
-            "upload": "/upload",
-            "status": "/status/{file_id}",
-            "files": "/files/{file_id}",
+            "files": {
+                "upload": "/upload",
+                "status": "/status/{file_id}",
+                "metadata": "/files/{file_id}",
+                "libraries": "/libraries",
+            },
+            "data": {
+                "documents": "/data",
+                "records": "/data/{document_id}/records",
+                "query": "/data/{document_id}/query",
+            },
             "health": "/health",
         }
     }

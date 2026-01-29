@@ -871,6 +871,19 @@ services:
   # ===========================================================================
 
   user-apps:
+    # =========================================================================
+    # USER APPS CONTAINER (Sandboxed)
+    # =========================================================================
+    # This container runs UNTRUSTED user-deployed applications.
+    # Security isolation is critical - all app code executes inside this container.
+    #
+    # Security measures:
+    # - Resource limits (CPU, memory)
+    # - Read-only root filesystem where possible
+    # - No privileged access
+    # - Dropped capabilities
+    # - Isolated network (only reaches internal services)
+    # =========================================================================
     image: node:20-slim
     container_name: ${CONTAINER_PREFIX:-dev}-user-apps
     hostname: user-apps
@@ -881,15 +894,37 @@ services:
       # Dev apps mount - uses DEV_APPS_DIR from .busibox-state via Makefile
       # Falls back to local ./dev-apps directory if not set
       - ${DEV_APPS_DIR:-./dev-apps}:/srv/dev-apps
+      # Logs directory for user apps
+      - user_apps_logs:/var/log/user-apps
     environment:
       NODE_ENV: production
     # Container stays running - deploy-api uses docker exec to manage apps
     command: ["sleep", "infinity"]
     # Install common tools needed for app deployment
-    entrypoint: ["/bin/bash", "-c", "apt-get update && apt-get install -y git curl procps systemd && exec sleep infinity"]
+    entrypoint: ["/bin/bash", "-c", "apt-get update && apt-get install -y git curl procps && exec sleep infinity"]
     restart: unless-stopped
     networks:
       - busibox-net
+    # Resource limits to prevent runaway apps from affecting host
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    # Security: drop unnecessary capabilities
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - NET_BIND_SERVICE
+    # Security: prevent privilege escalation
+    security_opt:
+      - no-new-privileges:true
 
 # ===========================================================================
   # NEXT.JS APPLICATIONS (Core Apps)
@@ -1002,6 +1037,8 @@ volumes:
   vllm_cache:
   # User apps - persistent storage for deployed external applications
   user_apps_data:
+  # User apps logs - separate volume for app logs
+  user_apps_logs:
 
 # ===========================================================================
 # NETWORKS

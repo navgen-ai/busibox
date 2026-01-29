@@ -1,0 +1,20 @@
+---
+# User Apps Docker Deployment Tasks
+#
+# Deploys User Apps container via Docker Compose
+# Used when deploy_target == 'docker'
+
+- name: Start user-apps container
+  include_role:
+    name: docker_common
+    tasks_from: compose_up
+  vars:
+    docker_services_to_start:
+      - user-apps
+    docker_wait_for_health: false  # User apps may not have healthcheck
+
+- name: Display user-apps status
+  ansible.builtin.debug:
+    msg: |
+      User apps container is running
+      External apps can be deployed via the Deploy API

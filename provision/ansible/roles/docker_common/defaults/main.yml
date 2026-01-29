@@ -1,0 +1,31 @@
+---
+# Docker Common Role - Default Variables
+#
+# These defaults can be overridden in inventory group_vars or playbook vars
+
+# Docker Compose configuration
+docker_compose_dir: "{{ playbook_dir }}/../.."
+docker_compose_project: "{{ container_prefix | default('dev') }}"
+
+# Default compose files (base + dev overlay)
+docker_compose_files_list:
+  - "{{ docker_compose_dir }}/docker-compose.yml"
+  - "{{ docker_compose_dir }}/docker-compose.local-dev.yml"
+
+# Environment file
+docker_env_file: "{{ docker_compose_dir }}/.env.{{ docker_compose_project }}"
+
+# Docker network name
+docker_network: busibox-net
+
+# Timeouts
+docker_health_timeout: 60
+docker_startup_timeout: 120
+
+# Build options
+docker_build_no_cache: false
+docker_build_pull: true
+
+# Service management
+docker_force_recreate: false
+docker_remove_orphans: true
