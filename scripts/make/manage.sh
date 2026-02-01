@@ -400,17 +400,6 @@ manage_service() {
                     continue
                 fi
                 
-                # For Docker, apps are built into the image, so we can't rebuild in-place
-                if [[ "$backend" == "docker" ]]; then
-                    echo ""
-                    warn "For Docker, apps are built into the container image."
-                    warn "Use option 6 'Rebuild Container' to rebuild with latest code."
-                    echo ""
-                    read -n 1 -s -r -p "Press any key to continue..."
-                    continue
-                fi
-                
-                # Proxmox/Ansible mode - deploy specific apps
                 clear
                 box_start 70 double "$CYAN"
                 box_header "REBUILD APP"
@@ -429,32 +418,56 @@ manage_service() {
                 read -n 1 -s -r -p "Select app: " app_choice
                 echo ""
                 
-                local env
-                env=$(get_state "ENVIRONMENT" || echo "staging")
-                
                 case "$app_choice" in
                     1) # ai-portal
                         echo ""
                         info "Rebuilding ai-portal from source..."
-                        cd "${REPO_ROOT}/provision/ansible"
-                        make deploy-ai-portal INV="inventory/${env}"
+                        if [[ "$backend" == "docker" ]]; then
+                            # Docker: use entrypoint.sh deploy command
+                            docker exec "${prefix}-core-apps" /usr/local/bin/entrypoint.sh deploy ai-portal main
+                        else
+                            # Proxmox: use Ansible
+                            local env
+                            env=$(get_state "ENVIRONMENT" || echo "staging")
+                            cd "${REPO_ROOT}/provision/ansible"
+                            make deploy-ai-portal INV="inventory/${env}"
+                        fi
                         read -n 1 -s -r -p "Press any key to continue..."
                         ;;
                     2) # agent-manager
                         echo ""
                         info "Rebuilding agent-manager from source..."
-                        cd "${REPO_ROOT}/provision/ansible"
-                        make deploy-agent-manager INV="inventory/${env}"
+                        if [[ "$backend" == "docker" ]]; then
+                            # Docker: use entrypoint.sh deploy command
+                            docker exec "${prefix}-core-apps" /usr/local/bin/entrypoint.sh deploy agent-manager main
+                        else
+                            # Proxmox: use Ansible
+                            local env
+                            env=$(get_state "ENVIRONMENT" || echo "staging")
+                            cd "${REPO_ROOT}/provision/ansible"
+                            make deploy-agent-manager INV="inventory/${env}"
+                        fi
                         read -n 1 -s -r -p "Press any key to continue..."
                         ;;
                     3) # both
                         echo ""
                         info "Rebuilding ai-portal from source..."
-                        cd "${REPO_ROOT}/provision/ansible"
-                        make deploy-ai-portal INV="inventory/${env}"
-                        echo ""
-                        info "Rebuilding agent-manager from source..."
-                        make deploy-agent-manager INV="inventory/${env}"
+                        if [[ "$backend" == "docker" ]]; then
+                            # Docker: use entrypoint.sh deploy command
+                            docker exec "${prefix}-core-apps" /usr/local/bin/entrypoint.sh deploy ai-portal main
+                            echo ""
+                            info "Rebuilding agent-manager from source..."
+                            docker exec "${prefix}-core-apps" /usr/local/bin/entrypoint.sh deploy agent-manager main
+                        else
+                            # Proxmox: use Ansible
+                            local env
+                            env=$(get_state "ENVIRONMENT" || echo "staging")
+                            cd "${REPO_ROOT}/provision/ansible"
+                            make deploy-ai-portal INV="inventory/${env}"
+                            echo ""
+                            info "Rebuilding agent-manager from source..."
+                            make deploy-agent-manager INV="inventory/${env}"
+                        fi
                         read -n 1 -s -r -p "Press any key to continue..."
                         ;;
                     b|B)
