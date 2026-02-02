@@ -88,6 +88,22 @@
     lc_ctype: en_US.UTF-8
     template: template0
 
+- name: Create service-specific databases
+  become_user: postgres
+  postgresql_db:
+    name: "{{ item }}"
+    owner: "{{ postgres_user }}"
+    encoding: UTF8
+    lc_collate: en_US.UTF-8
+    lc_ctype: en_US.UTF-8
+    template: template0
+    state: present
+  loop:
+    - "{{ files_db | default('files') }}"
+    - agent_server
+    - authz
+  tags: [postgres]
+
 # =============================================================================
 # Pytest Database Infrastructure
 # =============================================================================
@@ -192,17 +208,17 @@
     group: postgres
   tags: [postgres]
 
-- name: Create migrations table in files database
+- name: Create migrations table in data/files database
   become_user: postgres
   postgresql_query:
-    db: files
+    db: "{{ files_db | default('files') }}"
     query: |
       CREATE TABLE IF NOT EXISTS ansible_migrations (
         version INTEGER PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
         applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
-  when: "'files' in (app_databases | default([]))"
+  when: files_db is defined
   tags: [postgres]
 
 - name: Check if data schema migration has been applied
@@ -212,13 +228,13 @@
     query: "SELECT COUNT(*) as count FROM ansible_migrations WHERE version = 10"
   register: migration_check
   failed_when: false
-  when: "'files' in (app_databases | default([]))"
+  when: files_db is defined
   tags: [postgres]
 
 - name: Debug migration check result
   debug:
     msg: "Migration check: {{ migration_check }}"
-  when: "'files' in (app_databases | default([]))"
+  when: files_db is defined
   tags: [postgres]
 
 - name: Apply data schema to files database
@@ -235,7 +251,7 @@
 - name: Display migration result
   debug:
     msg: "Data schema migration: {{ 'applied' if files_migration_result.changed else 'already exists' }}"
-  when: "'files' in (app_databases | default([]))"
+  when: files_db is defined
   tags: [postgres]
 
 - name: Grant ownership of all tables to postgres user (files database)
@@ -276,7 +292,7 @@
       -- Set default privileges for future objects
       ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO {{ postgres_user }};
       ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO {{ postgres_user }};
-  when: "'files' in (app_databases | default([]))"
+  when: files_db is defined
   tags: [postgres]
 
 - name: Ensure ai_portal database exists with correct owner
