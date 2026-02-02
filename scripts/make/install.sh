@@ -1614,9 +1614,10 @@ bootstrap_proxmox_ansible() {
         info "Proxmox host already setup for ${inventory_name} environment (skipping)"
     fi
     
-    # Start embedding model download in background (if not already done)
-    local embedding_setup_done
+    # Start model downloads in background (if not already done)
+    local embedding_setup_done llm_setup_done
     embedding_setup_done=$(get_state "EMBEDDING_MODELS_SETUP_${inventory_name^^}" "false")
+    llm_setup_done=$(get_state "LLM_MODELS_SETUP_${inventory_name^^}" "false")
     
     if [[ "$embedding_setup_done" != "true" ]]; then
         info "Starting embedding model download in background..."
@@ -1625,11 +1626,23 @@ bootstrap_proxmox_ansible() {
             (
                 bash "$embedding_script" && set_state "EMBEDDING_MODELS_SETUP_${inventory_name^^}" "true"
             ) &
-            local pid=$!
-            info "Embedding download started (PID: $pid) - continuing with container creation"
+            info "Embedding download started (PID: $!) - continuing with container creation"
         fi
     else
         info "Embedding models already setup for ${inventory_name} environment (skipping)"
+    fi
+    
+    if [[ "$llm_setup_done" != "true" ]]; then
+        info "Starting LLM model download in background..."
+        local llm_script="${REPO_ROOT}/provision/pct/host/setup-llm-models.sh"
+        if [[ -f "$llm_script" ]]; then
+            (
+                bash "$llm_script" && set_state "LLM_MODELS_SETUP_${inventory_name^^}" "true"
+            ) &
+            info "LLM download started (PID: $!) - continuing with container creation"
+        fi
+    else
+        info "LLM models already setup for ${inventory_name} environment (skipping)"
     fi
     
     # =========================================================================
