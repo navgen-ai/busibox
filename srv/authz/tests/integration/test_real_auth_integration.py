@@ -33,7 +33,7 @@ import hashlib
 from datetime import datetime, timedelta
 
 # Test database configuration
-# Tests use ISOLATED test databases (test_authz, test_files, test_agent_server)
+# Tests use ISOLATED test databases (test_authz, test_data, test_agent)
 # owned by busibox_test_user - completely separate from production data
 TEST_DB_HOST = os.getenv("TEST_DB_HOST", "10.96.201.203")
 TEST_DB_PORT = int(os.getenv("TEST_DB_PORT", "5432"))

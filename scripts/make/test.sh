@@ -1179,7 +1179,7 @@ run_container_tests() {
     # NOTE: Pytest tests run against isolated test databases owned by busibox_test_user:
     #   - test_authz (for authz service tests)
     #   - test_files (for data/search service tests)
-    #   - test_agent_server (for agent service tests)
+    #   - test_agent (for agent service tests)
     #
     # The test user has identical table structures but completely isolated data.
     # Environment (staging/production) only determines which network/containers we SSH to.
@@ -1338,13 +1338,13 @@ run_container_tests() {
                 fi
             fi
             
-            # Pytest uses test_agent_server database (not the production agent_server database)
+            # Pytest uses test_agent database (not the production agent database)
             # Also set TEST_DATABASE_URL which the agent conftest.py checks first
-            local agent_test_db_url="postgresql+asyncpg://${db_user}:${db_password}@${postgres_ip}:5432/test_agent_server"
+            local agent_test_db_url="postgresql+asyncpg://${db_user}:${db_password}@${postgres_ip}:5432/test_agent"
             local test_env="POSTGRES_HOST=${postgres_ip}"
             test_env="${test_env} POSTGRES_USER=${db_user}"
             test_env="${test_env} POSTGRES_PASSWORD=${db_password}"
-            test_env="${test_env} POSTGRES_DB=test_agent_server"
+            test_env="${test_env} POSTGRES_DB=test_agent"
             test_env="${test_env} TEST_DATABASE_URL=${agent_test_db_url}"
             test_env="${test_env} AUTHZ_URL=http://${authz_ip}:8010"
             test_env="${test_env} AUTHZ_JWKS_URL=http://${authz_ip}:8010/.well-known/jwks.json"

@@ -2494,7 +2494,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               note: 'This command runs locally against Docker.',
               command: 'make test-db-init',
               description: 'Bootstrap test databases with schema, OAuth clients, and signing keys',
-              databases: ['test_authz', 'test_files', 'test_agent_server'],
+              databases: ['test_authz', 'test_data', 'test_agent'],
               user: 'busibox_test_user',
               prerequisites: [
                 'Docker services must be running: make docker-up',
@@ -2517,8 +2517,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               description: 'Check if test databases are properly initialized',
               what_it_checks: [
                 'test_authz database has active signing keys',
-                'test_files database exists',
-                'test_agent_server database exists',
+                'test_data database exists',
+                'test_agent database exists',
               ],
             }, null, 2),
           },
@@ -2689,8 +2689,8 @@ make test-docker SERVICE=agent FAST=1
 
 Tests run against isolated databases:
 - test_authz (not authz)
-- test_files (not files)  
-- test_agent_server (not agent_server)
+- test_data (not data)  
+- test_agent (not agent)
 
 User: busibox_test_user
 `,
@@ -3306,7 +3306,7 @@ make test-db-init  # Reinitialize test databases
 \`\`\`
 
 ## Important Note
-Tests run against **isolated test databases** (test_authz, test_files, test_agent_server), not production databases.`
+Tests run against **isolated test databases** (test_authz, test_data, test_agent), not production databases.`
               : `# Testing ${service} Against ${environment.charAt(0).toUpperCase() + environment.slice(1)}
 
 ## Option 1: Remote Tests (run locally, connect to ${environment})

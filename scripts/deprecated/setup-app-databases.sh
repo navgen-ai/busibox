@@ -17,13 +17,11 @@ echo ""
 
 # List of databases to create
 DATABASES=(
-    "agent_server"
+    "agent"
     "ai_portal"
-    "agent_client"
-    "doc_intel"
-    "innovation"
+    "agent_manager"
     "litellm"
-    "files"
+    "data"
 )
 
 echo "This script will create the following databases:"

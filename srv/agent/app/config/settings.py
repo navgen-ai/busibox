@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     # Database configuration
     # Default credentials match docker-compose.yml (busibox_user:devpassword)
     database_url: str = Field(
-        "postgresql+asyncpg://busibox_user:devpassword@localhost:5432/agent_server",
+        "postgresql+asyncpg://busibox_user:devpassword@localhost:5432/agent",
         description="SQLAlchemy connection URL",
     )
     
@@ -100,7 +100,7 @@ class Settings(BaseSettings):
         description="Enable test mode support (routes test requests to test database)",
     )
     test_database_url: str = Field(
-        "postgresql+asyncpg://busibox_test_user:testpassword@localhost:5432/test_agent_server",
+        "postgresql+asyncpg://busibox_test_user:testpassword@localhost:5432/test_agent",
         description="SQLAlchemy connection URL for test database",
     )
 

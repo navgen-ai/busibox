@@ -14,7 +14,7 @@ import os
 from datetime import datetime, timedelta
 
 # Test database configuration
-# Tests use ISOLATED test databases (test_authz, test_files, test_agent_server)
+# Tests use ISOLATED test databases (test_authz, test_data, test_agent)
 # owned by busibox_test_user - completely separate from production data
 # For Proxmox: defaults point to staging test database
 # For Docker: TEST_DB_* env vars are set by run-local-tests.sh

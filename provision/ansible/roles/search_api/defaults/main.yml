@@ -14,7 +14,6 @@ milvus_port: 19530
 # PostgreSQL connection
 postgres_host: "{{ hostvars[groups['pg'][0]]['ansible_host'] }}"
 postgres_port: 5432
-postgres_db: busibox
 postgres_user: app_user
 # postgres_password is defined in inventory group_vars
 

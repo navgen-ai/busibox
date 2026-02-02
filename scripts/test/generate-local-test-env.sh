@@ -161,7 +161,7 @@ try:
     print(f"POSTGRES_PASSWORD={pg.get('password', '')}")
     
     # Test database credentials (database name is set per-service in bash)
-    # The actual database name (authz, files, agent_server) is determined by the service
+    # The actual database name (authz, data, agent) is determined by the service
     print(f"TEST_DB_USER=busibox_test_user")
     print(f"TEST_DB_PASSWORD={pg.get('password', '')}")
     
@@ -259,18 +259,18 @@ generate_env_file() {
     # Determine the correct database for this service
     # Each service uses its own dedicated database:
     #   - authz: "authz" database (RBAC, OAuth, encryption keys)
-    #   - data: "files" database (documents, chunks)
-    #   - search: "files" database (reads from same as data)
-    #   - agent: "agent_server" database
+    #   - data: "data" database (documents, chunks)
+    #   - search: "data" database (reads from same as data)
+    #   - agent: "agent" database
     case "$service" in
         ingest|search)
-            POSTGRES_DB_FOR_SERVICE="files"
+            POSTGRES_DB_FOR_SERVICE="data"
             ;;
         authz)
             POSTGRES_DB_FOR_SERVICE="authz"
             ;;
         agent)
-            POSTGRES_DB_FOR_SERVICE="agent_server"
+            POSTGRES_DB_FOR_SERVICE="agent"
             ;;
         all|*)
             # Default to authz for "all" since it's the most commonly needed

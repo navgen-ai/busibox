@@ -5,8 +5,8 @@ Database Migration Tool: Separate Service Databases
 This script migrates services from the shared 'busibox' database to their own
 dedicated databases:
 - authz tables -> 'authz' database
-- data tables -> 'files' database
-- agent tables -> 'agent_server' database (already separate)
+- data tables -> 'data' database
+- agent tables -> 'agent' database (already separate)
 
 The migration:
 1. Creates the target databases if they don't exist
