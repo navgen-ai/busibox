@@ -1588,7 +1588,25 @@ bootstrap_proxmox_ansible() {
     fi
     
     # =========================================================================
-    # PHASE 0: Create/Validate LXC Containers
+    # PHASE 0: Setup Proxmox Host (if needed)
+    # =========================================================================
+    # Setup ZFS datasets and host directories before creating containers
+    
+    local host_setup_script="${REPO_ROOT}/provision/pct/host/setup-proxmox-host.sh"
+    if [[ -f "$host_setup_script" ]]; then
+        info "Checking Proxmox host setup (ZFS datasets, directories)..."
+        if bash "$host_setup_script" "$inventory_name"; then
+            success "Proxmox host setup complete"
+        else
+            warn "Host setup script reported issues (may be non-critical)"
+        fi
+    else
+        warn "Host setup script not found: $host_setup_script"
+        warn "Skipping host setup - containers may not have required datasets"
+    fi
+    
+    # =========================================================================
+    # PHASE 1: Create/Validate LXC Containers
     # =========================================================================
     # LXC containers must exist before Ansible can deploy to them
     # This step creates containers if they don't exist, or validates existing ones
@@ -1825,7 +1843,7 @@ bootstrap_docker() {
     cd "${REPO_ROOT}"
     
     # ==========================================================================
-    # PHASE 1: Core Infrastructure (PostgreSQL)
+    # PHASE 2: Core Infrastructure (PostgreSQL)
     # ==========================================================================
     show_stage 40 "Starting PostgreSQL" "Enterprise-grade database with row-level security."
     
@@ -1861,7 +1879,7 @@ bootstrap_docker() {
         "ALTER USER busibox_test_user WITH PASSWORD 'testpassword';" &>/dev/null || true
     
     # ==========================================================================
-    # PHASE 2: Authentication Service
+    # PHASE 3: Authentication Service
     # ==========================================================================
     show_stage 55 "Starting AuthZ API" "Zero-trust authentication with OAuth 2.0."
     
@@ -1889,7 +1907,7 @@ bootstrap_docker() {
     success "AuthZ API is ready"
     
     # ==========================================================================
-    # PHASE 3: Create Admin User
+    # PHASE 4: Create Admin User
     # ==========================================================================
     show_stage 65 "Creating Admin User" "Setting up admin account with magic link."
     
@@ -1938,7 +1956,7 @@ bootstrap_docker() {
     fi
     
     # ==========================================================================
-    # PHASE 4: AI Portal (Setup Wizard)
+    # PHASE 5: AI Portal (Setup Wizard)
     # ==========================================================================
     show_stage 75 "Building AI Portal" "Building core-apps container with GitHub credentials."
     
@@ -2001,7 +2019,7 @@ bootstrap_docker() {
     fi
     
     # ==========================================================================
-    # PHASE 5: Nginx (Reverse Proxy)
+    # PHASE 6: Nginx (Reverse Proxy)
     # ==========================================================================
     show_stage 90 "Starting Nginx" "Reverse proxy with SSL termination."
     
@@ -2013,7 +2031,7 @@ bootstrap_docker() {
     fi
     
     # ==========================================================================
-    # PHASE 6: Wait for AI Portal to be ready
+    # PHASE 7: Wait for AI Portal to be ready
     # ==========================================================================
     show_stage 95 "Waiting for services" "Bootstrap services starting up..."
     
