@@ -1614,6 +1614,24 @@ bootstrap_proxmox_ansible() {
         info "Proxmox host already setup for ${inventory_name} environment (skipping)"
     fi
     
+    # Start embedding model download in background (if not already done)
+    local embedding_setup_done
+    embedding_setup_done=$(get_state "EMBEDDING_MODELS_SETUP_${inventory_name^^}" "false")
+    
+    if [[ "$embedding_setup_done" != "true" ]]; then
+        info "Starting embedding model download in background..."
+        local embedding_script="${REPO_ROOT}/provision/pct/host/setup-embedding-models.sh"
+        if [[ -f "$embedding_script" ]]; then
+            (
+                bash "$embedding_script" && set_state "EMBEDDING_MODELS_SETUP_${inventory_name^^}" "true"
+            ) &
+            local pid=$!
+            info "Embedding download started (PID: $pid) - continuing with container creation"
+        fi
+    else
+        info "Embedding models already setup for ${inventory_name} environment (skipping)"
+    fi
+    
     # =========================================================================
     # PHASE 1: Create/Validate LXC Containers
     # =========================================================================
