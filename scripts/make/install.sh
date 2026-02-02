@@ -992,6 +992,11 @@ generate_secrets() {
     
     # Generate all secrets
     export POSTGRES_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=')
+    export POSTGRES_USER="busibox_user"
+    export POSTGRES_DB="busibox"
+    export POSTGRES_HOST="${POSTGRES_HOST:-postgres}"
+    export POSTGRES_PORT="${POSTGRES_PORT:-5432}"
+    
     export SSO_JWT_SECRET=$(openssl rand -hex 32)
     export AUTHZ_MASTER_KEY=$(openssl rand -base64 32)
     # LiteLLM uses master_key for authentication - services should use the same key
@@ -999,6 +1004,22 @@ generate_secrets() {
     export LITELLM_API_KEY="${LITELLM_MASTER_KEY}"  # Same as master key for authentication
     export MINIO_ACCESS_KEY="minioadmin"
     export MINIO_SECRET_KEY=$(openssl rand -base64 24 | tr -d '/+=')
+    
+    # Email/SMTP defaults (can be overridden)
+    export EMAIL_FROM="${EMAIL_FROM:-noreply@busibox.local}"
+    export SMTP_HOST="${SMTP_HOST:-localhost}"
+    export SMTP_PORT="${SMTP_PORT:-25}"
+    export SMTP_USER="${SMTP_USER:-}"
+    export SMTP_PASSWORD="${SMTP_PASSWORD:-}"
+    export SMTP_SECURE="${SMTP_SECURE:-false}"
+    
+    # GitHub OAuth defaults (should be configured for production)
+    export GITHUB_CLIENT_ID="${GITHUB_CLIENT_ID:-CHANGE_ME}"
+    export GITHUB_CLIENT_SECRET="${GITHUB_CLIENT_SECRET:-CHANGE_ME}"
+    export GITHUB_REDIRECT_URI="${GITHUB_REDIRECT_URI:-https://localhost/portal/api/admin/github/callback}"
+    
+    # Encryption key (use JWT secret if not set)
+    export ENCRYPTION_KEY="${ENCRYPTION_KEY:-${SSO_JWT_SECRET}}"
     
     success "All secrets generated"
 }
