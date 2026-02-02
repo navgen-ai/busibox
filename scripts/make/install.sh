@@ -3608,11 +3608,14 @@ main() {
         # Ensure vault file exists first
         
         # For fresh install, force environment-specific vault (don't use legacy)
-        local env_vault_path="${REPO_ROOT}/provision/ansible/roles/secrets/vars/vault.${TARGET_ENV}.yml"
-        if [[ ! -f "$env_vault_path" ]] && [[ "$VAULT_FILE" != "$env_vault_path" ]]; then
-            warn "Legacy vault detected, but environment-specific vault doesn't exist"
-            info "Creating new environment-specific vault: vault.${TARGET_ENV}.yml"
-            VAULT_FILE="$env_vault_path"
+        # VAULT_ENVIRONMENT is set by set_vault_environment() in vault.sh
+        if [[ -n "${VAULT_ENVIRONMENT:-}" ]]; then
+            local env_vault_path="${REPO_ROOT}/provision/ansible/roles/secrets/vars/vault.${VAULT_ENVIRONMENT}.yml"
+            if [[ ! -f "$env_vault_path" ]] && [[ "$VAULT_FILE" != "$env_vault_path" ]]; then
+                warn "Legacy vault detected, but environment-specific vault doesn't exist"
+                info "Creating new environment-specific vault: vault.${VAULT_ENVIRONMENT}.yml"
+                VAULT_FILE="$env_vault_path"
+            fi
         fi
         
         if [[ ! -f "$VAULT_FILE" ]]; then
@@ -3645,11 +3648,21 @@ main() {
         
         # Set vault password for sync operation
         # Use environment-specific vault password file
-        local vault_pass_file="${HOME}/.busibox-vault-pass-${TARGET_ENV}"
+        # VAULT_ENVIRONMENT is set by set_vault_environment() in vault.sh
+        if [[ -n "${VAULT_ENVIRONMENT:-}" ]]; then
+            local vault_pass_file="${HOME}/.busibox-vault-pass-${VAULT_ENVIRONMENT}"
+        else
+            # Fallback for legacy installations
+            local vault_pass_file="${HOME}/.vault_pass"
+        fi
         
         # Generate vault password if it doesn't exist
         if [[ ! -f "$vault_pass_file" ]]; then
-            info "Generating vault password for $TARGET_ENV environment..."
+            if [[ -n "${VAULT_ENVIRONMENT:-}" ]]; then
+                info "Generating vault password for $VAULT_ENVIRONMENT environment..."
+            else
+                info "Generating vault password..."
+            fi
             openssl rand -base64 32 > "$vault_pass_file"
             chmod 600 "$vault_pass_file"
             success "Vault password generated: $vault_pass_file"
