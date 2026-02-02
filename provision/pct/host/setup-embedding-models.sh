@@ -137,16 +137,24 @@ declare -A MODEL_SIZES=(
 check_model_cached() {
     local model="$1"
     
-    # Check for model.onnx file in cache
-    # FastEmbed stores models in subdirectories based on model name
-    local model_slug
-    model_slug=$(echo "$model" | tr '/' '_' | tr '[:upper:]' '[:lower:]')
+    # FastEmbed stores models using HuggingFace Hub cache structure:
+    # models--{org}--{model_name}/snapshots/{hash}/
+    # e.g., models--BAAI--bge-small-en-v1.5/snapshots/.../model.onnx
     
-    # FastEmbed uses the model name as directory structure
-    # e.g., BAAI/bge-small-en-v1.5 -> baai_bge-small-en-v1.5
-    if find "${FASTEMBED_CACHE}" -type f -name "model*.onnx" 2>/dev/null | grep -q .; then
-        # Check if this specific model exists
-        if find "${FASTEMBED_CACHE}" -path "*${model_slug}*" -name "model*.onnx" 2>/dev/null | grep -q .; then
+    # Convert model name to HuggingFace Hub format
+    # "BAAI/bge-small-en-v1.5" -> "models--BAAI--bge-small-en-v1.5"
+    local hub_name
+    hub_name="models--$(echo "$model" | tr '/' '--')"
+    
+    # Check if cache directory exists
+    if [[ ! -d "${FASTEMBED_CACHE}" ]]; then
+        return 1
+    fi
+    
+    # Check if this specific model directory exists and has model files
+    if [[ -d "${FASTEMBED_CACHE}/${hub_name}" ]]; then
+        # Verify it has actual model files (not just empty directory)
+        if find "${FASTEMBED_CACHE}/${hub_name}" -type f -name "*.onnx" 2>/dev/null | grep -q .; then
             return 0
         fi
     fi
