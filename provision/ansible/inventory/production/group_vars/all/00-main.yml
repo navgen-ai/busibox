@@ -11,6 +11,7 @@
 # Environment Configuration
 # ============================================================================
 busibox_env: production
+deployment_environment: prod  # Used to load vault.prod.yml
 node_env: production  # For Node.js applications
 
 # ============================================================================

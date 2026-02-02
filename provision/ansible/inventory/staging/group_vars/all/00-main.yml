@@ -15,6 +15,7 @@
 # Environment Configuration
 # ============================================================================
 busibox_env: staging
+deployment_environment: staging  # Used to load vault.staging.yml
 enable_pytest_databases: true  # Create *_test databases for running automated tests
 node_env: development  # For Node.js applications
 

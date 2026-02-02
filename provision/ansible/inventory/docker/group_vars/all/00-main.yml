@@ -13,6 +13,7 @@
 # Environment Configuration
 # ============================================================================
 busibox_env: "{{ lookup('env', 'BUSIBOX_ENV') | default('development', true) }}"
+deployment_environment: dev  # Used to load vault.dev.yml
 deploy_target: docker
 node_env: "{{ 'production' if busibox_env == 'demo' else 'development' }}"
 
