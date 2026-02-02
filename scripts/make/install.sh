@@ -3678,6 +3678,17 @@ main() {
         # Restore secrets and protected config from vault when resuming
         info "Restoring secrets and config from vault..."
         
+        # For resume, also force environment-specific vault (don't use legacy)
+        # VAULT_ENVIRONMENT is set by set_vault_environment() in vault.sh
+        if [[ -n "${VAULT_ENVIRONMENT:-}" ]]; then
+            local env_vault_path="${REPO_ROOT}/provision/ansible/roles/secrets/vars/vault.${VAULT_ENVIRONMENT}.yml"
+            if [[ -f "$env_vault_path" ]] && [[ "$VAULT_FILE" != "$env_vault_path" ]]; then
+                warn "Legacy vault path detected, switching to environment-specific vault"
+                info "Using environment vault: vault.${VAULT_ENVIRONMENT}.yml"
+                VAULT_FILE="$env_vault_path"
+            fi
+        fi
+        
         # Initialize ANSIBLE_VAULT_PASSWORD_FILE to avoid unbound variable errors
         export ANSIBLE_VAULT_PASSWORD_FILE="${ANSIBLE_VAULT_PASSWORD_FILE:-}"
         

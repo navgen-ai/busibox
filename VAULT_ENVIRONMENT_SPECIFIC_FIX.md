@@ -26,7 +26,7 @@ This fallback made sense for **resuming** installations, but not for **fresh** i
 
 ## Solution
 
-### 1. Force Environment-Specific Vault Creation
+### 1. Force Environment-Specific Vault Creation (Fresh Install)
 
 **File**: `scripts/make/install.sh` (lines 3607-3617)
 
@@ -86,6 +86,30 @@ export ANSIBLE_VAULT_PASSWORD_FILE="$vault_pass_file"
 - Fresh password generated for fresh vault
 - No attempt to reuse old password from legacy vault
 - Each environment has its own password file
+
+### 3. Force Environment-Specific Vault Usage (Resume Path)
+
+**File**: `scripts/make/install.sh` (lines 3678-3693)
+
+Added similar logic for the **resume** path to prevent using legacy vault:
+
+```bash
+# For resume, also force environment-specific vault (don't use legacy)
+if [[ -n "${VAULT_ENVIRONMENT:-}" ]]; then
+    local env_vault_path="...vault.${VAULT_ENVIRONMENT}.yml"
+    if [[ -f "$env_vault_path" ]] && [[ "$VAULT_FILE" != "$env_vault_path" ]]; then
+        warn "Legacy vault path detected, switching to environment vault"
+        info "Using environment vault: vault.${VAULT_ENVIRONMENT}.yml"
+        VAULT_FILE="$env_vault_path"
+    fi
+fi
+```
+
+**Why Needed**:
+- `set_vault_environment()` falls back to legacy vault if environment vault doesn't exist
+- But during resume, the environment vault DOES exist (created during initial install)
+- Need to override the fallback and use the environment-specific vault
+- Ensures correct vault is used with correct password
 
 ## Expected Behavior After Fix
 
