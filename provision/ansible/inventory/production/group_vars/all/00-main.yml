@@ -70,10 +70,15 @@ postgres_port: 5432
 postgres_user: busibox_user
 postgres_password: "{{ secrets.postgresql.password }}"
 
-# Data API database (files/documents/chunks)
+# Legacy vars for API database (files/documents/chunks)
 files_db: data
 files_user: "{{ postgres_user }}"
 files_password: "{{ secrets.postgresql.password }}"
+
+# Data database (data/documents/chunks)
+data_db: data
+data_user: "{{ postgres_user }}"
+data_password: "{{ secrets.postgresql.password }}"
 
 milvus_host: "{{ milvus_ip }}"
 milvus_port: 19530

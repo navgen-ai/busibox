@@ -7,10 +7,10 @@
 --
 -- Architecture:
 --   Production/Staging User: busibox_user
---     - Connects to: agent, authz, files, busibox, ai_portal
+--     - Connects to: agent, authz, data, busibox, ai_portal
 --   
 --   Pytest Test User: busibox_test_user
---     - Connects to: agent, authz, files (SAME names, different owner)
+--     - Connects to: agent, authz, data (SAME names, different owner)
 --     - Provides complete isolation for automated tests
 --
 -- =============================================================================
@@ -61,9 +61,9 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'agent')\gexec
 SELECT 'CREATE DATABASE authz OWNER busibox_user'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'authz')\gexec
 
--- Create files database (for data/search service)
-SELECT 'CREATE DATABASE files OWNER busibox_user'
-WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'files')\gexec
+-- Create data database (for data/search service)
+SELECT 'CREATE DATABASE data OWNER busibox_user'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'data')\gexec
 
 -- Create litellm database (for LiteLLM proxy caching and usage tracking)
 SELECT 'CREATE DATABASE litellm OWNER busibox_user'
@@ -82,9 +82,9 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'test_agent')\gexec
 SELECT 'CREATE DATABASE test_authz OWNER busibox_test_user'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'test_authz')\gexec
 
--- Create test_files database
-SELECT 'CREATE DATABASE test_files OWNER busibox_test_user'
-WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'test_files')\gexec
+-- Create test_data database
+SELECT 'CREATE DATABASE test_data OWNER busibox_test_user'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'test_data')\gexec
 
 -- =============================================================================
 -- GRANT PRIVILEGES
@@ -95,13 +95,12 @@ GRANT ALL PRIVILEGES ON DATABASE busibox TO busibox_user;
 GRANT ALL PRIVILEGES ON DATABASE ai_portal TO busibox_user;
 GRANT ALL PRIVILEGES ON DATABASE agent TO busibox_user;
 GRANT ALL PRIVILEGES ON DATABASE authz TO busibox_user;
-GRANT ALL PRIVILEGES ON DATABASE files TO busibox_user;
-GRANT ALL PRIVILEGES ON DATABASE litellm TO busibox_user;
+GRANT ALL PRIVILEGES ON DATABASE data TO busibox_user;
 
 -- Test databases
 GRANT ALL PRIVILEGES ON DATABASE test_agent TO busibox_test_user;
 GRANT ALL PRIVILEGES ON DATABASE test_authz TO busibox_test_user;
-GRANT ALL PRIVILEGES ON DATABASE test_files TO busibox_test_user;
+GRANT ALL PRIVILEGES ON DATABASE test_data TO busibox_test_user;
 
 -- =============================================================================
 -- BUSIBOX DATABASE SETUP (production)
@@ -117,9 +116,9 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO busibox_user
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO busibox_user;
 
 -- =============================================================================
--- AGENT_SERVER DATABASE SETUP (production)
+-- AGENT DATABASE SETUP (production)
 -- =============================================================================
-\c agent_server
+\c agent
 
 GRANT ALL ON SCHEMA public TO busibox_user;
 GRANT CREATE ON SCHEMA public TO busibox_user;
@@ -144,7 +143,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO busibox_
 -- =============================================================================
 -- FILES DATABASE SETUP (production)
 -- =============================================================================
-\c files
+\c data
 
 GRANT ALL ON SCHEMA public TO busibox_user;
 GRANT CREATE ON SCHEMA public TO busibox_user;
@@ -179,9 +178,9 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO busibox_user
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO busibox_user;
 
 -- =============================================================================
--- TEST_AGENT_SERVER DATABASE SETUP (pytest)
+-- TEST_AGENT DATABASE SETUP (pytest)
 -- =============================================================================
-\c test_agent_server
+\c test_agent
 
 GRANT ALL ON SCHEMA public TO busibox_test_user;
 GRANT CREATE ON SCHEMA public TO busibox_test_user;
@@ -206,7 +205,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO busibox_
 -- =============================================================================
 -- TEST_FILES DATABASE SETUP (pytest)
 -- =============================================================================
-\c test_files
+\c test_data
 
 GRANT ALL ON SCHEMA public TO busibox_test_user;
 GRANT CREATE ON SCHEMA public TO busibox_test_user;

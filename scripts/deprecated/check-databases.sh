@@ -43,14 +43,11 @@ echo "Application Database Status:"
 echo "==================================="
 
 DATABASES=(
-    "agent_server"
+    "agent"
     "ai_portal"
-    "agent_client"
-    "doc_intel"
-    "innovation"
+    "agent_manager"
     "litellm"
-    "files"
-    "busibox"
+    "data"
 )
 
 for db in "${DATABASES[@]}"; do

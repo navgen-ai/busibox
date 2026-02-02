@@ -214,9 +214,9 @@
   delegate_to: "{{ groups['pg'][0] }}"
   tags: [agent, agent_api]
 
-- name: Ensure agent_server database exists
+- name: Ensure agent database exists
   postgresql_db:
-    name: agent_server
+    name: agent
     owner: "{{ postgres_user }}"
     encoding: UTF8
     lc_collate: en_US.UTF-8
@@ -229,7 +229,7 @@
 
 - name: Grant database privileges to agent user
   postgresql_privs:
-    database: agent_server
+    database: agent
     state: present
     privs: ALL
     type: database
@@ -240,7 +240,7 @@
 
 - name: Grant schema privileges to agent user
   postgresql_privs:
-    database: agent_server
+    database: agent
     state: present
     privs: ALL
     type: schema
@@ -252,7 +252,7 @@
 
 - name: Grant table privileges to agent user
   postgresql_privs:
-    database: agent_server
+    database: agent
     state: present
     privs: ALL
     type: table
@@ -265,7 +265,7 @@
 
 - name: Transfer ownership of existing tables to agent user
   shell: |
-    su - postgres -c "psql -d agent_server -c \"
+    su - postgres -c "psql -d agent -c \"
     DO \\\$\\\$
     DECLARE
       r RECORD;
@@ -285,7 +285,7 @@
 
 - name: Check if alembic_version table exists
   shell: |
-    su - postgres -c "psql -d agent_server -tAc \"
+    su - postgres -c "psql -d agent -tAc \"
       SELECT EXISTS (
         SELECT FROM information_schema.tables 
         WHERE table_schema = 'public' 
@@ -298,7 +298,7 @@
 
 - name: Get current alembic version from database
   shell: |
-    su - postgres -c "psql -d agent_server -tAc \"SELECT version_num FROM alembic_version;\""
+    su - postgres -c "psql -d agent -tAc \"SELECT version_num FROM alembic_version;\""
   delegate_to: "{{ groups['pg'][0] }}"
   register: alembic_version_num
   failed_when: false
@@ -307,7 +307,7 @@
 
 - name: Count all agent tables in database (excluding alembic_version)
   shell: |
-    su - postgres -c "psql -d agent_server -tAc \"
+    su - postgres -c "psql -d agent -tAc \"
       SELECT COUNT(*) FROM information_schema.tables 
       WHERE table_schema = 'public' 
       AND table_name != 'alembic_version';
@@ -331,9 +331,9 @@
     
     su - postgres -c "
       # Get list of all tables and backup each
-      for table in \$(psql -d agent_server -tAc \"SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename != 'alembic_version';\"); do
+      for table in \$(psql -d agent -tAc \"SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename != 'alembic_version';\"); do
         echo \"Backing up \$table...\"
-        pg_dump -d agent_server -t \$table --data-only > \"$BACKUP_DIR/\${table}.sql\" 2>/dev/null || true
+        pg_dump -d agent -t \$table --data-only > \"$BACKUP_DIR/\${table}.sql\" 2>/dev/null || true
       done
     "
     
@@ -349,11 +349,11 @@
 - name: Grant database permissions for migrations
   shell: |
     su - postgres -c "psql -d busibox << 'EOF'
-    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO agent_server;
-    GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO agent_server;
-    GRANT ALL PRIVILEGES ON SCHEMA public TO agent_server;
-    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO agent_server;
-    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO agent_server;
+    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO agent;
+    GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO agent;
+    GRANT ALL PRIVILEGES ON SCHEMA public TO agent;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO agent;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO agent;
     EOF
     "
   delegate_to: "{{ groups['pg'][0] }}"
@@ -371,7 +371,7 @@
   become: yes
   become_user: "{{ agent_api_user }}"
   environment:
-    DATABASE_URL: "postgresql+asyncpg://{{ postgres_user }}:{{ secrets.postgresql.password }}@{{ postgres_host }}:{{ postgres_port }}/agent_server"
+    DATABASE_URL: "postgresql+asyncpg://{{ postgres_user }}:{{ secrets.postgresql.password }}@{{ postgres_host }}:{{ postgres_port }}/agent"
   when: >
     tables_count.stdout|int > 0 and 
     (alembic_table_exists.stdout != 't' or 
@@ -396,7 +396,7 @@
   become: yes
   become_user: "{{ agent_api_user }}"
   environment:
-    DATABASE_URL: "postgresql+asyncpg://{{ postgres_user }}:{{ secrets.postgresql.password }}@{{ postgres_host }}:{{ postgres_port }}/agent_server"
+    DATABASE_URL: "postgresql+asyncpg://{{ postgres_user }}:{{ secrets.postgresql.password }}@{{ postgres_host }}:{{ postgres_port }}/agent"
     PYTHONPATH: "/srv/agent"
   register: migration_result
   changed_when: "'Running upgrade' in migration_result.stderr"
@@ -412,11 +412,11 @@
 # When pytest databases are enabled, also run migrations on the test database
 # This ensures pytest schemas stay in sync with the main schemas
 #
-# Test database: test_agent_server (owned by busibox_test_user)
+# Test database: test_agent (owned by busibox_test_user)
 
 - name: Build pytest database URL
   set_fact:
-    agent_pytest_database_url: "postgresql+asyncpg://busibox_test_user:{{ pytest_db_password | default('testpassword') }}@{{ postgres_host }}:{{ postgres_port }}/test_agent_server"
+    agent_pytest_database_url: "postgresql+asyncpg://busibox_test_user:{{ pytest_db_password | default('testpassword') }}@{{ postgres_host }}:{{ postgres_port }}/test_agent"
   when: enable_pytest_databases | default(false)
   tags: [agent, agent_pytest_db]
 

@@ -54,11 +54,11 @@
     docker_exec_command: >
       sh -c "psql -U postgres -tc \"SELECT 1 FROM pg_database WHERE datname='{{ item }}'\" | grep -q 1 || psql -U postgres -c \"CREATE DATABASE {{ item }}\"; psql -U postgres -c \"GRANT ALL PRIVILEGES ON DATABASE {{ item }} TO {{ postgres_user }};\""
     docker_exec_fail_on_error: false
-  loop: "{{ postgres_databases | default(['busibox', 'authz', 'files', 'agent_server', 'litellm']) }}"
+  loop: "{{ postgres_databases | default(['data', 'agent', 'authz', 'litellm']) }}"
 
 - name: Display PostgreSQL status
   ansible.builtin.debug:
     msg: |
       PostgreSQL is running and ready for connections
-      Databases created: {{ postgres_databases | default(['busibox', 'authz', 'files', 'agent_server', 'litellm']) | join(', ') }}
+      Databases created: {{ postgres_databases | default(['busibox', 'authz', 'data', 'agent', 'litellm']) | join(', ') }}
       User: {{ postgres_user }}

@@ -28,13 +28,13 @@ POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "testpassword")
 
 # Test databases
 TEST_AUTHZ_DB = "test_authz"
-TEST_DATA_DB = "test_files"
-TEST_AGENT_DB = "test_agent_server"
+TEST_DATA_DB = "test_data"
+TEST_AGENT_DB = "test_agent"
 
 # Production databases (for isolation verification)
 PROD_AUTHZ_DB = "authz"
-PROD_DATA_DB = "files"
-PROD_AGENT_DB = "agent_server"
+PROD_DATA_DB = "data"
+PROD_AGENT_DB = "agent"
 
 
 class TestResult:

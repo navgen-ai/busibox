@@ -146,9 +146,9 @@ echo ""
 
 # PostgreSQL
 test_port "PostgreSQL" "$PG_IP" "5432"
-test_postgres "PostgreSQL - agent_server" "$PG_IP" "agent_server"
+test_postgres "PostgreSQL - agent" "$PG_IP" "agent"
 test_postgres "PostgreSQL - ai_portal" "$PG_IP" "ai_portal"
-test_postgres "PostgreSQL - agent_client" "$PG_IP" "agent_client"
+test_postgres "PostgreSQL - agent_manager" "$PG_IP" "agent_manager"
 
 echo ""
 

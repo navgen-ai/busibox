@@ -32,7 +32,7 @@ def test_postgres_connectivity():
     
     host = os.getenv("POSTGRES_HOST", "10.96.201.203")
     port = int(os.getenv("POSTGRES_PORT", "5432"))
-    database = os.getenv("POSTGRES_DB", "agent_server")
+    database = os.getenv("POSTGRES_DB", "agent")
     user = os.getenv("POSTGRES_USER", "busibox_test_user")
     password = os.getenv("POSTGRES_PASSWORD", "")
     

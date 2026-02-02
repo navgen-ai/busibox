@@ -216,11 +216,11 @@ def get_service_config(service_name: str) -> Dict[str, Any]:
     
     # Service-specific database
     if service_name in ("data", "search"):
-        config["postgres_db"] = os.getenv("POSTGRES_DB", "files")
+        config["postgres_db"] = os.getenv("POSTGRES_DB", "data")
     elif service_name == "authz":
         config["postgres_db"] = os.getenv("POSTGRES_DB", "authz")
     elif service_name == "agent":
-        config["postgres_db"] = os.getenv("POSTGRES_DB", "agent_server")
+        config["postgres_db"] = os.getenv("POSTGRES_DB", "agent")
     else:
         config["postgres_db"] = os.getenv("POSTGRES_DB", "busibox_test")
     

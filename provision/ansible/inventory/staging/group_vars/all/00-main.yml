@@ -73,7 +73,12 @@ postgres_host: "{{ postgres_ip }}"
 postgres_port: 5432
 postgres_user: busibox_user
 
-# Data API database (files/documents/chunks)
+# Data database (data/documents/chunks)
+data_db: data
+data_user: "{{ postgres_user }}"
+data_password: "{{ secrets.postgresql.password }}"
+
+# Legacy Data API database (files/documents/chunks)
 files_db: data
 files_user: "{{ postgres_user }}"
 files_password: "{{ secrets.postgresql.password }}"

@@ -135,7 +135,7 @@ if [[ "$ENV" == "docker" ]]; then
     export AUTH_TOKEN_URL=http://localhost:8010/oauth/token
     
     # Database URLs for each service
-    export DATABASE_URL=postgresql+asyncpg://busibox_user:devpassword@localhost:5432/agent_server
+    export DATABASE_URL=postgresql+asyncpg://busibox_user:devpassword@localhost:5432/agent
     
     # Test-specific environment variables (needed for integration tests)
     export TEST_DB_HOST=localhost
@@ -484,15 +484,15 @@ run_docker_container_tests() {
     echo ""
     
     # Build test database environment variables
-    # Tests ALWAYS use ISOLATED test databases (test_authz, test_files, test_agent_server)
+    # Tests ALWAYS use ISOLATED test databases (test_authz, test_data, test_agent)
     # owned by busibox_test_user - NEVER production databases
     # See config/init-databases.sql for test database setup
     local test_db_name="test_authz"
     case "$service" in
         authz)  test_db_name="test_authz" ;;
-        data) test_db_name="test_files" ;;
-        search) test_db_name="test_files" ;;
-        agent)  test_db_name="test_agent_server" ;;
+        data) test_db_name="test_data" ;;
+        search) test_db_name="test_data" ;;
+        agent)  test_db_name="test_agent" ;;
     esac
     
     # Use the well-known consistent test user ID

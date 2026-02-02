@@ -2,7 +2,7 @@
 """
 Bootstrap test databases for Docker integration testing.
 
-This script initializes the test databases (test_authz, test_files, test_agent_server)
+This script initializes the test databases (test_authz, test_data, test_agent)
 with the same schema and bootstrap data as the production databases.
 
 Run after all services are healthy:
@@ -478,7 +478,7 @@ async def check_agent_schema_exists(conn):
 
 
 async def apply_agent_schema(conn):
-    """Apply the agent schema to test_agent_server database."""
+    """Apply the agent schema to test_agent database."""
     print("  Applying agent schema...")
     
     # Check if schema already exists
@@ -609,9 +609,9 @@ async def apply_agent_schema(conn):
     return True
 
 
-async def bootstrap_test_agent_server():
-    """Bootstrap the test_agent_server database."""
-    print("\nBootstrapping test_agent_server database...")
+async def bootstrap_test_agent():
+    """Bootstrap the test_agent database."""
+    print("\nBootstrapping test_agent database...")
     
     try:
         conn = await asyncpg.connect(
@@ -619,17 +619,17 @@ async def bootstrap_test_agent_server():
             port=POSTGRES_PORT,
             user=TEST_DB_USER,
             password=TEST_DB_PASSWORD,
-            database="test_agent_server"
+            database="test_agent"
         )
     except Exception as e:
-        print(f"  ERROR: Cannot connect to test_agent_server: {e}")
+        print(f"  ERROR: Cannot connect to test_agent: {e}")
         return False
     
     try:
         schema_ok = await apply_agent_schema(conn)
         if not schema_ok:
             return False
-        print("✓ test_agent_server bootstrapped successfully")
+        print("✓ test_agent bootstrapped successfully")
         return True
     except Exception as e:
         print(f"  ERROR: {e}")
@@ -658,8 +658,8 @@ async def main():
     if not await bootstrap_test_files():
         all_success = False
     
-    # Bootstrap test_agent_server
-    if not await bootstrap_test_agent_server():
+    # Bootstrap test_agent
+    if not await bootstrap_test_agent():
         all_success = False
     
     # Also add test domains to production authz for integration tests

@@ -144,9 +144,9 @@
       ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO busibox_test_user;
       ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO busibox_test_user;
   loop:
-    - test_agent_server
+    - test_data
+    - test_agent
     - test_authz
-    - test_files
   when: enable_pytest_databases | default(false)
   failed_when: false
   tags: [postgres, pytest_databases]
@@ -159,9 +159,9 @@
       CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
       CREATE EXTENSION IF NOT EXISTS "pgcrypto";
   loop:
-    - test_agent_server
+    - test_agent
     - test_authz
-    - test_files
+    - test_data
   when: enable_pytest_databases | default(false)
   failed_when: false
   tags: [postgres, pytest_databases]
@@ -214,7 +214,7 @@
 - name: Check if data schema migration has been applied
   become_user: postgres
   postgresql_query:
-    db: files
+    db: data
     query: "SELECT COUNT(*) as count FROM ansible_migrations WHERE version = 10"
   register: migration_check
   failed_when: false
@@ -227,15 +227,14 @@
   tags: [postgres]
   tags: [postgres]
 
-- name: Apply data schema to files database
+- name: Apply data schema to data database
   become_user: postgres
-  command: psql -U postgres -d files -f /var/lib/postgresql/migrations/010_data_schema.sql
+  command: psql -U postgres -d data -f /var/lib/postgresql/migrations/010_data_schema.sql
   when: >
-    'files' in (app_databases | default([])) and
     (migration_check.query_result is not defined or 
     (migration_check.query_result | length == 0) or
     (migration_check.query_result[0].count | int == 0))
-  register: files_migration_result
+  register: data_migration_result
   tags: [postgres]
 
 - name: Display migration result
