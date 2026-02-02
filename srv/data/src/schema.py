@@ -693,4 +693,21 @@ def get_data_schema() -> SchemaManager:
             EXECUTE FUNCTION check_document_has_roles()
     """)
     
+    # ==========================================================================
+    # Grants - Give busibox_user access to all tables
+    # ==========================================================================
+    
+    schema.add_function("GRANT SELECT, INSERT, UPDATE, DELETE ON data_files TO busibox_user")
+    schema.add_function("GRANT SELECT, INSERT, UPDATE, DELETE ON data_chunks TO busibox_user")
+    schema.add_function("GRANT SELECT, INSERT, UPDATE ON data_status TO busibox_user")
+    schema.add_function("GRANT SELECT, INSERT ON processing_history TO busibox_user")
+    schema.add_function("GRANT SELECT, INSERT, UPDATE, DELETE ON document_roles TO busibox_user")
+    schema.add_function("GRANT SELECT, INSERT, UPDATE, DELETE ON groups TO busibox_user")
+    schema.add_function("GRANT SELECT, INSERT, UPDATE, DELETE ON group_memberships TO busibox_user")
+    schema.add_function("GRANT SELECT, INSERT, UPDATE, DELETE ON processing_strategy_results TO busibox_user")
+    schema.add_function("GRANT SELECT, INSERT, UPDATE, DELETE ON libraries TO busibox_user")
+    schema.add_function("GRANT SELECT, INSERT, UPDATE, DELETE ON library_tag_cache TO busibox_user")
+    schema.add_function("GRANT SELECT, INSERT, UPDATE, DELETE ON data_document_cache TO busibox_user")
+    schema.add_function("GRANT SELECT, INSERT ON data_record_history TO busibox_user")
+    
     return schema
