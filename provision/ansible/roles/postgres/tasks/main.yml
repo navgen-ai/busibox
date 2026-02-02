@@ -229,7 +229,7 @@
 
 - name: Apply data schema to data database
   become_user: postgres
-  command: psql -U postgres -d data -f /var/lib/postgresql/migrations/010_data_schema.sql
+  command: psql -U postgres -d data -f /var/lib/postgresql/migrations/010_ingestion_schema.sql
   when: >
     (migration_check.query_result is not defined or 
     (migration_check.query_result | length == 0) or
