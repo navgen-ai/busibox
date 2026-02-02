@@ -157,6 +157,7 @@ LLM_BACKEND=""
 LLM_TIER=""
 ADMIN_EMAIL=""
 BASE_DOMAIN=""
+SSL_EMAIL=""
 NETWORK_PRODUCTION=""
 NETWORK_STAGING=""
 
@@ -794,6 +795,9 @@ wizard_admin() {
         read -p "$(echo -e "${BOLD}Admin email(s):${NC} ")" ADMIN_EMAIL
     fi
     
+    # Use first admin email for SSL notifications
+    SSL_EMAIL="${ADMIN_EMAIL%%,*}"  # Get first email from comma-separated list
+    
     if [[ "$ENVIRONMENT" != "development" ]]; then
         # Extract unique domains from admin emails for default
         # E.g., "wes@sonnenreich.com,wes@maigent.ai" -> "sonnenreich.com,maigent.ai"
@@ -1042,6 +1046,10 @@ generate_secrets() {
     
     # Encryption key (use JWT secret if not set)
     export ENCRYPTION_KEY="${ENCRYPTION_KEY:-${SSO_JWT_SECRET}}"
+    
+    # Export configuration values for vault sync
+    export BASE_DOMAIN
+    export SSL_EMAIL
     
     success "All secrets generated"
 }

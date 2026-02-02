@@ -780,6 +780,20 @@ sync_secrets_to_vault() {
     local values_to_update=()
     
     # ==========================================================================
+    # TOP-LEVEL CONFIGURATION (from install.sh prompts)
+    # ==========================================================================
+    
+    # Base domain
+    if [[ -n "${BASE_DOMAIN:-}" ]]; then
+        values_to_update+=("base_domain=${BASE_DOMAIN}")
+    fi
+    
+    # SSL email
+    if [[ -n "${SSL_EMAIL:-}" ]]; then
+        values_to_update+=("ssl_email=${SSL_EMAIL}")
+    fi
+    
+    # ==========================================================================
     # SECRETS (security-sensitive)
     # ==========================================================================
     
@@ -811,6 +825,14 @@ sync_secrets_to_vault() {
     if [[ -n "${LITELLM_API_KEY:-}" ]]; then
         values_to_update+=("secrets.litellm_api_key=${LITELLM_API_KEY}")
     fi
+    if [[ -n "${LITELLM_MASTER_KEY:-}" ]]; then
+        values_to_update+=("secrets.litellm_master_key=${LITELLM_MASTER_KEY}")
+    fi
+    
+    # Encryption key
+    if [[ -n "${ENCRYPTION_KEY:-}" ]]; then
+        values_to_update+=("secrets.encryption_key=${ENCRYPTION_KEY}")
+    fi
     
     # GitHub
     if [[ -n "${GITHUB_AUTH_TOKEN:-}" ]]; then
@@ -841,7 +863,7 @@ sync_secrets_to_vault() {
     
     # Admin configuration - stored in vault to prevent unauthorized changes
     if [[ -n "${ADMIN_EMAIL:-}" ]]; then
-        values_to_update+=("secrets.admin_email=${ADMIN_EMAIL}")
+        values_to_update+=("secrets.admin_emails=${ADMIN_EMAIL}")
     fi
     if [[ -n "${ALLOWED_DOMAINS:-}" ]]; then
         values_to_update+=("secrets.allowed_email_domains=${ALLOWED_DOMAINS}")
