@@ -120,14 +120,13 @@ setup_python_environment() {
 EMBEDDING_MODELS=(
     "BAAI/bge-small-en-v1.5"   # Small, fast (134MB)
     "BAAI/bge-base-en-v1.5"    # Medium (438MB)
-    "BAAI/bge-large-en-v1.5"   # Large, best quality (1.3GB)
+    # Note: bge-large-en-v1.5 excluded due to model file structure incompatibility
 )
 
 # Model size estimates
 declare -A MODEL_SIZES=(
     ["BAAI/bge-small-en-v1.5"]="134MB"
     ["BAAI/bge-base-en-v1.5"]="438MB"
-    ["BAAI/bge-large-en-v1.5"]="1.3GB"
 )
 
 # =============================================================================
@@ -201,9 +200,42 @@ download_model() {
     # Activate venv
     source "${VENV_DIR}/bin/activate"
     
+    # Determine output redirection (suppress progress bars in background)
+    local log_file="${FASTEMBED_CACHE}/.download-$(echo "$model" | tr '/' '_').log"
+    local output_redirect=""
+    if [[ ! -t 1 ]]; then
+        # Not a terminal (running in background), redirect all output to log
+        output_redirect=">> '${log_file}' 2>&1"
+        log_info "  Log: ${log_file}"
+    fi
+    
     # Download model using Python script
     # This instantiates the model which triggers download
-    python3 -c "
+    if [[ -n "$output_redirect" ]]; then
+        # Background mode with output redirection
+        python3 -c "
+from fastembed import TextEmbedding
+import os
+
+model_name = '${model}'
+cache_dir = '${FASTEMBED_CACHE}'
+
+print(f'Downloading {model_name} to {cache_dir}...')
+embedder = TextEmbedding(model_name=model_name, cache_dir=cache_dir)
+
+# Test embedding to verify model works
+test_text = ['warmup test']
+result = list(embedder.embed(test_text))
+print(f'Download complete! Model verified.')
+print(f'Embedding dimension: {len(result[0])}')
+" >> "$log_file" 2>&1 || {
+            log_error "Failed to download ${model}"
+            log_error "  See log: ${log_file}"
+            return 1
+        }
+    else
+        # Interactive mode - show output
+        python3 -c "
 from fastembed import TextEmbedding
 import os
 
@@ -219,9 +251,10 @@ result = list(embedder.embed(test_text))
 print(f'Download complete! Model verified.')
 print(f'Embedding dimension: {len(result[0])}')
 " || {
-        log_error "Failed to download ${model}"
-        return 1
-    }
+            log_error "Failed to download ${model}"
+            return 1
+        }
+    fi
     
     log_success "Model downloaded: ${model}"
     
