@@ -287,57 +287,8 @@ else
 fi
 
 echo ""
-read -p "Pre-download test models now? (saves time during deployment) (y/N): " -n 1 -r
-echo ""
-
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo "  Downloading test models..."
-    
-    # Install Ollama on host
-    if ! command -v ollama &>/dev/null; then
-        echo "    Installing Ollama..."
-        curl -fsSL https://ollama.com/install.sh | sh
-    fi
-    
-    # Download Ollama test model
-    echo "    Downloading qwen2.5:0.5b for Ollama (~500MB)..."
-    OLLAMA_MODELS=/var/lib/llm-models/ollama ollama pull qwen2.5:0.5b
-    
-    # Set up Python venv for model downloads
-    VENV_DIR="/opt/model-downloader"
-    if [ ! -d "${VENV_DIR}" ]; then
-        echo "    Installing Python venv support..."
-        apt-get install -y python3-venv >/dev/null 2>&1
-        
-        echo "    Creating virtual environment..."
-        python3 -m venv "${VENV_DIR}"
-    fi
-    
-    # Install huggingface-hub in venv
-    if ! "${VENV_DIR}/bin/python3" -c "import huggingface_hub" 2>/dev/null; then
-        echo "    Installing huggingface-hub..."
-        "${VENV_DIR}/bin/pip" install -q huggingface-hub
-    fi
-    
-    echo "    Downloading Qwen2.5-0.5B-Instruct for vLLM (~1GB)..."
-    HF_HOME=/var/lib/llm-models/huggingface "${VENV_DIR}/bin/python3" -c "
-from huggingface_hub import snapshot_download
-snapshot_download('Qwen/Qwen2.5-0.5B-Instruct', local_dir_use_symlinks=False)
-print('Model downloaded successfully')
-" || echo "    Model download failed, can retry later"
-    
-    echo ""
-    echo "  ✓ Models downloaded"
-    echo ""
-    echo "  Model storage:"
-    du -sh /var/lib/llm-models/ollama 2>/dev/null || echo "    Ollama: 0B"
-    du -sh /var/lib/llm-models/huggingface 2>/dev/null || echo "    HuggingFace: 0B"
-else
-    echo "  ⚠ Skipping model download"
-    echo "    Models can be downloaded later with:"
-    echo "    bash provision/pct/setup-llm-models.sh"
-fi
-
+echo "  Model downloads will be handled by background downloader"
+echo "  during make install (embedding + LLM models)"
 echo ""
 
 # 8. Setup convenience aliases
