@@ -90,6 +90,34 @@ def get_data_schema() -> SchemaManager:
     # Core Tables
     # ==========================================================================
     
+    # Groups table (must come before data_files for foreign key)
+    schema.add_table("""
+        CREATE TABLE IF NOT EXISTS groups (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name VARCHAR(255) NOT NULL,
+            description TEXT,
+            created_by UUID NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    
+    # Libraries table (must come before data_files for foreign key)
+    schema.add_table("""
+        CREATE TABLE IF NOT EXISTS libraries (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name VARCHAR(255) NOT NULL,
+            is_personal BOOLEAN DEFAULT false,
+            user_id UUID,
+            library_type VARCHAR(20),
+            created_by UUID NOT NULL,
+            deleted_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(user_id, library_type)
+        )
+    """)
+    
     # Main data_files table - supports both file documents and structured data
     schema.add_table("""
         CREATE TABLE IF NOT EXISTS data_files (
@@ -121,8 +149,8 @@ def get_data_schema() -> SchemaManager:
             images_path VARCHAR(512),
             image_count INTEGER DEFAULT 0,
             processing_strategies JSONB DEFAULT '[]'::jsonb,
-            group_id UUID,
-            library_id UUID,
+            group_id UUID REFERENCES groups(id) ON DELETE SET NULL,
+            library_id UUID REFERENCES libraries(id) ON DELETE SET NULL,
             is_encrypted BOOLEAN DEFAULT false,
             -- Structured data support (doc_type = 'data')
             doc_type VARCHAR(20) DEFAULT 'file' CHECK (doc_type IN ('file', 'data')),
@@ -190,17 +218,6 @@ def get_data_schema() -> SchemaManager:
         )
     """)
     
-    # Groups table
-    schema.add_table("""
-        CREATE TABLE IF NOT EXISTS groups (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name VARCHAR(255) NOT NULL,
-            description TEXT,
-            created_by UUID NOT NULL,
-            created_at TIMESTAMP DEFAULT NOW(),
-            updated_at TIMESTAMP DEFAULT NOW()
-        )
-    """)
     
     # Group memberships table
     schema.add_table("""
@@ -251,22 +268,6 @@ def get_data_schema() -> SchemaManager:
     # ==========================================================================
     # Library Management Tables
     # ==========================================================================
-    
-    # Libraries table
-    schema.add_table("""
-        CREATE TABLE IF NOT EXISTS libraries (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name VARCHAR(255) NOT NULL,
-            is_personal BOOLEAN DEFAULT false,
-            user_id UUID,
-            library_type VARCHAR(20),
-            created_by UUID NOT NULL,
-            deleted_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT NOW(),
-            updated_at TIMESTAMP DEFAULT NOW(),
-            UNIQUE(user_id, library_type)
-        )
-    """)
     
     # Library tag cache
     schema.add_table("""
