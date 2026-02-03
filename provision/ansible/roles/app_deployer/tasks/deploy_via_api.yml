@@ -39,7 +39,7 @@
         githubRepoOwner: "{{ app.github_repo.split('/')[0] }}"
         githubRepoName: "{{ app.github_repo.split('/')[1] }}"
         githubBranch: "{{ app.github_branch | default('main') }}"
-        githubToken: "{{ secrets.github.personal_access_token }}"
+        githubToken: "{{ (secrets.github.personal_access_token | default('')) if secrets.github is defined else '' }}"
         devMode: false
         secrets: {}
     headers:
