@@ -56,6 +56,25 @@
     docker_exec_fail_on_error: false
   loop: "{{ postgres_databases | default(['data', 'agent', 'authz', 'litellm']) }}"
 
+# Grant schema permissions on public schema for each database
+# PostgreSQL 15+ restricts public schema by default - non-superusers can't create objects
+# We need to explicitly grant CREATE on schema public for each database
+- name: Grant schema permissions for application user
+  include_role:
+    name: docker_common
+    tasks_from: compose_exec
+  vars:
+    docker_exec_service: postgres
+    docker_exec_command: >
+      psql -U postgres -d {{ item }} -c "
+        GRANT ALL ON SCHEMA public TO {{ postgres_user }};
+        GRANT CREATE ON SCHEMA public TO {{ postgres_user }};
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO {{ postgres_user }};
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO {{ postgres_user }};
+      "
+    docker_exec_fail_on_error: false
+  loop: "{{ postgres_databases | default(['data', 'agent', 'authz', 'litellm']) }}"
+
 - name: Display PostgreSQL status
   ansible.builtin.debug:
     msg: |
