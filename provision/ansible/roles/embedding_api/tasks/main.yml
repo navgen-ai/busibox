@@ -108,6 +108,61 @@
   become: true
   notify: Restart embedding-api
 
+# Pre-download embedding model if not already cached
+# This avoids slow startup on first run and prevents health check timeouts
+- name: Get embedding model name from environment
+  ansible.builtin.shell: |
+    source /etc/embedding/embedding-api.env
+    echo "$FASTEMBED_MODEL"
+  args:
+    executable: /bin/bash
+  register: embedding_model_name
+  changed_when: false
+
+- name: Check if embedding model is already cached
+  ansible.builtin.find:
+    paths: "{{ embedding_cache_dir }}"
+    patterns: "model*.onnx"
+    recurse: yes
+  register: cached_model_files
+  become: true
+
+- name: Pre-download embedding model if not cached
+  ansible.builtin.shell: |
+    {{ embedding_api_venv_path }}/bin/python -c "
+    import os
+    import sys
+    
+    # Set cache directory
+    os.environ['FASTEMBED_CACHE_PATH'] = '{{ embedding_cache_dir }}'
+    
+    from fastembed import TextEmbedding
+    import structlog
+    
+    logger = structlog.get_logger()
+    model_name = '{{ embedding_model_name.stdout }}'
+    cache_dir = '{{ embedding_cache_dir }}'
+    
+    logger.info(f'Pre-downloading embedding model: {model_name}')
+    logger.info(f'Cache directory: {cache_dir}')
+    
+    try:
+        embedder = TextEmbedding(model_name=model_name, cache_dir=cache_dir)
+        # Warmup to ensure model is fully loaded
+        list(embedder.embed(['warmup test']))
+        logger.info('Embedding model downloaded successfully')
+    except Exception as e:
+        logger.error(f'Failed to download embedding model: {e}')
+        sys.exit(1)
+    "
+  become: true
+  become_user: "{{ embedding_api_user }}"
+  when: cached_model_files.matched == 0
+  register: model_download
+  retries: 3
+  delay: 10
+  until: model_download.rc == 0
+
 - name: Enable and start embedding-api service
   ansible.builtin.systemd:
     name: embedding-api

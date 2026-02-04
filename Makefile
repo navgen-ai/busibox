@@ -572,15 +572,19 @@ docker-clean-all:
 #   make warmup FORCE=1  # Re-download (interactive selection)
 
 # Interactive install with wizard OR deploy specific service
-# Usage: make install                      # Full wizard (docker-compose based)
+# Usage: make install                      # Install menu (Continue/Full/Clean if existing)
 #        make install VERBOSE=1            # Show all logs
 #        make install SERVICE=authz        # Deploy specific service (uses Ansible)
 #        make install SERVICE=authz,agent  # Deploy multiple services
+#
+# When called without SERVICE=, shows the same install options as `make` -> Install:
+# - Fresh install if no existing installation
+# - Continue/Full/Clean menu if existing installation detected
 install:
 ifdef SERVICE
 	@bash scripts/make/service-deploy.sh "$(SERVICE)"
 else
-	@USE_ANSIBLE_FOR_DOCKER=$(USE_ANSIBLE) bash scripts/make/install.sh $(if $(VERBOSE),-v)
+	@USE_ANSIBLE_FOR_DOCKER=$(USE_ANSIBLE) bash scripts/make/install-menu.sh $(if $(VERBOSE),-v)
 endif
 
 # Update existing installation

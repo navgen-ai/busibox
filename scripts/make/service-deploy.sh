@@ -221,10 +221,14 @@ deploy_service() {
         export BUSIBOX_ENV="$env"
     fi
     
-    # Run the deployment
+    # Run the deployment with reduced noise
     echo ""
     echo "Running: ${cmd}"
     echo ""
+    
+    # Set ANSIBLE_DISPLAY_SKIPPED_HOSTS=no to reduce noise
+    export ANSIBLE_DISPLAY_SKIPPED_HOSTS=no
+    export ANSIBLE_FORCE_COLOR=1
     
     if eval "$cmd"; then
         success "Service ${service} deployed successfully"
