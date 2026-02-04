@@ -1082,18 +1082,29 @@ fi
         log_file = f"/tmp/{app_id}.log"
         pid_file = f"/tmp/{app_id}.pid"
         
-        # Start new process in background with nohup
-        # Redirect stdout/stderr to log file with app_id prefix for identification
-        # The container's main process (tail -F /tmp/*.log) will stream these to docker logs
-        # Using a simple pipe with sed to prefix each line with the app_id
-        # IMPORTANT: Use env to pass environment variables into the bash -c subshell
+        # Start new process in background with nohup.
+        # We always write a per-app log file, and (when possible) also stream logs
+        # to the container stdout so `docker logs <user-apps>` shows activity.
+        #
+        # Note: The user-apps container currently runs `sleep infinity` (no log tail),
+        # so writing to /proc/1/fd/1 is the most reliable way to surface logs.
+        #
+        # IMPORTANT: Use env to pass environment variables into the bash -c subshell.
         command = f"""
 cd {app_path}
 rm -f {log_file} {pid_file}
 touch {log_file}
 echo "[{app_id}] Starting: {start_command}" >> {log_file}
 echo "[{app_id}] Environment: NEXT_PUBLIC_BASE_PATH={env_vars.get('NEXT_PUBLIC_BASE_PATH', 'not set') if env_vars else 'none'}" >> {log_file}
-nohup env {env_inline} bash -c '{start_command} 2>&1 | while IFS= read -r line; do echo "[{app_id}] $line"; done >> {log_file}' &
+nohup env {env_inline} bash -c '
+  {start_command} 2>&1 |
+  while IFS= read -r line; do echo "[{app_id}] $line"; done |
+  if [ -w /proc/1/fd/1 ]; then
+    tee -a "{log_file}" /proc/1/fd/1 >/dev/null
+  else
+    tee -a "{log_file}" >/dev/null
+  fi
+' &
 APP_PID=$!
 echo $APP_PID > {pid_file}
 sleep 2
