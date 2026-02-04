@@ -299,17 +299,27 @@ NPMRC_EOF
         timeout=900  # 15 minutes for clone + install + build
     )
     
-    # Append output to logs
+    # ALWAYS append stdout to logs (even on failure) so we can see debug output
     if stdout:
+        logs.append("=== STDOUT BEGIN ===")
         for line in stdout.strip().split('\n'):
             if line.strip():
                 logs.append(line)
+        logs.append("=== STDOUT END ===")
+    
+    # Also append stderr if present
+    if stderr:
+        logs.append("=== STDERR BEGIN ===")
+        for line in stderr.strip().split('\n'):
+            if line.strip():
+                logs.append(line)
+        logs.append("=== STDERR END ===")
     
     if code != 0:
         logs.append(f"❌ Deployment failed with exit code {code}")
-        if stderr:
-            logs.append(f"Error: {stderr}")
-        return False, f"Deployment failed: {stderr or stdout}"
+        # Combine stdout and stderr for the error message
+        combined_output = stderr or stdout
+        return False, f"Deployment failed: {combined_output}"
     
     logs.append(f"✅ {app_id} deployed successfully")
     return True, f"{app_id} deployed successfully"

@@ -3375,6 +3375,14 @@ check_existing_install() {
         return 1  # No meaningful state
     fi
     
+    # FULL_INSTALL mode: skip all interactive prompts and just load existing state
+    # The user has already chosen "Full Install" from the launcher menu
+    # The main flow will reset deployment states after this function returns
+    if [[ "$FULL_INSTALL" == true ]]; then
+        info "Full Install mode: loading existing configuration, will redeploy all services..."
+        return 0  # Return success to load existing state, skip prompts
+    fi
+    
     # Check if bootstrap is complete according to state
     if [[ "$install_status" == "installed" || "$install_phase" == "complete" ]]; then
         # IMPORTANT: Validate that services are actually healthy
