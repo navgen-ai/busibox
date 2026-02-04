@@ -8,6 +8,7 @@ In Docker/local environments, skips actual configuration.
 import asyncio
 import logging
 import os
+import shlex
 from typing import Optional, Tuple
 from .models import BusiboxManifest
 from .config import config
@@ -83,10 +84,13 @@ class NginxConfigurator:
 # This matches the agent-manager nginx config pattern exactly.
 # proxy_pass WITHOUT trailing slash = preserve the request URI
 
-location {path} {{
+location ^~ {path} {{
     set $backend_{var_name} http://{backend};
     proxy_pass $backend_{var_name};
     proxy_http_version 1.1;
+
+    # Debug/provenance headers (helps confirm nginx is matching this location)
+    add_header X-Busibox-App "{manifest.id}" always;
     
     # Headers
     proxy_set_header Host $host;
@@ -94,6 +98,7 @@ location {path} {{
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-Host $server_name;
+    proxy_set_header X-Forwarded-Prefix {path};
     
     # WebSocket support for Next.js HMR
     proxy_set_header Upgrade $http_upgrade;
@@ -235,6 +240,33 @@ ln -s {source} {target}
 
                 last_error = ""
                 for container in containers_to_try:
+                    # Ensure the config is present inside the nginx container.
+                    # In some environments, the host bind-mount path can differ from
+                    # what core-apps/nginx is mounting, so writing to the host path
+                    # alone is not sufficient.
+                    target_path = f"/etc/nginx/conf.d/apps/{manifest.id}.conf"
+                    exists_result = subprocess.run(
+                        ['docker', 'exec', container, 'sh', '-c', f'test -f {shlex.quote(target_path)}'],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if exists_result.returncode != 0:
+                        # Write config into the container directly.
+                        heredoc_cmd = (
+                            f"cat > {shlex.quote(target_path)} << 'NGINX_EOF'\n"
+                            f"{config_content}\n"
+                            f"NGINX_EOF\n"
+                        )
+                        write_result = subprocess.run(
+                            ['docker', 'exec', container, 'sh', '-c', heredoc_cmd],
+                            capture_output=True,
+                            text=True,
+                        )
+                        if write_result.returncode != 0:
+                            last_error = (write_result.stderr or write_result.stdout or "").strip()
+                            logger.warning(f"Failed to write app config into {container}: {last_error}")
+                            continue
+
                     # First validate config so reload errors are actionable
                     test_result = subprocess.run(
                         ['docker', 'exec', container, 'nginx', '-t'],
