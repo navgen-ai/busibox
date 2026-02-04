@@ -20,7 +20,7 @@ deploy_api_authz_url: "http://localhost:{{ authz_service_port | default(8010) }}
 deploy_api_postgres_host: "{{ hostvars[groups['pg'][0]]['ansible_host'] | default('10.96.200.202') }}"
 deploy_api_postgres_port: 5432
 deploy_api_postgres_admin_user: postgres
-deploy_api_postgres_admin_password: "{{ secrets.postgres.admin_password | default('') }}"
+deploy_api_postgres_admin_password: "{{ secrets.postgresql.password | default('') }}"
 
 # Container IPs
 # Note: Use core_apps group (not apps) - staging/production inventories use this group name
