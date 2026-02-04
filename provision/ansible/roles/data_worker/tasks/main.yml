@@ -1,3 +1,13 @@
+---
+# Data Worker Role - Main Tasks
+
+- name: Load secrets
+  include_vars:
+    file: "{{ playbook_dir }}/roles/secrets/vars/vault.{{ deployment_environment | default('staging') }}.yml"
+  no_log: true
+  tags:
+    - always
+
 # Redis Installation (for job queue)
 - name: Install Redis
   apt:

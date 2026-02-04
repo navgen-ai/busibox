@@ -3,6 +3,13 @@
 # Purpose: Install and configure NGINX reverse proxy with SSL
 # Requirements: FR-012, FR-013, FR-016, FR-017 (reverse proxy, SSL, HTTP redirect, graceful reload)
 
+- name: Load secrets
+  include_vars:
+    file: "{{ playbook_dir }}/roles/secrets/vars/vault.{{ deployment_environment | default('staging') }}.yml"
+  no_log: true
+  tags:
+    - always
+
 - name: Install NGINX
   apt:
     name:

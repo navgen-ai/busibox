@@ -3,6 +3,13 @@
 # Created: 2025-10-16
 # Purpose: Install and configure LiteLLM proxy
 
+- name: Load secrets
+  include_vars:
+    file: "{{ playbook_dir }}/roles/secrets/vars/vault.{{ deployment_environment | default('staging') }}.yml"
+  no_log: true
+  tags:
+    - always
+
 - name: Include installation tasks
   include_tasks: install.yml
   tags: [litellm, litellm_install]

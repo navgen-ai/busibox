@@ -1,6 +1,13 @@
 ---
 # Main tasks for agent_api role
 
+- name: Load secrets
+  include_vars:
+    file: "{{ playbook_dir }}/roles/secrets/vars/vault.{{ deployment_environment | default('staging') }}.yml"
+  no_log: true
+  tags:
+    - always
+
 - name: Create agent user
   user:
     name: "{{ agent_api_user }}"
