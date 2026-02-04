@@ -1,3 +1,13 @@
+---
+# Milvus Role - Main Tasks
+
+- name: Load secrets
+  include_vars:
+    file: "{{ playbook_dir }}/roles/secrets/vars/vault.{{ deployment_environment | default('staging') }}.yml"
+  no_log: true
+  tags:
+    - always
+
 - name: Install docker
   apt:
     name: [ca-certificates, curl, gnupg]

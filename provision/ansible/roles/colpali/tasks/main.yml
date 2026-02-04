@@ -2,6 +2,13 @@
 # ColPali Visual Embedding Service Deployment
 # Native ColPali implementation using colpali-engine package
 
+- name: Load secrets
+  include_vars:
+    file: "{{ playbook_dir }}/roles/secrets/vars/vault.{{ deployment_environment | default('staging') }}.yml"
+  no_log: true
+  tags:
+    - always
+
 - name: Pre-check - Verify ColPali model is cached on host
   stat:
     path: "{{ colpali_cache_dir }}/hub/models--vidore--colpali-v1.3"

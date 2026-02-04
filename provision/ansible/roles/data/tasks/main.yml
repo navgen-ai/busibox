@@ -2,6 +2,13 @@
 # Busibox Data Service
 # Combines API (FastAPI) and Worker (Python) into a single service
 
+- name: Load secrets
+  include_vars:
+    file: "{{ playbook_dir }}/roles/secrets/vars/vault.{{ deployment_environment | default('staging') }}.yml"
+  no_log: true
+  tags:
+    - always
+
 # ============================================================================
 # System Dependencies
 # ============================================================================

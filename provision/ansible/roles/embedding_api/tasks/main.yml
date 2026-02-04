@@ -2,6 +2,13 @@
 # Embedding API deployment tasks
 # Deploys the FastEmbed-based embedding service to the data container
 
+- name: Load secrets
+  include_vars:
+    file: "{{ playbook_dir }}/roles/secrets/vars/vault.{{ deployment_environment | default('staging') }}.yml"
+  no_log: true
+  tags:
+    - always
+
 - name: Create embedding user
   ansible.builtin.user:
     name: "{{ embedding_api_user }}"
