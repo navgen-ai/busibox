@@ -39,23 +39,6 @@
   tags: [deploy_api]
 
 # =============================================================================
-# Shared Library (busibox_common)
-# =============================================================================
-
-- name: Copy shared busibox_common library
-  synchronize:
-    src: "{{ playbook_dir }}/../../srv/shared/busibox_common/"
-    dest: "{{ deploy_api_app_dir }}/src/busibox_common/"
-    delete: yes
-    rsync_opts:
-      - "--exclude=__pycache__"
-      - "--exclude=*.pyc"
-      - "--exclude=.pytest_cache"
-  register: shared_lib_sync
-  notify: Restart deploy-api service
-  tags: [deploy_api]
-
-# =============================================================================
 # Source Code Deployment
 # =============================================================================
 
@@ -72,7 +55,25 @@
     rsync_opts:
       - "--exclude=__pycache__"
       - "--exclude=*.pyc"
+      - "--exclude=busibox_common"
   register: deploy_api_source_sync
+  notify: Restart deploy-api service
+  tags: [deploy_api]
+
+# =============================================================================
+# Shared Library (busibox_common) - MUST be after source sync
+# =============================================================================
+
+- name: Copy shared busibox_common library
+  synchronize:
+    src: "{{ playbook_dir }}/../../srv/shared/busibox_common/"
+    dest: "{{ deploy_api_app_dir }}/src/busibox_common/"
+    delete: yes
+    rsync_opts:
+      - "--exclude=__pycache__"
+      - "--exclude=*.pyc"
+      - "--exclude=.pytest_cache"
+  register: shared_lib_sync
   notify: Restart deploy-api service
   tags: [deploy_api]
 
