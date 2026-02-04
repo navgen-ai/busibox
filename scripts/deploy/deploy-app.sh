@@ -36,10 +36,6 @@ if [ -z "$APP_NAME" ]; then
     echo "Available apps:"
     echo "  - ai-portal        (port 3000) - Main AI portal"
     echo "  - agent-manager     (port 3001) - Agent management interface"
-    echo "  - doc-intel        (port 3002) - Document intelligence platform"
-    echo "  - foundation       (port 3003) - Foundation donation analysis"
-    echo "  - project-analysis (port 3004) - Project data visualization"
-    echo "  - innovation       (port 3005) - Innovation project manager"
     echo ""
     echo "Note: agent-server (port 8000) is deployed separately via 'make agent'"
     exit 1

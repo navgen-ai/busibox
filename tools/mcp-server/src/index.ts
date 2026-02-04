@@ -3153,10 +3153,6 @@ Or use \`list_make_targets\` with category: "testing" to see all options.`,
 - \`deploy-apps\`: All applications
 - \`deploy-ai-portal\`: AI Portal
 - \`deploy-agent-manager\`: Agent Manager
-- \`deploy-doc-intel\`: Doc Intel
-- \`deploy-foundation\`: Foundation
-- \`deploy-project-analysis\`: Project Analysis
-- \`deploy-innovation\`: Innovation
 
 **Verify Deployment**:
 Use \`get_container_service_status\` with:
