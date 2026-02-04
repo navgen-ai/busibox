@@ -36,17 +36,16 @@
     - "{{ deploy_api_base_dir }}"
     - "{{ deploy_api_app_dir }}"
     - "{{ deploy_api_app_dir }}/src"
-    - "{{ deploy_api_app_dir }}/shared"
   tags: [deploy_api]
 
 # =============================================================================
 # Shared Library (busibox_common)
 # =============================================================================
 
-- name: Sync busibox_common shared library
+- name: Copy shared busibox_common library
   synchronize:
-    src: "{{ playbook_dir }}/../../srv/shared/"
-    dest: "{{ deploy_api_app_dir }}/shared/"
+    src: "{{ playbook_dir }}/../../srv/shared/busibox_common/"
+    dest: "{{ deploy_api_app_dir }}/src/busibox_common/"
     delete: yes
     rsync_opts:
       - "--exclude=__pycache__"

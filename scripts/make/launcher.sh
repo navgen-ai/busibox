@@ -569,114 +569,12 @@ show_help() {
 # ============================================================================
 
 handle_install() {
-    local install_status
-    install_status=$(detect_installation_status)
-    
-    # Get current environment info
-    local env backend
-    env=$(get_state "ENVIRONMENT" || echo "")
-    backend=$(get_current_backend "$env")
-    
-    if [[ "$install_status" == "installed" ]]; then
-        # Show install options submenu
-        clear
-        box_start 70 double "$CYAN"
-        box_header "INSTALL OPTIONS"
-        box_empty
-        if [[ -n "$env" ]]; then
-            box_line "  ${CYAN}Environment:${NC} $env ($backend)"
-            box_empty
-            box_separator
-            box_empty
-        fi
-        box_line "  ${BOLD}1)${NC} Continue Install - pick up from where we last failed"
-        box_line "  ${BOLD}2)${NC} Full Install - redeploy all services, keep config & data"
-        box_line "  ${BOLD}3)${NC} Clean Install - clear everything and start fresh"
-        box_empty
-        box_line "  ${DIM}b = back${NC}"
-        box_empty
-        box_footer
-        echo ""
-        
-        read -n 1 -s -r -p "Select option: " choice
-        echo ""
-        
-        case "$choice" in
-            1)
-                # Continue - resume from current install phase
-                if [[ -n "$env" ]]; then
-                    exec bash "${SCRIPT_DIR}/install.sh" --env "$env" --backend "$backend"
-                else
-                    exec bash "${SCRIPT_DIR}/install.sh"
-                fi
-                ;;
-            2)
-                # Full Install - reset install phase but keep config
-                echo ""
-                printf "${YELLOW}This will redeploy all services but preserve your configuration and data.${NC}\n"
-                read -p "Continue? [y/N]: " confirm
-                if [[ "${confirm,,}" == "y" ]]; then
-                    # Reset install phase to force full redeploy
-                    set_state "INSTALL_PHASE" "wizard_complete"
-                    # Clear container creation flags to force service redeploy
-                    if [[ "$backend" == "proxmox" ]]; then
-                        # Keep LXC containers but force service redeploy
-                        set_state "LXC_CONTAINERS_CREATED_${env^^}" "true"
-                    fi
-                    if [[ -n "$env" ]]; then
-                        exec bash "${SCRIPT_DIR}/install.sh" --env "$env" --backend "$backend" --full-install
-                    else
-                        exec bash "${SCRIPT_DIR}/install.sh" --full-install
-                    fi
-                else
-                    echo "Cancelled."
-                    sleep 1
-                fi
-                ;;
-            3)
-                # Clean Install - full uninstall then fresh install
-                echo ""
-                printf "${RED}Warning: This will remove ALL containers, data, and configuration.${NC}\n"
-                read -p "Type 'CLEAN' to confirm: " confirm
-                if [[ "$confirm" == "CLEAN" ]]; then
-                    perform_uninstall "$env" "$backend"
-                    # Clear all state files for this environment
-                    local state_prefix
-                    case "$env" in
-                        development) state_prefix="dev" ;;
-                        staging) state_prefix="staging" ;;
-                        production) state_prefix="prod" ;;
-                        demo) state_prefix="demo" ;;
-                        *) state_prefix="dev" ;;
-                    esac
-                    local state_file="${REPO_ROOT}/.busibox-state-${state_prefix}"
-                    if [[ -f "$state_file" ]]; then
-                        info "Removing state file: $state_file"
-                        rm -f "$state_file"
-                    fi
-                    echo ""
-                    info "Starting fresh install..."
-                    sleep 1
-                    exec bash "${SCRIPT_DIR}/install.sh"
-                else
-                    echo "Cancelled."
-                    sleep 1
-                fi
-                ;;
-            b|B)
-                return
-                ;;
-        esac
-    else
-        # Fresh install
-        if [[ -z "$env" ]]; then
-            # No environment configured, let install.sh handle it
-            exec bash "${SCRIPT_DIR}/install.sh"
-        else
-            # Pass env to install script
-            exec bash "${SCRIPT_DIR}/install.sh" --env "$env" --backend "$backend"
-        fi
-    fi
+    # Delegate to install-menu.sh which handles:
+    # - Fresh install if no existing install
+    # - Continue/Full/Clean options if existing install detected
+    # Using --from-launcher so it knows to use 'b = back' and clear screen
+    bash "${SCRIPT_DIR}/install-menu.sh" --from-launcher
+    # If install-menu.sh returns (user pressed 'b'), we return to main menu
 }
 
 # Perform uninstall based on environment and backend

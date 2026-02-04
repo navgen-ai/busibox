@@ -1782,11 +1782,21 @@ bootstrap_proxmox_ansible() {
         local log_file="${REPO_ROOT}/.ansible-${inventory_name}-${tags}.log"
         local exit_code=0
         
-        # Always show full output for consistency with Docker deployment
-        # Use -v for slightly more verbose output to see what's happening
         echo ""
         info "Running ansible with tags: $tags"
-        ANSIBLE_FORCE_COLOR=1 $playbook_cmd --tags "$tags" -v 2>&1 | tee "$log_file"
+        
+        # Set ANSIBLE_DISPLAY_SKIPPED_HOSTS=no to reduce noise
+        # Don't use -v by default to keep output cleaner (full log is saved to file)
+        # Use ANSIBLE_CALLBACK_WHITELIST for cleaner output
+        if [[ "$VERBOSE" == true ]]; then
+            # Verbose mode: show everything including task details
+            ANSIBLE_FORCE_COLOR=1 ANSIBLE_DISPLAY_SKIPPED_HOSTS=no \
+                $playbook_cmd --tags "$tags" -v 2>&1 | tee "$log_file"
+        else
+            # Normal mode: show task names and status, hide skipped hosts
+            ANSIBLE_FORCE_COLOR=1 ANSIBLE_DISPLAY_SKIPPED_HOSTS=no \
+                $playbook_cmd --tags "$tags" 2>&1 | tee "$log_file"
+        fi
         exit_code=${PIPESTATUS[0]}
         
         if [[ $exit_code -ne 0 ]]; then
