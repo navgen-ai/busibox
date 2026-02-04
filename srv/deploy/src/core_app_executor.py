@@ -198,8 +198,10 @@ async def deploy_core_app(
         
         # Use authenticated URL if token provided (for private repos)
         if github_token:
+            logs.append(f"🔐 Using GitHub token for authenticated clone")
             repo_url = f"https://{github_token}@github.com/{repo}.git"
         else:
+            logs.append(f"⚠️ No GitHub token - attempting public clone")
             repo_url = f"https://github.com/{repo}.git"
         
         command = f"""
@@ -218,7 +220,7 @@ async def deploy_core_app(
                 git checkout {github_ref}
                 git pull origin {github_ref}
             else
-                echo "Cloning repository..."
+                echo "Cloning repository from GitHub..."
                 rm -rf "$APP_DIR"  # Clean up any partial clone
                 git clone {repo_url} "$APP_DIR"
                 cd "$APP_DIR"
