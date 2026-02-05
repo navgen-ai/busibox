@@ -1,8 +1,9 @@
 # Wes's Tasks
 issues:
 
-[ ] get staging deployed
-  [ ] make sure we didn't mess up docker
+[ ] get proxmox stage deployed
+[ ] get docker prod deployed
+[ ] get docker dev deployed
   [ ] make sure we can deploy app-template on both
   [ ] app-template needs to use our data-api so we can prove that works
 
