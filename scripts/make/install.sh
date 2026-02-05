@@ -1871,48 +1871,87 @@ bootstrap_proxmox_ansible() {
     # ==========================================================================
     
     # Get environment-specific IPs
-    local authz_ip portal_ip proxy_ip
+    local authz_ip portal_ip proxy_ip pg_ip
     case "$ENVIRONMENT" in
         production)
+            pg_ip="10.96.200.203"
             authz_ip="10.96.200.210"
             portal_ip="10.96.200.201"
             proxy_ip="10.96.200.200"
             ;;
         staging)
+            pg_ip="10.96.201.203"
             authz_ip="10.96.201.210"
             portal_ip="10.96.201.201"
             proxy_ip="10.96.201.200"
             ;;
     esac
     
+    # Helper function to check if a service is healthy before deploying
+    # Returns 0 if healthy (skip), 1 if not healthy (deploy)
+    is_service_healthy() {
+        local service="$1"
+        local health_url="$2"
+        local check_type="${3:-http}"  # http or tcp
+        
+        if [[ "$check_type" == "tcp" ]]; then
+            # TCP port check (for postgres)
+            local host port
+            host=$(echo "$health_url" | sed -E 's|.*://([^:]+):([0-9]+).*|\1|')
+            port=$(echo "$health_url" | sed -E 's|.*://([^:]+):([0-9]+).*|\2|')
+            if nc -z -w 2 "$host" "$port" 2>/dev/null || timeout 2 bash -c "echo > /dev/tcp/${host}/${port}" 2>/dev/null; then
+                return 0  # Healthy
+            fi
+            return 1  # Not healthy
+        else
+            # HTTP health check
+            local http_code
+            http_code=$(curl -s -w "%{http_code}" --max-time 5 --connect-timeout 3 -o /dev/null "$health_url" 2>/dev/null || echo "000")
+            case "$http_code" in
+                200|301|302|401|403) return 0 ;;  # Healthy
+                *) return 1 ;;  # Not healthy
+            esac
+        fi
+    }
+    
+    local max_attempts=30
+    local attempt=0
+    
     # Phase 1: PostgreSQL (database)
-    show_stage 40 "Deploying PostgreSQL" "Enterprise-grade database with row-level security."
-    if ! run_ansible_proxmox "postgres"; then
-        error "PostgreSQL deployment failed"
-        return 1
+    if is_service_healthy "postgres" "http://${pg_ip}:5432" "tcp"; then
+        info "PostgreSQL is already healthy - skipping deployment"
+    else
+        show_stage 40 "Deploying PostgreSQL" "Enterprise-grade database with row-level security."
+        if ! run_ansible_proxmox "postgres"; then
+            error "PostgreSQL deployment failed"
+            return 1
+        fi
     fi
     
     # Phase 2: AuthZ API (needed for admin user creation and authentication)
-    show_stage 55 "Deploying AuthZ API" "Zero-trust authentication with OAuth 2.0."
-    if ! run_ansible_proxmox "authz"; then
-        error "AuthZ deployment failed"
-        return 1
+    if is_service_healthy "authz" "http://${authz_ip}:8010/health/live"; then
+        info "AuthZ API is already healthy - skipping deployment"
+    else
+        show_stage 55 "Deploying AuthZ API" "Zero-trust authentication with OAuth 2.0."
+        if ! run_ansible_proxmox "authz"; then
+            error "AuthZ deployment failed"
+            return 1
+        fi
+        
+        # Wait for AuthZ to be ready before creating admin user
+        info "Waiting for AuthZ API to be healthy at ${authz_ip}..."
+        attempt=0
+        while [[ $attempt -lt $max_attempts ]]; do
+            if curl -sf "http://${authz_ip}:8010/health/live" &>/dev/null; then
+                success "AuthZ API is ready"
+                break
+            fi
+            sleep 2
+            ((attempt++))
+        done
     fi
     
-    # Wait for AuthZ to be ready before creating admin user
-    info "Waiting for AuthZ API to be healthy at ${authz_ip}..."
-    local max_attempts=30
-    local attempt=0
-    while [[ $attempt -lt $max_attempts ]]; do
-        if curl -sf "http://${authz_ip}:8010/health/live" &>/dev/null; then
-            success "AuthZ API is ready"
-            break
-        fi
-        sleep 2
-        ((attempt++))
-    done
-    
-    # Phase 3: Create Admin User
+    # Phase 3: Create Admin User (always run to ensure user exists)
     show_stage 65 "Creating Admin User" "Setting up admin account with magic link."
     export AUTHZ_BASE_URL="http://${authz_ip}:8010"
     if create_admin_user "$ADMIN_EMAIL"; then
@@ -1922,58 +1961,70 @@ bootstrap_proxmox_ansible() {
     fi
     
     # Phase 4: Deploy API (service orchestration - needed to deploy remaining services)
-    show_stage 70 "Deploying Deploy API" "Service orchestration and deployment automation."
-    if ! run_ansible_proxmox "deploy"; then
-        error "Deploy API deployment failed"
-        return 1
+    if is_service_healthy "deploy-api" "http://${authz_ip}:8011/health/live"; then
+        info "Deploy API is already healthy - skipping deployment"
+    else
+        show_stage 70 "Deploying Deploy API" "Service orchestration and deployment automation."
+        if ! run_ansible_proxmox "deploy"; then
+            error "Deploy API deployment failed"
+            return 1
+        fi
+        
+        # Wait for Deploy API to be ready
+        info "Waiting for Deploy API to be healthy at ${authz_ip}:8011..."
+        attempt=0
+        while [[ $attempt -lt 30 ]]; do
+            if curl -sf "http://${authz_ip}:8011/health/live" &>/dev/null; then
+                success "Deploy API is ready"
+                break
+            fi
+            sleep 1
+            ((attempt++))
+        done
     fi
     
-    # Wait for Deploy API to be ready
-    info "Waiting for Deploy API to be healthy at ${authz_ip}:8011..."
-    attempt=0
-    while [[ $attempt -lt 30 ]]; do
-        if curl -sf "http://${authz_ip}:8011/health/live" &>/dev/null; then
-            success "Deploy API is ready"
-            break
-        fi
-        sleep 1
-        ((attempt++))
-    done
-    
     # Phase 5: Nginx (reverse proxy - needed before apps can be accessed)
-    show_stage 75 "Deploying Nginx" "Reverse proxy for secure access."
-    if ! run_ansible_proxmox "nginx"; then
-        error "Nginx deployment failed"
-        return 1
+    if is_service_healthy "nginx" "http://${proxy_ip}:80/"; then
+        info "Nginx is already healthy - skipping deployment"
+    else
+        show_stage 75 "Deploying Nginx" "Reverse proxy for secure access."
+        if ! run_ansible_proxmox "nginx"; then
+            error "Nginx deployment failed"
+            return 1
+        fi
     fi
     
     # Phase 6: Core Apps (AI Portal + Agent Manager)
-    show_stage 85 "Deploying Core Apps" "AI Portal and Agent Manager."
-    if ! run_ansible_proxmox "apps"; then
-        error "Core apps deployment failed"
-        return 1
-    fi
-    
-    # Phase 7: Wait for AI Portal to be ready
-    show_stage 95 "Waiting for AI Portal" "Verifying services are healthy..."
-    info "Waiting for AI Portal to be healthy at ${portal_ip}..."
-    max_attempts=90
-    attempt=0
-    while [[ $attempt -lt $max_attempts ]]; do
-        if curl -sf "http://${portal_ip}:3000/portal/api/health" &>/dev/null; then
-            success "AI Portal is ready"
-            break
+    if is_service_healthy "ai-portal" "http://${portal_ip}:3000/portal/api/health"; then
+        info "AI Portal is already healthy - skipping deployment"
+    else
+        show_stage 85 "Deploying Core Apps" "AI Portal and Agent Manager."
+        if ! run_ansible_proxmox "apps"; then
+            error "Core apps deployment failed"
+            return 1
         fi
-        sleep 2
-        ((attempt++))
-        if [[ $((attempt % 15)) -eq 0 ]]; then
-            echo -n "."
+        
+        # Phase 7: Wait for AI Portal to be ready
+        show_stage 95 "Waiting for AI Portal" "Verifying services are healthy..."
+        info "Waiting for AI Portal to be healthy at ${portal_ip}..."
+        max_attempts=90
+        attempt=0
+        while [[ $attempt -lt $max_attempts ]]; do
+            if curl -sf "http://${portal_ip}:3000/portal/api/health" &>/dev/null; then
+                success "AI Portal is ready"
+                break
+            fi
+            sleep 2
+            ((attempt++))
+            if [[ $((attempt % 15)) -eq 0 ]]; then
+                echo -n "."
+            fi
+        done
+        echo ""
+        
+        if [[ $attempt -ge $max_attempts ]]; then
+            warn "AI Portal health check timed out, but it may still be starting"
         fi
-    done
-    echo ""
-    
-    if [[ $attempt -ge $max_attempts ]]; then
-        warn "AI Portal health check timed out, but it may still be starting"
     fi
     
     # Note: Additional services (MinIO, Milvus, Data-API, Search-API, Agent-API, 
@@ -3339,11 +3390,32 @@ check_prerequisites() {
 # Minimal bootstrap services deployed via CLI
 # Other services (redis, minio, milvus, litellm, data-api, search-api, agent-api, docs-api)
 # are managed by deploy-api after the initial bootstrap
+
+# Docker services (uses localhost and container names)
 INSTALL_SERVICES_ORDER=(
     "postgres:5432:infrastructure"
     "authz-api:8010:apis"
     "deploy-api:8011:apis"
     "core-apps:443:frontend"  # Includes nginx, ai-portal, agent-manager
+)
+
+# Proxmox services (uses actual health endpoint URLs)
+# Format: "service_name:health_url:phase:ansible_tag"
+# Note: IPs are placeholders - actual IPs are calculated based on environment
+PROXMOX_SERVICES_ORDER_PRODUCTION=(
+    "postgres:http://10.96.200.203:5432:infrastructure:postgres"
+    "authz:http://10.96.200.210:8010/health/live:apis:authz"
+    "deploy-api:http://10.96.200.210:8011/health/live:apis:deploy"
+    "nginx:http://10.96.200.200:80/:frontend:nginx"
+    "ai-portal:http://10.96.200.201:3000/portal/api/health:frontend:apps"
+)
+
+PROXMOX_SERVICES_ORDER_STAGING=(
+    "postgres:http://10.96.201.203:5432:infrastructure:postgres"
+    "authz:http://10.96.201.210:8010/health/live:apis:authz"
+    "deploy-api:http://10.96.201.210:8011/health/live:apis:deploy"
+    "nginx:http://10.96.201.200:80/:frontend:nginx"
+    "ai-portal:http://10.96.201.201:3000/portal/api/health:frontend:apps"
 )
 
 # Validate container health in installation order
@@ -3419,6 +3491,85 @@ validate_install_health() {
     return 0
 }
 
+# Validate Proxmox installation health using actual HTTP health checks
+# Returns: 0 if all healthy, 1 if any unhealthy
+# Sets: FIRST_UNHEALTHY_SERVICE, FIRST_UNHEALTHY_PHASE, FIRST_UNHEALTHY_TAG
+validate_proxmox_install_health() {
+    local env="$1"  # "production" or "staging"
+    
+    FIRST_UNHEALTHY_SERVICE=""
+    FIRST_UNHEALTHY_PHASE=""
+    FIRST_UNHEALTHY_TAG=""
+    
+    # Select services order based on environment
+    local -a services_order
+    if [[ "$env" == "production" ]]; then
+        services_order=("${PROXMOX_SERVICES_ORDER_PRODUCTION[@]}")
+    else
+        services_order=("${PROXMOX_SERVICES_ORDER_STAGING[@]}")
+    fi
+    
+    info "Validating Proxmox installation health (${#services_order[@]} services)..."
+    
+    for service_entry in "${services_order[@]}"; do
+        # Parse: "service_name:health_url:phase:ansible_tag"
+        local service_name="${service_entry%%:*}"
+        local rest="${service_entry#*:}"
+        local health_url="${rest%%:*}"
+        rest="${rest#*:}"
+        local phase="${rest%%:*}"
+        local ansible_tag="${rest#*:}"
+        
+        # Special handling for postgres (TCP check, not HTTP)
+        if [[ "$service_name" == "postgres" ]]; then
+            # Extract host and port from URL format http://host:port
+            local pg_host
+            local pg_port
+            pg_host=$(echo "$health_url" | sed -E 's|https?://([^:]+):([0-9]+).*|\1|')
+            pg_port=$(echo "$health_url" | sed -E 's|https?://([^:]+):([0-9]+).*|\2|')
+            
+            # Check if postgres port is accessible
+            if nc -z -w 2 "$pg_host" "$pg_port" 2>/dev/null || timeout 2 bash -c "echo > /dev/tcp/${pg_host}/${pg_port}" 2>/dev/null; then
+                echo "  ✓ $service_name is healthy"
+            else
+                warn "  ✗ $service_name is not accessible at ${pg_host}:${pg_port}"
+                FIRST_UNHEALTHY_SERVICE="$service_name"
+                FIRST_UNHEALTHY_PHASE="$phase"
+                FIRST_UNHEALTHY_TAG="$ansible_tag"
+                return 1
+            fi
+            continue
+        fi
+        
+        # HTTP health check for other services
+        local http_code
+        http_code=$(curl -s -w "%{http_code}" --max-time 5 --connect-timeout 3 -o /dev/null "$health_url" 2>/dev/null || echo "000")
+        
+        case "$http_code" in
+            200|301|302|401|403)
+                echo "  ✓ $service_name is healthy (HTTP $http_code)"
+                ;;
+            000)
+                warn "  ✗ $service_name is not responding at $health_url"
+                FIRST_UNHEALTHY_SERVICE="$service_name"
+                FIRST_UNHEALTHY_PHASE="$phase"
+                FIRST_UNHEALTHY_TAG="$ansible_tag"
+                return 1
+                ;;
+            *)
+                warn "  ✗ $service_name returned HTTP $http_code at $health_url"
+                FIRST_UNHEALTHY_SERVICE="$service_name"
+                FIRST_UNHEALTHY_PHASE="$phase"
+                FIRST_UNHEALTHY_TAG="$ansible_tag"
+                return 1
+                ;;
+        esac
+    done
+    
+    success "All Proxmox services are healthy"
+    return 0
+}
+
 # Check for existing installation and offer resume/restart options
 check_existing_install() {
     local env_prefix="$1"
@@ -3450,9 +3601,29 @@ check_existing_install() {
     if [[ "$install_status" == "installed" || "$install_phase" == "complete" ]]; then
         # IMPORTANT: Validate that services are actually healthy
         # State says "installed" but containers may be missing/stopped
-        info "Validating installation health (checking ${#INSTALL_SERVICES_ORDER[@]} services)..."
         
-        if ! validate_install_health "$env_prefix"; then
+        # Get platform from state to use appropriate health checks
+        local saved_platform
+        saved_platform=$(grep "^PLATFORM=" "$state_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'" || echo "docker")
+        
+        # Get environment from state for Proxmox health checks
+        local saved_env
+        saved_env=$(grep "^ENVIRONMENT=" "$state_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'" || echo "staging")
+        
+        local health_valid=false
+        if [[ "$saved_platform" == "proxmox" ]]; then
+            info "Validating Proxmox installation health..."
+            if validate_proxmox_install_health "$saved_env"; then
+                health_valid=true
+            fi
+        else
+            info "Validating Docker installation health (checking ${#INSTALL_SERVICES_ORDER[@]} services)..."
+            if validate_install_health "$env_prefix"; then
+                health_valid=true
+            fi
+        fi
+        
+        if [[ "$health_valid" != "true" ]]; then
             # Services are unhealthy - treat as interrupted install
             echo ""
             echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
@@ -4083,12 +4254,15 @@ main() {
         wait_for_model_download
         # Ensure MLX server is running for AI Portal setup
         ensure_mlx_running
-    else
-        # For non-MLX backends, still download the embedding model
+    elif [[ "$PLATFORM" != "proxmox" ]]; then
+        # For Docker non-MLX backends, download the embedding model
         # (embeddings run locally regardless of LLM backend)
+        # Note: Proxmox downloads embedding models earlier via setup-embedding-models.sh
         show_stage 92 "Downloading Embedding Model" "Pre-downloading FastEmbed model for document search."
         download_embedding_model
     fi
+    # For Proxmox: embedding models were already downloaded in background 
+    # at the start of bootstrap_proxmox_ansible (setup-embedding-models.sh)
     
     # Mark installation as complete
     set_install_phase "complete"
@@ -4097,9 +4271,9 @@ main() {
     # Note: SETUP_COMPLETE will be set by AI Portal after admin completes setup wizard
     set_state "SETUP_COMPLETE" "false"
     
-    # Generate admin magic link
+    # Generate admin magic link - always regenerate to ensure a fresh token
     local magic_link
-    magic_link=$(generate_admin_link)
+    magic_link=$(generate_admin_link true)
     
     # Show completion message
     show_completion "$magic_link"
