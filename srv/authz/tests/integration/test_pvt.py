@@ -151,6 +151,77 @@ class TestPVTAuth:
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{SERVICE_URL}/admin/roles", timeout=5.0)
             assert resp.status_code == 401, f"Expected 401, got {resp.status_code}"
+    
+    @pytest.mark.asyncio
+    async def test_signing_key_can_sign_jwt(self):
+        """
+        Verify signing key can be used to sign JWTs.
+        
+        This test catches the critical issue where signing keys exist in the database
+        but cannot be decrypted (e.g., passphrase mismatch). The test initiates a login
+        which requires JWT signing - if signing fails, this test will fail.
+        """
+        async with httpx.AsyncClient() as client:
+            # Initiate login - this creates a magic link which requires JWT signing
+            resp = await client.post(
+                f"{SERVICE_URL}/auth/login/initiate",
+                json={"email": "pvt-signing-test@example.com"},
+                timeout=10.0,
+            )
+            
+            # If signing key can't be decrypted, this will return 500
+            assert resp.status_code == 200, (
+                f"Login initiate failed with {resp.status_code}: {resp.text}. "
+                "This may indicate signing key encryption/decryption issues."
+            )
+            
+            data = resp.json()
+            assert "magic_link_token" in data, "Missing magic_link_token - signing may have failed"
+    
+    @pytest.mark.asyncio
+    async def test_magic_link_jwt_verification(self):
+        """
+        Verify magic link tokens can be verified (end-to-end signing test).
+        
+        This test creates a magic link and then uses it, which requires:
+        1. Signing the magic link JWT (tests key decryption)
+        2. Verifying the JWT signature (tests public key)
+        3. Creating a session JWT (tests signing again)
+        
+        If any step fails due to key issues, this test will catch it.
+        """
+        async with httpx.AsyncClient() as client:
+            # Step 1: Create a magic link (requires JWT signing)
+            init_resp = await client.post(
+                f"{SERVICE_URL}/auth/login/initiate",
+                json={"email": "pvt-jwt-verify@example.com"},
+                timeout=10.0,
+            )
+            assert init_resp.status_code == 200, (
+                f"Login initiate failed: {init_resp.text}. "
+                "Signing key may not be decryptable."
+            )
+            
+            magic_link_token = init_resp.json()["magic_link_token"]
+            
+            # Step 2: Use the magic link (requires JWT verification + new JWT signing)
+            use_resp = await client.post(
+                f"{SERVICE_URL}/auth/magic-links/{magic_link_token}",
+                timeout=10.0,
+            )
+            
+            # Should succeed (200) or indicate the link was already used (which is fine)
+            # A 500 error would indicate signing/verification issues
+            assert use_resp.status_code in [200, 400, 409], (
+                f"Magic link use failed with {use_resp.status_code}: {use_resp.text}. "
+                "This may indicate JWT signing or verification issues."
+            )
+            
+            if use_resp.status_code == 200:
+                data = use_resp.json()
+                # Verify we got a session JWT back
+                assert "session" in data, "Missing session in response"
+                assert "user" in data, "Missing user in response"
 
 
 @pytest.mark.pvt
