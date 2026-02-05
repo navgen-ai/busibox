@@ -224,48 +224,114 @@ get_docker_service_status() {
 }
 
 # Get status of a single service (Proxmox LXC)
+# Uses actual HTTP health endpoint checks for APIs, not just container ping
 get_proxmox_service_status() {
     local service="$1"
     local env
     env=$(get_current_env)
     
-    # Map service to LXC container name
-    local lxc_prefix
-    case "$env" in
-        staging) lxc_prefix="STAGE" ;;
-        production) lxc_prefix="PROD" ;;
-        *) lxc_prefix="STAGE" ;;
-    esac
-    
-    local lxc_name="${lxc_prefix}-${service}-lxc"
-    local network_base
-    case "$env" in
-        staging) network_base="10.96.201" ;;
-        production) network_base="10.96.200" ;;
-        *) network_base="10.96.201" ;;
-    esac
-    
-    # Quick ping check
-    local ip
+    # Normalize service name for lookup
+    local lookup_service="$service"
     case "$service" in
-        postgres|pg) ip="${network_base}.203" ;;
-        minio|files) ip="${network_base}.205" ;;
-        milvus) ip="${network_base}.204" ;;
-        agent|agent-api) ip="${network_base}.202" ;;
-        ingest|data-api) ip="${network_base}.206" ;;
-        authz|authz-api) ip="${network_base}.210" ;;
-        core-apps|apps) ip="${network_base}.201" ;;
-        proxy|nginx) ip="${network_base}.200" ;;
-        litellm) ip="${network_base}.207" ;;
-        vllm) ip="${network_base}.208" ;;
-        *) echo "unknown"; return ;;
+        pg) lookup_service="postgres" ;;
+        files) lookup_service="minio" ;;
+        agent) lookup_service="agent-api" ;;
+        ingest|data) lookup_service="data-api" ;;
+        authz) lookup_service="authz" ;;  # Keep as authz, not authz-api
+        apps) lookup_service="ai-portal" ;;  # Check portal health for core-apps
+        proxy) lookup_service="nginx" ;;
+        search) lookup_service="search-api" ;;
+        deploy) lookup_service="deploy-api" ;;
+        docs) lookup_service="docs-api" ;;
+        embedding) lookup_service="embedding" ;;
+        core-apps) lookup_service="ai-portal" ;;  # Check portal for core-apps status
     esac
     
-    if ping -c 1 -W 1 "$ip" &>/dev/null 2>&1; then
-        echo "running"
-    else
-        echo "unreachable"
+    # Get health URL from service registry
+    local health_url
+    health_url=$(get_service_health_url "$lookup_service" "$env" "proxmox" 2>/dev/null)
+    
+    if [[ -z "$health_url" ]]; then
+        # Fallback to container ping for services without health endpoints
+        local network_base
+        case "$env" in
+            staging) network_base="10.96.201" ;;
+            production) network_base="10.96.200" ;;
+            *) network_base="10.96.201" ;;
+        esac
+        
+        local ip
+        case "$service" in
+            postgres|pg) ip="${network_base}.203" ;;
+            minio|files) ip="${network_base}.205" ;;
+            milvus) ip="${network_base}.204" ;;
+            agent|agent-api) ip="${network_base}.202" ;;
+            ingest|data-api|data) ip="${network_base}.206" ;;
+            authz|authz-api) ip="${network_base}.210" ;;
+            core-apps|apps) ip="${network_base}.201" ;;
+            proxy|nginx) ip="${network_base}.200" ;;
+            litellm) ip="${network_base}.207" ;;
+            vllm) ip="${network_base}.208" ;;
+            embedding) ip="${network_base}.208" ;;
+            redis) ip="${network_base}.206" ;;
+            *) echo "unknown"; return ;;
+        esac
+        
+        if ping -c 1 -W 1 "$ip" &>/dev/null 2>&1; then
+            echo "running"
+        else
+            echo "unreachable"
+        fi
+        return
     fi
+    
+    # Check actual health endpoint with short timeout
+    local http_code
+    http_code=$(curl -s -w "%{http_code}" --max-time 3 --connect-timeout 2 -o /dev/null "$health_url" 2>/dev/null || echo "000")
+    
+    case "$http_code" in
+        200|301|302)
+            echo "healthy"
+            ;;
+        401|403)
+            # Auth required but service is up
+            echo "healthy"
+            ;;
+        000)
+            # Connection failed - check if container is at least pingable
+            local network_base
+            case "$env" in
+                staging) network_base="10.96.201" ;;
+                production) network_base="10.96.200" ;;
+                *) network_base="10.96.201" ;;
+            esac
+            local container_id
+            container_id=$(get_service_container_id "$lookup_service" "$env" 2>/dev/null || echo "")
+            if [[ -n "$container_id" ]]; then
+                local ip
+                if [[ "$env" == "staging" ]]; then
+                    ip="${network_base}.$((container_id - 100))"
+                else
+                    ip="${network_base}.${container_id}"
+                fi
+                if ping -c 1 -W 1 "$ip" &>/dev/null 2>&1; then
+                    echo "stopped"  # Container up but service not responding
+                else
+                    echo "unreachable"  # Container not reachable
+                fi
+            else
+                echo "unreachable"
+            fi
+            ;;
+        5*)
+            # Server error - service unhealthy
+            echo "unhealthy"
+            ;;
+        *)
+            # Other codes
+            echo "unknown"
+            ;;
+    esac
 }
 
 # Get service status based on backend
