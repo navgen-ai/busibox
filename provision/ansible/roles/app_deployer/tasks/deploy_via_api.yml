@@ -54,9 +54,10 @@
 
 # Build environment variables for the app
 # Start with the static env vars from app config
+# All values must be strings for the Deploy API
 - name: Build app environment variables
   set_fact:
-    app_env_vars: "{{ app.env | default({}) }}"
+    app_env_vars: "{{ dict(app.env | default({}) | dict2items | map(attribute='key') | list | zip(app.env | default({}) | dict2items | map(attribute='value') | map('string') | list)) }}"
   tags:
     - deploy_via_api
 

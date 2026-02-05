@@ -31,15 +31,15 @@
 # INFRASTRUCTURE: Internal DNS Configuration
 # =============================================================================
 # Configure /etc/hosts on all containers for service discovery via canonical hostnames
-# Run with: make install SERVICE=internal_dns
-# Or include as part of: make install SERVICE=core (runs with core infrastructure)
+# Runs with: postgres (first infrastructure service), core, or internal_dns tags
 # NOTE: Removed 'always' tag - was causing DNS tasks to run on ALL hosts for every deploy
+# Instead, runs once when deploying infrastructure (postgres is typically first)
 
 - hosts: all
-  tags: [core, internal_dns]
+  tags: [core, internal_dns, postgres]
   roles:
     - role: internal_dns
-      tags: [core, internal_dns]
+      tags: [core, internal_dns, postgres]
 
 # =============================================================================
 # GROUP 1: CORE SERVICES (tag: core)
