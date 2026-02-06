@@ -13,8 +13,41 @@ from pydantic import BaseModel
 from .auth import verify_admin_token
 from .state import read_state, write_state, get_state_value
 from .docker_manager import DockerManager
+from .core_app_executor import is_docker_environment, execute_ssh_command
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Proxmox Service Mapping
+# =============================================================================
+# Maps service names to (dns_hostname, systemd_service_name) for Proxmox/LXC environments
+# DNS hostnames are resolved via /etc/hosts (set by internal_dns Ansible role)
+PROXMOX_SERVICE_MAP = {
+    'redis': ('redis', 'redis-server'),  # data-lxc
+    'postgres': ('postgres', 'postgresql'),  # pg-lxc
+    'milvus': ('milvus', 'milvus'),  # milvus-lxc
+    'minio': ('minio', 'minio'),  # files-lxc
+    'litellm': ('litellm', 'litellm'),  # litellm-lxc
+    'authz-api': ('authz-api', 'authz'),  # authz-lxc
+    'authz': ('authz-api', 'authz'),  # alias
+    'data-api': ('data-api', 'data-api'),  # data-lxc
+    'data': ('data-api', 'data-api'),  # alias
+    'data-worker': ('data-api', 'data-worker'),  # data-lxc
+    'search-api': ('search-api', 'search-api'),  # milvus-lxc
+    'search': ('search-api', 'search-api'),  # alias
+    'agent-api': ('agent-api', 'agent-api'),  # agent-lxc
+    'agent': ('agent-api', 'agent-api'),  # alias
+    'embedding-api': ('embedding-api', 'embedding'),  # data-lxc
+    'embedding': ('embedding-api', 'embedding'),  # alias
+    'deploy-api': ('deploy-api', 'deploy-api'),  # authz-lxc
+    'deploy': ('deploy-api', 'deploy-api'),  # alias
+    'docs-api': ('docs-api', 'docs-api'),  # milvus-lxc
+    'docs': ('docs-api', 'docs-api'),  # alias
+    'nginx': ('nginx', 'nginx'),  # proxy-lxc
+    'ai-portal': ('ai-portal', 'ai-portal'),  # core-apps-lxc
+    'agent-manager': ('ai-portal', 'agent-manager'),  # core-apps-lxc (same host)
+}
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -229,7 +262,42 @@ async def get_service_logs(
 ):
     """
     Get logs for a specific service.
+    
+    For Docker: Uses docker logs command.
+    For Proxmox: Uses SSH + journalctl to fetch logs from the appropriate container.
     """
+    # Check if we're on Proxmox/LXC (not Docker)
+    if not is_docker_environment():
+        # Proxmox: Use SSH + journalctl
+        if service not in PROXMOX_SERVICE_MAP:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Service '{service}' is not recognized. Available services: {', '.join(sorted(set(PROXMOX_SERVICE_MAP.keys())))}"
+            )
+        
+        container_host, systemd_service = PROXMOX_SERVICE_MAP[service]
+        
+        try:
+            # Use journalctl to get logs (--no-pager for non-interactive output)
+            command = f"journalctl -u {systemd_service} -n {lines} --no-pager"
+            stdout, stderr, code = await execute_ssh_command(container_host, command, timeout=30)
+            
+            if code != 0:
+                logger.error(f"Failed to get logs for {service} via SSH: {stderr}")
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Failed to get logs: {stderr}"
+                )
+            
+            return {"success": True, "logs": stdout, "service": service, "host": container_host}
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"SSH error getting logs for {service}: {e}")
+            raise HTTPException(status_code=500, detail=f"SSH error: {str(e)}")
+    
+    # Docker: Use DockerManager
     manager = DockerManager()
     result = await manager.get_service_logs(service, lines=lines)
     

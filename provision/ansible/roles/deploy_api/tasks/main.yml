@@ -275,3 +275,10 @@
     group: root
     mode: "0644"
   tags: [deploy_api]
+
+# ============================================================================
+# SSH Keys Setup - enables deploy-api to manage services on other containers
+# ============================================================================
+- name: Setup SSH keys for container-to-container communication
+  include_tasks: ssh-keys.yml
+  tags: [deploy_api, deploy_api_ssh]
