@@ -183,45 +183,94 @@ class TestPVTAuth:
         """
         Verify magic link tokens can be verified (end-to-end signing test).
         
-        This test creates a magic link and then uses it, which requires:
+        This test creates a test user, generates a magic link, and uses it.
+        This tests the full flow:
         1. Signing the magic link JWT (tests key decryption)
         2. Verifying the JWT signature (tests public key)
         3. Creating a session JWT (tests signing again)
         
         If any step fails due to key issues, this test will catch it.
         """
-        async with httpx.AsyncClient() as client:
-            # Step 1: Create a magic link (requires JWT signing)
-            init_resp = await client.post(
-                f"{SERVICE_URL}/auth/login/initiate",
-                json={"email": "pvt-jwt-verify@example.com"},
-                timeout=10.0,
-            )
-            assert init_resp.status_code == 200, (
-                f"Login initiate failed: {init_resp.text}. "
-                "Signing key may not be decryptable."
+        import asyncpg
+        import uuid
+        
+        # Get database config
+        host = require_env("POSTGRES_HOST", POSTGRES_HOST)
+        password = require_env("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
+        user = require_env("POSTGRES_USER", POSTGRES_USER)
+        
+        # Create a test user for this test
+        test_user_id = uuid.uuid4()
+        test_email = f"pvt-magiclink-{test_user_id}@test.example.com"
+        
+        conn = await asyncpg.connect(
+            host=host,
+            port=int(POSTGRES_PORT),
+            database=POSTGRES_DB,
+            user=user,
+            password=password,
+            timeout=5.0,
+        )
+        
+        try:
+            # Insert test user
+            await conn.execute(
+                """
+                INSERT INTO authz_users (user_id, email, status)
+                VALUES ($1, $2, 'ACTIVE')
+                """,
+                test_user_id,
+                test_email,
             )
             
-            magic_link_token = init_resp.json()["magic_link_token"]
-            
-            # Step 2: Use the magic link (requires JWT verification + new JWT signing)
-            use_resp = await client.post(
-                f"{SERVICE_URL}/auth/magic-links/{magic_link_token}/use",
-                timeout=10.0,
+            async with httpx.AsyncClient() as client:
+                # Step 1: Create a magic link (requires JWT signing)
+                init_resp = await client.post(
+                    f"{SERVICE_URL}/auth/login/initiate",
+                    json={"email": test_email},
+                    timeout=10.0,
+                )
+                assert init_resp.status_code == 200, (
+                    f"Login initiate failed: {init_resp.text}. "
+                    "Signing key may not be decryptable."
+                )
+                
+                magic_link_token = init_resp.json()["magic_link_token"]
+                
+                # Step 2: Use the magic link (requires JWT verification + new JWT signing)
+                use_resp = await client.post(
+                    f"{SERVICE_URL}/auth/magic-links/{magic_link_token}/use",
+                    timeout=10.0,
+                )
+                
+                # Should succeed (200) - we have a real user now
+                # 400/409 would indicate already used (acceptable)
+                # A 500 error would indicate signing/verification issues
+                assert use_resp.status_code in [200, 400, 409], (
+                    f"Magic link use failed with {use_resp.status_code}: {use_resp.text}. "
+                    "This may indicate JWT signing or verification issues."
+                )
+                
+                if use_resp.status_code == 200:
+                    data = use_resp.json()
+                    # Verify we got a session JWT back
+                    assert "session" in data, "Missing session in response"
+                    assert "user" in data, "Missing user in response"
+        finally:
+            # Cleanup test user and related data
+            await conn.execute(
+                "DELETE FROM authz_magic_links WHERE user_id = $1",
+                test_user_id,
             )
-            
-            # Should succeed (200) or indicate the link was already used (which is fine)
-            # A 500 error would indicate signing/verification issues
-            assert use_resp.status_code in [200, 400, 409], (
-                f"Magic link use failed with {use_resp.status_code}: {use_resp.text}. "
-                "This may indicate JWT signing or verification issues."
+            await conn.execute(
+                "DELETE FROM authz_user_sessions WHERE user_id = $1",
+                test_user_id,
             )
-            
-            if use_resp.status_code == 200:
-                data = use_resp.json()
-                # Verify we got a session JWT back
-                assert "session" in data, "Missing session in response"
-                assert "user" in data, "Missing user in response"
+            await conn.execute(
+                "DELETE FROM authz_users WHERE user_id = $1",
+                test_user_id,
+            )
+            await conn.close()
 
 
 @pytest.mark.pvt
