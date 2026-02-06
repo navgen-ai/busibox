@@ -54,7 +54,7 @@ class TestPVTHealth:
     async def test_deployment_health_endpoint(self):
         """Main deployment health endpoint responds."""
         async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{SERVICE_URL}/health", timeout=5.0)
+            resp = await client.get(f"{SERVICE_URL}/api/v1/deployment/health", timeout=5.0)
             assert resp.status_code == 200
 
 
@@ -66,7 +66,7 @@ class TestPVTPlatform:
     async def test_platform_endpoint(self):
         """Platform detection endpoint responds with valid data."""
         async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{SERVICE_URL}/services/platform", timeout=5.0)
+            resp = await client.get(f"{SERVICE_URL}/api/v1/services/platform", timeout=5.0)
             assert resp.status_code == 200
             data = resp.json()
             
@@ -78,7 +78,7 @@ class TestPVTPlatform:
     async def test_status_endpoint(self):
         """Service status endpoint responds."""
         async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{SERVICE_URL}/services/status", timeout=10.0)
+            resp = await client.get(f"{SERVICE_URL}/api/v1/services/status", timeout=10.0)
             assert resp.status_code == 200
             data = resp.json()
             
@@ -128,7 +128,7 @@ class TestPVTDeployments:
     async def test_deployments_endpoint_requires_auth(self):
         """Deployments endpoint requires authentication."""
         async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{SERVICE_URL}/deployments", timeout=5.0)
+            resp = await client.get(f"{SERVICE_URL}/api/v1/deployment/deployments", timeout=5.0)
             # Should require auth - 401 or 403
             assert resp.status_code in [401, 403], \
                 f"Deployments endpoint should require auth, got {resp.status_code}"
@@ -177,7 +177,7 @@ class TestPVTConfigEndpoints:
     async def test_config_categories_requires_auth(self):
         """Config categories endpoint requires authentication."""
         async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{SERVICE_URL}/config/categories", timeout=5.0)
+            resp = await client.get(f"{SERVICE_URL}/api/v1/config/categories", timeout=5.0)
             # Should require auth - 401 or 403
             assert resp.status_code in [401, 403], \
                 f"Config categories endpoint should require auth, got {resp.status_code}"

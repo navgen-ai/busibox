@@ -272,7 +272,7 @@ pg:
 	ansible-playbook -i $(INV) -l pg site.yml --tags core_database $(VAULT_FLAGS)
 
 authz:
-	ansible-playbook -i $(INV) -l authz site.yml --tags apis_authz $(VAULT_FLAGS)
+	ansible-playbook -i $(INV) -l authz site.yml --tags authz $(VAULT_FLAGS)
 
 deploy-api:
 	ansible-playbook -i $(INV) -l authz site.yml --tags deploy_api $(VAULT_FLAGS)
