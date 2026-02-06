@@ -282,3 +282,56 @@
 - name: Setup SSH keys for container-to-container communication
   include_tasks: ssh-keys.yml
   tags: [deploy_api, deploy_api_ssh]
+
+# ============================================================================
+# Post-Deployment Validation Tests (PVT)
+# ============================================================================
+- name: Wait for deploy-api service to be ready before PVT tests
+  uri:
+    url: "http://localhost:{{ deploy_api_service_port }}/health/live"
+    method: GET
+    status_code: 200
+    timeout: 5
+  delegate_to: "{{ inventory_hostname }}"
+  register: deploy_api_ready_check
+  until: deploy_api_ready_check.status == 200
+  retries: 12
+  delay: 2
+  failed_when: false
+  when: run_pvt_tests | default(true)
+  tags: [deploy_api, pvt]
+
+- name: Fail if service not ready for PVT tests
+  fail:
+    msg: "Deploy API service did not become ready within 24 seconds. Check logs: journalctl -u {{ deploy_api_service_name }} -n 50"
+  when: run_pvt_tests | default(true) and deploy_api_ready_check.status != 200
+  tags: [deploy_api, pvt]
+
+- name: Run PVT tests
+  shell: |
+    set -a
+    . {{ deploy_api_base_dir }}/.env
+    set +a
+    export PYTHONPATH={{ deploy_api_app_dir }}/src
+    export DEPLOYMENT_BACKEND={{ 'proxmox' if (ansible_distribution is defined) else 'docker' }}
+    cd {{ deploy_api_app_dir }}
+    {{ deploy_api_venv_dir }}/bin/python -m pytest tests/integration/test_pvt.py -v --tb=short 2>&1
+  args:
+    executable: /bin/bash
+  register: deploy_api_pvt_result
+  failed_when: false
+  changed_when: false
+  when: run_pvt_tests | default(true)
+  tags: [deploy_api, pvt]
+
+- name: Display PVT test results
+  debug:
+    msg: "{{ deploy_api_pvt_result.stdout_lines | default([]) }}"
+  when: run_pvt_tests | default(true) and deploy_api_pvt_result.stdout is defined
+  tags: [deploy_api, pvt]
+
+- name: Fail if PVT tests failed
+  fail:
+    msg: "Post-deployment validation tests failed! Check logs above."
+  when: run_pvt_tests | default(true) and deploy_api_pvt_result.rc != 0
+  tags: [deploy_api, pvt]
