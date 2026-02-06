@@ -1,0 +1,273 @@
+---
+# SSH key setup for deploy-api container-to-container communication
+# Enables authz container (where deploy-api runs) to SSH to other containers
+# for service management via systemctl
+#
+# Target containers: data-lxc, agent-lxc, milvus-lxc, files-lxc, pg-lxc, 
+#                    litellm-lxc, proxy-lxc, core-apps-lxc
+
+- name: Generate SSH key pair on authz container for root user
+  openssh_keypair:
+    path: /root/.ssh/id_rsa
+    type: rsa
+    size: 4096
+    state: present
+    force: false  # Don't overwrite existing key
+  register: ssh_key_result
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Read public key from authz container
+  slurp:
+    src: /root/.ssh/id_rsa.pub
+  register: authz_public_key
+  tags: [deploy_api, deploy_api_ssh]
+
+# ============================================================================
+# Core Apps Container (core-apps-lxc) - for ai-portal and agent-manager
+# ============================================================================
+
+- name: Ensure .ssh directory exists on core-apps container
+  file:
+    path: /root/.ssh
+    state: directory
+    mode: '0700'
+    owner: root
+    group: root
+  delegate_to: "{{ hostvars[groups['core_apps'][0]]['ansible_host'] }}"
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Add authz container public key to core-apps container authorized_keys
+  authorized_key:
+    user: root
+    key: "{{ authz_public_key.content | b64decode }}"
+    state: present
+  delegate_to: "{{ hostvars[groups['core_apps'][0]]['ansible_host'] }}"
+  tags: [deploy_api, deploy_api_ssh]
+
+# ============================================================================
+# Data Container (data-lxc) - for redis, data-api, embedding
+# ============================================================================
+
+- name: Ensure .ssh directory exists on data container
+  file:
+    path: /root/.ssh
+    state: directory
+    mode: '0700'
+    owner: root
+    group: root
+  delegate_to: "{{ hostvars[groups['data'][0]]['ansible_host'] }}"
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Add authz container public key to data container authorized_keys
+  authorized_key:
+    user: root
+    key: "{{ authz_public_key.content | b64decode }}"
+    state: present
+  delegate_to: "{{ hostvars[groups['data'][0]]['ansible_host'] }}"
+  tags: [deploy_api, deploy_api_ssh]
+
+# ============================================================================
+# Agent Container (agent-lxc) - for agent-api
+# ============================================================================
+
+- name: Ensure .ssh directory exists on agent container
+  file:
+    path: /root/.ssh
+    state: directory
+    mode: '0700'
+    owner: root
+    group: root
+  delegate_to: "{{ hostvars[groups['agent'][0]]['ansible_host'] }}"
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Add authz container public key to agent container authorized_keys
+  authorized_key:
+    user: root
+    key: "{{ authz_public_key.content | b64decode }}"
+    state: present
+  delegate_to: "{{ hostvars[groups['agent'][0]]['ansible_host'] }}"
+  tags: [deploy_api, deploy_api_ssh]
+
+# ============================================================================
+# Milvus Container (milvus-lxc) - for milvus, search-api, docs-api
+# ============================================================================
+
+- name: Ensure .ssh directory exists on milvus container
+  file:
+    path: /root/.ssh
+    state: directory
+    mode: '0700'
+    owner: root
+    group: root
+  delegate_to: "{{ hostvars[groups['milvus'][0]]['ansible_host'] }}"
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Add authz container public key to milvus container authorized_keys
+  authorized_key:
+    user: root
+    key: "{{ authz_public_key.content | b64decode }}"
+    state: present
+  delegate_to: "{{ hostvars[groups['milvus'][0]]['ansible_host'] }}"
+  tags: [deploy_api, deploy_api_ssh]
+
+# ============================================================================
+# Files Container (files-lxc) - for minio
+# ============================================================================
+
+- name: Ensure .ssh directory exists on files container
+  file:
+    path: /root/.ssh
+    state: directory
+    mode: '0700'
+    owner: root
+    group: root
+  delegate_to: "{{ hostvars[groups['files'][0]]['ansible_host'] }}"
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Add authz container public key to files container authorized_keys
+  authorized_key:
+    user: root
+    key: "{{ authz_public_key.content | b64decode }}"
+    state: present
+  delegate_to: "{{ hostvars[groups['files'][0]]['ansible_host'] }}"
+  tags: [deploy_api, deploy_api_ssh]
+
+# ============================================================================
+# PostgreSQL Container (pg-lxc) - for postgresql
+# ============================================================================
+
+- name: Ensure .ssh directory exists on pg container
+  file:
+    path: /root/.ssh
+    state: directory
+    mode: '0700'
+    owner: root
+    group: root
+  delegate_to: "{{ hostvars[groups['pg'][0]]['ansible_host'] }}"
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Add authz container public key to pg container authorized_keys
+  authorized_key:
+    user: root
+    key: "{{ authz_public_key.content | b64decode }}"
+    state: present
+  delegate_to: "{{ hostvars[groups['pg'][0]]['ansible_host'] }}"
+  tags: [deploy_api, deploy_api_ssh]
+
+# ============================================================================
+# LiteLLM Container (litellm-lxc) - for litellm
+# ============================================================================
+
+- name: Ensure .ssh directory exists on litellm container
+  file:
+    path: /root/.ssh
+    state: directory
+    mode: '0700'
+    owner: root
+    group: root
+  delegate_to: "{{ hostvars[groups['litellm'][0]]['ansible_host'] }}"
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Add authz container public key to litellm container authorized_keys
+  authorized_key:
+    user: root
+    key: "{{ authz_public_key.content | b64decode }}"
+    state: present
+  delegate_to: "{{ hostvars[groups['litellm'][0]]['ansible_host'] }}"
+  tags: [deploy_api, deploy_api_ssh]
+
+# ============================================================================
+# Proxy Container (proxy-lxc) - for nginx
+# ============================================================================
+
+- name: Ensure .ssh directory exists on proxy container
+  file:
+    path: /root/.ssh
+    state: directory
+    mode: '0700'
+    owner: root
+    group: root
+  delegate_to: "{{ hostvars[groups['proxy'][0]]['ansible_host'] }}"
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Add authz container public key to proxy container authorized_keys
+  authorized_key:
+    user: root
+    key: "{{ authz_public_key.content | b64decode }}"
+    state: present
+  delegate_to: "{{ hostvars[groups['proxy'][0]]['ansible_host'] }}"
+  tags: [deploy_api, deploy_api_ssh]
+
+# ============================================================================
+# Test SSH connections
+# ============================================================================
+
+- name: Test SSH connection from authz to core-apps
+  shell: "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@ai-portal 'echo SSH_OK'"
+  register: ssh_test_core_apps
+  changed_when: false
+  failed_when: false
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Test SSH connection from authz to data (redis)
+  shell: "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@redis 'echo SSH_OK'"
+  register: ssh_test_data
+  changed_when: false
+  failed_when: false
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Test SSH connection from authz to agent
+  shell: "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@agent-api 'echo SSH_OK'"
+  register: ssh_test_agent
+  changed_when: false
+  failed_when: false
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Test SSH connection from authz to milvus
+  shell: "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@milvus 'echo SSH_OK'"
+  register: ssh_test_milvus
+  changed_when: false
+  failed_when: false
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Test SSH connection from authz to files (minio)
+  shell: "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@minio 'echo SSH_OK'"
+  register: ssh_test_files
+  changed_when: false
+  failed_when: false
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Test SSH connection from authz to pg
+  shell: "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@postgres 'echo SSH_OK'"
+  register: ssh_test_pg
+  changed_when: false
+  failed_when: false
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Test SSH connection from authz to litellm
+  shell: "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@litellm 'echo SSH_OK'"
+  register: ssh_test_litellm
+  changed_when: false
+  failed_when: false
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Test SSH connection from authz to proxy (nginx)
+  shell: "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@nginx 'echo SSH_OK'"
+  register: ssh_test_proxy
+  changed_when: false
+  failed_when: false
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Display SSH test results
+  debug:
+    msg: |
+      SSH Tests from authz-lxc (deploy-api):
+      - Core Apps: {{ 'OK' if ssh_test_core_apps.rc == 0 else 'FAILED' }}
+      - Data (Redis): {{ 'OK' if ssh_test_data.rc == 0 else 'FAILED' }}
+      - Agent: {{ 'OK' if ssh_test_agent.rc == 0 else 'FAILED' }}
+      - Milvus: {{ 'OK' if ssh_test_milvus.rc == 0 else 'FAILED' }}
+      - Files (MinIO): {{ 'OK' if ssh_test_files.rc == 0 else 'FAILED' }}
+      - PostgreSQL: {{ 'OK' if ssh_test_pg.rc == 0 else 'FAILED' }}
+      - LiteLLM: {{ 'OK' if ssh_test_litellm.rc == 0 else 'FAILED' }}
+      - Proxy (Nginx): {{ 'OK' if ssh_test_proxy.rc == 0 else 'FAILED' }}
+  tags: [deploy_api, deploy_api_ssh]
