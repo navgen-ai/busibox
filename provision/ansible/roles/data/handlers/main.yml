@@ -1,4 +1,10 @@
 ---
+- name: Restart Redis
+  systemd:
+    name: redis-server
+    state: restarted
+  tags: [redis, data]
+
 - name: Restart data API
   systemd:
     name: data-api

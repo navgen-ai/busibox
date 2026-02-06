@@ -33,7 +33,7 @@ INFRASTRUCTURE_ANSIBLE_MAP = {
     'dns': ('all', ['internal_dns'], 'Internal DNS (/etc/hosts)'),  # alias
     
     # Core Infrastructure (data layer)
-    'redis': ('data', ['data_install'], 'Redis (message queue)'),
+    'redis': ('data', ['redis'], 'Redis (message queue)'),
     'postgres': ('pg', ['core_database'], 'PostgreSQL (database)'),
     'minio': ('files', ['core_storage'], 'MinIO (object storage)'),
     'milvus': ('milvus', ['core_vectorstore'], 'Milvus (vector database)'),

@@ -35,7 +35,40 @@
     name: redis-server
     enabled: yes
     state: started
-  tags: [data, data_install]
+  tags: [data, data_install, redis]
+
+# Redis-only installation (minimal - just install and start Redis)
+- name: Install Redis (standalone)
+  apt:
+    name:
+      - redis-server
+      - redis-tools
+    state: present
+    update_cache: yes
+  tags: [redis]
+
+- name: Configure Redis to listen on all interfaces
+  lineinfile:
+    path: /etc/redis/redis.conf
+    regexp: '^bind '
+    line: 'bind 0.0.0.0 ::1'
+  notify: Restart Redis
+  tags: [redis]
+
+- name: Disable Redis protected mode (internal network)
+  lineinfile:
+    path: /etc/redis/redis.conf
+    regexp: '^protected-mode '
+    line: 'protected-mode no'
+  notify: Restart Redis
+  tags: [redis]
+
+- name: Start and enable Redis
+  systemd:
+    name: redis-server
+    state: started
+    enabled: yes
+  tags: [redis]
 
 # ============================================================================
 # GPU and CUDA Support (for Marker PDF extraction)
