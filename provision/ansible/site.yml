@@ -257,15 +257,21 @@
 # 3.1 AuthZ (authentication/authorization) - needed by all other APIs
 #     Also hosts Docs API (both are lightweight Python services)
 #     Deploy API also runs here for secure app deployment operations
+#
+# Tag structure:
+#   - apis_authz: runs all services on this host (authz + docs_api + deploy_api)
+#   - authz: runs only authz role
+#   - docs, docs_api: runs only docs_api role
+#   - deploy, deploy_api: runs only deploy_api role
 - hosts: authz
-  tags: [apis, apis_authz]
+  tags: [apis, apis_authz, authz, docs, docs_api, deploy, deploy_api]
   roles:
     - role: authz
       tags: [apis, apis_authz, authz]
     - role: docs_api
-      tags: [apis, apis_docs, docs, docs_api]
+      tags: [apis, apis_authz, docs, docs_api]
     - role: deploy_api
-      tags: [apis, apis_deploy, deploy, deploy_api]
+      tags: [apis, apis_authz, deploy, deploy_api]
 
 # 3.2 Data (file ingestion + embedding)
 - hosts: data
