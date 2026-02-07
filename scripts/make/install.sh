@@ -595,6 +595,50 @@ wizard_llm_backend() {
                         echo ""
                     fi
                     
+                    # Prompt for GPU layout configuration for production vLLM
+                    if [[ "$ENVIRONMENT" == "production" && "$LLM_BACKEND" == "vllm" ]]; then
+                        echo ""
+                        echo -e "${CYAN}GPU MODEL CONFIGURATION${NC}"
+                        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        echo ""
+                        echo "vLLM requires configuring which models run on which GPUs."
+                        echo "This affects container setup and LLM routing."
+                        echo ""
+                        echo "Options:"
+                        echo "  1) Configure now - Interactive GPU layout wizard"
+                        echo "  2) Use existing config - Skip if already configured"
+                        echo "  3) Configure later - Use 'make configure' -> Model Configuration"
+                        echo ""
+                        
+                        local gpu_choice=""
+                        read -p "$(echo -e "${BOLD}Choice [2]:${NC} ")" gpu_choice
+                        
+                        case "${gpu_choice:-2}" in
+                            1)
+                                echo ""
+                                echo -e "${CYAN}Launching GPU layout configuration...${NC}"
+                                echo ""
+                                if [[ -f "${REPO_ROOT}/provision/pct/host/configure-vllm-model-routing.sh" ]]; then
+                                    bash "${REPO_ROOT}/provision/pct/host/configure-vllm-model-routing.sh" --interactive
+                                else
+                                    echo -e "${YELLOW}Warning:${NC} GPU configuration script not found."
+                                    echo "You can configure later using: make configure -> Model Configuration"
+                                fi
+                                ;;
+                            2)
+                                echo ""
+                                echo -e "${CYAN}Using existing model configuration.${NC}"
+                                echo "If models aren't configured, run: make configure -> Model Configuration"
+                                ;;
+                            3|*)
+                                echo ""
+                                echo -e "${CYAN}Skipping GPU configuration.${NC}"
+                                echo "Configure later using: make configure -> Model Configuration"
+                                ;;
+                        esac
+                        echo ""
+                    fi
+                    
                     break
                     ;;
                 2) 

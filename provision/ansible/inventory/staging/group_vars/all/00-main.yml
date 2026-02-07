@@ -134,23 +134,25 @@ vllm_host: "0.0.0.0"  # Listen on all interfaces for IP aliasing support
 # When use_production_vllm is false, test services connect to test vLLM (10.96.201.208)
 
 # ============================================================================
-# GPU-Heavy Features - Test Environment
+# GPU-Heavy Features - Staging Environment
 # ============================================================================
-# Test shares the same physical GPU with production, so GPU memory is limited.
-# These settings prevent test from competing with production for GPU resources.
+# Staging does not run its own GPU services. Instead, it uses production's
+# GPU services (ColPali) via network. Marker is disabled (no remote service).
 
-# Marker PDF extraction - DISABLED for test (requires GPU/auth not available)
-# Test environment uses pdfplumber fallback instead of Marker
-# Production has Marker service with GPU support
-marker_enabled: false  # Disabled - test doesn't have GPU/auth for Marker
+# Marker PDF extraction - DISABLED for staging
+# Marker is embedded in data-worker, not a network service. Staging uses
+# pdfplumber fallback for PDF extraction (simpler, CPU-based).
+marker_enabled: false
 marker_use_gpu: false
 marker_gpu_device: cpu
-marker_service_url: ""  # Empty - don't call production Marker (auth issues)
+marker_service_url: ""  # No remote Marker service available
 
-# ColPali - DISABLED for test (requires GPU/ONNX not available)
-# Test environment doesn't have GPU for ColPali visual embeddings
-# Production has ColPali service with GPU support
-colpali_enabled: false  # Disabled - test doesn't have GPU for visual embeddings
+# ColPali - ENABLED, pointing to PRODUCTION vLLM service
+# Staging uses production's ColPali endpoint for visual embeddings
+# This avoids running GPU-heavy models on staging while still supporting
+# visual document embeddings
+colpali_enabled: true
+colpali_base_url: "http://{{ network_base_octets_production }}.208:9006/v1"  # Production vLLM ColPali
 
 # ============================================================================
 # LLM Model Configuration

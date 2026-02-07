@@ -269,22 +269,28 @@
     - role: deploy_api
       tags: [apis, deploy, deploy_api]
 
-# 3.2 Data (file ingestion + embedding)
+# 3.2 Data (file ingestion, worker)
 # Tag structure:
-#   - apis_data: runs both data role and embedding_api role
+#   - apis_data: runs data role (use with apis_embedding to run both)
 #   - data: runs only the data role (task-level tags control data_api vs data_worker)
 #   - data_api: runs only data API tasks within data role (task-level only)
 #   - data_worker: runs only worker tasks within data role (task-level only)
-#   - embedding_api: runs only embedding_api role
 # NOTE: data_api and data_worker are NOT on role tags - they're task-level only
 # This prevents ALL data tasks from running when targeting data_api or data_worker
 - hosts: data
-  tags: [apis, apis_data, data, embedding_api, embedding]
+  tags: [apis, apis_data, data]
   roles:
     - role: data
       tags: [apis, apis_data, data]
+
+# 3.2.1 Embedding API (separate play to avoid running data role GPU tasks)
+# Uses FastEmbed for CPU-based embeddings - does NOT need GPU
+# NOTE: Separated from data play because play-level tags cause both roles to run
+- hosts: data
+  tags: [apis, apis_embedding, embedding_api, embedding]
+  roles:
     - role: embedding_api
-      tags: [apis, apis_data, embedding_api, embedding]
+      tags: [apis, apis_embedding, embedding_api, embedding]
 
 # 3.3 Search API
 # Note: Removed 'search' from role tags to avoid confusion with milvus core service
