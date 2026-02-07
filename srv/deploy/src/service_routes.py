@@ -564,7 +564,7 @@ async def check_service_health(
             # API services
             'authz-api': ('authz-api', 8010, '/health', 'http', 'http'),
             'deploy-api': ('deploy-api', 8011, '/health', 'http', 'http'),
-            'data-api': ('data-api', 8001, '/health', 'http', 'http'),
+            'data-api': ('data-api', 8002, '/health', 'http', 'http'),
             'search-api': ('search-api', 8003, '/health', 'http', 'http'),
             'agent-api': ('agent-api', 8000, '/health', 'http', 'http'),
             'embedding-api': ('embedding-api', 8005, '/health', 'http', 'http'),

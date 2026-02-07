@@ -58,7 +58,7 @@ run_health_checks() {
             "milvus:19530"
             "authz-api:8010"
             "agent-api:4111"
-            "data-api:8001"
+            "data-api:8002"
             "search-api:8003"
             "litellm:4000"
         )
