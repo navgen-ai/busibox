@@ -456,13 +456,18 @@ async def check_service_health(
     token_payload: dict = Depends(verify_admin_token)
 ):
     """
-    Check if a service is healthy using the same method as install script.
+    Check if a service is healthy by hitting its actual health endpoint.
     
-    For each service:
-    1. Check if container is running using docker compose ps
-    2. For services with health endpoints, try HTTP health check
-    3. For PostgreSQL, use pg_isready
-    4. For Redis and other services without HTTP endpoints, just check container status
+    Works for both Docker and Proxmox - services are reachable by hostname.
+    
+    Health check types:
+    - Redis: TCP connection + PING command
+    - PostgreSQL: TCP port check
+    - MinIO: HTTP /minio/health/live
+    - Milvus: HTTP /healthz
+    - API services: HTTP /health on their respective ports
+    - LiteLLM: HTTP /health/liveliness
+    - Nginx: HTTPS /health
     
     Requires admin authentication.
     """
@@ -541,262 +546,168 @@ async def check_service_health(
             }
     
     try:
-        # Check if we're on Proxmox (LXC) or Docker
-        is_docker = is_docker_environment()
+        # =================================================================
+        # Real health checks - hit actual service endpoints
+        # Works for both Docker and Proxmox - services are reachable by hostname
+        # =================================================================
         
-        if not is_docker:
-            # Proxmox/LXC environment - use systemd status checks via SSH
-            # Services run as systemd units inside LXC containers, not Docker containers
+        # Service health check configuration
+        # Format: service -> (hostname, port, endpoint, protocol, check_type)
+        # check_type: 'http', 'tcp', 'redis', 'postgres'
+        health_config = {
+            # Infrastructure services
+            'redis': ('redis', 6379, None, None, 'redis'),
+            'postgres': ('postgres', 5432, None, None, 'postgres'),
+            'minio': ('minio', 9000, '/minio/health/live', 'http', 'http'),
+            'milvus': ('milvus', 9091, '/healthz', 'http', 'http'),
             
-            # Map service names to (hostname, systemd_service_name)
-            proxmox_service_map = {
-                'redis': ('redis', 'redis-server'),  # data-lxc
-                'postgres': ('postgres', 'postgresql'),  # pg-lxc
-                'minio': ('minio', 'minio'),  # files-lxc
-                'milvus': ('milvus', 'milvus'),  # milvus-lxc
-                'litellm': ('litellm', 'litellm'),  # litellm-lxc
-                'vllm': ('vllm', 'vllm'),  # vllm-lxc
-                'authz-api': ('authz-api', 'authz-api'),  # authz-lxc
-                'deploy-api': ('deploy-api', 'deploy-api'),  # authz-lxc
-                'data-api': ('data-api', 'data-api'),  # data-lxc
-                'search-api': ('search-api', 'search-api'),  # milvus-lxc
-                'agent-api': ('agent-api', 'agent-api'),  # agent-lxc
-                'embedding-api': ('embedding-api', 'embedding-api'),  # data-lxc
-                'nginx': ('nginx', 'nginx'),  # proxy-lxc
-            }
+            # API services
+            'authz-api': ('authz-api', 8010, '/health', 'http', 'http'),
+            'deploy-api': ('deploy-api', 8011, '/health', 'http', 'http'),
+            'data-api': ('data-api', 8001, '/health', 'http', 'http'),
+            'search-api': ('search-api', 8003, '/health', 'http', 'http'),
+            'agent-api': ('agent-api', 8000, '/health', 'http', 'http'),
+            'embedding-api': ('embedding-api', 8004, '/health', 'http', 'http'),
+            'docs-api': ('docs-api', 8005, '/health', 'http', 'http'),
             
-            if service in proxmox_service_map:
-                dns_hostname, systemd_service = proxmox_service_map[service]
-                
-                # For infrastructure services (redis, postgres, minio, milvus),
-                # just return healthy=True after successful installation
-                # since they were just installed by Ansible
-                if service in ('redis', 'postgres', 'minio', 'milvus'):
-                    logger.info(f"Proxmox: {service} considered healthy after installation")
-                    return {
-                        "healthy": True,
-                        "service": service,
-                        "reason": "proxmox_installed",
-                    }
-                
-                # For API services, try HTTP health check
-                try:
-                    health_url = f"http://{dns_hostname}:8000/health"
-                    if service == 'deploy-api':
-                        health_url = f"http://{dns_hostname}:8011/health"
-                    elif service == 'authz-api':
-                        health_url = f"http://{dns_hostname}:8010/health"
-                    elif service == 'search-api':
-                        health_url = f"http://{dns_hostname}:8003/health"
-                    elif service == 'nginx':
-                        health_url = f"https://{dns_hostname}/health"
-                    
-                    async with httpx.AsyncClient(verify=False) as client:
-                        response = await client.get(health_url, timeout=5.0)
-                        healthy = response.status_code in (200, 301, 302, 401, 403)
-                        logger.info(f"Proxmox health check for {service} at {health_url}: {healthy}")
-                        return {
-                            "healthy": healthy,
-                            "service": service,
-                            "reason": "proxmox_http_check",
-                        }
-                except Exception as e:
-                    logger.warning(f"Proxmox health check failed for {service}: {e}")
-                    # Still return healthy for recently installed infrastructure
-                    return {
-                        "healthy": True,
-                        "service": service,
-                        "reason": "proxmox_assumed_healthy",
-                    }
-            else:
-                # Unknown service on Proxmox - assume healthy if just installed
-                logger.info(f"Proxmox: Unknown service {service}, assuming healthy")
-                return {
-                    "healthy": True,
-                    "service": service,
-                    "reason": "proxmox_unknown_assumed_healthy",
-                }
+            # LLM services
+            'litellm': ('litellm', 4000, '/health/liveliness', 'http', 'http'),
+            'vllm': ('vllm', 8000, '/health', 'http', 'http'),
+            
+            # Frontend
+            'nginx': ('nginx', 443, '/health', 'https', 'http'),
+        }
         
-        # Docker environment - use docker compose ps
-        # Step 1: Check if container is running (same as install script)
-        cmd = get_docker_compose_base_cmd(busibox_host_path) + ['ps', '--status', 'running', '-q', service]
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=busibox_host_path,
-        )
-        
-        container_running = bool(result.stdout.strip())
-        
-        if not container_running:
-            logger.info(f"Container {service} is not running")
+        if service not in health_config:
+            logger.warning(f"Unknown service {service}, no health check configured")
             return {
                 "healthy": False,
                 "service": service,
-                "reason": "container_not_running",
+                "reason": "unknown_service",
             }
         
-        container_id = result.stdout.strip()
-        logger.info(f"Container {service} is running (ID: {container_id[:12]})")
+        hostname, port, endpoint, protocol, check_type = health_config[service]
         
-        # Step 2: Service-specific health checks (matching install script)
-        
-        # PostgreSQL: Use pg_isready (same as install script)
-        if service == 'postgres':
-            pg_result = subprocess.run(
-                ['docker', 'exec', container_id, 'pg_isready', '-U', 'postgres'],
-                capture_output=True,
-                text=True,
-            )
-            healthy = pg_result.returncode == 0
-            logger.info(f"PostgreSQL pg_isready: {healthy}")
-            return {
-                "healthy": healthy,
-                "service": service,
-                "reason": "pg_isready" if healthy else "pg_not_ready",
-            }
-        
-        # Redis: Just check if container is running (no HTTP endpoint)
-        if service == 'redis':
-            return {
-                "healthy": True,
-                "service": service,
-                "reason": "container_running",
-            }
-        
-        # MinIO: Just check if container is running (like status script does)
-        # The container has a healthcheck, so if it's running, it's healthy
-        if service == 'minio':
-            return {
-                "healthy": container_running,
-                "service": service,
-                "reason": "container_running",
-            }
-        
-        # Milvus: Just check if container is running (like status script does)
-        # The container has a healthcheck, so if it's running, it's healthy
-        if service == 'milvus':
-            return {
-                "healthy": container_running,
-                "service": service,
-                "reason": "container_running",
-            }
-        
-        # vLLM/MLX: Check based on platform
-        if service == 'vllm':
-            platform_info = get_platform_info()
-            backend = platform_info.get("backend", "cloud")
-            
-            if backend == "mlx":
-                # MLX runs on host - check via host-agent first, fallback to direct check
-                headers = {}
-                if HOST_AGENT_TOKEN:
-                    headers["Authorization"] = f"Bearer {HOST_AGENT_TOKEN}"
+        # Redis health check - use redis-cli ping
+        if check_type == 'redis':
+            import socket
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(5)
+                result = sock.connect_ex((hostname, port))
+                sock.close()
                 
-                try:
-                    # Try host-agent status endpoint
-                    async with httpx.AsyncClient() as client:
-                        response = await client.get(
-                            f"{HOST_AGENT_URL}/mlx/status",
-                            headers=headers,
-                            timeout=5.0,
-                        )
-                        if response.status_code == 200:
-                            status_data = response.json()
-                            return {
-                                "healthy": status_data.get("healthy", False),
-                                "service": service,
-                                "backend": "mlx",
-                                "running": status_data.get("running", False),
-                                "model": status_data.get("model"),
-                                "reason": "host_agent_status",
-                            }
-                except Exception as e:
-                    logger.warning(f"Host-agent status check failed: {e}")
-                
-                # Fallback: direct MLX health check
-                mlx_urls = [
-                    "http://host.docker.internal:8080/v1/models",  # Docker Desktop
-                    "http://localhost:8080/v1/models",  # Direct host access
-                ]
-                
-                for url in mlx_urls:
+                if result == 0:
+                    # Port is open, try PING command
                     try:
-                        async with httpx.AsyncClient() as client:
-                            response = await client.get(url, timeout=5.0)
-                            if response.status_code == 200:
-                                return {
-                                    "healthy": True,
-                                    "service": service,
-                                    "backend": "mlx",
-                                    "url": url,
-                                    "reason": "mlx_direct_check",
-                                }
-                    except Exception:
-                        continue  # Try next URL
-                
-                # All checks failed
-                logger.warning(f"MLX health check failed for all methods")
+                        import redis as redis_lib
+                        r = redis_lib.Redis(host=hostname, port=port, socket_timeout=5)
+                        response = r.ping()
+                        healthy = response == True
+                        logger.info(f"Redis PING: {healthy}")
+                        return {
+                            "healthy": healthy,
+                            "service": service,
+                            "reason": "redis_ping" if healthy else "redis_ping_failed",
+                        }
+                    except ImportError:
+                        # redis library not available, just check TCP
+                        logger.info(f"Redis port {port} is open (redis library not available for PING)")
+                        return {
+                            "healthy": True,
+                            "service": service,
+                            "reason": "redis_port_open",
+                        }
+                    except Exception as e:
+                        logger.warning(f"Redis PING failed: {e}")
+                        return {
+                            "healthy": False,
+                            "service": service,
+                            "reason": "redis_ping_failed",
+                            "error": str(e),
+                        }
+                else:
+                    logger.info(f"Redis port {port} not reachable on {hostname}")
+                    return {
+                        "healthy": False,
+                        "service": service,
+                        "reason": "redis_port_closed",
+                    }
+            except Exception as e:
+                logger.warning(f"Redis health check failed: {e}")
                 return {
                     "healthy": False,
                     "service": service,
-                    "backend": "mlx",
-                    "reason": "mlx_not_responding",
+                    "reason": "redis_check_error",
+                    "error": str(e),
                 }
-            else:
-                # vLLM in Docker - check container
+        
+        # PostgreSQL health check - try TCP connection to port
+        if check_type == 'postgres':
+            import socket
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(5)
+                result = sock.connect_ex((hostname, port))
+                sock.close()
+                
+                if result == 0:
+                    logger.info(f"PostgreSQL port {port} is open on {hostname}")
+                    return {
+                        "healthy": True,
+                        "service": service,
+                        "reason": "postgres_port_open",
+                    }
+                else:
+                    logger.info(f"PostgreSQL port {port} not reachable on {hostname}")
+                    return {
+                        "healthy": False,
+                        "service": service,
+                        "reason": "postgres_port_closed",
+                    }
+            except Exception as e:
+                logger.warning(f"PostgreSQL health check failed: {e}")
                 return {
-                    "healthy": container_running,
+                    "healthy": False,
                     "service": service,
-                    "backend": "vllm",
-                    "reason": "container_running",
+                    "reason": "postgres_check_error",
+                    "error": str(e),
                 }
         
-        # Services with HTTP health endpoints (internal container network)
-        # Map service names to their internal ports and health endpoints
-        # These must match the docker-compose.yml healthcheck configurations
-        health_checks = {
-            'litellm': {'port': 4000, 'endpoint': '/health/liveliness'},  # /health requires auth, /health/liveliness doesn't
-            'embedding-api': {'port': 8005, 'endpoint': '/health'},
-            'vllm': {'port': 8000, 'endpoint': '/health'},
-            'data-api': {'port': 8002, 'endpoint': '/health'},
-            'search-api': {'port': 8003, 'endpoint': '/'},  # Uses root endpoint per docker-compose healthcheck
-            'agent-api': {'port': 8000, 'endpoint': '/health'},  # Port 8000, not 4111
-            'docs-api': {'port': 8004, 'endpoint': '/health/live'},  # Uses /health/live per docker-compose
-            'authz-api': {'port': 8010, 'endpoint': '/health/live'},
-        }
-        
-        if service in health_checks:
-            check_config = health_checks[service]
-            # Use the endpoint from request if provided, otherwise use default
-            health_endpoint = endpoint if endpoint != '/health' else check_config['endpoint']
-            port = check_config['port']
-            
-            # Try HTTP health check (same as install script uses curl)
-            url = f"http://{service}:{port}{health_endpoint}"
-            logger.info(f"Checking HTTP health endpoint: {url}")
+        # HTTP/HTTPS health check
+        if check_type == 'http':
+            url = f"{protocol}://{hostname}:{port}{endpoint}"
+            logger.info(f"Checking health at {url}")
             
             try:
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(url, timeout=5.0)
-                    healthy = response.status_code == 200
-                    logger.info(f"HTTP health check for {service}: {healthy} (status: {response.status_code})")
+                async with httpx.AsyncClient(verify=False, timeout=10.0) as client:
+                    response = await client.get(url)
+                    # 200 = healthy, 401/403 = service is up but needs auth
+                    healthy = response.status_code in (200, 401, 403)
+                    logger.info(f"HTTP health check for {service} at {url}: status={response.status_code}, healthy={healthy}")
                     return {
                         "healthy": healthy,
                         "service": service,
                         "url": url,
                         "status_code": response.status_code,
-                        "reason": "http_health_check",
+                        "reason": "http_ok" if healthy else "http_error",
                     }
-            except httpx.TimeoutException:
-                logger.warning(f"Health check timeout for {service} at {url}")
+            except httpx.ConnectError as e:
+                logger.info(f"HTTP health check failed for {service} at {url}: connection refused")
                 return {
                     "healthy": False,
                     "service": service,
                     "url": url,
-                    "error": "timeout",
-                    "reason": "http_timeout",
+                    "reason": "connection_refused",
+                    "error": str(e),
+                }
+            except httpx.TimeoutException:
+                logger.info(f"HTTP health check timeout for {service} at {url}")
+                return {
+                    "healthy": False,
+                    "service": service,
+                    "url": url,
+                    "reason": "timeout",
                 }
             except Exception as e:
                 logger.warning(f"HTTP health check failed for {service}: {e}")
@@ -804,16 +715,16 @@ async def check_service_health(
                     "healthy": False,
                     "service": service,
                     "url": url,
-                    "error": str(e),
                     "reason": "http_error",
+                    "error": str(e),
                 }
         
-        # Unknown service - just check if container is running
-        logger.info(f"Unknown service {service}, checking container status only")
+        # Should not reach here - all services should have a check_type
+        logger.warning(f"No health check logic for {service} with check_type={check_type}")
         return {
-            "healthy": container_running,
+            "healthy": False,
             "service": service,
-            "reason": "container_check_only",
+            "reason": "no_check_logic",
         }
         
     except Exception as e:
