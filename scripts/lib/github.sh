@@ -19,6 +19,7 @@
 # Source dependencies
 _GITHUB_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_GITHUB_SCRIPT_DIR}/state.sh" 2>/dev/null || true
+source "${_GITHUB_SCRIPT_DIR}/vault.sh" 2>/dev/null || true
 
 # Colors (define if not already defined by ui.sh)
 RED="${RED:-\033[0;31m}"
@@ -172,14 +173,27 @@ get_github_token() {
     # Try to read from vault (source of truth for secrets)
     # Determine vault file path if not already set
     local vault_file="${VAULT_FILE:-}"
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local repo_root="$(cd "$script_dir/../.." && pwd)"
+    
     if [[ -z "$vault_file" ]]; then
-        # Try to find the vault file relative to this script
-        local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        local repo_root="$(cd "$script_dir/../.." && pwd)"
         vault_file="${repo_root}/provision/ansible/roles/secrets/vars/vault.yml"
     fi
     
     if command -v get_vault_secret &>/dev/null && [[ -f "$vault_file" ]]; then
+        # Initialize vault access if not already done
+        # Determine environment prefix from state or default to dev
+        local env_prefix
+        env_prefix=$(_get_env_prefix 2>/dev/null || echo "dev")
+        
+        # Set up vault environment and ensure access
+        if command -v set_vault_environment &>/dev/null; then
+            set_vault_environment "$env_prefix" >/dev/null 2>&1 || true
+        fi
+        if command -v ensure_vault_access &>/dev/null; then
+            ensure_vault_access >/dev/null 2>&1 || true
+        fi
+        
         local vault_token
         vault_token=$(get_vault_secret "secrets.github.personal_access_token" 2>/dev/null || echo "")
         if [[ -n "$vault_token" ]] && [[ "$vault_token" != "null" ]] && [[ "$vault_token" != "CHANGE_ME"* ]]; then

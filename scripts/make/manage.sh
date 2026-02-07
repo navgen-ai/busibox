@@ -573,7 +573,19 @@ manage_service() {
         box_line "  ${BOLD}2)${NC} Stop"
         box_line "  ${BOLD}3)${NC} Restart"
         box_line "  ${BOLD}4)${NC} View Logs"
-        box_line "  ${BOLD}5)${NC} Redeploy"
+        box_line "  ${BOLD}5)${NC} Redeploy (rebuild container)"
+        
+        # Add dev mode note for Python API services
+        if [[ "$backend" == "docker" ]]; then
+            case "$service" in
+                authz-api|data-api|search-api|agent-api|deploy-api|docs-api|embedding-api)
+                    box_empty
+                    box_line "  ${DIM}Note: In dev mode, Python APIs have hot-reload.${NC}"
+                    box_line "  ${DIM}Use Restart for code changes, Redeploy only for${NC}"
+                    box_line "  ${DIM}requirements.txt or Dockerfile changes.${NC}"
+                    ;;
+            esac
+        fi
         
         # Add options for core-apps service
         if [[ "$service" == "core-apps" ]]; then

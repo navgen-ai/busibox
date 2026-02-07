@@ -2596,7 +2596,7 @@ make test-docker SERVICE=agent ARGS='-v --tb=short'
 
 ## Services in Docker
 - authz-api: http://localhost:8080
-- data-api: http://localhost:8001
+- data-api: http://localhost:8002
 - search-api: http://localhost:8003
 - agent-api: http://localhost:8000
 `,
