@@ -341,6 +341,7 @@ Choose the most appropriate single agent for the query.""",
         available_agents: Optional[List[str]] = None,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         principal: Optional[Any] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """
         Main entry point for agentic dispatch.
@@ -355,6 +356,7 @@ Choose the most appropriate single agent for the query.""",
             available_agents: List of agent IDs that can be used (can be UUIDs or names)
             conversation_history: Previous messages for context
             principal: Authenticated user principal for tools that require auth
+            metadata: Application context metadata (e.g. projectId, appName) passed to agents
         """
         start_time = datetime.now(timezone.utc)
         
@@ -537,13 +539,14 @@ Choose the most appropriate single agent for the query.""",
                             query=query,
                             stream=stream_callback,
                             cancel=cancel,
-                            context={
-                                "conversation_history": conversation_history,
-                                "principal": principal,
-                                "user_id": user_id,
-                                "session": session,  # Pass DB session for token exchange
-                                "relevant_insights": relevant_insights,  # Agent memories from dispatcher
-                            }
+                    context={
+                        "conversation_history": conversation_history,
+                        "principal": principal,
+                        "user_id": user_id,
+                        "session": session,  # Pass DB session for token exchange
+                        "relevant_insights": relevant_insights,  # Agent memories from dispatcher
+                        "metadata": metadata,  # Application context (e.g. projectId)
+                    }
                         )
                         logger.info(f"Agent {agent.name} completed with result length: {len(result) if result else 0}")
                         agent_result["output"] = result
@@ -731,6 +734,7 @@ async def run_agentic_dispatcher(
     available_agents: Optional[List[str]] = None,
     conversation_history: Optional[List[Dict[str, str]]] = None,
     principal: Optional[Any] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> AsyncGenerator[StreamEvent, None]:
     """
     Convenience function to run the agentic dispatcher.
@@ -745,5 +749,6 @@ async def run_agentic_dispatcher(
         available_agents=available_agents,
         conversation_history=conversation_history,
         principal=principal,
+        metadata=metadata,
     ):
         yield event

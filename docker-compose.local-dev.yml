@@ -98,6 +98,15 @@ services:
       # NOTE: NEXT_PUBLIC_BASE_PATH is set per-app in core-apps-entrypoint.sh
       # because both apps run in the same container but need different values
       # (/portal for ai-portal, /agents for agent-manager)
+      
+      # =======================================================================
+      # Testing: Silent SSO Refresh (REMOVE AFTER TESTING)
+      # =======================================================================
+      # SSO_COOKIE_MAX_AGE: "60"
+      # NEXT_PUBLIC_AUTH_CHECK_INTERVAL_MS: "10000"
+      # NEXT_PUBLIC_AUTH_REFRESH_BUFFER_MS: "30000"
+      # NEXT_PUBLIC_TOKEN_EXPIRES_OVERRIDE_MS: "60000"
+      # VERBOSE_AUTH_LOGGING: "true"
     extra_hosts:
       - "host.docker.internal:host-gateway"  # Access host's localhost from container
     ports:

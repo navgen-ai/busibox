@@ -62,6 +62,9 @@ class ModelInfo(BaseModel):
     provider: Optional[str] = None
     description: Optional[str] = None
     purpose: Optional[str] = None  # If this model is mapped to a purpose
+    db_model: bool = False  # True if stored in DB (can be deleted)
+    model_id: Optional[str] = None  # LiteLLM model UUID (for deletion)
+    actual_model: Optional[str] = None  # The underlying model path
 
 
 class ModelsResponse(BaseModel):
@@ -125,37 +128,33 @@ class PurposeMappingUpdate(BaseModel):
 
 
 # =============================================================================
-# Known Cloud Models (curated lists - these are available when API key is set)
+# Cloud Provider Configuration
 # =============================================================================
 
-OPENAI_MODELS = [
-    CloudModel(id="gpt-4.1", name="GPT-4.1", provider="openai",
-               description="Most capable OpenAI model, strong reasoning", context_window=1047576),
-    CloudModel(id="gpt-4.1-mini", name="GPT-4.1 Mini", provider="openai",
-               description="Fast, cost-effective for most tasks", context_window=1047576),
-    CloudModel(id="gpt-4.1-nano", name="GPT-4.1 Nano", provider="openai",
-               description="Fastest, cheapest OpenAI model", context_window=1047576),
-    CloudModel(id="o3", name="o3", provider="openai",
-               description="Advanced reasoning model", context_window=200000),
-    CloudModel(id="o3-mini", name="o3 Mini", provider="openai",
-               description="Fast reasoning model", context_window=200000),
-    CloudModel(id="o4-mini", name="o4 Mini", provider="openai",
-               description="Latest reasoning model", context_window=200000),
-]
-
-ANTHROPIC_MODELS = [
-    CloudModel(id="claude-sonnet-4-20250514", name="Claude Sonnet 4", provider="anthropic",
-               description="High capability, balanced speed and intelligence", context_window=200000),
-    CloudModel(id="claude-3-7-sonnet-20250219", name="Claude 3.7 Sonnet", provider="anthropic",
-               description="Extended thinking, strong reasoning", context_window=200000),
-    CloudModel(id="claude-3-5-haiku-20241022", name="Claude 3.5 Haiku", provider="anthropic",
-               description="Fast and cost-effective", context_window=200000),
-]
-
-CLOUD_MODELS: Dict[str, List[CloudModel]] = {
-    "openai": OPENAI_MODELS,
-    "anthropic": ANTHROPIC_MODELS,
+# Provider API base URLs for fetching live model lists
+CLOUD_PROVIDER_CONFIG: Dict[str, Dict[str, str]] = {
+    "openai": {
+        "models_url": "https://api.openai.com/v1/models",
+        "env_var": "OPENAI_API_KEY",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+    },
+    "anthropic": {
+        "models_url": "https://api.anthropic.com/v1/models",
+        "env_var": "ANTHROPIC_API_KEY",
+        "auth_header": "x-api-key",
+        "auth_prefix": "",
+    },
 }
+
+# Models to exclude from the live lists (internal, deprecated, or not useful)
+OPENAI_MODEL_EXCLUDES = {
+    "babbage", "davinci", "dall-e", "tts", "whisper", "canary", "audio",
+    "embedding", "embed", "moderation", "omni-moderation", "realtime",
+    "text-embedding", "codex", "search",
+}
+
+ANTHROPIC_MODEL_EXCLUDES = set()  # Anthropic list is already clean
 
 # Purposes that can be overridden via the UI
 CONFIGURABLE_PURPOSES = [
@@ -204,6 +203,165 @@ def _mask_key(key: str) -> str:
     return f"{key[:4]}...{key[-4:]}"
 
 
+async def _get_configured_env_vars() -> Dict[str, str]:
+    """
+    Get environment variables configured in LiteLLM.
+    
+    Tries multiple strategies:
+    1. /config/yaml (older LiteLLM)
+    2. LiteLLM database query (newer LiteLLM with STORE_MODEL_IN_DB)
+    3. os.environ fallback
+    """
+    # Strategy 1: /config/yaml
+    config = await _get_litellm_config()
+    if config and "environment_variables" in config:
+        return config.get("environment_variables", {})
+    
+    # Strategy 2: Query LiteLLM database
+    if hasattr(settings, "litellm_database_url") and settings.litellm_database_url:
+        try:
+            import asyncpg
+            conn = await asyncpg.connect(str(settings.litellm_database_url))
+            try:
+                row = await conn.fetchrow(
+                    'SELECT param_value FROM "LiteLLM_Config" '
+                    "WHERE param_name = 'environment_variables'"
+                )
+                if row and row["param_value"]:
+                    import json
+                    stored = row["param_value"]
+                    if isinstance(stored, str):
+                        stored = json.loads(stored)
+                    if isinstance(stored, dict):
+                        return stored
+            finally:
+                await conn.close()
+        except ImportError:
+            logger.debug("asyncpg not available for direct DB query")
+        except Exception as e:
+            logger.warning(f"Failed to query LiteLLM DB for env vars: {e}")
+    
+    # Strategy 3: os.environ
+    import os
+    result = {}
+    for var in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]:
+        val = os.environ.get(var, "")
+        if val:
+            result[var] = val
+    return result
+
+
+def _is_key_configured(env_vars: Dict[str, str], env_var_name: str) -> bool:
+    """Check if a specific API key is configured (non-empty, non-None)."""
+    key_val = env_vars.get(env_var_name, "")
+    return bool(key_val and key_val != "" and key_val != "None")
+
+
+async def _get_api_key_for_provider(provider: str) -> Optional[str]:
+    """
+    Get the actual (decrypted) API key for a cloud provider.
+    
+    LiteLLM stores keys encrypted in DB via /config/update. But when models
+    are called, LiteLLM resolves them from its own env. So we also need the
+    raw key for direct provider API calls (listing models).
+    
+    Strategy: check LiteLLM's env (it decrypts at startup), then os.environ.
+    """
+    env_var = CLOUD_PROVIDER_CONFIG.get(provider, {}).get("env_var", "")
+    if not env_var:
+        return None
+    
+    # Try LiteLLM's runtime environment via /config/update stored values
+    # LiteLLM decrypts them internally - we can't read encrypted values.
+    # But the key may have been passed as a docker env var too.
+    import os
+    val = os.environ.get(env_var, "")
+    if val:
+        return val
+    
+    # If not in os.environ, the key is only in LiteLLM's DB (encrypted).
+    # We can't decrypt it, but LiteLLM itself can use it.
+    # Return None to signal we can't make direct provider API calls.
+    return None
+
+
+async def _fetch_live_openai_models(api_key: str) -> List[CloudModel]:
+    """Fetch live model list from OpenAI API."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                "https://api.openai.com/v1/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            if resp.status_code != 200:
+                logger.warning(f"OpenAI /v1/models returned {resp.status_code}")
+                return []
+            data = resp.json()
+            models = []
+            for m in data.get("data", []):
+                mid = m.get("id", "")
+                # Filter out non-chat models (embeddings, tts, dall-e, etc.)
+                skip = False
+                for excl in OPENAI_MODEL_EXCLUDES:
+                    if excl in mid.lower():
+                        skip = True
+                        break
+                if skip:
+                    continue
+                models.append(CloudModel(
+                    id=mid,
+                    name=mid,
+                    provider="openai",
+                    description=f"OpenAI {mid}",
+                ))
+            # Sort: newest/most capable first
+            models.sort(key=lambda x: x.id)
+            return models
+    except Exception as e:
+        logger.warning(f"Failed to fetch OpenAI models: {e}")
+        return []
+
+
+async def _fetch_live_anthropic_models(api_key: str) -> List[CloudModel]:
+    """Fetch live model list from Anthropic API."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                "https://api.anthropic.com/v1/models?limit=100",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Anthropic /v1/models returned {resp.status_code}")
+                return []
+            data = resp.json()
+            models = []
+            for m in data.get("data", []):
+                mid = m.get("id", "")
+                display = m.get("display_name", mid)
+                models.append(CloudModel(
+                    id=mid,
+                    name=display,
+                    provider="anthropic",
+                    description=f"Anthropic {display}",
+                ))
+            return models
+    except Exception as e:
+        logger.warning(f"Failed to fetch Anthropic models: {e}")
+        return []
+
+
+async def _fetch_live_cloud_models(provider: str, api_key: str) -> List[CloudModel]:
+    """Fetch live model list from a cloud provider."""
+    if provider == "openai":
+        return await _fetch_live_openai_models(api_key)
+    elif provider == "anthropic":
+        return await _fetch_live_anthropic_models(api_key)
+    return []
+
+
 async def _get_litellm_config() -> Optional[Dict[str, Any]]:
     """Fetch current LiteLLM config via /config/yaml."""
     base_url = _get_litellm_base_url()
@@ -213,52 +371,125 @@ async def _get_litellm_config() -> Optional[Dict[str, Any]]:
             resp = await client.get(f"{base_url}/config/yaml", headers=headers)
             if resp.status_code == 200:
                 return resp.json()
+            else:
+                logger.warning(f"/config/yaml returned {resp.status_code}: {resp.text[:200]}")
     except Exception as e:
         logger.error(f"Failed to fetch LiteLLM config: {e}")
     return None
 
 
+async def _get_model_info() -> List[Dict[str, Any]]:
+    """
+    Fetch model info from LiteLLM /model/info endpoint.
+    
+    This returns rich per-model data including litellm_params and model_info,
+    and works regardless of STORE_MODEL_IN_DB setting. It includes both
+    config-file and DB-stored models.
+    
+    Returns list of model info dicts, or empty list on failure.
+    """
+    base_url = _get_litellm_base_url()
+    headers = _get_litellm_headers()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{base_url}/model/info", headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("data", [])
+            else:
+                logger.warning(f"/model/info returned {resp.status_code}")
+    except Exception as e:
+        logger.warning(f"Failed to fetch /model/info: {e}")
+    return []
+
+
+async def _get_v1_models() -> List[Dict[str, Any]]:
+    """
+    Fetch basic model list from /v1/models (OpenAI-compatible).
+    Always works, but has minimal metadata.
+    """
+    base_url = _get_litellm_base_url()
+    headers = _get_litellm_headers()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{base_url}/v1/models", headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("data", [])
+    except Exception as e:
+        logger.warning(f"Failed to fetch /v1/models: {e}")
+    return []
+
+
 async def _get_registered_model_names() -> set:
     """Get the set of model_name values currently registered in LiteLLM."""
-    config = await _get_litellm_config()
-    if not config:
-        return set()
-    model_list = config.get("model_list", [])
-    names = set()
-    for entry in model_list:
-        names.add(entry.get("model_name", ""))
-        # Also extract the actual model ID from litellm_params
-        params = entry.get("litellm_params", {})
-        model_id = params.get("model", "")
-        # Strip provider prefixes like "openai/" or "bedrock/"
-        if "/" in model_id:
-            names.add(model_id.split("/", 1)[-1])
-        names.add(model_id)
-    return names
+    # Try /model/info first (richer data)
+    model_infos = await _get_model_info()
+    if model_infos:
+        names = set()
+        for entry in model_infos:
+            mname = entry.get("model_name", "")
+            if mname:
+                names.add(mname)
+            # Also check litellm_params.model
+            model_id = entry.get("litellm_params", {}).get("model", "")
+            if model_id:
+                names.add(model_id)
+                if "/" in model_id:
+                    names.add(model_id.split("/", 1)[-1])
+        return names
+    
+    # Fallback to /v1/models
+    v1_models = await _get_v1_models()
+    return {m.get("id", "") for m in v1_models if m.get("id")}
 
 
-def _build_purpose_map(model_list: List[Dict]) -> Dict[str, str]:
+def _detect_provider(model_name: str, litellm_params: Dict) -> str:
+    """Detect the real provider from LiteLLM model config."""
+    actual_model = litellm_params.get("model", "")
+    api_base = litellm_params.get("api_base", "")
+    
+    if "host.docker.internal" in api_base or "mlx" in api_base:
+        return "mlx (local)"
+    elif "vllm" in api_base:
+        return "vllm (local)"
+    elif actual_model.startswith("bedrock/"):
+        return "aws-bedrock"
+    elif actual_model.startswith("anthropic/"):
+        return "anthropic"
+    elif actual_model.startswith("openai/") and "mlx-community" not in actual_model:
+        return "openai"
+    elif "mlx-community" in actual_model or "mlx" in actual_model.lower():
+        return "mlx (local)"
+    elif "claude" in model_name.lower() or "claude" in actual_model.lower():
+        return "anthropic"
+    elif "gpt" in model_name.lower() or "o3" in model_name or "o4" in model_name:
+        return "openai"
+    else:
+        return litellm_params.get("custom_llm_provider", "unknown")
+
+
+def _strip_provider_prefix(model_id: str) -> str:
+    """Strip provider prefix from model ID (e.g., openai/gpt-4.1 -> gpt-4.1)."""
+    if "/" in model_id:
+        parts = model_id.split("/", 1)
+        if parts[0] in ("openai", "bedrock", "anthropic"):
+            return parts[1]
+    return model_id
+
+
+def _build_purpose_map(model_entries: List[Dict]) -> Dict[str, str]:
     """
-    Build purpose -> underlying model description from LiteLLM config.
+    Build purpose -> underlying model description from model entries.
     
-    LiteLLM config entries look like:
-      model_name: "agent"
-      litellm_params:
-        model: "openai/mlx-community/Qwen2.5-7B-Instruct-4bit"
-    
-    We want: {"agent": "mlx-community/Qwen2.5-7B-Instruct-4bit"}
+    Accepts entries from either /model/info or /config/yaml model_list.
     """
     purpose_map = {}
-    for entry in model_list:
+    for entry in model_entries:
         name = entry.get("model_name", "")
         params = entry.get("litellm_params", {})
         model_id = params.get("model", "")
-        # Strip provider prefix (openai/, bedrock/, anthropic/)
-        if "/" in model_id:
-            parts = model_id.split("/", 1)
-            if parts[0] in ("openai", "bedrock", "anthropic"):
-                model_id = parts[1]
-        purpose_map[name] = model_id
+        purpose_map[name] = _strip_provider_prefix(model_id)
     return purpose_map
 
 
@@ -272,60 +503,64 @@ async def list_models(
 ) -> ModelsResponse:
     """
     List available models from LiteLLM with proper provider labels and purpose mapping.
-    """
-    base_url = _get_litellm_base_url()
-    headers = _get_litellm_headers()
-    config = await _get_litellm_config()
     
-    # Build a lookup from LiteLLM config for richer info
-    config_lookup: Dict[str, Dict] = {}
-    model_list = []
+    Uses /model/info first (richest data), falls back to /config/yaml,
+    then /v1/models as last resort.
+    """
+    # Strategy 1: /model/info (works with both config-file and DB models)
+    model_infos = await _get_model_info()
+    if model_infos:
+        models = []
+        for entry in model_infos:
+            mname = entry.get("model_name", "")
+            params = entry.get("litellm_params", {})
+            info = entry.get("model_info", {})
+            provider = _detect_provider(mname, params)
+            is_db = bool(info.get("db_model", False))
+            models.append(ModelInfo(
+                id=mname,
+                provider=provider,
+                description=info.get("description", ""),
+                db_model=is_db,
+                model_id=info.get("id", "") if is_db else None,
+                actual_model=params.get("model", ""),
+            ))
+        purpose_map = _build_purpose_map(model_infos)
+        return ModelsResponse(models=models, purposes=purpose_map)
+    
+    # Strategy 2: /config/yaml
+    config = await _get_litellm_config()
     if config:
         model_list = config.get("model_list", [])
+        models = []
         for entry in model_list:
             mname = entry.get("model_name", "")
             params = entry.get("litellm_params", {})
             info = entry.get("model_info", {})
-            actual_model = params.get("model", "")
-            api_base = params.get("api_base", "")
-            
-            # Determine real provider from config
-            if "host.docker.internal" in api_base or "mlx" in api_base:
-                provider = "mlx (local)"
-            elif "vllm" in api_base:
-                provider = "vllm (local)"
-            elif actual_model.startswith("bedrock/"):
-                provider = "aws-bedrock"
-            elif actual_model.startswith("anthropic/") or "anthropic" in actual_model:
-                provider = "anthropic"
-            elif actual_model.startswith("openai/") and "mlx-community" not in actual_model:
-                provider = "openai"
-            elif "mlx-community" in actual_model or "mlx" in actual_model.lower():
-                provider = "mlx (local)"
-            else:
-                provider = params.get("custom_llm_provider", "unknown")
-            
-            config_lookup[mname] = {
-                "provider": provider,
-                "actual_model": actual_model,
-                "description": info.get("description", ""),
-            }
+            provider = _detect_provider(mname, params)
+            models.append(ModelInfo(
+                id=mname,
+                provider=provider,
+                description=info.get("description", ""),
+            ))
+        purpose_map = _build_purpose_map(model_list)
+        return ModelsResponse(models=models, purposes=purpose_map)
     
-    # Build models list from config (not from /v1/models which loses context)
-    models = []
-    for entry in model_list:
-        mname = entry.get("model_name", "")
-        lookup = config_lookup.get(mname, {})
-        models.append(ModelInfo(
-            id=mname,
-            provider=lookup.get("provider"),
-            description=lookup.get("description"),
-        ))
+    # Strategy 3: /v1/models (minimal info)
+    v1_models = await _get_v1_models()
+    if v1_models:
+        models = []
+        for m in v1_models:
+            mid = m.get("id", "unknown")
+            models.append(ModelInfo(
+                id=mid,
+                provider=m.get("owned_by"),
+            ))
+        return ModelsResponse(models=models, purposes={})
     
-    # Build purpose map
-    purpose_map = _build_purpose_map(model_list)
-    
-    return ModelsResponse(models=models, purposes=purpose_map)
+    # Nothing available
+    logger.error("Could not fetch models from any LiteLLM endpoint")
+    return ModelsResponse(models=[], purposes={})
 
 
 @router.post("/completions", response_model=CompletionResponse)
@@ -481,58 +716,126 @@ async def save_provider_key(
 ) -> Dict[str, Any]:
     """
     Save a cloud provider API key to LiteLLM.
+    
+    Uses the /credentials API (forward-compatible) with fallback to
+    /config/update for older LiteLLM versions.
+    Also sets the key in os.environ so agent-api can use it for
+    direct provider API calls (e.g., fetching live model lists).
+    
     Admin only.
     """
     _require_admin(principal)
     
     provider = request.provider.lower()
-    if provider not in ("openai", "anthropic"):
+    if provider not in CLOUD_PROVIDER_CONFIG:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported provider: {provider}. Supported: openai, anthropic"
+            detail=f"Unsupported provider: {provider}. "
+                   f"Supported: {list(CLOUD_PROVIDER_CONFIG.keys())}"
         )
     
-    env_var_map = {
-        "openai": "OPENAI_API_KEY",
-        "anthropic": "ANTHROPIC_API_KEY",
-    }
-    env_var = env_var_map[provider]
-    
+    env_var = CLOUD_PROVIDER_CONFIG[provider]["env_var"]
     base_url = _get_litellm_base_url()
     headers = _get_litellm_headers()
+    saved = False
     
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            update_payload = {
-                "environment_variables": {
-                    env_var: request.api_key,
+            # Strategy 1: Use /credentials API (LiteLLM v1.65+)
+            try:
+                cred_payload = {
+                    "credential_name": f"{provider}_credentials",
+                    "credential_info": {
+                        "provider": provider,
+                        "description": f"{provider.title()} API key",
+                    },
+                    "credential_values": {
+                        env_var: request.api_key,
+                    },
                 }
-            }
-            
-            response = await client.post(
-                f"{base_url}/config/update",
-                headers=headers,
-                json=update_payload,
-            )
-            
-            if response.status_code == 200:
-                logger.info(f"Successfully updated {provider} API key in LiteLLM")
-                return {
-                    "success": True,
-                    "provider": provider,
-                    "message": f"{provider.title()} API key configured successfully"
-                }
-            else:
-                logger.warning(
-                    f"LiteLLM config/update returned {response.status_code}: {response.text}"
+                resp = await client.post(
+                    f"{base_url}/credentials",
+                    headers=headers,
+                    json=cred_payload,
                 )
+                if resp.status_code == 200:
+                    logger.info(f"Saved {provider} key via /credentials API")
+                    saved = True
+                elif resp.status_code == 409:
+                    # Credential exists, update it
+                    resp2 = await client.patch(
+                        f"{base_url}/credentials/{provider}_credentials",
+                        headers=headers,
+                        json={
+                            "credential_values": {env_var: request.api_key},
+                        },
+                    )
+                    if resp2.status_code == 200:
+                        logger.info(f"Updated {provider} key via /credentials API")
+                        saved = True
+                    else:
+                        logger.warning(
+                            f"/credentials PATCH returned {resp2.status_code}: "
+                            f"{resp2.text[:200]}"
+                        )
+                else:
+                    logger.warning(
+                        f"/credentials POST returned {resp.status_code}: "
+                        f"{resp.text[:200]}"
+                    )
+            except Exception as e:
+                logger.warning(f"/credentials API failed: {e}")
+            
+            # Strategy 2: Fallback to /config/update
+            if not saved:
+                try:
+                    resp = await client.post(
+                        f"{base_url}/config/update",
+                        headers=headers,
+                        json={"environment_variables": {env_var: request.api_key}},
+                    )
+                    if resp.status_code == 200:
+                        logger.info(f"Saved {provider} key via /config/update")
+                        saved = True
+                    else:
+                        error_text = resp.text[:500]
+                        logger.warning(
+                            f"/config/update returned {resp.status_code}: {error_text}"
+                        )
+                        if "STORE_MODEL_IN_DB" in error_text:
+                            raise HTTPException(
+                                status_code=status.HTTP_502_BAD_GATEWAY,
+                                detail="LiteLLM requires STORE_MODEL_IN_DB=True. "
+                                       "Set this env var on LiteLLM and restart."
+                            )
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    logger.warning(f"/config/update failed: {e}")
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.warning(f"LiteLLM config/update failed: {e}")
+        logger.warning(f"Key save connection failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to connect to LiteLLM: {str(e)}"
+        )
     
-    raise HTTPException(
-        status_code=status.HTTP_502_BAD_GATEWAY,
-        detail="Failed to update LiteLLM configuration."
-    )
+    if not saved:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to save key via any LiteLLM API"
+        )
+    
+    # Also set in os.environ so agent-api can use it for direct provider calls
+    import os
+    os.environ[env_var] = request.api_key
+    
+    return {
+        "success": True,
+        "provider": provider,
+        "message": f"{provider.title()} API key configured successfully"
+    }
 
 
 @router.get("/keys", response_model=KeysResponse)
@@ -542,22 +845,17 @@ async def list_provider_keys(
     """List which cloud providers have API keys configured. Admin only."""
     _require_admin(principal)
     
-    config = await _get_litellm_config()
-    providers_info = []
+    env_vars = await _get_configured_env_vars()
     
-    if config:
-        env_vars = config.get("environment_variables", {})
-        for provider, env_var in [("openai", "OPENAI_API_KEY"), ("anthropic", "ANTHROPIC_API_KEY")]:
-            key_val = env_vars.get(env_var, "")
-            configured = bool(key_val and key_val != "" and key_val != "None")
-            providers_info.append(ProviderKeyInfo(
-                provider=provider,
-                configured=configured,
-                masked_key=_mask_key(key_val) if configured else None,
-            ))
-    else:
-        for provider in ["openai", "anthropic"]:
-            providers_info.append(ProviderKeyInfo(provider=provider, configured=False))
+    providers_info = []
+    for provider, env_var in [("openai", "OPENAI_API_KEY"), ("anthropic", "ANTHROPIC_API_KEY")]:
+        configured = _is_key_configured(env_vars, env_var)
+        providers_info.append(ProviderKeyInfo(
+            provider=provider,
+            configured=configured,
+            # Keys in DB may be encrypted - just show configured status
+            masked_key="****configured****" if configured else None,
+        ))
     
     return KeysResponse(providers=providers_info)
 
@@ -572,36 +870,53 @@ async def list_cloud_models(
     principal: Principal = Depends(get_principal),
 ) -> CloudModelsResponse:
     """
-    List available cloud models for a provider.
+    List available cloud models for a provider by querying the provider API live.
     
-    Returns curated model list with registration status (whether each model
-    is already configured in LiteLLM).
+    Returns the current model list from OpenAI/Anthropic with registration
+    status (whether each model is already configured in LiteLLM).
+    Requires the provider's API key to be configured.
     Admin only.
     """
     _require_admin(principal)
     
     provider = provider.lower()
-    if provider not in CLOUD_MODELS:
+    if provider not in CLOUD_PROVIDER_CONFIG:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported provider: {provider}. Supported: {list(CLOUD_MODELS.keys())}"
+            detail=f"Unsupported provider: {provider}. "
+                   f"Supported: {list(CLOUD_PROVIDER_CONFIG.keys())}"
         )
     
-    # Check if API key is configured
-    config = await _get_litellm_config()
-    env_vars = config.get("environment_variables", {}) if config else {}
-    env_var_map = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}
-    key_val = env_vars.get(env_var_map.get(provider, ""), "")
-    key_configured = bool(key_val and key_val != "" and key_val != "None")
+    # Check if API key is available for direct provider calls
+    api_key = await _get_api_key_for_provider(provider)
+    key_configured = api_key is not None
     
-    # Check which models are already registered
-    registered = await _get_registered_model_names()
+    # Also check LiteLLM DB (key might be stored there even if not in os.environ)
+    if not key_configured:
+        env_vars = await _get_configured_env_vars()
+        env_var = CLOUD_PROVIDER_CONFIG[provider]["env_var"]
+        key_configured = _is_key_configured(env_vars, env_var)
     
-    models = []
-    for m in CLOUD_MODELS[provider]:
-        model_copy = m.model_copy()
-        model_copy.registered = m.id in registered
-        models.append(model_copy)
+    models: List[CloudModel] = []
+    
+    if api_key:
+        # Fetch live models from the provider
+        models = await _fetch_live_cloud_models(provider, api_key)
+        
+        if models:
+            # Mark which are already registered in LiteLLM
+            registered = await _get_registered_model_names()
+            for m in models:
+                m.registered = m.id in registered
+    
+    if not models and key_configured:
+        # Key is in LiteLLM DB but we can't access it for direct calls.
+        # Return empty list with a note that key is configured but we
+        # need it in agent-api env to fetch live models.
+        logger.info(
+            f"{provider} key is in LiteLLM but not accessible to agent-api "
+            f"for direct API calls. Re-save the key to enable live model listing."
+        )
     
     return CloudModelsResponse(
         provider=provider,
@@ -617,24 +932,17 @@ async def register_cloud_models(
 ) -> Dict[str, Any]:
     """
     Register cloud models in LiteLLM so they become available for use.
+    
+    Accepts any model ID from the provider (fetched via live API).
     Admin only.
     """
     _require_admin(principal)
     
     provider = request.provider.lower()
-    if provider not in CLOUD_MODELS:
+    if provider not in CLOUD_PROVIDER_CONFIG:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsupported provider: {provider}"
-        )
-    
-    # Validate model IDs against known models
-    known_ids = {m.id for m in CLOUD_MODELS[provider]}
-    invalid = set(request.model_ids) - known_ids
-    if invalid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unknown model IDs for {provider}: {invalid}"
         )
     
     base_url = _get_litellm_base_url()
@@ -661,10 +969,7 @@ async def register_cloud_models(
                 "model": litellm_model,
             },
             "model_info": {
-                "description": next(
-                    (m.description for m in CLOUD_MODELS[provider] if m.id == model_id),
-                    ""
-                ),
+                "description": f"{provider.title()} {model_id}",
             },
         })
     
@@ -727,34 +1032,71 @@ async def get_purpose_mappings(
     Returns the mapping of purposes (agent, fast, frontier, etc.) to their
     underlying model names, along with all available models that could be
     assigned to purposes.
+    
+    Uses /model/info first, falls back to /config/yaml, then /v1/models.
     """
+    # Strategy 1: /model/info
+    model_infos = await _get_model_info()
+    if model_infos:
+        purpose_map = _build_purpose_map(model_infos)
+        available_models = []
+        for entry in model_infos:
+            mname = entry.get("model_name", "")
+            params = entry.get("litellm_params", {})
+            actual_model = params.get("model", "")
+            info = entry.get("model_info", {})
+            available_models.append({
+                "model_name": mname,
+                "actual_model": actual_model,
+                "description": info.get("description", ""),
+            })
+        return {
+            "purposes": purpose_map,
+            "configurable_purposes": CONFIGURABLE_PURPOSES,
+            "available_models": available_models,
+        }
+    
+    # Strategy 2: /config/yaml
     config = await _get_litellm_config()
-    if not config:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Cannot read LiteLLM configuration"
-        )
+    if config:
+        model_list = config.get("model_list", [])
+        purpose_map = _build_purpose_map(model_list)
+        available_models = []
+        for entry in model_list:
+            mname = entry.get("model_name", "")
+            params = entry.get("litellm_params", {})
+            actual_model = params.get("model", "")
+            info = entry.get("model_info", {})
+            available_models.append({
+                "model_name": mname,
+                "actual_model": actual_model,
+                "description": info.get("description", ""),
+            })
+        return {
+            "purposes": purpose_map,
+            "configurable_purposes": CONFIGURABLE_PURPOSES,
+            "available_models": available_models,
+        }
     
-    model_list = config.get("model_list", [])
-    purpose_map = _build_purpose_map(model_list)
+    # Strategy 3: /v1/models (minimal - no purpose mapping possible)
+    v1_models = await _get_v1_models()
+    if v1_models:
+        available_models = [
+            {"model_name": m.get("id", ""), "actual_model": "", "description": ""}
+            for m in v1_models
+        ]
+        return {
+            "purposes": {},
+            "configurable_purposes": CONFIGURABLE_PURPOSES,
+            "available_models": available_models,
+        }
     
-    # Build list of all available model names that can be assigned
-    available_models = []
-    for entry in model_list:
-        mname = entry.get("model_name", "")
-        params = entry.get("litellm_params", {})
-        actual_model = params.get("model", "")
-        info = entry.get("model_info", {})
-        available_models.append({
-            "model_name": mname,
-            "actual_model": actual_model,
-            "description": info.get("description", ""),
-        })
-    
+    # Nothing available
+    logger.error("Could not fetch model info from any LiteLLM endpoint")
     return {
-        "purposes": purpose_map,
+        "purposes": {},
         "configurable_purposes": CONFIGURABLE_PURPOSES,
-        "available_models": available_models,
+        "available_models": [],
     }
 
 
@@ -780,19 +1122,22 @@ async def update_purpose_mapping(
                    f"Allowed: {CONFIGURABLE_PURPOSES}"
         )
     
-    # Get current config
-    config = await _get_litellm_config()
-    if not config:
+    # Get model info - try /model/info first, then /config/yaml
+    model_entries = await _get_model_info()
+    if not model_entries:
+        config = await _get_litellm_config()
+        if config:
+            model_entries = config.get("model_list", [])
+    
+    if not model_entries:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Cannot read LiteLLM configuration"
+            detail="Cannot read LiteLLM model configuration"
         )
-    
-    model_list = config.get("model_list", [])
     
     # Verify the target model exists in LiteLLM
     all_model_names = set()
-    for entry in model_list:
+    for entry in model_entries:
         all_model_names.add(entry.get("model_name", ""))
     
     if request.model_name not in all_model_names:
@@ -805,7 +1150,7 @@ async def update_purpose_mapping(
     # Find the target model's litellm_params
     target_params = None
     target_info = None
-    for entry in model_list:
+    for entry in model_entries:
         if entry.get("model_name") == request.model_name:
             target_params = entry.get("litellm_params", {})
             target_info = entry.get("model_info", {})
@@ -820,27 +1165,46 @@ async def update_purpose_mapping(
     base_url = _get_litellm_base_url()
     headers = _get_litellm_headers()
     
-    # Check if purpose already exists as a model entry
-    purpose_exists = request.purpose in all_model_names
-    
+    # Check if purpose already has a DB-stored model entry that we need to 
+    # delete first. Config-file entries (db_model=False) can't be deleted
+    # via API, but adding a DB entry with the same model_name will override.
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            if purpose_exists:
-                # Delete old purpose mapping first
-                try:
-                    await client.post(
-                        f"{base_url}/model/delete",
-                        headers=headers,
-                        json={"id": request.purpose},
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to delete old purpose mapping: {e}")
+            # Find and delete any existing DB model entry for this purpose
+            for entry in model_entries:
+                if entry.get("model_name") == request.purpose:
+                    entry_info = entry.get("model_info", {})
+                    if entry_info.get("db_model", False):
+                        # This is a DB-stored entry, delete it by its UUID
+                        model_id = entry_info.get("id", "")
+                        if model_id:
+                            try:
+                                await client.post(
+                                    f"{base_url}/model/delete",
+                                    headers=headers,
+                                    json={"id": model_id},
+                                )
+                                logger.info(f"Deleted existing DB purpose entry: {request.purpose} (id={model_id})")
+                            except Exception as e:
+                                logger.warning(f"Failed to delete old purpose DB entry: {e}")
             
-            # Create new purpose entry pointing to the target model
+            # Create new purpose entry pointing to the target model.
+            # IMPORTANT: Only pass minimal fields. The full model_info from
+            # /model/info has many metadata/pricing fields that cause
+            # "Failed to add model to db" errors in LiteLLM's /model/new.
+            clean_params = {"model": target_params.get("model", "")}
+            # Preserve api_base if set (needed for local models like MLX)
+            if target_params.get("api_base"):
+                clean_params["api_base"] = target_params["api_base"]
+            
+            clean_info: Dict[str, Any] = {}
+            if target_info and target_info.get("description"):
+                clean_info["description"] = target_info["description"]
+            
             new_entry = {
                 "model_name": request.purpose,
-                "litellm_params": dict(target_params),  # Copy target model's params
-                "model_info": dict(target_info) if target_info else {},
+                "litellm_params": clean_params,
+                "model_info": clean_info,
             }
             
             resp = await client.post(
@@ -874,3 +1238,74 @@ async def update_purpose_mapping(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Failed to update purpose mapping: {e}"
         )
+
+
+# =============================================================================
+# Model Deletion
+# =============================================================================
+
+class ModelDeleteRequest(BaseModel):
+    """Request to delete one or more models from LiteLLM."""
+    model_ids: List[str]  # LiteLLM model UUIDs (from model_info.id)
+
+
+@router.post("/models/delete")
+async def delete_models(
+    request: ModelDeleteRequest,
+    principal: Principal = Depends(get_principal),
+) -> Dict[str, Any]:
+    """
+    Delete one or more DB-stored models from LiteLLM.
+    
+    Only models with db_model=True can be deleted. Config-file models
+    cannot be removed via this API.
+    
+    Admin only.
+    """
+    _require_admin(principal)
+    
+    if not request.model_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No model_ids provided"
+        )
+    
+    base_url = _get_litellm_base_url()
+    headers = _get_litellm_headers()
+    
+    deleted = 0
+    errors: List[str] = []
+    
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for model_id in request.model_ids:
+                try:
+                    resp = await client.post(
+                        f"{base_url}/model/delete",
+                        headers=headers,
+                        json={"id": model_id},
+                    )
+                    if resp.status_code == 200:
+                        deleted += 1
+                        logger.info(f"Deleted model {model_id}")
+                    else:
+                        error_text = resp.text[:200]
+                        logger.warning(f"Failed to delete model {model_id}: {resp.status_code} - {error_text}")
+                        errors.append(f"{model_id}: {error_text}")
+                except Exception as e:
+                    errors.append(f"{model_id}: {str(e)}")
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to connect to LiteLLM: {e}"
+        )
+    
+    result: Dict[str, Any] = {
+        "success": deleted > 0 or len(errors) == 0,
+        "deleted": deleted,
+        "message": f"Deleted {deleted} model(s)",
+    }
+    if errors:
+        result["errors"] = errors
+    
+    return result

@@ -92,6 +92,7 @@ class ChatMessageRequest(BaseModel):
     selected_agents: Optional[List[str]] = Field(None, description="Specific agent IDs to use (bypasses dispatcher)")
     temperature: Optional[float] = Field(None, ge=0.0, le=2.0, description="Temperature override")
     max_tokens: Optional[int] = Field(None, ge=1, le=32000, description="Max tokens override")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Application context metadata passed to agent tools (e.g. projectId, appName)")
 
 
 class ChatMessageResponse(BaseModel):
@@ -764,6 +765,7 @@ async def send_chat_message_stream_agentic(
                 available_agents=available_agents,
                 conversation_history=history_dicts,
                 principal=principal,
+                metadata=payload.metadata,
             ):
                 # Yield event to client
                 yield f"event: {event.type}\ndata: {event.model_dump_json()}\n\n"

@@ -275,6 +275,8 @@ services:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev-key}
       # PostgreSQL database for caching, usage tracking, and team management
       DATABASE_URL: postgresql://${POSTGRES_USER:-busibox_user}:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/litellm
+      # Enable runtime model/config management via API (requires DATABASE_URL)
+      STORE_MODEL_IN_DB: "True"
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # AWS Bedrock - pass BEDROCK_API_KEY directly as bearer token
@@ -694,6 +696,9 @@ services:
       DEFAULT_MODEL: agent
       # LiteLLM database for spend tracking (admin stats)
       LITELLM_DATABASE_URL: postgresql://${POSTGRES_USER:-busibox_user}:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/litellm
+      # Cloud provider API keys (for direct model listing from providers)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # AuthZ
       AUTH_JWKS_URL: http://authz-api:8010/.well-known/jwks.json
       AUTH_ISSUER: busibox-authz
