@@ -551,9 +551,98 @@ restart_all_services() {
     read -n 1 -s -r -p "Press any key to continue..."
 }
 
+# Check if a service runs on the host (not in Docker/Proxmox)
+is_host_native_service() {
+    local service="$1"
+    case "$service" in
+        mlx|host-agent) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Manage a host-native service (MLX, host-agent)
+# These run directly on the host machine, not in Docker or Proxmox containers.
+# Actions are routed to Makefile targets (e.g., make mlx-start, make mlx-stop).
+manage_host_native_service() {
+    local service="$1"
+    
+    while true; do
+        clear
+        box_start 70 double "$CYAN"
+        box_header "MANAGE: $service (host-native)"
+        box_empty
+        
+        local status
+        status=$(get_service_status "$service")
+        box_line "  ${CYAN}Status:${NC} $status"
+        box_empty
+        
+        box_line "  ${BOLD}1)${NC} Start"
+        box_line "  ${BOLD}2)${NC} Stop"
+        box_line "  ${BOLD}3)${NC} Restart"
+        box_line "  ${BOLD}4)${NC} Status (detailed)"
+        
+        box_empty
+        box_line "  ${DIM}This service runs on the host machine, not in a container.${NC}"
+        box_line "  ${DIM}Managed via: make ${service}-start/stop/restart/status${NC}"
+        box_empty
+        box_line "  ${DIM}b = back to service list    m = main menu${NC}"
+        box_empty
+        box_footer
+        echo ""
+        
+        read -n 1 -s -r -p "Select option: " choice
+        echo ""
+        
+        case "$choice" in
+            1) # Start
+                echo ""
+                cd "$REPO_ROOT"
+                make "${service}-start" || echo "Failed to start"
+                echo ""
+                read -n 1 -s -r -p "Press any key to continue..."
+                ;;
+            2) # Stop
+                echo ""
+                cd "$REPO_ROOT"
+                make "${service}-stop" || echo "Failed to stop"
+                echo ""
+                read -n 1 -s -r -p "Press any key to continue..."
+                ;;
+            3) # Restart
+                echo ""
+                cd "$REPO_ROOT"
+                make "${service}-restart" || echo "Failed to restart"
+                echo ""
+                read -n 1 -s -r -p "Press any key to continue..."
+                ;;
+            4) # Status (detailed)
+                echo ""
+                cd "$REPO_ROOT"
+                make "${service}-status" || echo "Failed to get status"
+                echo ""
+                read -n 1 -s -r -p "Press any key to continue..."
+                ;;
+            b|B)
+                return
+                ;;
+            m|M)
+                return 1
+                ;;
+        esac
+    done
+}
+
 # Manage individual service
 manage_service() {
     local service="$1"
+    
+    # Host-native services get their own management flow
+    if is_host_native_service "$service"; then
+        manage_host_native_service "$service"
+        return $?
+    fi
+    
     local backend
     backend=$(get_backend_type)
     local prefix="${CONTAINER_PREFIX:-dev}"

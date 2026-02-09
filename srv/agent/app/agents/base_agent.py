@@ -204,6 +204,8 @@ class AgentContext:
     recent_messages: List[Dict[str, Any]] = field(default_factory=list)
     # Relevant insights from user's past conversations (agent memories)
     relevant_insights: List[Dict[str, Any]] = field(default_factory=list)
+    # Application context metadata (e.g. projectId, appName) from the chat request
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 class BaseStreamingAgent(StreamingAgent):
@@ -223,14 +225,16 @@ class BaseStreamingAgent(StreamingAgent):
         # Ensure OpenAI environment is configured (lazy init for test support)
         _ensure_openai_env()
         
-        # Get fresh settings after env is configured
+        # Use the agent's configured model (from definition), falling back to settings
         settings = get_settings()
+        model_name = config.model or settings.default_model
         
-        # Create synthesis model
+        # Create synthesis model using the agent's configured model
         self.synthesis_model = OpenAIChatModel(
-            model_name=settings.default_model,
+            model_name=model_name,
             provider="openai",
         )
+        logger.info(f"Agent '{config.display_name}' using model: {model_name}")
         
         # Build model settings - only include max_tokens if explicitly set
         # If max_tokens is None, don't pass it so the model uses its natural limit
@@ -447,6 +451,7 @@ class BaseStreamingAgent(StreamingAgent):
             agent_context.user_id = context.get("user_id")
             agent_context.agent_id = context.get("agent_id")
             agent_context.conversation_history = context.get("conversation_history", [])
+            agent_context.metadata = context.get("metadata") or {}
         
         # Check what scopes this agent's tools require
         scopes = self.config.get_required_scopes()
@@ -844,12 +849,21 @@ class BaseStreamingAgent(StreamingAgent):
         
         This ensures the LLM has full context when deciding which tools to use.
         Includes:
+        - Application metadata context (e.g. projectId, appName)
         - Relevant insights (memories from past conversations)
         - Compressed history summary
         - Recent conversation messages
         - Current query
         """
         parts = []
+        
+        # Add application metadata context if present (e.g. projectId, appName)
+        if context.metadata:
+            parts.append("## Application Context")
+            parts.append("The following metadata was provided by the calling application. Use these values when making tool calls:")
+            for key, value in context.metadata.items():
+                parts.append(f"- **{key}**: {value}")
+            parts.append("")
         
         # Add relevant insights (agent memories) if present
         if context.relevant_insights:
@@ -884,7 +898,7 @@ class BaseStreamingAgent(StreamingAgent):
         parts.append(query)
         
         # Add guidance about using context
-        has_context = context.recent_messages or context.compressed_history_summary or context.relevant_insights
+        has_context = context.recent_messages or context.compressed_history_summary or context.relevant_insights or context.metadata
         if has_context:
             parts.append("")
             parts.append("Please respond to the current query using all available context above. Use the user context to personalize your response, the conversation history to understand follow-up references (like 'it', 'that', 'this topic'), and make informed decisions about which tools to use.")

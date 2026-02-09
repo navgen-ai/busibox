@@ -115,6 +115,10 @@ get_container_for_service() {
         vllm) echo "vllm" ;;
         # NOTE: ollama is deprecated - use vLLM instead
         
+        # Host-native services (run on host, not in Docker)
+        mlx) echo "mlx" ;;
+        host-agent) echo "host-agent" ;;
+        
         # Frontend
         core-apps|apps|ai-portal|agent-manager) echo "core-apps" ;;
         nginx|proxy) echo "nginx" ;;
@@ -278,6 +282,53 @@ get_proxmox_make_target() {
         
         # Default - use as-is
         *) echo "$service" ;;
+    esac
+}
+
+# Check if a service runs on the host (not in Docker/Proxmox)
+is_host_native_service() {
+    local service="$1"
+    case "$service" in
+        mlx|host-agent) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Execute action on a host-native service (MLX, host-agent)
+# Routes to Makefile targets: make mlx-start, make mlx-stop, etc.
+host_native_action() {
+    local service="$1"
+    local action="$2"
+    
+    case "$action" in
+        start)
+            info "Starting ${service}..."
+            cd "$REPO_ROOT"
+            make "${service}-start" || { error "Failed to start ${service}"; return 1; }
+            ;;
+        stop)
+            info "Stopping ${service}..."
+            cd "$REPO_ROOT"
+            make "${service}-stop" || { error "Failed to stop ${service}"; return 1; }
+            ;;
+        restart)
+            info "Restarting ${service}..."
+            cd "$REPO_ROOT"
+            make "${service}-restart" || { error "Failed to restart ${service}"; return 1; }
+            ;;
+        status)
+            cd "$REPO_ROOT"
+            make "${service}-status" || { error "Failed to get status for ${service}"; return 1; }
+            ;;
+        logs)
+            info "Logs not available for host-native service ${service}."
+            info "Use 'make ${service}-status' for current status."
+            ;;
+        redeploy)
+            info "Redeploying ${service}..."
+            cd "$REPO_ROOT"
+            make "${service}-restart" || { error "Failed to redeploy ${service}"; return 1; }
+            ;;
     esac
 }
 
@@ -558,7 +609,7 @@ main() {
         echo "  make manage SERVICE=authz ACTION=status"
         echo ""
         echo "Services: postgres, redis, minio, milvus, authz, agent, data,"
-        echo "          search, deploy, docs, embedding, litellm, core-apps, nginx"
+        echo "          search, deploy, docs, embedding, litellm, mlx, core-apps, nginx"
         echo ""
         echo "Actions: start, stop, restart, logs, status, redeploy"
         echo ""
@@ -608,7 +659,9 @@ main() {
             continue
         fi
         
-        if [[ "$backend" == "docker" ]]; then
+        if is_host_native_service "$service"; then
+            host_native_action "$service" "$action" || any_failed=true
+        elif [[ "$backend" == "docker" ]]; then
             local container
             container=$(get_full_container_name "$service" "$prefix")
             docker_action "$service" "$action" "$container" "$env" "$prefix" || any_failed=true

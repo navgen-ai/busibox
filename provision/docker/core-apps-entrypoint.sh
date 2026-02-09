@@ -76,7 +76,24 @@ setup_npm_auth() {
     fi
 }
 
+# Compute a checksum of package.json + package-lock.json for change detection
+compute_deps_checksum() {
+    local app_dir="$1"
+    local checksum=""
+    if [ -f "$app_dir/package.json" ]; then
+        checksum=$(md5sum "$app_dir/package.json" 2>/dev/null | awk '{print $1}')
+    fi
+    if [ -f "$app_dir/package-lock.json" ]; then
+        local lock_checksum
+        lock_checksum=$(md5sum "$app_dir/package-lock.json" 2>/dev/null | awk '{print $1}')
+        checksum="${checksum}-${lock_checksum}"
+    fi
+    echo "$checksum"
+}
+
 # Function to run npm install if needed (for dev mode with volume mounts)
+# Detects changes to package.json/package-lock.json across container restarts
+# by comparing checksums stored in node_modules/.deps-checksum
 ensure_deps() {
     local app_dir="$1"
     local app_name="$2"
@@ -92,10 +109,28 @@ ensure_deps() {
             rm -rf .next/dev
         fi
         
-        # Check if node_modules exists and is populated
+        local needs_install=false
+        local checksum_file="node_modules/.deps-checksum"
+        local current_checksum
+        current_checksum=$(compute_deps_checksum "$app_dir")
+        
+        # Check if node_modules exists at all
         if [ ! -d "node_modules" ] || [ ! -f "node_modules/.package-lock.json" ]; then
-            echo "Installing dependencies for $app_name..."
+            echo "[$app_name] node_modules missing, installing dependencies..."
+            needs_install=true
+        # Check if package.json or package-lock.json changed since last install
+        elif [ ! -f "$checksum_file" ] || [ "$(cat "$checksum_file" 2>/dev/null)" != "$current_checksum" ]; then
+            echo "[$app_name] package.json or package-lock.json changed, updating dependencies..."
+            needs_install=true
+        else
+            echo "[$app_name] Dependencies up to date (checksum match)"
+        fi
+        
+        if [ "$needs_install" = true ]; then
             npm install
+            # Store the checksum after successful install
+            echo "$current_checksum" > "$checksum_file"
+            echo "[$app_name] Dependencies installed, checksum saved"
         fi
         
         # Run prisma generate if prisma directory exists
@@ -104,6 +139,44 @@ ensure_deps() {
             npx prisma generate 2>/dev/null || true
         fi
     fi
+}
+
+# Watch package.json files for changes and auto-reinstall dependencies
+# Runs in background during dev mode. Uses polling since inotify isn't
+# available on Docker for Mac volume mounts.
+watch_package_changes() {
+    echo "[dep-watcher] Starting package.json watcher for hot-reinstall..."
+    
+    # Store initial checksums
+    local portal_checksum agent_checksum
+    portal_checksum=$(compute_deps_checksum "/srv/ai-portal")
+    agent_checksum=$(compute_deps_checksum "/srv/agent-manager")
+    
+    while true; do
+        sleep 5  # Check every 5 seconds
+        
+        # Check ai-portal
+        if [ -f "/srv/ai-portal/package.json" ]; then
+            local new_portal_checksum
+            new_portal_checksum=$(compute_deps_checksum "/srv/ai-portal")
+            if [ "$new_portal_checksum" != "$portal_checksum" ]; then
+                echo "[dep-watcher] ai-portal package.json changed! Running npm install..."
+                (cd /srv/ai-portal && npm install && echo "$new_portal_checksum" > node_modules/.deps-checksum) &
+                portal_checksum="$new_portal_checksum"
+            fi
+        fi
+        
+        # Check agent-manager
+        if [ -f "/srv/agent-manager/package.json" ]; then
+            local new_agent_checksum
+            new_agent_checksum=$(compute_deps_checksum "/srv/agent-manager")
+            if [ "$new_agent_checksum" != "$agent_checksum" ]; then
+                echo "[dep-watcher] agent-manager package.json changed! Running npm install..."
+                (cd /srv/agent-manager && npm install && echo "$new_agent_checksum" > node_modules/.deps-checksum) &
+                agent_checksum="$new_agent_checksum"
+            fi
+        fi
+    done
 }
 
 case "$MODE" in
@@ -121,6 +194,11 @@ case "$MODE" in
         # via Docker volume overlay (no symlink needed)
         ensure_deps "/srv/ai-portal" "ai-portal"
         ensure_deps "/srv/agent-manager" "agent-manager"
+        
+        # Start background watcher for package.json changes (hot-reinstall)
+        watch_package_changes &
+        WATCHER_PID=$!
+        echo "Package watcher started (PID: $WATCHER_PID)"
         
         # Start both apps with concurrently
         # Names are prefixed with app name for log clarity
