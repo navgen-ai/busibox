@@ -326,6 +326,10 @@ NPMRC_EOF
             fi
             
             # Build application
+            # Clean .next directory to prevent stale lock files from failed builds
+            echo "Cleaning .next build cache..."
+            rm -rf .next 2>/dev/null || true
+            
             # Always build in production mode regardless of NODE_ENV setting
             echo "=== NPM BUILD START ==="
             NODE_ENV=production npm run build
