@@ -753,6 +753,7 @@ manage_service() {
                     local make_target
                     case "$service" in
                         core-apps|apps) make_target="apps" ;;
+                        user-apps) make_target="user-apps" ;;
                         nginx|proxy) make_target="nginx" ;;
                         postgres|pg) make_target="pg" ;;
                         minio|files) make_target="files" ;;
