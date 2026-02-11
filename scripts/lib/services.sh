@@ -34,8 +34,9 @@ _SERVICES_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Service definitions as simple variables
 _SERVICE_authz="210:busibox:srv/authz:/health/live:8010"
 _SERVICE_authz_api="210:busibox:srv/authz:/health/live:8010"  # Alias for consistency
-_SERVICE_postgres="203:busibox::/health:5432"
-_SERVICE_redis="206:busibox::/health:6379"
+# postgres/redis: no HTTP - use "tcp" so get_service_health_url returns empty; manage.sh falls back to ping
+_SERVICE_postgres="203:busibox::tcp:5432"
+_SERVICE_redis="206:busibox::tcp:6379"
 _SERVICE_milvus="204:milvus::/healthz:9091"
 _SERVICE_minio="205:minio::/minio/health/live:9000"
 _SERVICE_data="206:busibox:srv/data:/health:8002"  # Placeholder for consolidated data display
@@ -46,7 +47,7 @@ _SERVICE_agent_api="202:busibox:srv/agent:/health:8000"
 _SERVICE_deploy_api="210:busibox:srv/deploy:/health/live:8011"
 _SERVICE_docs_api="202:busibox:srv/docs:/health/live:8004"
 _SERVICE_litellm="207:litellm::/health:4000"
-_SERVICE_vllm="210:vllm::/health:8000"
+_SERVICE_vllm="208:vllm::/health:8000"
 _SERVICE_mlx="211:mlx::/v1/models:8080"
 _SERVICE_host_agent="0:busibox:scripts/host-agent:/health:8089"
 _SERVICE_embedding="208:busibox:srv/embedding:/health:8005"
@@ -54,6 +55,8 @@ _SERVICE_embedding_api="208:busibox:srv/embedding:/health:8005"  # Alias for con
 _SERVICE_nginx="200:busibox:provision/ansible/roles/nginx:/:80"
 _SERVICE_ai_portal="201:ai-portal::/portal/api/health:3000"
 _SERVICE_agent_manager="201:agent-manager::/agents/api/health:3001"
+# user-apps: TCP-only (no single HTTP health) - use tcp so manage.sh falls back to ping
+_SERVICE_user_apps="212:busibox::tcp:80"
 
 # Service display names
 _NAME_authz="AuthZ"
@@ -77,6 +80,7 @@ _NAME_agent_manager="Agent Manager"
 _NAME_docs_api="Docs API"
 _NAME_authz_api="AuthZ API"
 _NAME_deploy_api="Deploy API"
+_NAME_user_apps="User Apps"
 
 # Service categories (reorganized per user request)
 # Core: authz, postgres, redis, milvus, minio
@@ -214,6 +218,7 @@ get_service_hostname() {
         mlx)                 echo "mlx" ;;
         ai_portal)           echo "ai-portal" ;;
         agent_manager)       echo "agent-manager" ;;
+        user_apps)           echo "user-apps" ;;
         *)                   echo "$service" ;;
     esac
 }
@@ -261,14 +266,21 @@ get_service_ip() {
 
 # Get full health check URL for service
 # Usage: get_service_health_url "authz" "staging" "proxmox"
+# Returns empty for TCP-only services (postgres, redis, user-apps) - caller should use ping fallback
 get_service_health_url() {
     local service=$1
     local env=${2:-production}
     local backend=${3:-proxmox}
     
+    local endpoint=$(get_service_health_endpoint "$service")
+    # TCP-only services: no HTTP health check - return empty so manage.sh uses ping fallback
+    if [[ "$endpoint" == "tcp" || -z "$endpoint" ]]; then
+        echo ""
+        return 0
+    fi
+    
     local ip=$(get_service_ip "$service" "$env" "$backend")
     local port=$(get_service_port "$service")
-    local endpoint=$(get_service_health_endpoint "$service")
     
     echo "http://${ip}:${port}${endpoint}"
 }
