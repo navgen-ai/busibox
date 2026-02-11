@@ -72,9 +72,10 @@ app.include_router(secrets_router)
 app.include_router(releases_router)
 
 
+@app.get("/health")
 @app.get("/health/live")
 async def live():
-    """Liveness probe"""
+    """Liveness probe - /health alias for deploy-api self-check"""
     return {"status": "ok"}
 
 
