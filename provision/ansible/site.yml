@@ -341,7 +341,16 @@
     - role: app_deployer
       tags: [apps, apps_frontend, app_deployer]
 
-# 4.1.1 Reconfigure nginx after app deployment
+# 4.1.1 User Apps Container (external/untrusted app deployments)
+# Provisions user-apps-lxc with Node.js, git, and other prerequisites
+# so the deploy-api can SSH in and deploy user apps at runtime
+- hosts: user_apps
+  tags: [apps, user_apps]
+  roles:
+    - role: node_common
+      tags: [apps, user_apps, node_common]
+
+# 4.1.2 Reconfigure nginx after app deployment
 # This ensures nginx routes are updated after apps are deployed
 - hosts: proxy
   tags: [apps, apps_frontend, nginx_post_apps]
