@@ -248,6 +248,7 @@ get_proxmox_service_status() {
         apps) lookup_service="ai_portal" ;;
         proxy) lookup_service="nginx" ;;
         core-apps) lookup_service="ai_portal" ;;
+        user-apps) lookup_service="user_apps" ;;
     esac
     
     # Get health URL from service registry
@@ -277,6 +278,7 @@ get_proxmox_service_status() {
             vllm) ip="${network_base}.208" ;;
             embedding) ip="${network_base}.208" ;;
             redis) ip="${network_base}.206" ;;
+            user-apps) ip="${network_base}.212" ;;
             *) echo "unknown"; return ;;
         esac
         
