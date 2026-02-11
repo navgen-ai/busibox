@@ -37,6 +37,12 @@ server {
     access_log /var/log/nginx/default-https-access.log main;
     error_log /var/log/nginx/default-https-error.log warn;
     
+    # Health check endpoint (for deploy-api / admin system status)
+    location = /health {
+        default_type application/json;
+        return 200 '{"status":"ok"}';
+    }
+    
     # Placeholder root
     root /var/www/placeholder;
     index index.html;

@@ -84,6 +84,12 @@ server {
 {% endfor %}
 {% endfor %}
 
+    # Health check endpoint (for deploy-api / admin system status)
+    location = /health {
+        default_type application/json;
+        return 200 '{"status":"ok"}';
+    }
+
     # Redirect root to portal
     location = / {
         return 302 /portal;

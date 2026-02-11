@@ -860,6 +860,29 @@ async def list_provider_keys(
     return KeysResponse(providers=providers_info)
 
 
+@router.get("/keys/openai-for-video")
+async def get_openai_key_for_video(
+    principal: Principal = Depends(get_principal),
+) -> Dict[str, Any]:
+    """
+    Return the OpenAI API key for server-side video generation.
+    
+    Used by AI Portal when OPENAI_API_KEY is not in its env (e.g. when key was
+    configured via AI Models UI and stored in LiteLLM, not in vault).
+    Admin only. The key is returned over HTTPS to the calling service.
+    """
+    _require_admin(principal)
+    
+    api_key = await _get_api_key_for_provider("openai")
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="OpenAI API key not available. Configure it in Admin Settings > AI Models.",
+        )
+    
+    return {"api_key": api_key}
+
+
 # =============================================================================
 # Cloud Model Discovery & Registration
 # =============================================================================
