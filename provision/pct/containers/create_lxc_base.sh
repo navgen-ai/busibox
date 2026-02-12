@@ -21,10 +21,11 @@
 #   bash provision/pct/create_lxc_base.sh staging --with-ollama   # Staging with Ollama
 #
 # Containers Created (in order):
-#   1. Core Services:    proxy, apps, agent
+#   1. Core Services:    proxy, apps, agent, authz, user-apps
 #   2. Data Services:    postgres, milvus, minio
 #   3. Worker Services:  data, litellm
-#   4. LLM Services:     vllm (ollama optional with --with-ollama)
+#   4. Bridge Service:   bridge (multi-channel communication)
+#   5. LLM Services:     vllm (ollama optional with --with-ollama)
 #
 # Notes:
 #   - Requires Proxmox host setup completed (setup-proxmox-host.sh)
@@ -78,9 +79,9 @@ echo "=========================================="
 echo ""
 
 # Track overall progress
-TOTAL_STEPS=4
+TOTAL_STEPS=5
 if $CREATE_OLLAMA; then
-  TOTAL_STEPS=5
+  TOTAL_STEPS=6
 fi
 CURRENT_STEP=0
 
@@ -113,14 +114,21 @@ bash "${SCRIPT_DIR}/create-worker-services.sh" "$MODE" || {
   exit 1
 }
 
-# Step 4: Create vLLM (with all GPUs)
+# Step 4: Create bridge service
+print_step "Creating Bridge Service (multi-channel communication)"
+bash "${SCRIPT_DIR}/create-bridge.sh" "$MODE" || {
+  echo "ERROR: Failed to create bridge container"
+  exit 1
+}
+
+# Step 5: Create vLLM (with all GPUs)
 print_step "Creating vLLM Service (all GPUs)"
 bash "${SCRIPT_DIR}/create-vllm.sh" "$MODE" || {
   echo "ERROR: Failed to create vLLM container"
   exit 1
 }
 
-# Step 5 (optional): Create Ollama
+# Step 6 (optional): Create Ollama
 if $CREATE_OLLAMA; then
   print_step "Creating Ollama Service (optional, single GPU)"
   bash "${SCRIPT_DIR}/create-ollama.sh" "$MODE" 0 || {
@@ -146,6 +154,7 @@ if [[ "$MODE" == "staging" ]]; then
   echo "    - STAGE-user-apps-lxc  ($CT_USER_APPS_STAGING @ $IP_USER_APPS_STAGING)"
   echo "    - STAGE-agent-lxc      ($CT_AGENT_STAGING @ $IP_AGENT_STAGING)"
   echo "    - STAGE-authz-lxc      ($CT_AUTHZ_STAGING @ $IP_AUTHZ_STAGING)"
+  echo "    - STAGE-bridge-lxc     ($CT_BRIDGE_STAGING @ $IP_BRIDGE_STAGING)"
   echo ""
   echo "  Data Services:"
   echo "    - STAGE-pg-lxc     ($CT_PG_STAGING @ $IP_PG_STAGING)"
@@ -167,6 +176,7 @@ else
   echo "    - proxy-lxc  ($CT_PROXY @ $IP_PROXY)"
   echo "    - apps-lxc   ($CT_APPS @ $IP_APPS)"
   echo "    - agent-lxc  ($CT_AGENT @ $IP_AGENT)"
+  echo "    - bridge-lxc ($CT_BRIDGE @ $IP_BRIDGE)"
   echo ""
   echo "  Data Services:"
   echo "    - pg-lxc     ($CT_PG @ $IP_PG)"

@@ -518,3 +518,46 @@ def get_tool_executor(tool_name: str) -> Optional[Callable]:
     except Exception as e:
         print(f"Warning: Failed to load tool executor for {tool_name}: {e}")
         return None
+
+
+def get_tool_object(tool_name: str) -> Optional[Any]:
+    """
+    Get the pre-built PydanticAI Tool object for a built-in tool.
+    
+    Returns Tool objects (with takes_ctx properly configured) instead of
+    raw functions. This avoids PydanticAI schema generation errors when
+    registering tools with agent.tool().
+    
+    Args:
+        tool_name: Tool name (e.g., "web_search", "get_weather")
+        
+    Returns:
+        PydanticAI Tool object or None if not found
+    """
+    # Map tool names to their pre-built Tool object variable names
+    tool_objects = {
+        "web_search": ("app.tools.web_search_tool", "web_search_tool"),
+        "document_search": ("app.tools.document_search_tool", "document_search_tool"),
+        "get_weather": ("app.tools.weather_tool", "weather_tool"),
+        "data_document": ("app.tools.ingestion_tool", "data_tool"),
+        "web_scraper": ("app.tools.web_scraper_tool", "web_scraper_tool"),
+        # Data management tools
+        "create_data_document": ("app.tools.data_tool", "create_data_document_tool"),
+        "query_data": ("app.tools.data_tool", "query_data_tool"),
+        "insert_records": ("app.tools.data_tool", "insert_records_tool"),
+        "update_records": ("app.tools.data_tool", "update_records_tool"),
+        "delete_records": ("app.tools.data_tool", "delete_records_tool"),
+        "list_data_documents": ("app.tools.data_tool", "list_data_documents_tool"),
+        "get_data_document": ("app.tools.data_tool", "get_data_document_tool"),
+    }
+    
+    if tool_name not in tool_objects:
+        return None
+    
+    module_path, obj_name = tool_objects[tool_name]
+    try:
+        module = importlib.import_module(module_path)
+        return getattr(module, obj_name, None)
+    except Exception as e:
+        print(f"Warning: Failed to load Tool object for {tool_name}: {e}")
+        return None

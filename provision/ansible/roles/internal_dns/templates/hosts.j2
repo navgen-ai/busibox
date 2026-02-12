@@ -41,8 +41,10 @@ ff02::2     ip6-allrouters
 # Embedded Services (share container with parent service)
 {{ agent_ip }}          docs-api docs
 {{ authz_ip }}          deploy-api deploy
-{{ data_ip }}         bridge-api bridge
 {{ data_ip }}         embedding-api embedding
+
+# Bridge Service (dedicated container)
+{{ bridge_ip }}         bridge-api bridge bridge-lxc
 
 # Application Services
 {{ core_apps_ip }}      ai-portal
@@ -62,6 +64,7 @@ ff02::2     ip6-allrouters
 {{ data_ip }}         STAGE-data-lxc
 {{ agent_ip }}          STAGE-agent-lxc
 {{ litellm_ip }}        STAGE-litellm-lxc
+{{ bridge_ip }}         STAGE-bridge-lxc
 {{ core_apps_ip }}      STAGE-core-apps-lxc
 {{ user_apps_ip }}      STAGE-user-apps-lxc
 {% endif %}

@@ -4,11 +4,13 @@ Dynamic agent loader with tool registry support.
 Loads agent definitions from database and dynamically attaches tools
 based on tool names registered in BUILTIN_TOOL_METADATA.
 """
+import logging
 import uuid
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set, Union
 
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.tools import Tool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,7 +18,9 @@ from app.agents.core import BusiboxDeps, data_tool, rag_tool, search_tool
 from app.config.settings import get_settings
 from app.models.domain import AgentDefinition
 from app.schemas.definitions import AgentDefinitionCreate
-from app.services.builtin_tools import BUILTIN_TOOL_METADATA, get_tool_executor
+from app.services.builtin_tools import BUILTIN_TOOL_METADATA, get_tool_executor, get_tool_object
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
@@ -70,6 +74,35 @@ def get_tool_function(tool_name: str) -> Optional[Callable]:
     return get_tool_executor(tool_name)
 
 
+def get_tool_for_agent(tool_name: str) -> Optional[object]:
+    """
+    Get a pre-built PydanticAI Tool object for registering with an agent.
+    
+    Returns Tool objects (with takes_ctx properly configured) instead of raw functions.
+    This avoids PydanticAI schema generation errors like:
+        "First parameter of tools that take context must be annotated with RunContext[...]"
+    
+    Falls back to legacy tool functions for backward compatibility.
+    
+    Args:
+        tool_name: Name of the tool
+        
+    Returns:
+        PydanticAI Tool object, legacy tool function, or None if not found
+    """
+    # Check legacy tools first (these are already pydantic_ai tool-decorated)
+    if tool_name in LEGACY_TOOL_REGISTRY:
+        return LEGACY_TOOL_REGISTRY[tool_name]
+    
+    # Try to get pre-built Tool object (preferred - has takes_ctx set correctly)
+    tool_obj = get_tool_object(tool_name)
+    if tool_obj is not None:
+        return tool_obj
+    
+    # Fall back to raw function (may fail with newer pydantic_ai versions)
+    return get_tool_executor(tool_name)
+
+
 def _configure_litellm_env():
     """Configure OpenAI environment for LiteLLM using shared utilities."""
     from busibox_common.llm import ensure_openai_env
@@ -77,6 +110,38 @@ def _configure_litellm_env():
         base_url=str(settings.litellm_base_url),
         api_key=settings.litellm_api_key,
     )
+
+
+def _register_tool_on_agent(agent: Agent, tool_name: str) -> bool:
+    """
+    Register a tool on an agent using the appropriate method.
+    
+    Pre-built Tool objects are registered via _function_toolset.add_tool(),
+    while legacy raw functions fall back to agent.tool().
+    
+    Args:
+        agent: PydanticAI Agent instance
+        tool_name: Name of the tool to register
+        
+    Returns:
+        True if the tool was successfully registered, False otherwise
+    """
+    tool_obj = get_tool_for_agent(tool_name)
+    if tool_obj is None:
+        logger.warning(f"Tool '{tool_name}' not found, skipping")
+        return False
+    
+    try:
+        if isinstance(tool_obj, Tool):
+            # Pre-built Tool object -- register directly to avoid re-analyzing signature
+            agent._function_toolset.add_tool(tool_obj)  # type: ignore[arg-type]
+        else:
+            # Legacy raw function -- use agent.tool() decorator
+            agent.tool(tool_obj)  # type: ignore[arg-type]
+        return True
+    except Exception as e:
+        logger.error(f"Failed to register tool '{tool_name}': {e}")
+        return False
 
 
 async def load_active_agents(session: AsyncSession) -> Dict[uuid.UUID, Agent[BusiboxDeps, object]]:
@@ -100,9 +165,7 @@ async def load_active_agents(session: AsyncSession) -> Dict[uuid.UUID, Agent[Bus
             instructions=definition.instructions,
         )
         for tool_name in definition.tools.get("names", []):
-            tool_fn = get_tool_function(tool_name)
-            if tool_fn:
-                agent.tool(tool_fn)  # type: ignore[arg-type]
+            _register_tool_on_agent(agent, tool_name)
         agents[definition.id] = agent
     return agents
 
@@ -176,7 +239,5 @@ async def register_agent(
     )
     agent = Agent[BusiboxDeps, object](model=model, instructions=definition.instructions)
     for tool_name in tool_names:
-        tool_fn = get_tool_function(tool_name)
-        if tool_fn:
-            agent.tool(tool_fn)  # type: ignore[arg-type]
+        _register_tool_on_agent(agent, tool_name)
     return definition.id, agent
