@@ -30,7 +30,6 @@ from app.agents.base_agent import (
     ToolStrategy,
 )
 from app.config.settings import get_settings
-from app.schemas.streaming import thought
 
 logger = logging.getLogger(__name__)
 
