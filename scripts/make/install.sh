@@ -1747,8 +1747,10 @@ ${vllm_ip}                vllm vllm-lxc
 # docs-api runs on agent (202), not milvus (204)
 ${network_base}.202       docs-api docs
 ${network_base}.210       deploy-api deploy
-${network_base}.206       bridge-api bridge
 ${network_base}.206       embedding-api embedding
+
+# Bridge Service (dedicated container)
+${network_base}.211       bridge-api bridge bridge-lxc
 
 # Application Services
 ${network_base}.201       ai-portal
@@ -1896,19 +1898,34 @@ bootstrap_proxmox_ansible() {
     lxc_setup_done=$(get_state "LXC_CONTAINERS_CREATED_${inventory_name^^}" "false")
     
     if [[ "$lxc_setup_done" == "true" ]]; then
-        info "LXC containers already created for ${inventory_name} environment (skipping)"
+        info "LXC containers already created for ${inventory_name} environment - validating..."
         
-        # Quick validation: check that at least pg container is running
-        local pg_ctid
+        # Comprehensive validation: check ALL expected containers exist
+        # This catches cases where new containers have been added to the inventory
+        # (e.g., bridge-lxc) but don't exist yet on a running system
+        local expected_ctids missing_ctids=()
         case "$inventory_name" in
-            production) pg_ctid=203 ;;
-            staging) pg_ctid=303 ;;
+            # Note: vLLM (208) is always created in production, but optional in staging
+            # (staging can use production vLLM via use_production_vllm flag)
+            production) expected_ctids=(200 201 202 203 204 205 206 207 208 210 211 212) ;;
+            staging)    expected_ctids=(300 301 302 303 304 305 306 307 310 311 312) ;;
         esac
         
-        if pct status "$pg_ctid" 2>/dev/null | grep -q "running"; then
-            success "LXC containers validated (pg-lxc is running)"
+        for ctid in "${expected_ctids[@]}"; do
+            if ! pct status "$ctid" &>/dev/null; then
+                missing_ctids+=("$ctid")
+            elif ! pct status "$ctid" 2>/dev/null | grep -q "running"; then
+                # Container exists but not running - try to start it
+                warn "Container $ctid exists but is not running - starting..."
+                pct start "$ctid" 2>/dev/null || true
+            fi
+        done
+        
+        if [[ ${#missing_ctids[@]} -eq 0 ]]; then
+            success "All ${#expected_ctids[@]} LXC containers validated"
         else
-            warn "pg-lxc container not running - attempting to start containers"
+            warn "Missing containers detected: ${missing_ctids[*]}"
+            info "Re-running container creation script (idempotent - existing containers will be skipped)"
             # Reset state so we re-run container creation
             lxc_setup_done="false"
         fi

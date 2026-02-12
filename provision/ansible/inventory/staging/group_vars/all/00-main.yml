@@ -62,6 +62,9 @@ vllm_ip: "{{ (use_production_vllm | default(true)) | ternary(network_base_octets
 # Authz Service IP
 authz_ip: "{{ network_base_octets }}.210"
 
+# Bridge Service IP (multi-channel communication: Signal, Email, WhatsApp)
+bridge_ip: "{{ network_base_octets }}.211"
+
 # ============================================================================
 # Domain Configuration - Staging
 # ============================================================================

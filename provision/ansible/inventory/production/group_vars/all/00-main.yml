@@ -52,6 +52,9 @@ vllm_ip: "{{ network_base_octets }}.208"
 # Authz Service IP
 authz_ip: "{{ network_base_octets }}.210"
 
+# Bridge Service IP (multi-channel communication: Signal, Email, WhatsApp)
+bridge_ip: "{{ network_base_octets }}.211"
+
 # ============================================================================
 # Domain Configuration - Production
 # ============================================================================
