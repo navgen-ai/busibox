@@ -23,6 +23,7 @@ from app.agents.web_search_agent import web_search_agent, WebSearchAgent
 from app.agents.document_agent import document_agent, DocumentAgent
 from app.agents.weather_agent import weather_agent, WeatherAgent
 from app.agents.chat_agent import chat_agent, ChatAgent
+from app.agents.status_agent import status_assistant_agent, status_update_agent
 from app.agents.base_agent import create_agent_from_definition, BaseStreamingAgent
 from app.config.settings import get_settings
 from app.core.logging import get_logger
@@ -49,6 +50,13 @@ STREAMING_AGENTS: Dict[str, StreamingAgent] = {
     "chat": chat_agent,
     "chat_agent": chat_agent,  # Alias
     "chat-agent": chat_agent,  # Alias with hyphen
+    # Status agents (predefined pipeline, no LLM tool selection)
+    "status_assistant": status_assistant_agent,
+    "status-assistant": status_assistant_agent,  # Alias with hyphen
+    "status_assistant_agent": status_assistant_agent,
+    "status_update": status_update_agent,
+    "status-update": status_update_agent,  # Alias with hyphen
+    "status_update_agent": status_update_agent,
 }
 
 # Map agent names/types to streaming agent keys
@@ -78,6 +86,15 @@ AGENT_TYPE_MAPPING = {
     "chat_agent": "chat",
     "chat-agent": "chat",
     "chat assistant": "chat",
+    # Status agent mappings
+    "status_assistant": "status_assistant",
+    "status-assistant": "status_assistant",
+    "status_assistant_agent": "status_assistant",
+    "project status assistant": "status_assistant",
+    "status_update": "status_update",
+    "status-update": "status_update",
+    "status_update_agent": "status_update",
+    "status update assistant": "status_update",
 }
 
 # Agent descriptions for routing
@@ -86,6 +103,8 @@ AGENT_DESCRIPTIONS = {
     "document": "Search internal documents and knowledge bases",
     "weather": "Get current weather information for a location",
     "chat": "General conversation and questions",
+    "status_assistant": "Manage project status, create/query/update projects and tasks",
+    "status_update": "Record quick status updates for projects and tasks",
 }
 
 # UUID pattern for detecting agent IDs
@@ -274,23 +293,26 @@ Choose the most appropriate single agent for the query.""",
         Resolve an agent definition to a streaming agent key.
         
         Maps agent types/names to our streaming agent registry.
-        For database agents with full definitions, uses "dynamic" to create a custom streaming agent.
+        First checks if the agent name matches a registered streaming agent
+        (which have custom pipeline logic). Falls back to "dynamic" for 
+        database agents with full definitions.
         """
-        # First priority: if we have a full definition from the database, 
-        # use dynamic agent pattern - this lets custom agents use their own 
-        # prompts and tool configurations
-        if "definition" in agent_info:
-            return "dynamic"
-        
-        # Try agent_type for built-in streaming agents
+        # First priority: check if the agent name/type maps to a registered
+        # streaming agent. This takes precedence over dynamic creation because
+        # registered agents have custom pipeline logic (e.g. StatusAssistantAgent
+        # uses predefined pipelines instead of LLM_DRIVEN tool selection).
         agent_type = agent_info.get("agent_type", "").lower()
         if agent_type in AGENT_TYPE_MAPPING:
             return AGENT_TYPE_MAPPING[agent_type]
         
-        # Try name for built-in streaming agents
         name = agent_info.get("name", "").lower().replace(" ", "_").replace("-", "_")
         if name in AGENT_TYPE_MAPPING:
             return AGENT_TYPE_MAPPING[name]
+
+        # Second priority: if we have a full definition from the database
+        # and it didn't match a registered agent, use dynamic agent pattern
+        if "definition" in agent_info:
+            return "dynamic"
         
         # Check if name contains keywords (for backward compatibility)
         name_lower = name.lower()
@@ -708,6 +730,8 @@ Choose the most appropriate single agent for the query.""",
             "document": "Document Search Agent",
             "weather": "Weather Agent",
             "chat": "Chat Assistant",
+            "status_assistant": "Project Status Assistant",
+            "status_update": "Status Update Assistant",
         }
         return names.get(agent_id, agent_id.replace("_", " ").title())
     
