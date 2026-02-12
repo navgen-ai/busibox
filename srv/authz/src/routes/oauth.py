@@ -364,12 +364,16 @@ async def _require_client(client_id: str, client_secret: str) -> dict:
     return client
 
 
-async def _verify_subject_token(subject_token: str) -> Tuple[str, str, str]:
+async def _verify_subject_token(subject_token: str, request: Request = None) -> Tuple[str, str, str]:
     """
     Verify a subject_token JWT signed by authz.
     
     Returns (user_id, email, jti) if valid.
     Raises HTTPException if invalid.
+    
+    Args:
+        subject_token: The JWT to verify
+        request: Optional request object for test-mode DB routing
     """
     await _pg.connect()
     
@@ -449,8 +453,11 @@ async def _verify_subject_token(subject_token: str) -> Tuple[str, str, str]:
         
         # Check if token has been revoked (only for session/delegation tokens)
         # Access tokens are short-lived and don't need revocation tracking
+        # Use request-aware DB routing so test-mode sessions are found in the test DB
+        revocation_db = _get_pg(request)
+        await revocation_db.connect()
         if token_type == "session" and jti:
-            session = await _pg.get_session_by_id(jti)
+            session = await revocation_db.get_session_by_id(jti)
             if not session:
                 logger.warning("Session revoked or not found", jti=jti)
                 raise HTTPException(
@@ -458,7 +465,7 @@ async def _verify_subject_token(subject_token: str) -> Tuple[str, str, str]:
                     detail="session_revoked"
                 )
         elif token_type == "delegation" and jti:
-            delegation = await _pg.get_delegation_token(jti)
+            delegation = await revocation_db.get_delegation_token(jti)
             if not delegation:
                 logger.warning("Delegation token revoked or not found", jti=jti)
                 raise HTTPException(
@@ -646,7 +653,7 @@ async def token(request: Request):
             # No client credentials required - the JWT signature proves identity
             logger.info("Token exchange with subject_token (Zero Trust mode)")
             
-            user_id, email, jti = await _verify_subject_token(token_req.subject_token)
+            user_id, email, jti = await _verify_subject_token(token_req.subject_token, request)
             purpose = f"subject_token:{jti[:8]}"
             
         elif token_req.client_id and token_req.client_secret and token_req.requested_subject:
@@ -836,7 +843,7 @@ async def create_delegation_token(request: Request):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     
     # Verify the session JWT
-    user_id, email, session_jti = await _verify_subject_token(req.subject_token)
+    user_id, email, session_jti = await _verify_subject_token(req.subject_token, request)
     
     # Get user's roles to validate requested scopes
     db = _get_pg(request)
@@ -939,7 +946,7 @@ async def list_delegation_tokens(request: Request):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="bearer_token_required")
     
     subject_token = auth_header[7:]
-    user_id, email, session_jti = await _verify_subject_token(subject_token)
+    user_id, email, session_jti = await _verify_subject_token(subject_token, request)
     
     db = _get_pg(request)
     await db.connect()
@@ -976,7 +983,7 @@ async def revoke_delegation_token(request: Request, jti: str):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="bearer_token_required")
     
     subject_token = auth_header[7:]
-    user_id, email, session_jti = await _verify_subject_token(subject_token)
+    user_id, email, session_jti = await _verify_subject_token(subject_token, request)
     
     db = _get_pg(request)
     await db.connect()
