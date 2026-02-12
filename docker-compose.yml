@@ -388,6 +388,12 @@ services:
       AUTHZ_BOOTSTRAP_ALLOWED_SCOPES: read,write,search.read,data.write,data.read,agent.execute
       # Admin users to bootstrap on startup (comma-separated)
       ADMIN_EMAILS: ${ADMIN_EMAILS:-${ADMIN_EMAIL:-}}
+      # Email / Bridge integration
+      # Authz calls bridge-api directly to send magic-link emails so that
+      # tokens never leave the backend.
+      APP_URL: "http://localhost:3000/portal"
+      BRIDGE_API_URL: "http://bridge-api:8081"
+      DEV_MODE: "true"
     ports:
       - "8010:8010"
     depends_on:

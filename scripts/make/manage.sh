@@ -859,8 +859,11 @@ manage_service() {
                         echo ""
                         info "Rebuilding ai-portal from source..."
                         if [[ "$backend" == "docker" ]]; then
-                            # Docker: use entrypoint.sh deploy command
-                            docker exec "${prefix}-core-apps" /usr/local/bin/entrypoint.sh deploy ai-portal main
+                            # Docker dev: reinstall deps and restart container
+                            # In dev mode, apps are volume-mounted and run with hot-reload
+                            docker exec "${prefix}-core-apps" bash -c "cd /srv/ai-portal && npm install"
+                            info "Restarting core-apps container..."
+                            docker restart "${prefix}-core-apps"
                         else
                             # Proxmox: use Ansible
                             local env
@@ -874,8 +877,10 @@ manage_service() {
                         echo ""
                         info "Rebuilding agent-manager from source..."
                         if [[ "$backend" == "docker" ]]; then
-                            # Docker: use entrypoint.sh deploy command
-                            docker exec "${prefix}-core-apps" /usr/local/bin/entrypoint.sh deploy agent-manager main
+                            # Docker dev: reinstall deps and restart container
+                            docker exec "${prefix}-core-apps" bash -c "cd /srv/agent-manager && npm install"
+                            info "Restarting core-apps container..."
+                            docker restart "${prefix}-core-apps"
                         else
                             # Proxmox: use Ansible
                             local env
@@ -889,11 +894,13 @@ manage_service() {
                         echo ""
                         info "Rebuilding ai-portal from source..."
                         if [[ "$backend" == "docker" ]]; then
-                            # Docker: use entrypoint.sh deploy command
-                            docker exec "${prefix}-core-apps" /usr/local/bin/entrypoint.sh deploy ai-portal main
+                            # Docker dev: reinstall deps for both apps and restart
+                            docker exec "${prefix}-core-apps" bash -c "cd /srv/ai-portal && npm install"
                             echo ""
                             info "Rebuilding agent-manager from source..."
-                            docker exec "${prefix}-core-apps" /usr/local/bin/entrypoint.sh deploy agent-manager main
+                            docker exec "${prefix}-core-apps" bash -c "cd /srv/agent-manager && npm install"
+                            info "Restarting core-apps container..."
+                            docker restart "${prefix}-core-apps"
                         else
                             # Proxmox: use Ansible
                             local env

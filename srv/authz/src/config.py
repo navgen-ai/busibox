@@ -93,6 +93,20 @@ class Config:
             if s.strip()
         ]
 
+        # ---- Email / Bridge integration ----
+        # Portal base URL used to construct magic link URLs.
+        # Example: "https://portal.example.com/portal"
+        self.app_url: str = os.getenv("APP_URL", "http://localhost:3000/portal")
+
+        # Internal Bridge API URL for sending emails.
+        # Authz calls bridge-api directly so that magic link tokens and TOTP
+        # codes never leave the backend.
+        self.bridge_api_url: Optional[str] = os.getenv("BRIDGE_API_URL")
+
+        # Dev mode — when true, log magic link URL and TOTP code to console
+        # so developers can authenticate without a working email setup.
+        self.dev_mode: bool = os.getenv("DEV_MODE", "false").lower() == "true"
+
     def to_dict(self) -> Dict:
         return {
             "postgres_host": self.postgres_host,
@@ -114,6 +128,9 @@ class Config:
             "test_db_password": self.test_db_password,
             "allowed_email_domains": self.allowed_email_domains,
             "admin_emails": self.admin_emails,
+            "app_url": self.app_url,
+            "bridge_api_url": self.bridge_api_url,
+            "dev_mode": self.dev_mode,
         }
 
 
