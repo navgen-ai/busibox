@@ -700,6 +700,21 @@ manage_service() {
             fi
             # Option 7: Rebuild App (always available)
             box_line "  ${BOLD}7)${NC} Rebuild App (from source, no container restart)"
+            # Option 8: Switch mode (Docker dev only)
+            if [[ "$backend" == "docker" ]]; then
+                # Detect current mode from the running container's command
+                local current_mode
+                current_mode=$(docker inspect --format='{{join .Args " "}}' "${prefix}-core-apps" 2>/dev/null || echo "unknown")
+                if [[ "$current_mode" == "prod" ]]; then
+                    box_line "  ${BOLD}8)${NC} Switch to Dev mode (Turbopack hot-reload)"
+                    box_empty
+                    box_line "  ${DIM}Currently running in ${BOLD}prod${NC}${DIM} mode (built, no hot-reload)${NC}"
+                else
+                    box_line "  ${BOLD}8)${NC} Switch to Prod mode (build + serve, lower CPU)"
+                    box_empty
+                    box_line "  ${DIM}Currently running in ${BOLD}dev${NC}${DIM} mode (Turbopack hot-reload)${NC}"
+                fi
+            fi
         fi
         
         box_empty
@@ -832,6 +847,34 @@ manage_service() {
                 env=$(get_current_env)
                 cd "$REPO_ROOT"
                 make docker-build SERVICE=core-apps ENV="$env" && make docker-up SERVICE=core-apps ENV="$env"
+                read -n 1 -s -r -p "Press any key to continue..."
+                ;;
+            8) # Switch mode (only for core-apps + Docker)
+                if [[ "$service" != "core-apps" ]] || [[ "$backend" != "docker" ]]; then
+                    continue
+                fi
+                
+                echo ""
+                # Detect current mode
+                local current_mode
+                current_mode=$(docker inspect --format='{{join .Args " "}}' "${prefix}-core-apps" 2>/dev/null || echo "dev")
+                
+                local new_mode
+                if [[ "$current_mode" == "prod" ]]; then
+                    new_mode="dev"
+                    info "Switching core-apps to dev mode (Turbopack hot-reload)..."
+                else
+                    new_mode="prod"
+                    info "Switching core-apps to prod mode (build + serve)..."
+                    warn "This will build both apps before starting. It may take a minute."
+                fi
+                
+                cd "$REPO_ROOT"
+                export CORE_APPS_MODE="$new_mode"
+                make docker-up SERVICE="core-apps"
+                
+                echo ""
+                success "core-apps now running in ${new_mode} mode"
                 read -n 1 -s -r -p "Press any key to continue..."
                 ;;
             7) # Rebuild App (only for core-apps)

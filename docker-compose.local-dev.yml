@@ -5,14 +5,21 @@
 # Development overlay for Next.js apps with:
 #   - Volume-mounted source code for live editing
 #   - busibox-app installed from GitHub Packages
-#   - Turbopack hot-reload for both apps
+#   - Turbopack hot-reload (dev mode) or built production server (prod mode)
 #
 # Prerequisites:
 #   - Set GITHUB_AUTH_TOKEN in .env.local for @jazzmind/busibox-app
 #
+# Core Apps Mode (CORE_APPS_MODE env var):
+#   dev  - (default) Turbopack hot-reload. Code changes apply instantly.
+#          Higher CPU usage due to on-demand compilation.
+#   prod - Builds apps from volume-mounted source, then serves with `next start`.
+#          Much lower CPU. Restart container to pick up code changes.
+#
 # Usage:
-#   docker compose -f docker-compose.yml -f docker-compose.local-dev.yml up
-#   Or: make docker-up
+#   make docker-up                          # Default (dev mode)
+#   CORE_APPS_MODE=prod make docker-up      # Production mode (built, no hot-reload)
+#   Or: docker compose -f docker-compose.yml -f docker-compose.local-dev.yml up
 #
 # Architecture:
 #   - Both ai-portal and agent-manager run in single core-apps container
@@ -35,7 +42,11 @@ services:
     container_name: ${CONTAINER_PREFIX:-local}-core-apps
     hostname: core-apps
     restart: unless-stopped
+    # Pass the mode to the entrypoint: "dev" (Turbopack) or "prod" (build + serve)
+    # Set CORE_APPS_MODE=prod for pre-built production mode (much lower CPU, no hot-reload)
+    command: ["${CORE_APPS_MODE:-dev}"]
     environment:
+      # NODE_ENV is set by the entrypoint based on the mode
       NODE_ENV: development
       # GitHub token for busibox-app access (REQUIRED)
       # Set via: export GITHUB_AUTH_TOKEN=ghp_your_token_here

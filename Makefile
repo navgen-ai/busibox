@@ -125,6 +125,7 @@ help:
 	@echo "  make update                  # Update existing installation"
 	@echo "  make manage                  # Service management (interactive)"
 	@echo "  make manage SERVICE=authz ACTION=restart  # Direct service action"
+	@echo "  CORE_APPS_MODE=prod make manage SERVICE=core-apps ACTION=restart  # Prod mode"
 	@echo "  make test                    # Testing menu"
 	@echo ""
 	@echo "  Services: postgres, redis, minio, milvus, authz, agent, data,"
@@ -150,6 +151,10 @@ help:
 	@echo "    make docker-up ENV=development         # Dev mode (volume mounts, npm link)"
 	@echo "    make docker-up ENV=demo                # Demo mode (prod-like, from GitHub)"
 	@echo "    make docker-up SERVICE=ai-portal       # Start specific service"
+	@echo ""
+	@echo "  Core Apps mode (CORE_APPS_MODE variable, development ENV only):"
+	@echo "    make docker-up                         # Default: Turbopack hot-reload"
+	@echo "    CORE_APPS_MODE=prod make docker-up     # Build + serve (lower CPU, no hot-reload)"
 	@echo ""
 	@echo "  Building:"
 	@echo "    make docker-build                      # Build for current ENV"
@@ -616,6 +621,10 @@ update:
 #        make manage SERVICE=authz ACTION=restart      # Restart authz service
 #        make manage SERVICE=authz,agent ACTION=stop   # Stop multiple services
 #        make manage SERVICE=authz ACTION=logs         # View logs
+#
+# Core-apps mode switching (Docker dev env only):
+#        CORE_APPS_MODE=prod make manage SERVICE=core-apps ACTION=restart  # Prod mode
+#        CORE_APPS_MODE=dev  make manage SERVICE=core-apps ACTION=restart  # Dev mode
 #
 # Actions: start, stop, restart, logs, redeploy, status
 manage:

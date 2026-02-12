@@ -346,6 +346,26 @@ host_native_action() {
     esac
 }
 
+# Restart core-apps with optional mode switch (dev/prod)
+# Uses docker compose up --force-recreate so the new CORE_APPS_MODE
+# env var is picked up (plain `docker restart` doesn't re-read compose env).
+core_apps_restart() {
+    local env="$1"
+    local mode="${CORE_APPS_MODE:-}"
+    
+    if [[ -n "$mode" ]]; then
+        info "Restarting core-apps in ${BOLD}${mode}${NC} mode..."
+    else
+        info "Restarting core-apps..."
+    fi
+    
+    cd "$REPO_ROOT"
+    # Export so docker compose picks it up from the environment
+    export CORE_APPS_MODE="${mode}"
+    make docker-up SERVICE="core-apps" ENV="$env"
+    success "core-apps restarted${mode:+ in ${mode} mode}"
+}
+
 # Execute action on a service (Docker)
 docker_action() {
     local service="$1"
@@ -375,6 +395,12 @@ docker_action() {
             ;;
         
         restart)
+            # core-apps needs special handling to support CORE_APPS_MODE switching
+            if [[ "$svc_container" == "core-apps" && -n "${CORE_APPS_MODE:-}" ]]; then
+                core_apps_restart "$env"
+                return $?
+            fi
+            
             info "Restarting ${service}..."
             docker restart "$container" 2>/dev/null || {
                 warn "Container not found, trying to bring up..."
@@ -406,6 +432,12 @@ docker_action() {
             ;;
         
         redeploy)
+            # core-apps: support CORE_APPS_MODE for mode switching on redeploy
+            if [[ "$svc_container" == "core-apps" && -n "${CORE_APPS_MODE:-}" ]]; then
+                core_apps_restart "$env"
+                return $?
+            fi
+            
             info "Redeploying ${service}..."
             cd "$REPO_ROOT"
             
@@ -623,6 +655,10 @@ main() {
         echo "  make manage SERVICE=authz,agent ACTION=stop"
         echo "  make manage SERVICE=authz ACTION=logs"
         echo "  make manage SERVICE=authz ACTION=status"
+        echo ""
+        echo "Core-apps mode switching (dev mode with volume mounts only):"
+        echo "  CORE_APPS_MODE=prod make manage SERVICE=core-apps ACTION=restart"
+        echo "  CORE_APPS_MODE=dev  make manage SERVICE=core-apps ACTION=restart"
         echo ""
         echo "Services: postgres, redis, minio, milvus, authz, agent, data,"
         echo "          search, deploy, docs, embedding, litellm, mlx, core-apps, nginx"
