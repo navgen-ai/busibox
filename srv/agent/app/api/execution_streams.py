@@ -32,6 +32,42 @@ router = APIRouter(prefix="/streams", tags=["streams"])
 POLL_INTERVAL_SECONDS = 1.0  # Poll database every 1s (workflows change slower than chat)
 MAX_POLL_DURATION_SECONDS = 600  # Max 10 minutes of streaming (workflows can be long)
 TERMINAL_STATUSES = {"completed", "succeeded", "failed", "stopped", "timeout"}
+MAX_OUTPUT_SIZE = 10000  # Max chars for output_data in SSE events (prevents giant payloads)
+
+
+def _truncate_output(output_data: dict) -> dict:
+    """
+    Prepare step output_data for SSE streaming.
+    
+    Returns the full output if it's under the size limit, otherwise
+    returns a truncated version with a note.
+    """
+    if not output_data:
+        return None
+    
+    serialized = json.dumps(output_data, default=str)
+    if len(serialized) <= MAX_OUTPUT_SIZE:
+        return output_data
+    
+    # Try to provide a useful summary
+    result = {}
+    for key, value in output_data.items():
+        val_str = json.dumps(value, default=str) if not isinstance(value, str) else value
+        if len(val_str) > 2000:
+            if isinstance(value, str):
+                result[key] = value[:2000] + f"... [truncated, {len(value)} chars total]"
+            elif isinstance(value, list):
+                result[key] = value[:5]
+                result[f"_{key}_note"] = f"Showing first 5 of {len(value)} items"
+            elif isinstance(value, dict):
+                result[key] = {k: str(v)[:200] for k, v in list(value.items())[:10]}
+                result[f"_{key}_note"] = f"Truncated, {len(value)} keys total"
+            else:
+                result[key] = str(value)[:2000] + "... [truncated]"
+        else:
+            result[key] = value
+    result["_truncated"] = True
+    return result
 
 
 @router.get("/executions/{execution_id}")
@@ -138,13 +174,7 @@ async def stream_workflow_execution(
                             }
                     
                     if prev_status != step.status and step.status in ("completed", "succeeded"):
-                        # Step completed
-                        output_preview = None
-                        if step.output_data:
-                            # Create a brief preview of the output
-                            preview = str(step.output_data)
-                            output_preview = preview[:200] + "..." if len(preview) > 200 else preview
-                        
+                        # Step completed — send full output (truncated if huge)
                         yield {
                             "event": "step_complete",
                             "data": json.dumps({
@@ -152,12 +182,13 @@ async def stream_workflow_execution(
                                 "step_index": idx,
                                 "status": step.status,
                                 "duration_seconds": step.duration_seconds,
-                                "output_preview": output_preview,
+                                "output_data": _truncate_output(step.output_data),
+                                "error": step.error,  # Some steps succeed with warnings
                                 "usage_requests": step.usage_requests,
                                 "usage_input_tokens": step.usage_input_tokens,
                                 "usage_output_tokens": step.usage_output_tokens,
                                 "timestamp": step.completed_at.isoformat() if step.completed_at else None,
-                            }),
+                            }, default=str),
                         }
                     
                     if prev_status != step.status and step.status == "failed":
@@ -167,8 +198,9 @@ async def stream_workflow_execution(
                                 "step_id": step.step_id,
                                 "step_index": idx,
                                 "error": step.error,
+                                "output_data": _truncate_output(step.output_data),
                                 "timestamp": step.completed_at.isoformat() if step.completed_at else None,
-                            }),
+                            }, default=str),
                         }
                     
                     last_step_statuses[str(step.id)] = step.status
@@ -314,11 +346,6 @@ async def stream_task_execution(
                             }
                         
                         if prev_status != step.status and step.status in ("completed", "succeeded"):
-                            output_preview = None
-                            if step.output_data:
-                                preview = str(step.output_data)
-                                output_preview = preview[:200] + "..." if len(preview) > 200 else preview
-                            
                             yield {
                                 "event": "step_complete",
                                 "data": json.dumps({
@@ -326,8 +353,9 @@ async def stream_task_execution(
                                     "step_index": idx,
                                     "status": step.status,
                                     "duration_seconds": step.duration_seconds,
-                                    "output_preview": output_preview,
-                                }),
+                                    "output_data": _truncate_output(step.output_data),
+                                    "error": step.error,
+                                }, default=str),
                             }
                         
                         if prev_status != step.status and step.status == "failed":
@@ -337,7 +365,8 @@ async def stream_task_execution(
                                     "step_id": step.step_id,
                                     "step_index": idx,
                                     "error": step.error,
-                                }),
+                                    "output_data": _truncate_output(step.output_data),
+                                }, default=str),
                             }
                         
                         last_step_statuses[str(step.id)] = step.status

@@ -181,7 +181,7 @@ watch_package_changes() {
 
 case "$MODE" in
     dev)
-        echo "Starting Core Apps in development mode..."
+        echo "Starting Core Apps in development mode (Turbopack hot-reload)..."
         
         # Start nginx first (handles routing)
         start_nginx
@@ -211,9 +211,62 @@ case "$MODE" in
             "cd /srv/ai-portal && PORT=3000 NEXT_PUBLIC_BASE_PATH=/portal npm run dev" \
             "cd /srv/agent-manager && PORT=3001 NEXT_PUBLIC_BASE_PATH=/agents npm run dev"
         ;;
+
+    prod)
+        echo "Starting Core Apps in local production mode (build + serve)..."
+        echo "Source code is volume-mounted but apps are built and served with 'next start'."
+        echo "No hot-reload — restart the container to pick up code changes."
+        
+        # Override NODE_ENV for production build and serve
+        export NODE_ENV=production
+        
+        # Start nginx first (handles routing)
+        start_nginx
+        
+        # Setup npm authentication (required for @jazzmind/busibox-app from GitHub Packages)
+        setup_npm_auth
+        
+        # Install deps in dev mode first (so devDependencies are available for build)
+        NODE_ENV=development ensure_deps "/srv/ai-portal" "ai-portal"
+        NODE_ENV=development ensure_deps "/srv/agent-manager" "agent-manager"
+        
+        # Build both apps (NEXT_PUBLIC_* env vars are baked in at build time)
+        echo "Building ai-portal..."
+        (cd /srv/ai-portal && NEXT_PUBLIC_BASE_PATH=/portal NODE_ENV=production npm run build) || {
+            echo "ERROR: ai-portal build failed"
+            exit 1
+        }
+        
+        echo "Building agent-manager..."
+        (cd /srv/agent-manager && NEXT_PUBLIC_BASE_PATH=/agents NODE_ENV=production npm run build) || {
+            echo "ERROR: agent-manager build failed"
+            exit 1
+        }
+        
+        # Sync database schema (if prisma is configured)
+        if [ -d "/srv/ai-portal/prisma" ] && [ -f "/srv/ai-portal/prisma.config.ts" ]; then
+            echo "Syncing database schema..."
+            cd /srv/ai-portal
+            npx prisma db push 2>/dev/null || {
+                echo "Warning: prisma db push failed, continuing..."
+            }
+        fi
+        
+        echo ""
+        echo "Build complete. Starting production servers..."
+        echo ""
+        
+        # Start both apps with concurrently using npm start (next start)
+        exec concurrently \
+            --names "portal,agents" \
+            --prefix-colors "blue,green" \
+            --kill-others-on-fail \
+            "cd /srv/ai-portal && PORT=3000 HOSTNAME=0.0.0.0 npm start" \
+            "cd /srv/agent-manager && PORT=3001 HOSTNAME=0.0.0.0 npm start"
+        ;;
         
     start)
-        echo "Starting Core Apps in production mode..."
+        echo "Starting Core Apps in production mode (pre-built)..."
         
         # Start nginx first (handles routing)
         start_nginx
@@ -241,7 +294,11 @@ case "$MODE" in
         ;;
         
     *)
-        echo "Usage: $0 {dev|start}"
+        echo "Usage: $0 {dev|prod|start}"
+        echo ""
+        echo "  dev   - Development mode with Turbopack hot-reload (default)"
+        echo "  prod  - Build from volume-mounted source, then serve with 'next start'"
+        echo "  start - Serve pre-built apps with 'next start' (used by runtime Dockerfile)"
         exit 1
         ;;
 esac
