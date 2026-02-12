@@ -102,9 +102,12 @@ async def _sign_session_jwt(
         roles: Optional list of role dicts with 'id' and 'name' keys
         db: Optional PostgresService instance (defaults to production)
     """
-    db = db or pg
-    await db.connect()
-    row = await db.get_active_signing_key()
+    # Always use the production database for signing keys.
+    # Signing keys are shared infrastructure, not per-test-database data.
+    # The test database may not have signing keys bootstrapped.
+    signing_db = pg
+    await signing_db.connect()
+    row = await signing_db.get_active_signing_key()
     if not row:
         raise RuntimeError("no active signing key configured")
     
