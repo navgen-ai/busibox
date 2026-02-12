@@ -28,11 +28,13 @@ Public endpoints (authentication mechanism itself):
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid as uuid_module
 from typing import List, Optional
 from uuid import UUID
 
+import httpx
 import jwt
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -41,6 +43,8 @@ from config import Config
 from oauth.client_auth import verify_client_secret
 from oauth.keys import load_private_key
 from oauth.jwt_auth import require_auth, require_auth_or_self_service, authenticate_self_service, verify_session_token, AuthContext
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 config = Config()
@@ -506,9 +510,47 @@ class LoginInitiateRequest(BaseModel):
 
 
 class LoginInitiateResponse(BaseModel):
-    magic_link_token: str
-    totp_code: str
+    message: str
     expires_in: int  # seconds until expiry
+
+
+async def _send_magic_link_email(
+    to: str,
+    magic_link_url: str,
+    totp_code: str,
+) -> None:
+    """
+    Send the magic-link email via Bridge API.
+
+    Authz calls bridge-api directly so that the magic_link_token and TOTP
+    code never leave the backend.  If Bridge API is unavailable the error
+    is logged but *not* propagated — we never leak information about
+    whether an email was actually sent.
+    """
+    if not config.bridge_api_url:
+        logger.warning("[LOGIN] BRIDGE_API_URL not configured — cannot send email")
+        return
+
+    url = f"{config.bridge_api_url.rstrip('/')}/api/v1/email/send-magic-link"
+    payload = {
+        "to": to,
+        "magic_link_url": magic_link_url,
+        "totp_code": totp_code,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json=payload)
+            if resp.status_code >= 400:
+                logger.error(
+                    "[LOGIN] Bridge API returned %s: %s",
+                    resp.status_code,
+                    resp.text[:500],
+                )
+            else:
+                logger.info("[LOGIN] Magic-link email sent for %s via bridge-api", to)
+    except Exception as exc:
+        logger.error("[LOGIN] Failed to reach Bridge API: %s", exc)
 
 
 @router.post("/auth/login/initiate")
@@ -522,7 +564,8 @@ async def initiate_login(request: Request):
     3. Looks up or creates user (PENDING status for new users)
     4. Creates magic link token
     5. Creates TOTP code
-    6. Returns tokens for ai-portal to send email
+    6. Sends the email via Bridge API (authz → bridge-api, server-to-server)
+    7. Returns a simple success message — no tokens are ever sent to the caller
     
     NEVER leaks whether an email/user exists - always returns same structure.
     Rate limiting should be applied at the infrastructure level.
@@ -531,8 +574,7 @@ async def initiate_login(request: Request):
     - email: string (required)
     
     Returns:
-    - magic_link_token: string (for constructing magic link URL)
-    - totp_code: string (6-digit code to include in email)
+    - message: string ("ok")
     - expires_in: int (seconds until tokens expire)
     """
     body = await request.json()
@@ -542,6 +584,10 @@ async def initiate_login(request: Request):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     
     email = login_data.email.lower().strip()
+    
+    # Standard success response — returned in ALL cases (valid, invalid, rejected)
+    # so the caller cannot distinguish between them.
+    ok_response = {"message": "ok", "expires_in": 900}
     
     # Validate email format (basic check)
     if "@" not in email or "." not in email.split("@")[-1]:
@@ -554,14 +600,8 @@ async def initiate_login(request: Request):
     if config.allowed_email_domains:
         domain = email.split("@")[-1].lower()
         if domain not in config.allowed_email_domains:
-            # Don't leak which domains are allowed - just reject silently
-            # by returning a fake success response
-            import secrets
-            return {
-                "magic_link_token": secrets.token_urlsafe(32),
-                "totp_code": f"{secrets.randbelow(1000000):06d}",
-                "expires_in": 900,
-            }
+            # Don't leak which domains are allowed — return identical success
+            return ok_response
     
     db = _get_pg(request)
     await db.connect()
@@ -573,13 +613,8 @@ async def initiate_login(request: Request):
         # Create user in PENDING status
         user = await db.create_user(email=email, status="PENDING")
     elif user.get("status") == "DEACTIVATED":
-        # User is deactivated - return fake tokens (don't leak status)
-        import secrets
-        return {
-            "magic_link_token": secrets.token_urlsafe(32),
-            "totp_code": f"{secrets.randbelow(1000000):06d}",
-            "expires_in": 900,
-        }
+        # User is deactivated — return identical success (don't leak status)
+        return ok_response
     
     user_id = user["user_id"]
     
@@ -597,11 +632,31 @@ async def initiate_login(request: Request):
         expires_in_seconds=900,
     )
     
-    return {
-        "magic_link_token": magic_link["token"],
-        "totp_code": totp["code"],
-        "expires_in": 900,
-    }
+    # Build the magic link URL
+    base_url = config.app_url.rstrip("/")
+    magic_link_url = f"{base_url}/verify?token={magic_link['token']}"
+    totp_code = totp["code"]
+    
+    # Dev mode: log to console so developers can authenticate without email
+    if config.dev_mode:
+        logger.info(
+            "\n🔗 [MAGIC LINK + TOTP] =====================================\n"
+            "📧 Email: %s\n"
+            "🔑 Magic Link Token: %s\n"
+            "🔢 TOTP Code: %s\n"
+            "🌐 URL: %s\n"
+            "=======================================================",
+            email,
+            magic_link["token"],
+            totp_code,
+            magic_link_url,
+        )
+    
+    # Send the email via Bridge API (fire-and-forget style — errors are logged
+    # but never returned to the caller).
+    await _send_magic_link_email(email, magic_link_url, totp_code)
+    
+    return ok_response
 
 
 # ============================================================================

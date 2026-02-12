@@ -34,7 +34,10 @@ authz_key_encryption_passphrase: "{{ secrets.jwt_secret | default(secrets.sso.jw
 authz_bootstrap_allowed_audiences: "data-api,search-api,agent-api,authz-api,deploy-api"
 authz_bootstrap_allowed_scopes: ""
 
-
-
-
+# Email / Bridge integration
+# Authz calls bridge-api directly to send magic-link emails so that tokens
+# never leave the backend.
+authz_app_url: "https://{{ full_domain }}/portal"
+authz_bridge_api_url: "http://{{ data_ip }}:{{ bridge_api_port | default(8081) }}"
+authz_dev_mode: false
 
