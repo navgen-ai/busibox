@@ -485,10 +485,14 @@ async def _read_bridge_raw_config_from_db() -> dict[str, str]:
 async def _read_bridge_config_from_db() -> dict[str, str]:
     """Read all smtp-category config rows and return as {COMPOSE_ENV: value}."""
     raw = await _read_bridge_raw_config_from_db()
+    _COMPOSE_BOOLEAN_KEYS = {"BRIDGE_SMTP_SECURE", "BRIDGE_EMAIL_ENABLED"}
     env: dict[str, str] = {}
     for cfg_key, cfg_val in raw.items():
         compose_key = _CONFIG_TO_COMPOSE_ENV.get(cfg_key)
         if compose_key:
+            # Normalise booleans: empty string -> "false"
+            if compose_key in _COMPOSE_BOOLEAN_KEYS and cfg_val.strip() == "":
+                cfg_val = "false"
             env[compose_key] = cfg_val
     # Derive EMAIL_ENABLED from whether any provider is configured
     has_smtp = bool(env.get("BRIDGE_SMTP_HOST"))
@@ -554,10 +558,16 @@ async def _apply_bridge_config_proxmox() -> dict:
     logger.info(f"[APPLY-PROXMOX] Bridge raw config keys: {list(raw.keys())}")
 
     # Build the env var updates for the bridge .env file
+    # Boolean-type env vars that Pydantic expects as "true"/"false"
+    _BOOLEAN_KEYS = {"SMTP_SECURE", "EMAIL_ENABLED"}
+
     env_updates: dict[str, str] = {}
     for cfg_key, cfg_val in raw.items():
         bridge_key = _CONFIG_TO_BRIDGE_ENV.get(cfg_key)
         if bridge_key:
+            # Normalise booleans: empty string -> "false"
+            if bridge_key in _BOOLEAN_KEYS and cfg_val.strip() == "":
+                cfg_val = "false"
             env_updates[bridge_key] = cfg_val
 
     # Derive EMAIL_ENABLED
