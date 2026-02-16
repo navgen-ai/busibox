@@ -217,14 +217,14 @@ echo ""
 echo -e "${BLUE}=== Web Applications (systemd) ===${NC}"
 echo ""
 
-test_systemd_service "ai-portal" "$APPS_IP" "ai-portal"
-test_systemd_service "agent-manager" "$APPS_IP" "agent-manager"
+test_systemd_service "busibox-portal" "$APPS_IP" "busibox-portal"
+test_systemd_service "busibox-agents" "$APPS_IP" "busibox-agents"
 test_systemd_service "doc-intel" "$APPS_IP" "doc-intel"
 test_systemd_service "innovation" "$APPS_IP" "innovation"
 
 # HTTP health checks for web apps
-test_http "ai-portal" "http://${APPS_IP}:3000/api/health" "200"
-test_http "agent-manager" "http://${APPS_IP}:3001/api/health" "200"
+test_http "busibox-portal" "http://${APPS_IP}:3000/api/health" "200"
+test_http "busibox-agents" "http://${APPS_IP}:3001/api/health" "200"
 test_http "doc-intel" "http://${APPS_IP}:3002/api/health" "200" 5
 test_http "innovation" "http://${APPS_IP}:3003/api/health" "200" 5
 
