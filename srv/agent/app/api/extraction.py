@@ -664,6 +664,18 @@ def _build_extraction_prompt(
     instructions: str,
     compact_mode: bool,
 ) -> str:
+    provenance_instructions = (
+        "Provenance requirements (critical):\n"
+        "- Return `_provenance` as an object mirroring the extracted record shape.\n"
+        "- For each extracted scalar leaf value, include provenance node(s) with:\n"
+        "  - `text`: exact source snippet from document markdown\n"
+        "  - `charOffset`: 0-based start character offset\n"
+        "  - `charLength`: snippet length in characters\n"
+        "- If multiple matches are plausible, use `{ \"candidates\": [ ...nodes ] }`.\n"
+        "- For arrays, `_provenance` must be an array aligned by item index.\n"
+        "- For nested objects, `_provenance` must nest by matching property names.\n"
+        "- Do NOT output top-level `source_text` or `char_offsets`; keep provenance only under `_provenance`."
+    )
     mode_instructions = (
         "Return ONLY valid JSON with shape {\"records\":[...]} and no markdown/prose. "
         "If a field is not present, omit it or set null. "
@@ -680,9 +692,11 @@ def _build_extraction_prompt(
     )
     return (
         f"{instructions}\n\n"
+        f"{provenance_instructions}\n\n"
         f"{mode_instructions}\n\n"
         f"Schema document ID: {schema_document_id}\n"
         f"Source file ID: {file_id}\n\n"
+        f"Schema JSON:\n```json\n{json.dumps(schema_obj, indent=2)}\n```\n\n"
         f"Document markdown:\n{markdown}"
     )
 
@@ -696,6 +710,7 @@ def _validate_and_enrich_records(
     fields = schema.get("fields", {}) if isinstance(schema, dict) else {}
     now_iso = datetime.now(timezone.utc).isoformat()
     validated: List[Dict[str, Any]] = []
+    active_coercions: List[Dict[str, Any]] = []
 
     def _coerce_bool(value: Any) -> Any:
         if isinstance(value, bool):
@@ -709,14 +724,178 @@ def _validate_and_enrich_records(
         return value
 
     def _coerce_to_field_type(field_name: str, value: Any, field_def: Dict[str, Any]) -> Any:
+        def _type_name(raw_value: Any) -> str:
+            if raw_value is None:
+                return "null"
+            if isinstance(raw_value, list):
+                return "array"
+            if isinstance(raw_value, dict):
+                return "object"
+            return type(raw_value).__name__
+
+        def _note_coercion(path: str, expected_type: str, original_value: Any, coerced_value: Any, reason: str) -> None:
+            def _preview(raw_value: Any) -> Any:
+                if raw_value is None:
+                    return None
+                if isinstance(raw_value, (int, float, bool)):
+                    return raw_value
+                if isinstance(raw_value, str):
+                    return raw_value[:200]
+                if isinstance(raw_value, list):
+                    return f"list(len={len(raw_value)})"
+                if isinstance(raw_value, dict):
+                    return f"object(keys={list(raw_value.keys())[:12]})"
+                return str(raw_value)[:200]
+
+            active_coercions.append(
+                {
+                    "field": path,
+                    "expectedType": expected_type,
+                    "fromType": _type_name(original_value),
+                    "toType": _type_name(coerced_value),
+                    "reason": reason,
+                    "fromPreview": _preview(original_value),
+                    "toPreview": _preview(coerced_value),
+                }
+            )
+
+        def _to_string(raw_value: Any) -> str:
+            if isinstance(raw_value, str):
+                return raw_value
+            if isinstance(raw_value, (dict, list)):
+                return json.dumps(raw_value, ensure_ascii=False)
+            return str(raw_value)
+
+        def _flatten_to_array_items(raw_value: Any) -> List[Any]:
+            if isinstance(raw_value, list):
+                return raw_value
+
+            if isinstance(raw_value, dict):
+                flattened: List[Any] = []
+                for key, nested_value in raw_value.items():
+                    if isinstance(nested_value, list):
+                        for item in nested_value:
+                            flattened.append(f"{key}: {item}" if not isinstance(item, dict) else item)
+                    elif isinstance(nested_value, dict):
+                        flattened.append(json.dumps({key: nested_value}, ensure_ascii=False))
+                    elif nested_value is None:
+                        continue
+                    else:
+                        flattened.append(f"{key}: {nested_value}")
+                return flattened
+
+            if isinstance(raw_value, str):
+                try:
+                    parsed = json.loads(raw_value)
+                    if isinstance(parsed, (list, dict)):
+                        return _flatten_to_array_items(parsed)
+                except Exception:
+                    pass
+                # Fallback for plain delimited text
+                if "," in raw_value:
+                    return [part.strip() for part in raw_value.split(",") if part.strip()]
+                if "\n" in raw_value:
+                    return [part.strip() for part in raw_value.splitlines() if part.strip()]
+                trimmed = raw_value.strip()
+                return [trimmed] if trimmed else []
+
+            if raw_value is None:
+                return []
+            return [raw_value]
+
+        def _coerce_object_value(raw_value: Any, object_def: Dict[str, Any]) -> Dict[str, Any]:
+            properties = object_def.get("properties", {}) if isinstance(object_def.get("properties"), dict) else {}
+            property_names = [name for name in properties.keys() if isinstance(name, str)]
+
+            if isinstance(raw_value, dict):
+                candidate: Dict[str, Any] = dict(raw_value)
+            elif isinstance(raw_value, list):
+                candidate = {}
+                # Merge dict-like list items first.
+                for item in raw_value:
+                    if isinstance(item, dict):
+                        candidate.update(item)
+
+                # Map scalar list items into known properties by order when available.
+                scalar_items = [item for item in raw_value if not isinstance(item, dict)]
+                if property_names:
+                    for idx, item in enumerate(scalar_items):
+                        if idx >= len(property_names):
+                            break
+                        key = property_names[idx]
+                        if key not in candidate:
+                            candidate[key] = item
+                elif scalar_items:
+                    candidate["items"] = scalar_items
+                _note_coercion(field_name, "object", raw_value, candidate, "array_to_object")
+            elif isinstance(raw_value, str):
+                trimmed = raw_value.strip()
+                parsed: Any = None
+                if trimmed:
+                    try:
+                        parsed = json.loads(trimmed)
+                    except Exception:
+                        parsed = None
+
+                if isinstance(parsed, dict):
+                    candidate = dict(parsed)
+                elif isinstance(parsed, list):
+                    candidate = _coerce_object_value(parsed, object_def)
+                else:
+                    if len(property_names) == 1:
+                        candidate = {property_names[0]: trimmed}
+                    else:
+                        candidate = {"value": trimmed}
+                    _note_coercion(field_name, "object", raw_value, candidate, "scalar_string_to_object")
+            else:
+                if len(property_names) == 1:
+                    candidate = {property_names[0]: raw_value}
+                else:
+                    candidate = {"value": raw_value}
+                _note_coercion(field_name, "object", raw_value, candidate, "scalar_to_object")
+
+            # If object properties are defined, coerce nested values recursively and
+            # ensure required nested keys exist to avoid strict schema write failures.
+            if properties:
+                coerced_obj: Dict[str, Any] = {}
+                for prop_name, prop_def in properties.items():
+                    if not isinstance(prop_name, str) or not isinstance(prop_def, dict):
+                        continue
+                    if prop_name in candidate and candidate.get(prop_name) is not None:
+                        coerced_obj[prop_name] = _coerce_to_field_type(
+                            f"{field_name}.{prop_name}",
+                            candidate.get(prop_name),
+                            prop_def,
+                        )
+                    elif bool(prop_def.get("required")):
+                        coerced_obj[prop_name] = None
+                        _note_coercion(
+                            f"{field_name}.{prop_name}",
+                            str(prop_def.get("type", "string")),
+                            None,
+                            None,
+                            "missing_required_nested_field_defaulted_to_null",
+                        )
+
+                # Preserve additional object keys the model returned.
+                for key, val in candidate.items():
+                    if key not in coerced_obj:
+                        coerced_obj[key] = val
+                return coerced_obj
+
+            return candidate
+
         if value is None:
             return None
 
         field_type = field_def.get("type", "string")
 
         if field_type == "string":
-            if isinstance(value, (str, int, float, bool)):
-                return str(value)
+            if isinstance(value, (str, int, float, bool, dict, list)):
+                coerced_string = _to_string(value)
+                if not isinstance(value, str):
+                    _note_coercion(field_name, "string", value, coerced_string, "value_to_string")
+                return coerced_string
             raise ValueError(f"Field '{field_name}' must be a string")
 
         if field_type == "integer":
@@ -752,21 +931,83 @@ def _validate_and_enrich_records(
             raise ValueError(f"Field '{field_name}' must be a boolean")
 
         if field_type == "array":
-            if isinstance(value, list):
-                return value
-            raise ValueError(f"Field '{field_name}' must be an array")
+            if not isinstance(value, list):
+                _note_coercion(field_name, "array", value, value, "non_array_input_normalized")
+            coerced_items = _flatten_to_array_items(value)
+            item_def = field_def.get("items", {}) if isinstance(field_def.get("items"), dict) else {}
+            item_type = item_def.get("type", "string")
+            normalized_items: List[Any] = []
+
+            for item in coerced_items:
+                if item is None:
+                    continue
+
+                if item_type == "string":
+                    if isinstance(item, (str, int, float, bool)):
+                        normalized_items.append(str(item))
+                    elif isinstance(item, dict):
+                        normalized_items.append(json.dumps(item, ensure_ascii=False))
+                    else:
+                        normalized_items.append(str(item))
+                elif item_type == "integer":
+                    if isinstance(item, bool):
+                        continue
+                    if isinstance(item, int):
+                        normalized_items.append(item)
+                    elif isinstance(item, float) and item.is_integer():
+                        normalized_items.append(int(item))
+                    elif isinstance(item, str):
+                        try:
+                            normalized_items.append(int(item.strip()))
+                        except Exception:
+                            continue
+                elif item_type == "number":
+                    if isinstance(item, bool):
+                        continue
+                    if isinstance(item, (int, float)):
+                        normalized_items.append(item)
+                    elif isinstance(item, str):
+                        try:
+                            normalized_items.append(float(item.strip()))
+                        except Exception:
+                            continue
+                elif item_type == "boolean":
+                    coerced_item = _coerce_bool(item)
+                    if isinstance(coerced_item, bool):
+                        normalized_items.append(coerced_item)
+                elif item_type == "object":
+                    if isinstance(item, dict):
+                        normalized_items.append(_coerce_object_value(item, item_def))
+                    elif isinstance(item, str):
+                        try:
+                            parsed_item = json.loads(item)
+                            if isinstance(parsed_item, dict):
+                                normalized_items.append(_coerce_object_value(parsed_item, item_def))
+                            elif isinstance(parsed_item, list):
+                                normalized_items.append(_coerce_object_value(parsed_item, item_def))
+                            else:
+                                normalized_items.append(_coerce_object_value(item, item_def))
+                        except Exception:
+                            normalized_items.append(_coerce_object_value(item, item_def))
+                    elif isinstance(item, list):
+                        normalized_items.append(_coerce_object_value(item, item_def))
+                    else:
+                        normalized_items.append(_coerce_object_value(item, item_def))
+                else:
+                    normalized_items.append(item)
+
+            if isinstance(value, dict):
+                _note_coercion(field_name, "array", value, normalized_items, "object_to_array")
+            elif isinstance(value, str):
+                _note_coercion(field_name, "array", value, normalized_items, "string_to_array")
+            elif not isinstance(value, list):
+                _note_coercion(field_name, "array", value, normalized_items, "scalar_to_array")
+            return normalized_items
 
         if field_type == "object":
-            if isinstance(value, dict):
-                return value
-            if isinstance(value, str):
-                try:
-                    parsed = json.loads(value)
-                    if isinstance(parsed, dict):
-                        return parsed
-                except Exception:
-                    raise ValueError(f"Field '{field_name}' must be an object")
-            raise ValueError(f"Field '{field_name}' must be an object")
+            if not isinstance(value, dict):
+                _note_coercion(field_name, "object", value, value, "non_object_input_normalized")
+            return _coerce_object_value(value, field_def)
 
         if field_type == "enum":
             allowed = field_def.get("values", [])
@@ -783,6 +1024,7 @@ def _validate_and_enrich_records(
         return value
 
     for record in records:
+        active_coercions = []
         row = dict(record)
         for field_name, field_def in fields.items():
             if not isinstance(field_def, dict):
@@ -809,6 +1051,12 @@ def _validate_and_enrich_records(
 
         if "_provenance" not in row or not isinstance(row.get("_provenance"), dict):
             row["_provenance"] = {}
+        if active_coercions:
+            existing_coercions = row["_provenance"].get("_coercions")
+            if isinstance(existing_coercions, list):
+                row["_provenance"]["_coercions"] = existing_coercions + active_coercions
+            else:
+                row["_provenance"]["_coercions"] = active_coercions
         row["_sourceFileId"] = file_id
         row["_extractedAt"] = now_iso
         row["_extractedBy"] = agent_id
