@@ -47,8 +47,11 @@
   environment:
     MODEL_CONFIG_FILE: "{{ playbook_dir }}/group_vars/all/model_config.yml"
     MODEL_REGISTRY_FILE: "{{ playbook_dir }}/group_vars/all/model_registry.yml"
-    AWS_BEARER_TOKEN_BEDROCK: "{{ secrets.bedrock_api_key | default('') }}"
-    AWS_REGION_NAME: "{{ secrets.bedrock_region | default('us-east-1') }}"
+    # Support both legacy flattened keys and nested secrets.bedrock.* structure.
+    AWS_BEARER_TOKEN_BEDROCK: "{{ secrets.bedrock_api_key | default(secrets.bedrock.api_key | default('')) }}"
+    AWS_REGION_BEDROCK: "{{ secrets.bedrock_region | default(secrets.bedrock.region | default('us-east-1')) }}"
+    # Backward compatibility for any older scripts reading this name.
+    AWS_REGION_NAME: "{{ secrets.bedrock_region | default(secrets.bedrock.region | default('us-east-1')) }}"
     VLLM_IP: "{{ vllm_ip }}"
   register: models_json_output
   delegate_to: localhost

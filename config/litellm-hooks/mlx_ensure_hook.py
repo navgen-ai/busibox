@@ -10,8 +10,13 @@ import threading
 import time
 from typing import Dict, Set
 
-import httpx
-from litellm.integrations.custom_logger import CustomLogger
+# LiteLLM has moved internal logger modules across versions.
+# Keep this hook import-compatible so proxy startup never fails on upgrade.
+try:
+    from litellm.integrations.custom_logger import CustomLogger
+except Exception:
+    class CustomLogger:  # type: ignore[override]
+        pass
 
 _ensure_lock = threading.Lock()
 _last_check_at = 0.0
@@ -108,18 +113,36 @@ def _should_ensure_mlx(data: dict, call_type: str) -> bool:
 
 
 def _mlx_healthcheck(mlx_port: str) -> bool:
+    # Import lazily so missing optional deps never break module import/startup.
     try:
-        response = httpx.get(
-            f"http://host.docker.internal:{mlx_port}/v1/models",
-            timeout=3.0,
-        )
-        return response.status_code == 200
+        import httpx  # type: ignore
+    except Exception:
+        httpx = None
+
+    try:
+        if httpx is not None:
+            response = httpx.get(
+                f"http://host.docker.internal:{mlx_port}/v1/models",
+                timeout=3.0,
+            )
+            return response.status_code == 200
+        # Fallback to stdlib if httpx is unavailable.
+        import urllib.request
+        with urllib.request.urlopen(
+            f"http://host.docker.internal:{mlx_port}/v1/models", timeout=3.0
+        ) as response:
+            return response.status == 200
     except Exception:
         return False
 
 
 def _check_and_start_mlx() -> None:
     global _last_check_at, _last_status
+    # Import lazily so missing optional deps never break module import/startup.
+    try:
+        import httpx  # type: ignore
+    except Exception:
+        httpx = None
 
     if not _ensure_lock.acquire(blocking=False):
         return
@@ -143,17 +166,40 @@ def _check_and_start_mlx() -> None:
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
-        response = httpx.post(
-            f"{deploy_api_url}/api/v1/services/mlx/ensure/quick",
-            headers=headers,
-            timeout=15.0,
-        )
+        if httpx is not None:
+            response = httpx.post(
+                f"{deploy_api_url}/api/v1/services/mlx/ensure/quick",
+                headers=headers,
+                timeout=15.0,
+            )
+            status_code = response.status_code
+            json_payload = None
+            try:
+                json_payload = response.json()
+            except Exception:
+                json_payload = None
+        else:
+            import json
+            import urllib.request
+            req = urllib.request.Request(
+                f"{deploy_api_url}/api/v1/services/mlx/ensure/quick",
+                data=b"{}",
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15.0) as response:
+                status_code = response.status
+                raw = response.read().decode("utf-8", errors="replace")
+            try:
+                json_payload = json.loads(raw) if raw else None
+            except Exception:
+                json_payload = None
 
         _last_check_at = time.monotonic()
-        if response.status_code == 200:
-            try:
-                _last_status = response.json().get("status", "unknown")
-            except Exception:
+        if status_code == 200:
+            if isinstance(json_payload, dict):
+                _last_status = str(json_payload.get("status", "unknown"))
+            else:
                 _last_status = "unknown"
         else:
             _last_status = "failed"
