@@ -310,6 +310,7 @@ services:
     labels:
       - "config_version=${GIT_COMMIT:-unknown}"
     environment:
+      PYTHONPATH: /app
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev-key}
       # MLX auto-start hook context
       LLM_BACKEND: ${LLM_BACKEND:-}
@@ -322,9 +323,11 @@ services:
       STORE_MODEL_IN_DB: "True"
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      # AWS Bedrock - pass BEDROCK_API_KEY directly as bearer token
-      AWS_BEARER_TOKEN_BEDROCK: ${BEDROCK_API_KEY:-}
-      AWS_REGION_NAME: ${AWS_REGION_NAME:-us-east-1}
+      # AWS Bedrock - support either token-style key or native AWS keypair env vars
+      AWS_BEARER_TOKEN_BEDROCK: ${BEDROCK_API_KEY:-${AWS_BEARER_TOKEN_BEDROCK:-}}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_REGION_NAME: ${AWS_REGION_NAME:-${AWS_REGION:-us-east-1}}
     ports:
       - "4000:4000"
     volumes:

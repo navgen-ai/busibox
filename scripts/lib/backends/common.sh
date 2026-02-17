@@ -23,8 +23,8 @@ _BACKEND_COMMON_LOADED=1
 # Service Groups
 # ============================================================================
 
-# Service group display order
-BACKEND_SERVICE_GROUP_ORDER=("Infrastructure" "APIs" "LLM" "Frontend" "User Apps")
+# Service group display order (manage menu)
+BACKEND_SERVICE_GROUP_ORDER=("Frontend" "APIs" "LLM" "Infrastructure")
 
 # Detect if running on Apple Silicon
 is_apple_silicon() {
@@ -43,9 +43,10 @@ backend_get_services_for_group() {
     case "$group" in
         "Infrastructure")
             if [[ "$backend" == "k8s" ]]; then
-                echo "postgres redis minio milvus neo4j etcd"
+                # Keep etcd visible for K8s operations.
+                echo "nginx redis minio postgres milvus neo4j etcd"
             else
-                echo "postgres redis minio milvus neo4j"
+                echo "nginx redis minio postgres milvus neo4j"
             fi
             ;;
         "Build")
@@ -57,7 +58,7 @@ backend_get_services_for_group() {
             fi
             ;;
         "APIs")
-            echo "authz-api agent-api data-api search-api deploy-api bridge-api docs-api embedding-api"
+            echo "deploy authz agent data embedding search bridge docs"
             ;;
         "LLM")
             if [[ "$backend" == "k8s" ]]; then
@@ -70,19 +71,16 @@ backend_get_services_for_group() {
             ;;
         "Frontend")
             if [[ "$backend" == "docker" ]]; then
-                echo "proxy core-apps"
+                echo "core-apps user-apps"
             elif [[ "$backend" == "k8s" ]]; then
                 echo "proxy busibox-portal busibox-agents"
             else
-                echo "nginx core-apps"  # Proxmox has separate nginx
+                echo "core-apps user-apps"
             fi
             ;;
         "User Apps"|"User_Apps")
-            if [[ "$backend" == "k8s" ]]; then
-                echo ""  # K8s user apps managed via deploy-api
-            else
-                echo "user-apps"
-            fi
+            # Legacy group kept for compatibility; user-apps now lives under Frontend.
+            echo ""
             ;;
         *)
             echo ""
@@ -96,9 +94,10 @@ backend_get_services_for_group() {
 backend_get_group_order() {
     local backend="${1:-docker}"
     if [[ "$backend" == "k8s" ]]; then
-        echo "Infrastructure Build APIs LLM Frontend"
+        # Keep Build group in K8s while matching requested primary ordering.
+        echo "Frontend APIs LLM Infrastructure Build"
     else
-        echo "Infrastructure APIs LLM Frontend User_Apps"
+        echo "Frontend APIs LLM Infrastructure"
     fi
 }
 
@@ -121,7 +120,7 @@ get_container_for_service() {
         # APIs
         authz|authz-api) echo "authz-api" ;;
         agent|agent-api) echo "agent-api" ;;
-        ingest|data-api) echo "data-api" ;;
+        ingest|data|data-api) echo "data-api" ;;
         data-worker) echo "data-worker" ;;
         search|search-api) echo "search-api" ;;
         deploy|deploy-api) echo "deploy-api" ;;
@@ -139,7 +138,7 @@ get_container_for_service() {
 
         # Frontend
         core-apps|apps|busibox-portal|busibox-agents) echo "core-apps" ;;
-        nginx|proxy) echo "nginx" ;;
+        nginx|proxy) echo "proxy" ;;
 
         # User apps
         user-apps) echo "user-apps" ;;
@@ -221,7 +220,7 @@ get_proxmox_make_target() {
         redis) echo "data" ;;
         authz|authz-api) echo "authz" ;;
         agent|agent-api) echo "agent" ;;
-        ingest|data-api) echo "data" ;;
+        ingest|data|data-api) echo "data" ;;
         data-worker) echo "data" ;;
         search|search-api) echo "search-api" ;;
         deploy|deploy-api) echo "deploy-api" ;;

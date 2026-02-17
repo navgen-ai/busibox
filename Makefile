@@ -2,7 +2,7 @@
         docker-up docker-up-prod docker-start docker-down docker-down-all docker-restart docker-restart-apis docker-restart-data docker-build docker-logs docker-ps docker-ps-all docker-clean docker-clean-all \
         vault-generate-env vault-migrate vault-sync ssl-check \
         github-check github-ensure \
-        install update manage recover-admin rotate-secrets profile demo warmup demo-clean demo-status \
+        install update manage login recover-admin rotate-secrets profile demo warmup demo-clean demo-status \
         docker-deploy docker-deploy-infra docker-deploy-apis docker-deploy-llm docker-deploy-frontend \
         deploy-user-app undeploy-user-app list-user-apps user-app-logs user-app-status \
         mlx-status mlx-start mlx-stop mlx-restart mlx-media-status mlx-media-start mlx-media-stop mlx-media-restart host-agent-status host-agent-start host-agent-stop host-agent-restart \
@@ -658,6 +658,11 @@ ifdef SERVICE
 else
 	@bash scripts/make/manage.sh
 endif
+
+# Generate admin magic link and open browser
+# Usage: make login
+login:
+	@bash scripts/make/login.sh
 
 # Rotate secrets (interactive)
 # Usage: make rotate-secrets

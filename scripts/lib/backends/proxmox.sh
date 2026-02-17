@@ -46,7 +46,7 @@ _proxmox_get_service_ip() {
         milvus) echo "${network_base}.204" ;;
         neo4j|graph) echo "${network_base}.213" ;;
         agent|agent-api) echo "${network_base}.202" ;;
-        ingest|data-api|data-worker|redis) echo "${network_base}.206" ;;
+        ingest|data|data-api|data-worker|redis) echo "${network_base}.206" ;;
         bridge|bridge-api) echo "${network_base}.211" ;;
         authz|authz-api|deploy|deploy-api|docs|docs-api) echo "${network_base}.210" ;;
         search|search-api|embedding|embedding-api) echo "${network_base}.204" ;;
@@ -65,7 +65,7 @@ _proxmox_get_systemd_name() {
     case "$service" in
         authz|authz-api) echo "authz" ;;
         agent|agent-api) echo "agent" ;;
-        ingest|data-api) echo "data-api" ;;
+        ingest|data|data-api) echo "data-api" ;;
         data-worker) echo "data-worker" ;;
         search|search-api) echo "search-api" ;;
         deploy|deploy-api) echo "deploy-api" ;;
