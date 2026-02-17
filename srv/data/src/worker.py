@@ -419,12 +419,15 @@ class IngestWorker:
             conn = self.postgres_service._get_connection(self._current_rls_context)
             try:
                 with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT chunk_index, content, metadata, embedding
+                    cur.execute(
+                        """
+                        SELECT chunk_index, text, char_offset, token_count, page_number, section_heading, metadata
                         FROM data_chunks
                         WHERE file_id = %s
                         ORDER BY chunk_index
-                    """, (file_id,))
+                        """,
+                        (file_id,),
+                    )
                     
                     rows = cur.fetchall()
                     if not rows:
@@ -432,15 +435,25 @@ class IngestWorker:
                     
                     # Convert to Chunk objects
                     chunks = []
-                    for chunk_index, content, metadata, embedding in rows:
+                    for chunk_index, text, char_offset, token_count, page_number, section_heading, metadata in rows:
+                        metadata_dict = metadata or {}
+                        if isinstance(metadata_dict, str):
+                            try:
+                                metadata_dict = json.loads(metadata_dict)
+                            except Exception:
+                                metadata_dict = {}
                         chunk = Chunk(
-                            text=content,
-                            index=chunk_index,
-                            metadata=metadata or {},
+                            text=text or "",
+                            chunk_index=chunk_index,
+                            token_count=token_count or 0,
+                            char_offset=char_offset or 0,
+                            page_number=page_number,
+                            section_heading=section_heading,
+                            language=metadata_dict.get("language"),
                         )
-                        # Store embedding if present
-                        if embedding:
-                            chunk.embedding = embedding
+                        # Keep compatibility with existing fast-path code expecting these attrs.
+                        chunk.index = chunk_index
+                        chunk.metadata = metadata_dict
                         chunks.append(chunk)
                     
                     return chunks
@@ -483,8 +496,14 @@ class IngestWorker:
             metadata={"chunk_count": total_chunks, "fast_path": True}
         )
         
-        # Stage: Embedding (if starting from embedding)
-        if start_stage == "embedding":
+        def _chunk_has_embedding(chunk_obj: Any) -> bool:
+            embedding = getattr(chunk_obj, "embedding", None)
+            return isinstance(embedding, list) and len(embedding) > 0
+
+        # PostgreSQL no longer stores chunk embeddings; ensure we have embeddings
+        # whenever we need to index.
+        need_embeddings = start_stage == "embedding" or any(not _chunk_has_embedding(c) for c in chunks)
+        if need_embeddings:
             embedding_start = self.history.log_stage_start(
                 file_id, "embedding",
                 f"Starting embedding generation for {total_chunks} chunks",
@@ -515,9 +534,6 @@ class IngestWorker:
                 started_at=text_embedding_start
             )
             
-            # Save embeddings to database
-            self._save_chunk_embeddings(file_id, chunks)
-            
             self.history.log_stage_complete(
                 file_id, "embedding",
                 f"Completed embedding generation: {len(text_embeddings)} text",
@@ -542,12 +558,14 @@ class IngestWorker:
         text_vectors = []
         for chunk in chunks:
             if hasattr(chunk, 'embedding') and chunk.embedding:
+                chunk_index = getattr(chunk, "chunk_index", getattr(chunk, "index", 0))
+                chunk_metadata = getattr(chunk, "metadata", {})
                 text_vectors.append({
                     "file_id": file_id,
-                    "chunk_index": chunk.index,
+                    "chunk_index": chunk_index,
                     "embedding": chunk.embedding,
                     "text": chunk.text[:1000],  # Truncate for storage
-                    "metadata": chunk.metadata,
+                    "metadata": chunk_metadata,
                 })
         
         # Insert into Milvus
@@ -618,25 +636,6 @@ class IngestWorker:
             vector_count=len(text_vectors),
             processing_time_seconds=processing_time,
         )
-    
-    def _save_chunk_embeddings(self, file_id: str, chunks: List):
-        """Save chunk embeddings back to database."""
-        try:
-            conn = self.postgres_service._get_connection(self._current_rls_context)
-            try:
-                with conn.cursor() as cur:
-                    for chunk in chunks:
-                        if hasattr(chunk, 'embedding') and chunk.embedding:
-                            cur.execute("""
-                                UPDATE data_chunks
-                                SET embedding = %s
-                                WHERE file_id = %s AND chunk_index = %s
-                            """, (chunk.embedding, file_id, chunk.index))
-                    conn.commit()
-            finally:
-                self.postgres_service._return_connection(conn)
-        except Exception as e:
-            logger.error("Failed to save chunk embeddings", file_id=file_id, error=str(e), exc_info=True)
     
     def _check_library_triggers(
         self,
