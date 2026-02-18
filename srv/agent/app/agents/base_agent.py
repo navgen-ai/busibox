@@ -37,6 +37,7 @@ from app.config.settings import get_settings
 from app.schemas.auth import Principal
 from app.schemas.streaming import StreamEvent, thought, tool_start, tool_result, content, error, complete
 from app.services.token_service import get_or_exchange_token
+from app.services.skills_service import get_skills_service
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +202,10 @@ TOOL_SCOPES: Dict[str, List[str]] = {
     "generate_image": ["data.write"],
     "transcribe_audio": ["data.read"],
     "text_to_speech": ["data.write"],
+    "memory_search": [],
+    "memory_save": [],
+    "calendar_list_events": [],
+    "calendar_create_event": [],
 }
 
 
@@ -289,6 +294,13 @@ def _register_builtin_tools():
     from app.tools.image_tool import generate_image, ImageOutput
     from app.tools.transcription_tool import transcribe_audio, TranscriptionOutput
     from app.tools.tts_tool import text_to_speech, TTSOutput
+    from app.tools.memory_tool import memory_search, memory_save, MemorySearchOutput, MemorySaveOutput
+    from app.tools.calendar_tool import (
+        calendar_list_events,
+        calendar_create_event,
+        CalendarListOutput,
+        CalendarCreateOutput,
+    )
     
     ToolRegistry.register("document_search", search_documents, DocumentSearchOutput)
     ToolRegistry.register("web_search", search_web, WebSearchOutput)
@@ -297,6 +309,10 @@ def _register_builtin_tools():
     ToolRegistry.register("generate_image", generate_image, ImageOutput)
     ToolRegistry.register("transcribe_audio", transcribe_audio, TranscriptionOutput)
     ToolRegistry.register("text_to_speech", text_to_speech, TTSOutput)
+    ToolRegistry.register("memory_search", memory_search, MemorySearchOutput)
+    ToolRegistry.register("memory_save", memory_save, MemorySaveOutput)
+    ToolRegistry.register("calendar_list_events", calendar_list_events, CalendarListOutput)
+    ToolRegistry.register("calendar_create_event", calendar_create_event, CalendarCreateOutput)
     
     # Register task and notification tools
     try:
@@ -1064,6 +1080,15 @@ class BaseStreamingAgent(StreamingAgent):
         - Current query
         """
         parts = []
+
+        # Add role-gated SKILL.md skills if enabled.
+        try:
+            skills_prompt = get_skills_service().render_skills_prompt(context.principal)
+            if skills_prompt:
+                parts.append(skills_prompt)
+                parts.append("")
+        except Exception as e:
+            logger.debug(f"Failed to render skills prompt: {e}")
         
         # Add application metadata context if present (e.g. projectId, appName)
         if context.metadata:
@@ -1219,6 +1244,15 @@ class BaseStreamingAgent(StreamingAgent):
             Context string for synthesis agent
         """
         parts = []
+
+        # Add role-gated SKILL.md skills if enabled.
+        try:
+            skills_prompt = get_skills_service().render_skills_prompt(context.principal)
+            if skills_prompt:
+                parts.append(skills_prompt)
+                parts.append("")
+        except Exception as e:
+            logger.debug(f"Failed to render skills prompt: {e}")
         
         # 1. Add relevant insights (user memories) if present
         if context.relevant_insights:

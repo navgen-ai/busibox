@@ -43,7 +43,7 @@ ENV="${2:-test}"
 if [[ -z "$SERVICE" ]]; then
     echo "Usage: $0 <service> [environment]"
     echo ""
-    echo "Services: authz, data, search, agent, all"
+    echo "Services: authz, data, search, agent, bridge, all"
     echo "Environments: test, production (default: test)"
     exit 1
 fi
@@ -247,6 +247,9 @@ generate_env_file() {
         agent)
             env_file="${REPO_ROOT}/srv/agent/.env.local"
             ;;
+        bridge)
+            env_file="${REPO_ROOT}/srv/bridge/.env.local"
+            ;;
         all)
             env_file="${REPO_ROOT}/.env.local"
             ;;
@@ -262,6 +265,7 @@ generate_env_file() {
     #   - data: "data" database (documents, chunks)
     #   - search: "data" database (reads from same as data)
     #   - agent: "agent" database
+    #   - bridge: does not require DB by default; authz used for consistency
     case "$service" in
         ingest|search)
             POSTGRES_DB_FOR_SERVICE="data"
@@ -271,6 +275,9 @@ generate_env_file() {
             ;;
         agent)
             POSTGRES_DB_FOR_SERVICE="agent"
+            ;;
+        bridge)
+            POSTGRES_DB_FOR_SERVICE="authz"
             ;;
         all|*)
             # Default to authz for "all" since it's the most commonly needed
@@ -400,6 +407,10 @@ SEARCH_API_URL=http://${MILVUS_IP}:8003
 AGENT_API_HOST=${AGENT_IP}
 AGENT_API_PORT=8000
 AGENT_API_URL=http://${AGENT_IP}:8000
+
+BRIDGE_API_HOST=${AUTHZ_IP}
+BRIDGE_API_PORT=8081
+BRIDGE_API_URL=http://${AUTHZ_IP}:8081
 
 # ============================================
 # GPU Services (use PRODUCTION container for GPU)

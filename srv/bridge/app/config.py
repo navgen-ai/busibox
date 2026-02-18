@@ -8,7 +8,8 @@ Loads settings from environment variables for all communication channels:
 """
 
 from functools import lru_cache
-from typing import List, Optional
+import json
+from typing import Dict, List, Optional
 
 from pydantic import AnyHttpUrl, Field, field_validator
 from pydantic_settings import BaseSettings
@@ -110,6 +111,98 @@ class Settings(BaseSettings):
         return [n.strip() for n in self.allowed_phone_numbers.split(",") if n.strip()]
 
     # -------------------------------------------------------------------------
+    # Telegram Channel
+    # -------------------------------------------------------------------------
+    telegram_enabled: bool = Field(False, description="Enable Telegram channel")
+    telegram_bot_token: str = Field("", description="Telegram bot token")
+    telegram_poll_interval: float = Field(1.0, description="Seconds between Telegram polls")
+    telegram_poll_timeout: int = Field(25, description="Telegram getUpdates timeout in seconds")
+    telegram_allowed_chat_ids: str = Field(
+        "",
+        description="Comma-separated Telegram chat IDs allowed to interact (empty = all)",
+    )
+
+    def get_allowed_telegram_chat_ids(self) -> List[str]:
+        """Parse allowed Telegram chat IDs into a normalized list."""
+        if not self.telegram_allowed_chat_ids or not self.telegram_allowed_chat_ids.strip():
+            return []
+        return [chat_id.strip() for chat_id in self.telegram_allowed_chat_ids.split(",") if chat_id.strip()]
+
+    # -------------------------------------------------------------------------
+    # Discord Channel
+    # -------------------------------------------------------------------------
+    discord_enabled: bool = Field(False, description="Enable Discord channel")
+    discord_bot_token: str = Field("", description="Discord bot token")
+    discord_poll_interval: float = Field(2.0, description="Seconds between Discord polls")
+    discord_channel_ids: str = Field(
+        "",
+        description="Comma-separated Discord channel IDs to poll",
+    )
+
+    def get_discord_channel_ids(self) -> List[str]:
+        """Parse configured Discord channel IDs."""
+        if not self.discord_channel_ids or not self.discord_channel_ids.strip():
+            return []
+        return [channel_id.strip() for channel_id in self.discord_channel_ids.split(",") if channel_id.strip()]
+
+    # -------------------------------------------------------------------------
+    # WhatsApp Channel (Cloud API webhook mode)
+    # -------------------------------------------------------------------------
+    whatsapp_enabled: bool = Field(False, description="Enable WhatsApp channel")
+    whatsapp_verify_token: str = Field("", description="Meta webhook verify token")
+    whatsapp_access_token: str = Field("", description="Meta Graph API access token")
+    whatsapp_phone_number_id: str = Field("", description="Meta phone number ID for sends")
+    whatsapp_api_version: str = Field("v22.0", description="Meta Graph API version")
+    whatsapp_allowed_phone_numbers: str = Field(
+        "",
+        description="Comma-separated WhatsApp phone numbers allowed (empty = all)",
+    )
+
+    def get_allowed_whatsapp_phone_numbers(self) -> List[str]:
+        """Parse allowed WhatsApp phone numbers into a list."""
+        if not self.whatsapp_allowed_phone_numbers or not self.whatsapp_allowed_phone_numbers.strip():
+            return []
+        return [number.strip() for number in self.whatsapp_allowed_phone_numbers.split(",") if number.strip()]
+
+    # -------------------------------------------------------------------------
+    # Cross-channel identity mapping
+    # -------------------------------------------------------------------------
+    channel_user_bindings: str = Field(
+        "",
+        description=(
+            "Optional JSON map of external channel IDs to stable IDs, "
+            "e.g. {'signal:+1555':'user-123','telegram:123':'user-123'}"
+        ),
+    )
+
+    def get_channel_user_bindings(self) -> Dict[str, str]:
+        """
+        Parse channel_user_bindings JSON into a dict.
+
+        Expected format:
+            {"signal:+1555": "user-1", "telegram:12345": "user-1"}
+        """
+        raw = (self.channel_user_bindings or "").strip()
+        if not raw:
+            return {}
+
+        try:
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                return {}
+            normalized: Dict[str, str] = {}
+            for key, value in parsed.items():
+                if not isinstance(key, str) or not isinstance(value, str):
+                    continue
+                k = key.strip().lower()
+                v = value.strip()
+                if k and v:
+                    normalized[k] = v
+            return normalized
+        except Exception:
+            return {}
+
+    # -------------------------------------------------------------------------
     # Email Channel
     # -------------------------------------------------------------------------
     email_enabled: bool = Field(False, description="Enable email channel")
@@ -120,6 +213,26 @@ class Settings(BaseSettings):
     smtp_secure: bool = Field(False, description="Use SSL/TLS for SMTP")
     email_from: Optional[str] = Field(None, description="From address for emails")
     resend_api_key: Optional[str] = Field(None, description="Resend API key (alternative to SMTP)")
+
+    # Inbound email (IMAP polling)
+    email_inbound_enabled: bool = Field(False, description="Enable inbound email polling channel")
+    imap_host: Optional[str] = Field(None, description="IMAP server host")
+    imap_port: int = Field(993, description="IMAP server port")
+    imap_user: Optional[str] = Field(None, description="IMAP username")
+    imap_password: Optional[str] = Field(None, description="IMAP password")
+    imap_use_ssl: bool = Field(True, description="Use IMAP SSL")
+    imap_folder: str = Field("INBOX", description="IMAP folder to poll")
+    email_inbound_poll_interval: float = Field(30.0, description="Seconds between inbound email polls")
+    email_allowed_senders: str = Field(
+        "",
+        description="Comma-separated list of allowed sender emails (empty = all)",
+    )
+
+    def get_email_allowed_senders(self) -> List[str]:
+        """Parse allowed inbound sender addresses."""
+        if not self.email_allowed_senders or not self.email_allowed_senders.strip():
+            return []
+        return [sender.strip().lower() for sender in self.email_allowed_senders.split(",") if sender.strip()]
 
     class Config:
         env_file = ".env"

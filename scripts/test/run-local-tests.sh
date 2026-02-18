@@ -106,11 +106,11 @@ fi
 
 # Validate service
 case "$SERVICE" in
-    authz|data|ingest|search|agent|busibox-portal|busibox-agents|apps|all)
+    authz|data|ingest|search|agent|bridge|busibox-portal|busibox-agents|apps|all)
         ;;
     *)
         error "Unknown service: $SERVICE"
-        echo "Valid services: authz, data, data, search, agent, busibox-portal, busibox-agents, apps, all"
+        echo "Valid services: authz, data, search, agent, bridge, busibox-portal, busibox-agents, apps, all"
         exit 1
         ;;
 esac
@@ -445,6 +445,7 @@ run_docker_container_tests() {
         data)    container_name="${DOCKER_PREFIX}-data-api" ;;
         search)  container_name="${DOCKER_PREFIX}-search-api" ;;
         agent)   container_name="${DOCKER_PREFIX}-agent-api" ;;
+        bridge)  container_name="${DOCKER_PREFIX}-bridge-api" ;;
         *)
             error "Unknown service: $service"
             return 1
@@ -527,6 +528,7 @@ run_docker_container_tests() {
         data) test_db_name="test_data" ;;
         search) test_db_name="test_data" ;;
         agent)  test_db_name="test_agent" ;;
+        bridge) test_db_name="test_authz" ;;
     esac
     
     # Use the well-known consistent test user ID
@@ -654,7 +656,7 @@ FAILED_SERVICES=""
 
 if [[ "$SERVICE" == "all" ]]; then
     # Run Python service tests
-    for svc in authz data search agent; do
+    for svc in authz data search agent bridge; do
         echo ""
         separator 70
         if ! run_service_tests "$svc"; then

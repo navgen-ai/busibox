@@ -600,6 +600,116 @@ BUILTIN_TOOL_METADATA = {
             }
         }
     },
+    "memory_tool_search": {
+        "name": "memory_search",
+        "description": "Search the user's saved memories and learned insights. Uses semantic retrieval with recency weighting.",
+        "entrypoint": "app.tools.memory_tool:memory_search",
+        "scopes": [],
+        "version": 1,
+        "schema": {
+            "input": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Memory search query"},
+                    "limit": {"type": "integer", "description": "Maximum results (default 5)", "default": 5},
+                    "score_threshold": {"type": "number", "description": "Cosine distance threshold (lower is stricter)", "default": 0.8},
+                    "half_life_days": {"type": "number", "description": "Recency decay half-life in days", "default": 30.0}
+                },
+                "required": ["query"]
+            },
+            "output": {
+                "type": "object",
+                "properties": {
+                    "found": {"type": "boolean"},
+                    "result_count": {"type": "integer"},
+                    "context": {"type": "string"},
+                    "results": {"type": "array"},
+                    "error": {"type": "string"}
+                }
+            }
+        }
+    },
+    "memory_tool_save": {
+        "name": "memory_save",
+        "description": "Save an explicit long-term memory for the current user.",
+        "entrypoint": "app.tools.memory_tool:memory_save",
+        "scopes": [],
+        "version": 1,
+        "schema": {
+            "input": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "Memory content to save"},
+                    "category": {"type": "string", "description": "Memory category (preference, fact, goal, context, other)", "default": "context"}
+                },
+                "required": ["content"]
+            },
+            "output": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"},
+                    "memory_id": {"type": "string"},
+                    "message": {"type": "string"},
+                    "error": {"type": "string"}
+                }
+            }
+        }
+    },
+    "calendar_tool_list": {
+        "name": "calendar_list_events",
+        "description": "List upcoming Google Calendar events for the configured calendar account.",
+        "entrypoint": "app.tools.calendar_tool:calendar_list_events",
+        "scopes": [],
+        "version": 1,
+        "schema": {
+            "input": {
+                "type": "object",
+                "properties": {
+                    "time_min": {"type": "string", "description": "Optional RFC3339 start window"},
+                    "time_max": {"type": "string", "description": "Optional RFC3339 end window"},
+                    "max_results": {"type": "integer", "description": "Maximum number of events", "default": 10}
+                },
+                "required": []
+            },
+            "output": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"},
+                    "events": {"type": "array"},
+                    "count": {"type": "integer"},
+                    "error": {"type": "string"}
+                }
+            }
+        }
+    },
+    "calendar_tool_create": {
+        "name": "calendar_create_event",
+        "description": "Create a Google Calendar event with summary and start/end RFC3339 datetimes.",
+        "entrypoint": "app.tools.calendar_tool:calendar_create_event",
+        "scopes": [],
+        "version": 1,
+        "schema": {
+            "input": {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string"},
+                    "start": {"type": "string", "description": "RFC3339 datetime"},
+                    "end": {"type": "string", "description": "RFC3339 datetime"},
+                    "description": {"type": "string"},
+                    "timezone": {"type": "string", "default": "UTC"}
+                },
+                "required": ["summary", "start", "end"]
+            },
+            "output": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"},
+                    "event": {"type": "object"},
+                    "error": {"type": "string"}
+                }
+            }
+        }
+    },
     # Extraction schema tool
     "extraction_schema_tool": {
         "name": "create_extraction_schema",
@@ -754,6 +864,10 @@ def get_tool_executor(tool_name: str) -> Optional[Callable]:
         "generate_image": ("app.tools.image_tool", "generate_image"),
         "transcribe_audio": ("app.tools.transcription_tool", "transcribe_audio"),
         "text_to_speech": ("app.tools.tts_tool", "text_to_speech"),
+        "memory_search": ("app.tools.memory_tool", "memory_search"),
+        "memory_save": ("app.tools.memory_tool", "memory_save"),
+        "calendar_list_events": ("app.tools.calendar_tool", "calendar_list_events"),
+        "calendar_create_event": ("app.tools.calendar_tool", "calendar_create_event"),
     }
     
     if tool_name not in executors:
@@ -809,6 +923,10 @@ def get_tool_object(tool_name: str) -> Optional[Any]:
         "generate_image": ("app.tools.image_tool", "image_tool"),
         "transcribe_audio": ("app.tools.transcription_tool", "transcription_tool"),
         "text_to_speech": ("app.tools.tts_tool", "tts_tool"),
+        "memory_search": ("app.tools.memory_tool", "memory_search_tool"),
+        "memory_save": ("app.tools.memory_tool", "memory_save_tool"),
+        "calendar_list_events": ("app.tools.calendar_tool", "calendar_list_events_tool"),
+        "calendar_create_event": ("app.tools.calendar_tool", "calendar_create_event_tool"),
     }
     
     if tool_name not in tool_objects:
