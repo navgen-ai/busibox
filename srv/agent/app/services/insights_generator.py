@@ -92,6 +92,52 @@ class ConversationInsight:
         self.category = category if category in self.CATEGORIES else "other"
 
 
+def build_session_summary_insight(
+    messages: List[Message],
+    conversation_id: str,
+    user_id: str,
+) -> Optional[ConversationInsight]:
+    """
+    Build a compact session summary insight from recent conversation turns.
+
+    This gives the memory system a durable conversation-level anchor even when
+    extracted atomic insights are sparse.
+    """
+    if not messages:
+        return None
+
+    # Use recent turns to keep summary concise and avoid giant embeddings.
+    recent = messages[-8:]
+    user_points: List[str] = []
+    assistant_points: List[str] = []
+    for msg in recent:
+        text = (msg.content or "").strip()
+        if not text:
+            continue
+        compact = text[:180]
+        if msg.role == "user":
+            user_points.append(compact)
+        elif msg.role == "assistant":
+            assistant_points.append(compact)
+
+    if not user_points and not assistant_points:
+        return None
+
+    parts = ["Session summary:"]
+    if user_points:
+        parts.append("User topics: " + " | ".join(user_points[:3]))
+    if assistant_points:
+        parts.append("Assistant responses: " + " | ".join(assistant_points[:3]))
+
+    return ConversationInsight(
+        content="\n".join(parts),
+        conversation_id=f"summary:{conversation_id}",
+        user_id=user_id,
+        importance=0.6,
+        category="context",
+    )
+
+
 def classify_insight_category(content: str) -> str:
     """
     Classify an insight into a category based on content.
@@ -516,6 +562,20 @@ async def generate_and_store_insights(
             conversation.user_id,
             existing_insights=existing_insights
         )
+
+        # Add a session-level summary memory when not already present.
+        has_existing_summary = any(
+            str(i.get("conversationId", "")).startswith("summary:")
+            for i in existing_insights
+        )
+        if not has_existing_summary:
+            summary = build_session_summary_insight(
+                messages=messages,
+                conversation_id=str(conversation.id),
+                user_id=conversation.user_id,
+            )
+            if summary is not None:
+                insights.append(summary)
         
         if not insights:
             logger.info(

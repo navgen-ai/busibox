@@ -12,12 +12,13 @@ Authentication:
 """
 
 import logging
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, EmailStr
 
 from .config import Settings
+from .whatsapp_client import WhatsAppClient
 from .email_client import EmailClient
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,10 @@ class EmailResponse(BaseModel):
 # App factory
 # ---------------------------------------------------------------------------
 
-def create_app(settings: Settings) -> FastAPI:
+def create_app(
+    settings: Settings,
+    whatsapp_handler: Optional[Callable[[dict], Awaitable[None]]] = None,
+) -> FastAPI:
     """Create the FastAPI application with email endpoints."""
 
     app = FastAPI(
@@ -93,7 +97,39 @@ def create_app(settings: Settings) -> FastAPI:
             "email_provider": email_client.provider,
             "email_enabled": settings.email_enabled,
             "signal_enabled": settings.signal_enabled,
+            "telegram_enabled": settings.telegram_enabled,
+            "discord_enabled": settings.discord_enabled,
+            "whatsapp_enabled": settings.whatsapp_enabled,
         }
+
+    # ------------------------------------------------------------------
+    # WhatsApp webhook endpoints (Cloud API)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/v1/channels/whatsapp/webhook")
+    async def whatsapp_verify(
+        mode: str = Query(alias="hub.mode"),
+        verify_token: str = Query(alias="hub.verify_token"),
+        challenge: str = Query(alias="hub.challenge"),
+    ):
+        if not settings.whatsapp_enabled:
+            raise HTTPException(status_code=503, detail="WhatsApp channel not enabled")
+        if mode != "subscribe":
+            raise HTTPException(status_code=400, detail="Invalid mode")
+        if not settings.whatsapp_verify_token or verify_token != settings.whatsapp_verify_token:
+            raise HTTPException(status_code=403, detail="Invalid verify token")
+        return int(challenge) if challenge.isdigit() else challenge
+
+    @app.post("/api/v1/channels/whatsapp/webhook")
+    async def whatsapp_webhook(request: Request):
+        if not settings.whatsapp_enabled:
+            raise HTTPException(status_code=503, detail="WhatsApp channel not enabled")
+        payload = await request.json()
+        # Basic validation: if parser sees nothing, still ACK to avoid retries.
+        parsed = WhatsAppClient.parse_webhook_messages(payload)
+        if parsed and whatsapp_handler is not None:
+            await whatsapp_handler(payload)
+        return {"ok": True, "message_count": len(parsed)}
 
     # ------------------------------------------------------------------
     # Email endpoints

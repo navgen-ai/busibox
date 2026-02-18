@@ -86,6 +86,7 @@ get_container_ip() {
         ollama)   echo "${network_base}.209" ;;
         authz)    echo "${network_base}.210" ;;
         search)   echo "${network_base}.204" ;;  # Search runs on milvus container
+        bridge)   echo "${network_base}.210" ;;  # Bridge currently runs with authz-api
         *)        echo "" ;;
     esac
 }
@@ -1051,7 +1052,7 @@ local_tests_menu() {
                 echo ""
                 info "Generating environment files for manual local testing..."
                 echo ""
-                for svc in authz data search agent; do
+                for svc in authz data search agent bridge; do
                     bash "${REPO_ROOT}/scripts/test/generate-local-test-env.sh" "$svc" "$env" 2>/dev/null || true
                 done
                 echo ""
@@ -1062,6 +1063,7 @@ local_tests_menu() {
                 echo "  - srv/data/.env.local"
                 echo "  - srv/search/.env.local"
                 echo "  - srv/agent/.env.local"
+                echo "  - srv/bridge/.env.local"
                 echo ""
                 info "To use: source srv/<service>/.env.local && pytest tests/ -v"
                 pause
@@ -1189,12 +1191,13 @@ run_container_tests() {
     eval "$creds"
     
     # Get container IPs
-    local postgres_ip authz_ip data_ip search_ip agent_ip minio_ip milvus_ip
+    local postgres_ip authz_ip data_ip search_ip agent_ip bridge_ip minio_ip milvus_ip
     postgres_ip=$(get_container_ip postgres "$env")
     authz_ip=$(get_container_ip authz "$env")
     data_ip=$(get_container_ip data "$env")
     search_ip=$(get_container_ip search "$env")
     agent_ip=$(get_container_ip agent "$env")
+    bridge_ip=$(get_container_ip bridge "$env")
     minio_ip=$(get_container_ip minio "$env")
     milvus_ip=$(get_container_ip milvus "$env")
     
@@ -1392,9 +1395,31 @@ run_container_tests() {
                 return 1
             fi
             ;;
+        bridge)
+            header "Bridge Service Tests" 70
+            info "Running bridge tests on ${bridge_ip}..."
+
+            local test_env="BRIDGE_API_URL=http://${bridge_ip}:8081"
+            test_env="${test_env} BRIDGE_API_PORT=8081"
+
+            # Parse additional pytest args
+            local pytest_args="${PYTEST_ARGS:-}"
+
+            if ssh "root@${bridge_ip}" "cd /srv/bridge && source venv/bin/activate && source .env && export ${test_env} && python -m pytest tests/ -v --tb=short ${pytest_args}"; then
+                success "Bridge tests passed!"
+                save_test_result "bridge" "passed"
+            else
+                error "Bridge tests failed"
+                echo ""
+                warn "To rerun failed tests, check output above for pytest filter"
+                echo ""
+                save_test_result "bridge" "failed"
+                return 1
+            fi
+            ;;
         all)
             local failed_services=()
-            for svc in authz data search agent; do
+            for svc in authz data search agent bridge; do
                 if ! run_container_tests "$svc" "$env"; then
                     failed_services+=("$svc")
                 fi
@@ -1425,7 +1450,7 @@ run_container_tests() {
             ;;
         *)
             error "Unknown service: $service"
-            echo "Available services: authz, data, search, agent, all"
+            echo "Available services: authz, data, search, agent, bridge, all"
             exit 1
             ;;
     esac

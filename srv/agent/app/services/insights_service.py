@@ -20,6 +20,7 @@ Embedding Strategy:
 """
 
 import logging
+import math
 import os
 import re
 import time
@@ -448,6 +449,8 @@ class InsightsService:
         authorization: Optional[str] = None,
         limit: int = 3,
         score_threshold: float = 0.7,
+        apply_temporal_decay: bool = True,
+        half_life_days: float = 30.0,
     ) -> List[InsightSearchResult]:
         """
         Search for relevant insights based on query.
@@ -458,6 +461,8 @@ class InsightsService:
             authorization: Bearer token for authorization
             limit: Maximum number of results
             score_threshold: Maximum cosine distance threshold (lower is better, 0=identical)
+            apply_temporal_decay: If True, older insights are downranked
+            half_life_days: Recency half-life used for temporal decay
             
         Returns:
             List of relevant insights with scores
@@ -493,10 +498,10 @@ class InsightsService:
             for hit in hits:
                 # For COSINE metric, distance is (1 - cosine_similarity)
                 # So lower distance = higher similarity (0 = identical, 2 = opposite)
-                score = hit.distance
+                raw_score = hit.distance
                 
                 # Filter by score threshold (lower is better for COSINE distance)
-                if score > score_threshold:
+                if raw_score > score_threshold:
                     continue
                 
                 # Extract fields
@@ -515,19 +520,31 @@ class InsightsService:
                 if not insight_id or not content:
                     continue  # Skip invalid results
                 
+                # Apply temporal decay to prefer recent memories.
+                analyzed_dt = datetime.fromtimestamp(analyzed_at) if analyzed_at else datetime.now()
+                score = raw_score
+                if apply_temporal_decay and half_life_days > 0:
+                    age_days = max(
+                        0.0,
+                        (datetime.now() - analyzed_dt).total_seconds() / 86400.0,
+                    )
+                    decay_lambda = math.log(2) / half_life_days
+                    # Lower is better. Increase score for older insights.
+                    score = raw_score * math.exp(decay_lambda * age_days)
+
                 insights.append(
                     InsightSearchResult(
                         id=str(insight_id),
                         user_id=str(result_user_id),
                         content=str(content),
                         conversation_id=str(conversation_id),
-                        analyzed_at=datetime.fromtimestamp(analyzed_at) if analyzed_at else datetime.now(),
+                        analyzed_at=analyzed_dt,
                         score=score,
                         category=str(category) if category else "other",
                     )
                 )
-        
-        return insights
+        insights.sort(key=lambda x: x.score)
+        return insights[:limit]
     
     def get_conversation_insights(self, conversation_id: str, user_id: str) -> List[Dict[str, Any]]:
         """

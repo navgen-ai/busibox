@@ -56,6 +56,10 @@ BUILTIN_AGENT_METADATA = {
             "generate_image",
             "transcribe_audio",
             "text_to_speech",
+            "memory_search",
+            "memory_save",
+            "calendar_list_events",
+            "calendar_create_event",
         ],
     },
     "document_agent": {

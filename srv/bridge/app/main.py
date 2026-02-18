@@ -1,11 +1,11 @@
 """
-Bridge Main Application
+Bridge Main Application.
 
-Entry point for the Bridge service.  Runs two concurrent co-processes:
-
-1. **FastAPI HTTP server** — email sending, health check (always runs)
-2. **Signal bot** — polls for Signal messages and forwards to Agent API
-   (only runs when signal_enabled=True and signal_phone_number is set)
+Runs FastAPI + optional channel workers:
+- Signal polling bot
+- Telegram polling bot
+- Discord polling bot
+- WhatsApp webhook ingress (served through FastAPI endpoint)
 """
 
 import asyncio
@@ -13,24 +13,28 @@ import logging
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Awaitable, Callable, Dict, List
 
 from .agent_client import AgentClient
+from .channel_identity import ChannelIdentityResolver
 from .config import Settings, get_settings
+from .discord_client import DiscordClient
+from .email_client import EmailClient
+from .email_inbound_client import EmailInboundClient
 from .signal_client import SignalClient, SignalMessage
+from .telegram_client import TelegramClient, TelegramMessage
+from .whatsapp_client import WhatsAppClient
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
-
 logger = logging.getLogger(__name__)
 
 
 class RateLimiter:
-    """Simple rate limiter for message processing."""
+    """Simple sender-scoped rate limiter."""
 
     def __init__(self, max_messages: int, window_seconds: int):
         self.max_messages = max_messages
@@ -38,129 +42,94 @@ class RateLimiter:
         self._messages: Dict[str, List[datetime]] = defaultdict(list)
 
     def is_allowed(self, sender: str) -> bool:
-        """Check if sender is within rate limits."""
         now = datetime.now()
         cutoff = now - timedelta(seconds=self.window_seconds)
-
-        # Clean old entries
-        self._messages[sender] = [
-            ts for ts in self._messages[sender] if ts > cutoff
-        ]
-
-        # Check limit
+        self._messages[sender] = [ts for ts in self._messages[sender] if ts > cutoff]
         if len(self._messages[sender]) >= self.max_messages:
             return False
-
-        # Record this message
         self._messages[sender].append(now)
         return True
 
 
-class SignalBot:
-    """
-    Main Signal bot application.
-    
-    Handles:
-    - Message polling from Signal
-    - Rate limiting
-    - Message processing via Agent API
-    - Response delivery back to Signal
-    """
+class MessageProcessor:
+    """Shared channel-agnostic message processing logic."""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, identity: ChannelIdentityResolver):
         self.settings = settings
+        self.identity = identity
         self.rate_limiter = RateLimiter(
             max_messages=settings.rate_limit_messages,
             window_seconds=settings.rate_limit_window,
         )
-        self._running = False
 
-    async def process_message(
+    async def process(
         self,
-        message: SignalMessage,
-        signal_client: SignalClient,
+        *,
+        channel: str,
+        external_sender: str,
+        text: str,
+        send_message: Callable[[str], Awaitable[None]],
+        send_typing_start: Callable[[], Awaitable[None]] | None,
+        send_typing_stop: Callable[[], Awaitable[None]] | None,
         agent_client: AgentClient,
-    ):
-        """
-        Process a single incoming message.
-        
-        Args:
-            message: Incoming Signal message
-            signal_client: Signal API client
-            agent_client: Agent API client
-        """
-        sender = message.sender
-        text = message.message.strip()
-
+    ) -> None:
+        text = text.strip()
         if not text:
             return
 
-        # Check allowed phone numbers
-        allowed = self.settings.get_allowed_phone_numbers()
-        if allowed and sender not in allowed:
-            logger.warning(f"Rejected message from unauthorized sender: {sender[:6]}...")
+        sender_key = self.identity.resolve(channel, external_sender)
+
+        if not self.rate_limiter.is_allowed(sender_key):
+            await send_message("⏳ You're sending messages too quickly. Please wait a moment.")
             return
 
-        # Check rate limit
-        if not self.rate_limiter.is_allowed(sender):
-            logger.warning(f"Rate limited sender: {sender[:6]}...")
-            await signal_client.send_message(
-                sender,
-                "⏳ You're sending messages too quickly. Please wait a moment.",
-            )
-            return
-
-        # Handle special commands
         if text.lower() == "/help":
-            await self._send_help(sender, signal_client)
+            await send_message(
+                "AI Assistant Bot\n\nCommands:\n- /help\n- /new\n\nAsk anything and I will respond with Busibox agents."
+            )
             return
 
         if text.lower() == "/new":
-            # Clear conversation to start fresh
-            agent_client._conversations.pop(sender, None)
-            await signal_client.send_message(
-                sender,
-                "🔄 Started a new conversation. How can I help you?",
-            )
+            agent_client._conversations.pop(sender_key, None)
+            await send_message("Started a new conversation. How can I help?")
             return
 
-        # Send typing indicator
-        await signal_client.send_typing_indicator(sender)
+        if send_typing_start:
+            await send_typing_start()
 
         try:
-            # Process with Agent API
-            if self.settings.debug:
-                # Use streaming in debug mode
-                response = await self._process_streaming(
-                    text, sender, signal_client, agent_client
-                )
-            else:
-                # Use non-streaming for cleaner responses
-                response = await self._process_simple(
-                    text, sender, agent_client
-                )
-
-            # Send response (split if too long)
-            await self._send_response(sender, response, signal_client)
-
+            response = await self._process_simple(text=text, sender=sender_key, agent_client=agent_client)
+            for chunk in self._split_response(response):
+                await send_message(chunk)
         except Exception as e:
-            logger.error(f"Error processing message: {e}", exc_info=True)
-            await signal_client.send_message(
-                sender,
-                "❌ Sorry, I encountered an error processing your message. Please try again.",
-            )
-
+            logger.error("Error processing %s message: %s", channel, e, exc_info=True)
+            await send_message("Sorry, I encountered an error processing your message.")
         finally:
-            # Stop typing indicator
-            await signal_client.send_typing_indicator(sender, stop=True)
+            if send_typing_stop:
+                await send_typing_stop()
 
     async def _process_simple(
         self,
+        *,
         text: str,
         sender: str,
         agent_client: AgentClient,
     ) -> str:
-        """Process message with non-streaming API."""
+        if self.settings.debug:
+            parts: List[str] = []
+            async for event in agent_client.chat_message_stream(
+                message=text,
+                sender=sender,
+                enable_web_search=self.settings.enable_web_search,
+                enable_doc_search=self.settings.enable_doc_search,
+                model=self.settings.default_model,
+            ):
+                if event.get("_event_type") == "content":
+                    parts.append(event.get("message", ""))
+                elif event.get("_event_type") == "complete":
+                    break
+            return "\n".join(parts) if parts else "No response generated."
+
         response = await agent_client.chat_message(
             message=text,
             sender=sender,
@@ -170,105 +139,108 @@ class SignalBot:
         )
         return response.content
 
-    async def _process_streaming(
+    async def process_audio(
         self,
-        text: str,
-        sender: str,
+        *,
+        channel: str,
+        external_sender: str,
+        audio_url: str,
+        send_message: Callable[[str], Awaitable[None]],
+        send_typing_start: Callable[[], Awaitable[None]] | None,
+        send_typing_stop: Callable[[], Awaitable[None]] | None,
+        agent_client: AgentClient,
+    ) -> None:
+        """
+        Process an inbound voice/audio message by asking the chat agent to
+        transcribe and respond.
+        """
+        prompt = (
+            "Transcribe the following audio file and respond to the user. "
+            "If it contains a question or request, answer it after transcription.\n\n"
+            f"Audio URL: {audio_url}"
+        )
+        await self.process(
+            channel=channel,
+            external_sender=external_sender,
+            text=prompt,
+            send_message=send_message,
+            send_typing_start=send_typing_start,
+            send_typing_stop=send_typing_stop,
+            agent_client=agent_client,
+        )
+
+    def _split_response(self, response: str) -> List[str]:
+        max_length = self.settings.max_message_length
+        if len(response) <= max_length:
+            return [response]
+
+        chunks: List[str] = []
+        current = ""
+        for line in response.split("\n"):
+            if len(current) + len(line) + 1 > max_length:
+                if current:
+                    chunks.append(current)
+                current = line
+            else:
+                current = f"{current}\n{line}" if current else line
+        if current:
+            chunks.append(current)
+        return chunks
+
+
+class SignalBot:
+    """Signal polling bot."""
+
+    def __init__(self, settings: Settings, processor: MessageProcessor):
+        self.settings = settings
+        self.processor = processor
+        self._running = False
+
+    async def process_message(
+        self,
+        message: SignalMessage,
         signal_client: SignalClient,
         agent_client: AgentClient,
-    ) -> str:
-        """Process message with streaming API."""
-        content_parts = []
-        thoughts = []
+    ) -> None:
+        sender = message.sender
+        allowed = self.settings.get_allowed_phone_numbers()
+        if allowed and sender not in allowed:
+            logger.warning("Rejected Signal sender: %s", sender[:6])
+            return
 
-        async for event in agent_client.chat_message_stream(
-            message=text,
-            sender=sender,
-            enable_web_search=self.settings.enable_web_search,
-            enable_doc_search=self.settings.enable_doc_search,
-            model=self.settings.default_model,
-        ):
-            event_type = event.get("_event_type", "")
+        text = message.message or ""
+        if not text.strip() and message.attachments:
+            first = message.attachments[0] if message.attachments else {}
+            attachment_url = (
+                str(first.get("url", "")).strip()
+                or str(first.get("remoteUrl", "")).strip()
+                or str(first.get("uri", "")).strip()
+            )
+            if attachment_url:
+                await self.processor.process_audio(
+                    channel="signal",
+                    external_sender=sender,
+                    audio_url=attachment_url,
+                    send_message=lambda body: signal_client.send_message(sender, body),
+                    send_typing_start=lambda: signal_client.send_typing_indicator(sender),
+                    send_typing_stop=lambda: signal_client.send_typing_indicator(sender, stop=True),
+                    agent_client=agent_client,
+                )
+                return
 
-            if event_type == "content":
-                content_parts.append(event.get("message", ""))
-            elif event_type == "thought":
-                thoughts.append(event.get("message", ""))
-            elif event_type == "tool_start":
-                tool_name = event.get("message", "tool")
-                logger.debug(f"Tool started: {tool_name}")
-            elif event_type == "complete":
-                break
-
-        return "\n".join(content_parts) if content_parts else "No response generated."
-
-    async def _send_response(
-        self,
-        sender: str,
-        response: str,
-        signal_client: SignalClient,
-    ):
-        """Send response, splitting if necessary."""
-        max_length = self.settings.max_message_length
-
-        if len(response) <= max_length:
-            await signal_client.send_message(sender, response)
-        else:
-            # Split into chunks
-            chunks = []
-            current_chunk = ""
-
-            for line in response.split("\n"):
-                if len(current_chunk) + len(line) + 1 > max_length:
-                    if current_chunk:
-                        chunks.append(current_chunk)
-                    current_chunk = line
-                else:
-                    if current_chunk:
-                        current_chunk += "\n" + line
-                    else:
-                        current_chunk = line
-
-            if current_chunk:
-                chunks.append(current_chunk)
-
-            # Send chunks with small delay
-            for i, chunk in enumerate(chunks):
-                if i > 0:
-                    await asyncio.sleep(0.5)
-                await signal_client.send_message(sender, chunk)
-
-    async def _send_help(self, sender: str, signal_client: SignalClient):
-        """Send help message."""
-        help_text = """🤖 *AI Assistant Bot*
-
-I can help you with questions, web searches, and more!
-
-*Commands:*
-• /help - Show this help message
-• /new - Start a new conversation
-
-*Tips:*
-• Ask me anything!
-• I can search the web for recent information
-• I remember context within a conversation
-
-*Examples:*
-• "What's the weather like today?"
-• "Explain quantum computing"
-• "Search for the latest news about AI"
-"""
-        await signal_client.send_message(sender, help_text)
+        await self.processor.process(
+            channel="signal",
+            external_sender=sender,
+            text=text,
+            send_message=lambda body: signal_client.send_message(sender, body),
+            send_typing_start=lambda: signal_client.send_typing_indicator(sender),
+            send_typing_stop=lambda: signal_client.send_typing_indicator(sender, stop=True),
+            agent_client=agent_client,
+        )
 
     async def run(self):
-        """Run the bot main loop."""
         settings = self.settings
         self._running = True
-
-        logger.info(f"Starting Signal Bot for {settings.signal_phone_number}")
-        logger.info(f"Agent API: {settings.agent_api_url}")
-        logger.info(f"Signal CLI: {settings.signal_cli_url}")
-
         async with SignalClient(
             base_url=str(settings.signal_cli_url),
             phone_number=settings.signal_phone_number,
@@ -278,45 +250,237 @@ I can help you with questions, web searches, and more!
                 auth_token_url=str(settings.auth_token_url),
                 delegation_token=settings.delegation_token,
             ) as agent_client:
-                # Verify connections
                 if not await signal_client.is_registered():
-                    logger.error("Signal phone number is not registered!")
+                    logger.error("Signal phone number is not registered")
                     return
-
                 if not await agent_client.health_check():
-                    logger.warning("Agent API health check failed, continuing anyway...")
+                    logger.warning("Agent API health check failed, continuing")
+                async for message in signal_client.poll_messages(interval=settings.poll_interval):
+                    if not self._running:
+                        break
+                    if message.is_group_message:
+                        continue
+                    asyncio.create_task(self.process_message(message, signal_client, agent_client))
 
-                logger.info("Bot initialized successfully, starting message polling...")
+    def stop(self):
+        self._running = False
 
-                # Main message loop
-                async for message in signal_client.poll_messages(
-                    interval=settings.poll_interval
+
+class TelegramBot:
+    """Telegram polling bot."""
+
+    def __init__(self, settings: Settings, processor: MessageProcessor):
+        self.settings = settings
+        self.processor = processor
+        self._running = False
+
+    async def run(self):
+        self._running = True
+        allowed = set(self.settings.get_allowed_telegram_chat_ids())
+
+        async with TelegramClient(self.settings.telegram_bot_token) as telegram_client:
+            async with AgentClient(
+                base_url=str(self.settings.agent_api_url),
+                auth_token_url=str(self.settings.auth_token_url),
+                delegation_token=self.settings.delegation_token,
+            ) as agent_client:
+                async for msg in telegram_client.poll_messages(
+                    interval=self.settings.telegram_poll_interval,
+                    timeout=self.settings.telegram_poll_timeout,
                 ):
                     if not self._running:
                         break
-
-                    # Skip group messages for now
-                    if message.is_group_message:
-                        logger.debug("Skipping group message")
+                    if allowed and msg.chat_id not in allowed:
+                        continue
+                    if msg.audio_url and not (msg.text or "").strip():
+                        await self.processor.process_audio(
+                            channel="telegram",
+                            external_sender=msg.sender_id,
+                            audio_url=msg.audio_url,
+                            send_message=lambda body, chat_id=msg.chat_id: telegram_client.send_message(chat_id, body),
+                            send_typing_start=lambda chat_id=msg.chat_id: telegram_client.send_typing_indicator(chat_id),
+                            send_typing_stop=None,
+                            agent_client=agent_client,
+                        )
                         continue
 
-                    # Process in background to not block polling
-                    asyncio.create_task(
-                        self.process_message(message, signal_client, agent_client)
+                    await self.processor.process(
+                        channel="telegram",
+                        external_sender=msg.sender_id,
+                        text=msg.text,
+                        send_message=lambda body, chat_id=msg.chat_id: telegram_client.send_message(chat_id, body),
+                        send_typing_start=lambda chat_id=msg.chat_id: telegram_client.send_typing_indicator(chat_id),
+                        send_typing_stop=None,
+                        agent_client=agent_client,
                     )
 
     def stop(self):
-        """Stop the bot."""
         self._running = False
-        logger.info("Bot stopping...")
 
 
-async def run_api_server(settings: Settings):
+class DiscordBot:
+    """Discord REST polling bot for configured channels."""
+
+    def __init__(self, settings: Settings, processor: MessageProcessor):
+        self.settings = settings
+        self.processor = processor
+        self._running = False
+
+    async def run(self):
+        self._running = True
+        channel_ids = self.settings.get_discord_channel_ids()
+        if not channel_ids:
+            logger.warning("Discord enabled but DISCORD_CHANNEL_IDS is empty; skipping")
+            return
+
+        async with DiscordClient(self.settings.discord_bot_token) as discord_client:
+            async with AgentClient(
+                base_url=str(self.settings.agent_api_url),
+                auth_token_url=str(self.settings.auth_token_url),
+                delegation_token=self.settings.delegation_token,
+            ) as agent_client:
+                tasks = [
+                    asyncio.create_task(
+                        self._run_channel_loop(discord_client, agent_client, channel_id)
+                    )
+                    for channel_id in channel_ids
+                ]
+                await asyncio.gather(*tasks)
+
+    async def _run_channel_loop(
+        self,
+        discord_client: DiscordClient,
+        agent_client: AgentClient,
+        channel_id: str,
+    ) -> None:
+        async for msg in discord_client.poll_messages(
+            channel_id=channel_id,
+            interval=self.settings.discord_poll_interval,
+        ):
+            if not self._running:
+                break
+            await self.processor.process(
+                channel="discord",
+                external_sender=msg.author_id,
+                text=msg.content,
+                send_message=lambda body, cid=msg.channel_id: discord_client.send_message(cid, body),
+                send_typing_start=None,
+                send_typing_stop=None,
+                agent_client=agent_client,
+            )
+
+    def stop(self):
+        self._running = False
+
+
+class WhatsAppWebhookBot:
+    """WhatsApp webhook ingress handler for Cloud API."""
+
+    def __init__(self, settings: Settings, processor: MessageProcessor):
+        self.settings = settings
+        self.processor = processor
+
+    async def handle_webhook(self, payload: dict) -> None:
+        allowed = set(self.settings.get_allowed_whatsapp_phone_numbers())
+        messages = WhatsAppClient.parse_webhook_messages(payload)
+        if not messages:
+            return
+
+        async with AgentClient(
+            base_url=str(self.settings.agent_api_url),
+            auth_token_url=str(self.settings.auth_token_url),
+            delegation_token=self.settings.delegation_token,
+        ) as agent_client:
+            async with WhatsAppClient(
+                access_token=self.settings.whatsapp_access_token,
+                phone_number_id=self.settings.whatsapp_phone_number_id,
+                api_version=self.settings.whatsapp_api_version,
+            ) as wa_client:
+                for msg in messages:
+                    if allowed and msg.from_phone not in allowed:
+                        continue
+                    await self.processor.process(
+                        channel="whatsapp",
+                        external_sender=msg.from_phone,
+                        text=msg.text,
+                        send_message=lambda body, to=msg.from_phone: wa_client.send_message(to, body),
+                        send_typing_start=None,
+                        send_typing_stop=None,
+                        agent_client=agent_client,
+                    )
+
+
+class EmailInboundBot:
+    """Inbound email polling + agent reply loop."""
+
+    def __init__(self, settings: Settings, processor: MessageProcessor):
+        self.settings = settings
+        self.processor = processor
+        self._running = False
+
+    async def run(self):
+        self._running = True
+        allowed_senders = set(self.settings.get_email_allowed_senders())
+        email_client = EmailClient(self.settings)
+
+        inbound = EmailInboundClient(
+            host=self.settings.imap_host or "",
+            port=self.settings.imap_port,
+            username=self.settings.imap_user or "",
+            password=self.settings.imap_password or "",
+            folder=self.settings.imap_folder,
+            use_ssl=self.settings.imap_use_ssl,
+        )
+
+        async with AgentClient(
+            base_url=str(self.settings.agent_api_url),
+            auth_token_url=str(self.settings.auth_token_url),
+            delegation_token=self.settings.delegation_token,
+        ) as agent_client:
+            async for inbound_msg in inbound.poll_messages(interval=self.settings.email_inbound_poll_interval):
+                if not self._running:
+                    break
+                sender = inbound_msg.sender_email.strip().lower()
+                if not sender:
+                    continue
+                if allowed_senders and sender not in allowed_senders:
+                    continue
+
+                body = inbound_msg.body or inbound_msg.subject or ""
+                if not body.strip():
+                    continue
+
+                chunks: List[str] = []
+
+                async def _capture(chunk: str):
+                    chunks.append(chunk)
+
+                await self.processor.process(
+                    channel="email",
+                    external_sender=sender,
+                    text=body,
+                    send_message=_capture,
+                    send_typing_start=None,
+                    send_typing_stop=None,
+                    agent_client=agent_client,
+                )
+                if not chunks:
+                    continue
+                response_text = "\n\n".join(chunks)
+                await email_client.send(
+                    to=sender,
+                    subject=f"Re: {inbound_msg.subject or 'Your message'}",
+                    html=response_text.replace("\n", "<br/>"),
+                    text=response_text,
+                )
+
+
+async def run_api_server(settings: Settings, whatsapp_handler: Callable[[dict], Awaitable[None]] | None):
     """Start the FastAPI HTTP server."""
     import uvicorn
     from .api import create_app
 
-    app = create_app(settings)
+    app = create_app(settings, whatsapp_handler=whatsapp_handler)
     config = uvicorn.Config(
         app,
         host="0.0.0.0",
@@ -324,67 +488,93 @@ async def run_api_server(settings: Settings):
         log_level=settings.log_level.lower(),
     )
     server = uvicorn.Server(config)
-    logger.info(f"Starting Bridge API on port {settings.bridge_api_port}")
+    logger.info("Starting Bridge API on port %s", settings.bridge_api_port)
     await server.serve()
 
 
-async def run_signal_bot(settings: Settings):
-    """Run the Signal bot polling loop (if enabled and configured)."""
+async def run_signal_bot(settings: Settings, processor: MessageProcessor):
     if not settings.signal_enabled:
-        logger.info("Signal channel disabled — skipping Signal bot")
+        logger.info("Signal channel disabled")
         return
-
     if not settings.signal_phone_number:
-        logger.warning("Signal enabled but SIGNAL_PHONE_NUMBER not set — skipping Signal bot")
+        logger.warning("Signal enabled but SIGNAL_PHONE_NUMBER not set")
         return
-
     if not settings.delegation_token:
-        logger.warning("Signal enabled but DELEGATION_TOKEN not set — skipping Signal bot")
+        logger.warning("Signal enabled but DELEGATION_TOKEN not set")
         return
+    await SignalBot(settings, processor).run()
 
-    bot = SignalBot(settings)
-    try:
-        await bot.run()
-    except Exception as e:
-        logger.error(f"Signal bot crashed: {e}", exc_info=True)
-        raise
+
+async def run_telegram_bot(settings: Settings, processor: MessageProcessor):
+    if not settings.telegram_enabled:
+        logger.info("Telegram channel disabled")
+        return
+    if not settings.telegram_bot_token:
+        logger.warning("Telegram enabled but TELEGRAM_BOT_TOKEN not set")
+        return
+    if not settings.delegation_token:
+        logger.warning("Telegram enabled but DELEGATION_TOKEN not set")
+        return
+    await TelegramBot(settings, processor).run()
+
+
+async def run_discord_bot(settings: Settings, processor: MessageProcessor):
+    if not settings.discord_enabled:
+        logger.info("Discord channel disabled")
+        return
+    if not settings.discord_bot_token:
+        logger.warning("Discord enabled but DISCORD_BOT_TOKEN not set")
+        return
+    if not settings.delegation_token:
+        logger.warning("Discord enabled but DELEGATION_TOKEN not set")
+        return
+    await DiscordBot(settings, processor).run()
+
+
+async def run_email_inbound_bot(settings: Settings, processor: MessageProcessor):
+    if not settings.email_inbound_enabled:
+        logger.info("Inbound email channel disabled")
+        return
+    if not settings.delegation_token:
+        logger.warning("Inbound email enabled but DELEGATION_TOKEN not set")
+        return
+    if not settings.imap_host or not settings.imap_user or not settings.imap_password:
+        logger.warning("Inbound email enabled but IMAP credentials are incomplete")
+        return
+    await EmailInboundBot(settings, processor).run()
 
 
 async def main():
-    """Main entry point — runs API server and Signal bot concurrently."""
     settings = get_settings()
-
-    # Configure logging level
     logging.getLogger().setLevel(settings.log_level)
 
-    logger.info(f"Bridge starting (env={settings.environment})")
-    logger.info(f"  API server:  port {settings.bridge_api_port}")
-    logger.info(f"  Signal bot:  {'enabled' if settings.signal_enabled else 'disabled'}")
-    logger.info(f"  Email:       {'enabled' if settings.email_enabled else 'disabled'}")
+    identity = ChannelIdentityResolver(settings.get_channel_user_bindings())
+    processor = MessageProcessor(settings, identity)
 
-    # Handle shutdown gracefully
-    loop = asyncio.get_event_loop()
+    logger.info("Bridge starting (env=%s)", settings.environment)
+    logger.info("  API server:  port %s", settings.bridge_api_port)
+    logger.info("  Signal:      %s", "enabled" if settings.signal_enabled else "disabled")
+    logger.info("  Telegram:    %s", "enabled" if settings.telegram_enabled else "disabled")
+    logger.info("  Discord:     %s", "enabled" if settings.discord_enabled else "disabled")
+    logger.info("  WhatsApp:    %s", "enabled" if settings.whatsapp_enabled else "disabled")
+    logger.info("  Email:       %s", "enabled" if settings.email_enabled else "disabled")
+    logger.info("  Inbound mail:%s", "enabled" if settings.email_inbound_enabled else "disabled")
 
-    def signal_handler():
-        logger.info("Shutdown signal received")
-
-    try:
-        import signal as sig
-
-        for s in (sig.SIGINT, sig.SIGTERM):
-            loop.add_signal_handler(s, signal_handler)
-    except (ImportError, NotImplementedError):
-        pass  # Windows doesn't support signal handlers
+    whatsapp_bot = WhatsAppWebhookBot(settings, processor) if settings.whatsapp_enabled else None
+    whatsapp_handler = whatsapp_bot.handle_webhook if whatsapp_bot else None
 
     try:
         await asyncio.gather(
-            run_api_server(settings),
-            run_signal_bot(settings),
+            run_api_server(settings, whatsapp_handler),
+            run_signal_bot(settings, processor),
+            run_telegram_bot(settings, processor),
+            run_discord_bot(settings, processor),
+            run_email_inbound_bot(settings, processor),
         )
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt")
     except Exception as e:
-        logger.error(f"Bridge crashed: {e}", exc_info=True)
+        logger.error("Bridge crashed: %s", e, exc_info=True)
         raise
 
 

@@ -151,6 +151,40 @@ class Settings(BaseSettings):
         description="Override service name for traces (defaults to app_name)",
     )
 
+    # Skills system (AgentSkills-compatible SKILL.md loader)
+    skills_enabled: bool = Field(
+        False,
+        description="Enable loading SKILL.md skills and injecting them into agent prompts",
+    )
+    skills_dirs: str = Field(
+        "/srv/skills,~/.openclaw/skills,/skills",
+        description="Comma-separated directories to scan recursively for SKILL.md files",
+    )
+    skills_cache_ttl_seconds: int = Field(
+        60,
+        description="Seconds to cache loaded skills before re-scan",
+    )
+    skills_allowed_roles: str = Field(
+        "",
+        description="Optional comma-separated RBAC roles allowed to use skills globally",
+    )
+    skills_clawhub_enabled: bool = Field(
+        False,
+        description="Enable ClawHub integration hints for loaded skills",
+    )
+
+    def get_skill_dirs(self) -> List[str]:
+        raw = self.skills_dirs or ""
+        if not raw.strip():
+            return []
+        return [item.strip() for item in raw.split(",") if item.strip()]
+
+    def get_skills_allowed_roles(self) -> List[str]:
+        raw = self.skills_allowed_roles or ""
+        if not raw.strip():
+            return []
+        return [role.strip().lower() for role in raw.split(",") if role.strip()]
+
     model_config = ConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

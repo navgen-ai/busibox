@@ -452,6 +452,34 @@ _CONFIG_TO_COMPOSE_ENV: dict[str, str] = {
     "SMTP_SECURE":   "BRIDGE_SMTP_SECURE",
     "EMAIL_FROM":    "BRIDGE_EMAIL_FROM",
     "RESEND_API_KEY": "BRIDGE_RESEND_API_KEY",
+    "SIGNAL_ENABLED": "BRIDGE_SIGNAL_ENABLED",
+    "SIGNAL_PHONE_NUMBER": "BRIDGE_SIGNAL_PHONE_NUMBER",
+    "ALLOWED_PHONE_NUMBERS": "BRIDGE_ALLOWED_PHONE_NUMBERS",
+    "TELEGRAM_ENABLED": "BRIDGE_TELEGRAM_ENABLED",
+    "TELEGRAM_BOT_TOKEN": "BRIDGE_TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_POLL_INTERVAL": "BRIDGE_TELEGRAM_POLL_INTERVAL",
+    "TELEGRAM_POLL_TIMEOUT": "BRIDGE_TELEGRAM_POLL_TIMEOUT",
+    "TELEGRAM_ALLOWED_CHAT_IDS": "BRIDGE_TELEGRAM_ALLOWED_CHAT_IDS",
+    "DISCORD_ENABLED": "BRIDGE_DISCORD_ENABLED",
+    "DISCORD_BOT_TOKEN": "BRIDGE_DISCORD_BOT_TOKEN",
+    "DISCORD_POLL_INTERVAL": "BRIDGE_DISCORD_POLL_INTERVAL",
+    "DISCORD_CHANNEL_IDS": "BRIDGE_DISCORD_CHANNEL_IDS",
+    "WHATSAPP_ENABLED": "BRIDGE_WHATSAPP_ENABLED",
+    "WHATSAPP_VERIFY_TOKEN": "BRIDGE_WHATSAPP_VERIFY_TOKEN",
+    "WHATSAPP_ACCESS_TOKEN": "BRIDGE_WHATSAPP_ACCESS_TOKEN",
+    "WHATSAPP_PHONE_NUMBER_ID": "BRIDGE_WHATSAPP_PHONE_NUMBER_ID",
+    "WHATSAPP_API_VERSION": "BRIDGE_WHATSAPP_API_VERSION",
+    "WHATSAPP_ALLOWED_PHONE_NUMBERS": "BRIDGE_WHATSAPP_ALLOWED_PHONE_NUMBERS",
+    "CHANNEL_USER_BINDINGS": "BRIDGE_CHANNEL_USER_BINDINGS",
+    "EMAIL_INBOUND_ENABLED": "BRIDGE_EMAIL_INBOUND_ENABLED",
+    "IMAP_HOST": "BRIDGE_IMAP_HOST",
+    "IMAP_PORT": "BRIDGE_IMAP_PORT",
+    "IMAP_USER": "BRIDGE_IMAP_USER",
+    "IMAP_PASSWORD": "BRIDGE_IMAP_PASSWORD",
+    "IMAP_USE_SSL": "BRIDGE_IMAP_USE_SSL",
+    "IMAP_FOLDER": "BRIDGE_IMAP_FOLDER",
+    "EMAIL_INBOUND_POLL_INTERVAL": "BRIDGE_EMAIL_INBOUND_POLL_INTERVAL",
+    "EMAIL_ALLOWED_SENDERS": "BRIDGE_EMAIL_ALLOWED_SENDERS",
 }
 
 # Config keys → bridge .env variable names (Proxmox: no BRIDGE_ prefix)
@@ -463,12 +491,40 @@ _CONFIG_TO_BRIDGE_ENV: dict[str, str] = {
     "SMTP_SECURE":   "SMTP_SECURE",
     "EMAIL_FROM":    "EMAIL_FROM",
     "RESEND_API_KEY": "RESEND_API_KEY",
+    "SIGNAL_ENABLED": "SIGNAL_ENABLED",
+    "SIGNAL_PHONE_NUMBER": "SIGNAL_PHONE_NUMBER",
+    "ALLOWED_PHONE_NUMBERS": "ALLOWED_PHONE_NUMBERS",
+    "TELEGRAM_ENABLED": "TELEGRAM_ENABLED",
+    "TELEGRAM_BOT_TOKEN": "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_POLL_INTERVAL": "TELEGRAM_POLL_INTERVAL",
+    "TELEGRAM_POLL_TIMEOUT": "TELEGRAM_POLL_TIMEOUT",
+    "TELEGRAM_ALLOWED_CHAT_IDS": "TELEGRAM_ALLOWED_CHAT_IDS",
+    "DISCORD_ENABLED": "DISCORD_ENABLED",
+    "DISCORD_BOT_TOKEN": "DISCORD_BOT_TOKEN",
+    "DISCORD_POLL_INTERVAL": "DISCORD_POLL_INTERVAL",
+    "DISCORD_CHANNEL_IDS": "DISCORD_CHANNEL_IDS",
+    "WHATSAPP_ENABLED": "WHATSAPP_ENABLED",
+    "WHATSAPP_VERIFY_TOKEN": "WHATSAPP_VERIFY_TOKEN",
+    "WHATSAPP_ACCESS_TOKEN": "WHATSAPP_ACCESS_TOKEN",
+    "WHATSAPP_PHONE_NUMBER_ID": "WHATSAPP_PHONE_NUMBER_ID",
+    "WHATSAPP_API_VERSION": "WHATSAPP_API_VERSION",
+    "WHATSAPP_ALLOWED_PHONE_NUMBERS": "WHATSAPP_ALLOWED_PHONE_NUMBERS",
+    "CHANNEL_USER_BINDINGS": "CHANNEL_USER_BINDINGS",
+    "EMAIL_INBOUND_ENABLED": "EMAIL_INBOUND_ENABLED",
+    "IMAP_HOST": "IMAP_HOST",
+    "IMAP_PORT": "IMAP_PORT",
+    "IMAP_USER": "IMAP_USER",
+    "IMAP_PASSWORD": "IMAP_PASSWORD",
+    "IMAP_USE_SSL": "IMAP_USE_SSL",
+    "IMAP_FOLDER": "IMAP_FOLDER",
+    "EMAIL_INBOUND_POLL_INTERVAL": "EMAIL_INBOUND_POLL_INTERVAL",
+    "EMAIL_ALLOWED_SENDERS": "EMAIL_ALLOWED_SENDERS",
 }
 
 
 async def _read_bridge_raw_config_from_db() -> dict[str, str]:
-    """Read all smtp-category config rows and return as {config_key: value}."""
-    sql = "SELECT key, value FROM config WHERE category = 'smtp'"
+    """Read bridge-related config rows and return as {config_key: value}."""
+    sql = "SELECT key, value FROM config WHERE category IN ('smtp', 'bridge')"
     result = await query_config(sql)
     raw: dict[str, str] = {}
     if result:
@@ -483,9 +539,18 @@ async def _read_bridge_raw_config_from_db() -> dict[str, str]:
 
 
 async def _read_bridge_config_from_db() -> dict[str, str]:
-    """Read all smtp-category config rows and return as {COMPOSE_ENV: value}."""
+    """Read bridge config rows and return as {COMPOSE_ENV: value}."""
     raw = await _read_bridge_raw_config_from_db()
-    _COMPOSE_BOOLEAN_KEYS = {"BRIDGE_SMTP_SECURE", "BRIDGE_EMAIL_ENABLED"}
+    _COMPOSE_BOOLEAN_KEYS = {
+        "BRIDGE_SMTP_SECURE",
+        "BRIDGE_EMAIL_ENABLED",
+        "BRIDGE_SIGNAL_ENABLED",
+        "BRIDGE_TELEGRAM_ENABLED",
+        "BRIDGE_DISCORD_ENABLED",
+        "BRIDGE_WHATSAPP_ENABLED",
+        "BRIDGE_EMAIL_INBOUND_ENABLED",
+        "BRIDGE_IMAP_USE_SSL",
+    }
     env: dict[str, str] = {}
     for cfg_key, cfg_val in raw.items():
         compose_key = _CONFIG_TO_COMPOSE_ENV.get(cfg_key)
@@ -540,7 +605,7 @@ async def _apply_bridge_config_docker() -> dict:
 
     out = stdout.decode().strip() if stdout else ""
     logger.info(f"[APPLY] bridge-api recreated: {out}")
-    return {"success": True, "message": "bridge-api restarted with updated email config.", "output": out}
+    return {"success": True, "message": "bridge-api restarted with updated bridge config.", "output": out}
 
 
 async def _apply_bridge_config_proxmox() -> dict:
@@ -559,7 +624,16 @@ async def _apply_bridge_config_proxmox() -> dict:
 
     # Build the env var updates for the bridge .env file
     # Boolean-type env vars that Pydantic expects as "true"/"false"
-    _BOOLEAN_KEYS = {"SMTP_SECURE", "EMAIL_ENABLED"}
+    _BOOLEAN_KEYS = {
+        "SMTP_SECURE",
+        "EMAIL_ENABLED",
+        "SIGNAL_ENABLED",
+        "TELEGRAM_ENABLED",
+        "DISCORD_ENABLED",
+        "WHATSAPP_ENABLED",
+        "EMAIL_INBOUND_ENABLED",
+        "IMAP_USE_SSL",
+    }
 
     env_updates: dict[str, str] = {}
     for cfg_key, cfg_val in raw.items():
@@ -617,7 +691,7 @@ async def _apply_bridge_config_proxmox() -> dict:
     logger.info(f"[APPLY-PROXMOX] Bridge config applied and service restarted")
     return {
         "success": True,
-        "message": "Bridge email config updated and service restarted.",
+        "message": "Bridge config updated and service restarted.",
         "keys_updated": list(env_updates.keys()),
     }
 
