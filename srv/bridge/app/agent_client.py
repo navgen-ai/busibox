@@ -262,7 +262,7 @@ class AgentClient:
                 headers=headers,
             ) as response:
                 response.raise_for_status()
-                
+                event_type = ""
                 async for line in response.aiter_lines():
                     if not line:
                         continue
@@ -274,6 +274,8 @@ class AgentClient:
                         try:
                             data = json.loads(line[6:])
                             data["_event_type"] = event_type
+                            if not isinstance(data.get("data"), dict):
+                                data["data"] = {}
                             
                             # Update conversation ID from events
                             if "conversation_id" in data:

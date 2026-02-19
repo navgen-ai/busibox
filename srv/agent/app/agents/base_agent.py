@@ -375,6 +375,10 @@ class AgentContext:
     relevant_insights: List[Dict[str, Any]] = field(default_factory=list)
     # Application context metadata (e.g. projectId, appName) from the chat request
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Raw attachment metadata from chat request (unresolved)
+    attachment_metadata: List[Dict[str, Any]] = field(default_factory=list)
+    # Resolved attachment content to inject into prompts
+    resolved_attachments: List[Dict[str, Any]] = field(default_factory=list)
     # Optional runtime JSON Schema used for deterministic structured output.
     # This is typically provided by programmatic workflow-style invocations.
     response_schema: Optional[Dict[str, Any]] = None
@@ -626,6 +630,7 @@ class BaseStreamingAgent(StreamingAgent):
             agent_context.agent_id = context.get("agent_id")
             agent_context.conversation_history = context.get("conversation_history", [])
             agent_context.metadata = context.get("metadata") or {}
+            agent_context.attachment_metadata = context.get("attachment_metadata", []) or []
             agent_context.response_schema = context.get("response_schema")
             agent_context.max_tokens = context.get("max_tokens")
         
@@ -747,6 +752,37 @@ class BaseStreamingAgent(StreamingAgent):
                 )
         
         return agent_context
+
+    def _build_attachment_context_section(self, context: AgentContext) -> List[str]:
+        """Render resolved attachment content for prompt injection."""
+        if not context.resolved_attachments:
+            return []
+
+        parts: List[str] = []
+        parts.append("## Attached Documents")
+        parts.append("The user uploaded the following attachments for this request:")
+
+        for idx, attachment in enumerate(context.resolved_attachments, start=1):
+            filename = attachment.get("filename", f"attachment-{idx}")
+            source_kind = attachment.get("source_kind", "document")
+            parts.append(f"\n### Attachment {idx}: {filename} ({source_kind})")
+
+            if source_kind == "image":
+                image_url = attachment.get("image_url")
+                if image_url:
+                    parts.append(f"Image URL: {image_url}")
+                else:
+                    parts.append("Image attachment provided (no URL available).")
+                continue
+
+            content = attachment.get("content", "")
+            if isinstance(content, str) and content.strip():
+                parts.append(content.strip())
+            else:
+                parts.append("No extracted text content available.")
+
+        parts.append("")
+        return parts
     
     async def _execute_pipeline(
         self,
@@ -1125,6 +1161,9 @@ class BaseStreamingAgent(StreamingAgent):
                 elif role == "assistant":
                     parts.append(f"Assistant: {msg_content}")
             parts.append("")
+
+        # Add resolved attachment content (if available)
+        parts.extend(self._build_attachment_context_section(context))
         
         # Add the current query
         parts.append("## Current Query")
@@ -1283,13 +1322,16 @@ class BaseStreamingAgent(StreamingAgent):
                 else:
                     parts.append(f"**{role}**: {msg_content}")
             parts.append("")
+
+        # 4. Add resolved attachment content
+        parts.extend(self._build_attachment_context_section(context))
         
-        # 4. Add current query
+        # 5. Add current query
         parts.append("## Current Query")
         parts.append(query)
         parts.append("")
         
-        # 5. Add tool results
+        # 6. Add tool results
         if context.tool_results:
             parts.append("## Tool Results")
             for tool_name, result in context.tool_results.items():

@@ -25,7 +25,7 @@ from sqlalchemy.orm import selectinload
 
 from app.auth.dependencies import get_principal
 from app.db.session import get_session
-from app.models.domain import Conversation, Message, ChatSettings
+from app.models.domain import Conversation, Message, ChatAttachment, ChatSettings
 from app.schemas.auth import Principal
 from app.schemas.conversation import Attachment, MessageRead
 from app.schemas.dispatcher import DispatcherRequest, FileAttachment, UserSettings, RoutingDecision
@@ -91,6 +91,7 @@ class ChatMessageRequest(BaseModel):
     enable_web_search: bool = Field(False, description="Enable web search tool")
     enable_doc_search: bool = Field(False, description="Enable document search tool")
     selected_agents: Optional[List[str]] = Field(None, description="Specific agent IDs to use (bypasses dispatcher)")
+    attachment_ids: Optional[List[uuid.UUID]] = Field(None, description="IDs of uploaded chat attachments")
     temperature: Optional[float] = Field(None, ge=0.0, le=2.0, description="Temperature override")
     max_tokens: Optional[int] = Field(None, ge=1, le=32000, description="Max tokens override")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Application context metadata passed to agent tools (e.g. projectId, appName)")
@@ -513,6 +514,37 @@ async def send_chat_message_stream(
             )
             session.add(user_message)
             await session.flush()
+
+            # Load uploaded chat-attachments and link them to the user message
+            attachment_metadata: List[Dict[str, Any]] = []
+            if payload.attachment_ids:
+                attachment_result = await session.execute(
+                    select(ChatAttachment).where(ChatAttachment.id.in_(payload.attachment_ids))
+                )
+                attachments = attachment_result.scalars().all()
+                requested_ids = {str(att_id) for att_id in payload.attachment_ids}
+                found_ids = {str(att.id) for att in attachments}
+                missing_ids = requested_ids - found_ids
+                if missing_ids:
+                    logger.warning(
+                        "Some attachment IDs were not found",
+                        extra={
+                            "user_sub": principal.sub,
+                            "conversation_id": str(conversation.id),
+                            "missing_attachment_ids": sorted(missing_ids),
+                        },
+                    )
+
+                for attachment in attachments:
+                    attachment.message_id = user_message.id
+                    attachment_metadata.append({
+                        "id": str(attachment.id),
+                        "file_id": attachment.file_id,
+                        "filename": attachment.filename,
+                        "mime_type": attachment.mime_type,
+                        "file_url": attachment.file_url,
+                        "parsed_content": attachment.parsed_content,
+                    })
             
             # Get user settings
             settings_result = await session.execute(
@@ -796,6 +828,7 @@ async def send_chat_message_stream_agentic(
                 conversation_history=history_dicts,
                 principal=principal,
                 metadata=payload.metadata,
+                attachment_metadata=attachment_metadata,
             ):
                 # Yield event to client
                 yield f"event: {event.type}\ndata: {event.model_dump_json()}\n\n"
