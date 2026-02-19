@@ -352,11 +352,12 @@
 # 4.1.1 User Apps Container (external/untrusted app deployments)
 # Provisions user-apps-lxc with Node.js, git, and other prerequisites
 # so the deploy-api can SSH in and deploy user apps at runtime
+# NOTE: Only runs with explicit user_apps tag, NOT during normal 'apps' install
 - hosts: user_apps
-  tags: [apps, user_apps]
+  tags: [user_apps]
   roles:
     - role: node_common
-      tags: [apps, user_apps, node_common]
+      tags: [user_apps, node_common]
 
 # 4.1.2 Reconfigure nginx after app deployment
 # This ensures nginx routes are updated after apps are deployed

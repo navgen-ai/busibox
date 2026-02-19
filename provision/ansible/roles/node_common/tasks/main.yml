@@ -1,4 +1,10 @@
 # Install Node.js via NodeSource (stable, official repository)
+- name: Remove conflicting NodeSource sources
+  shell: |
+    rm -f /etc/apt/sources.list.d/nodesource*.list
+    rm -f /usr/share/keyrings/nodesource.gpg
+  changed_when: false
+
 - name: Install Node.js prerequisites
   apt:
     name:
@@ -11,12 +17,6 @@
       - ffmpeg  # For video poster frame extraction in busibox-portal
     state: present
     update_cache: yes
-
-- name: Remove conflicting NodeSource sources
-  shell: |
-    rm -f /etc/apt/sources.list.d/nodesource*.list
-    rm -f /usr/share/keyrings/nodesource.gpg
-  changed_when: false
 
 - name: Add NodeSource GPG key
   shell: |
