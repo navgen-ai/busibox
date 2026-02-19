@@ -20,6 +20,7 @@ import inspect
 import json
 import logging
 import os
+import time
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
@@ -570,24 +571,43 @@ class BaseStreamingAgent(StreamingAgent):
         Returns:
             Final output string
         """
-        logger.info(f"{self.name}.run_with_streaming called with query: {query[:50]}...")
+        t0 = time.monotonic()
+        logger.info(
+            f"{self.name}.run_with_streaming started",
+            extra={"query_preview": query[:80], "strategy": self.config.tool_strategy.value},
+        )
         
         # Setup execution context (includes fetching relevant insights)
+        t_ctx = time.monotonic()
         agent_context = await self._setup_context(context, stream, query)
         if agent_context is None:
             return "Authentication or session error. Please sign in and try again."
+        logger.info(f"{self.name} context setup: {round((time.monotonic() - t_ctx) * 1000)}ms")
 
+        t_att = time.monotonic()
         await self._resolve_attachments(query, stream, agent_context)
+        att_ms = round((time.monotonic() - t_att) * 1000)
+        if att_ms > 50:
+            logger.info(f"{self.name} attachment resolution: {att_ms}ms")
         
         if cancel.is_set():
             return ""
         
         # Execute based on strategy
         try:
+            t_exec = time.monotonic()
             if self.config.tool_strategy == ToolStrategy.LLM_DRIVEN:
                 await self._execute_llm_driven(query, stream, cancel, agent_context)
             else:
                 await self._execute_pipeline(query, stream, cancel, agent_context)
+            logger.info(
+                f"{self.name} execution phase complete",
+                extra={
+                    "elapsed_ms": round((time.monotonic() - t_exec) * 1000),
+                    "strategy": self.config.tool_strategy.value,
+                    "tool_results_keys": list(agent_context.tool_results.keys()),
+                }
+            )
         except Exception as e:
             logger.error(f"Agent execution error: {e}", exc_info=True)
             await stream(error(
@@ -600,7 +620,17 @@ class BaseStreamingAgent(StreamingAgent):
             return ""
         
         # Synthesize final response
-        return await self._synthesize(query, stream, cancel, agent_context)
+        t_synth = time.monotonic()
+        result = await self._synthesize(query, stream, cancel, agent_context)
+        logger.info(
+            f"{self.name} total request complete",
+            extra={
+                "total_ms": round((time.monotonic() - t0) * 1000),
+                "synthesis_ms": round((time.monotonic() - t_synth) * 1000),
+                "result_length": len(result) if result else 0,
+            }
+        )
+        return result
     
     async def _setup_context(
         self, 
@@ -1039,8 +1069,14 @@ class BaseStreamingAgent(StreamingAgent):
                             source=_tool_name,
                             message=f"Using {_tool_name}...",
                         ))
+                        t_tool = time.monotonic()
                         try:
                             result = await _tool(*args, **kwargs)
+                            tool_ms = round((time.monotonic() - t_tool) * 1000)
+                            logger.info(
+                                f"Tool {_tool_name} complete",
+                                extra={"elapsed_ms": tool_ms},
+                            )
                             context.tool_results[_tool_name] = result
                             result_data = (
                                 result.model_dump()
@@ -1056,6 +1092,9 @@ class BaseStreamingAgent(StreamingAgent):
                             ))
                             return result
                         except Exception as e:
+                            logger.error(
+                                f"Tool {_tool_name} failed after {round((time.monotonic() - t_tool) * 1000)}ms: {e}",
+                            )
                             await stream(error(
                                 source=_tool_name,
                                 message=f"{_tool_name} failed: {str(e)}",
@@ -1103,10 +1142,13 @@ class BaseStreamingAgent(StreamingAgent):
             
             # Run agent with context-enriched prompt
             try:
+                t_conv = time.monotonic()
                 result = await agent.run(prompt_with_context, deps=context.deps)
+                logger.info(
+                    f"{self.name} conversational LLM call complete",
+                    extra={"elapsed_ms": round((time.monotonic() - t_conv) * 1000)},
+                )
                 
-                # Store result for synthesis. Keep JSON deterministic for
-                # programmatic callers by serializing structured objects.
                 output = result.output
                 if hasattr(output, "model_dump"):
                     context.tool_results["llm_response"] = json.dumps(output.model_dump())
@@ -1116,7 +1158,7 @@ class BaseStreamingAgent(StreamingAgent):
                     context.tool_results["llm_response"] = output
                 
             except Exception as e:
-                logger.error(f"Conversational agent error: {e}", exc_info=True)
+                logger.error(f"Conversational agent error after {round((time.monotonic() - t_conv) * 1000)}ms: {e}", exc_info=True)
                 await stream(error(
                     source=self.name,
                     message=f"Error: {str(e)}"
@@ -1153,18 +1195,26 @@ class BaseStreamingAgent(StreamingAgent):
         # Build the prompt with conversation history context
         prompt_with_context = self._build_llm_driven_prompt(query, context)
         
-        # Log the context being sent for debugging
         logger.info(
-            f"{self.name} LLM-driven execution: "
-            f"insights_count={len(context.relevant_insights)}, "
-            f"has_summary={context.compressed_history_summary is not None}, "
-            f"recent_messages_count={len(context.recent_messages)}, "
-            f"prompt_length={len(prompt_with_context)}"
+            f"{self.name} LLM-driven execution starting",
+            extra={
+                "insights_count": len(context.relevant_insights),
+                "has_summary": context.compressed_history_summary is not None,
+                "recent_messages_count": len(context.recent_messages),
+                "prompt_length": len(prompt_with_context),
+                "tool_count": len(tools),
+                "tool_names": [getattr(t, "__name__", str(t)) for t in tools],
+            }
         )
         
         # Run agent with context-enriched prompt
         try:
+            t_llm = time.monotonic()
             result = await agent.run(prompt_with_context, deps=context.deps)
+            logger.info(
+                f"{self.name} LLM agent.run() complete",
+                extra={"elapsed_ms": round((time.monotonic() - t_llm) * 1000)},
+            )
             
             output = result.output
             if hasattr(output, "model_dump"):
@@ -1175,7 +1225,11 @@ class BaseStreamingAgent(StreamingAgent):
                 context.tool_results["llm_response"] = output
             
         except Exception as e:
-            logger.error(f"LLM-driven execution error: {e}", exc_info=True)
+            logger.error(
+                f"LLM-driven execution error: {e}",
+                extra={"elapsed_ms": round((time.monotonic() - t_llm) * 1000)},
+                exc_info=True,
+            )
             await stream(error(
                 source=self.name,
                 message=f"Error: {str(e)}"

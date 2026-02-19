@@ -11,6 +11,7 @@ tool selection strategy.
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from app.agents.base_agent import (
@@ -318,13 +319,23 @@ class ChatAgent(BaseStreamingAgent):
         1) Fast first response (ack or direct conversational reply)
         2) Optional deeper tool-enabled response
         """
+        t0 = time.monotonic()
         agent_context = await self._setup_context(context, stream, query)
         if agent_context is None:
             return "Authentication or session error. Please sign in and try again."
         if cancel.is_set():
             return ""
 
+        t_ack = time.monotonic()
         decision = await self._generate_fast_ack(query, agent_context)
+        logger.info(
+            "Chat fast_ack decision",
+            extra={
+                "elapsed_ms": round((time.monotonic() - t_ack) * 1000),
+                "needs_tools": decision.needs_tools,
+                "response_preview": decision.response[:60],
+            }
+        )
         fast_response = decision.response.strip()
         if fast_response:
             await stream(content(
@@ -349,12 +360,20 @@ class ChatAgent(BaseStreamingAgent):
         await self._resolve_attachments(query, stream, agent_context)
 
         try:
+            t_deep = time.monotonic()
             if self.config.tool_strategy == ToolStrategy.LLM_DRIVEN:
                 await self._execute_llm_driven(query, stream, cancel, agent_context)
             else:
                 await self._execute_pipeline(query, stream, cancel, agent_context)
+            logger.info(
+                "Chat deep pass complete",
+                extra={
+                    "elapsed_ms": round((time.monotonic() - t_deep) * 1000),
+                    "tool_results_keys": list(agent_context.tool_results.keys()),
+                }
+            )
         except Exception as exc:
-            logger.error("Chat agent execution error: %s", exc, exc_info=True)
+            logger.error("Chat agent execution error: %s (after %dms)", exc, round((time.monotonic() - t_deep) * 1000), exc_info=True)
             await stream(error(
                 source=self.name,
                 message=f"Error during execution: {str(exc)}",
@@ -411,6 +430,15 @@ class ChatAgent(BaseStreamingAgent):
         else:
             # Fallback to base synthesis behavior for non-LLM-driven/custom paths.
             deep_response = await self._synthesize(query, stream, cancel, agent_context)
+        total_ms = round((time.monotonic() - t0) * 1000)
+        logger.info(
+            "Chat agent request complete",
+            extra={
+                "total_ms": total_ms,
+                "had_tools": decision.needs_tools,
+                "response_length": len(deep_response) if decision.needs_tools else len(fast_response),
+            }
+        )
         if fast_response:
             return f"{fast_response}\n\n{deep_response}".strip()
         return deep_response
