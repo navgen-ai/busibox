@@ -14,7 +14,7 @@ import logging
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Awaitable, Callable, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List
 
 from .agent_client import AgentClient
 from .channel_identity import ChannelIdentityResolver
@@ -64,6 +64,22 @@ class MessageProcessor:
         )
         self._binding_cache: Dict[str, Dict[str, str]] = {}
         self.authz_base_url = str(settings.authz_base_url).rstrip("/")
+        self._sender_queues: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        self._sender_workers: Dict[str, asyncio.Task[None]] = {}
+        self._sender_cancels: Dict[str, asyncio.Event] = {}
+
+    def _should_interrupt(self, text: str) -> bool:
+        lowered = text.lower()
+        interrupt_keywords = (
+            "cancel",
+            "stop",
+            "never mind",
+            "nevermind",
+            "ignore that",
+            "actually",
+            "wait",
+        )
+        return any(keyword in lowered for keyword in interrupt_keywords)
 
     async def _resolve_sender_binding(self, channel: str, external_sender: str) -> Dict[str, str] | None:
         cache_key = f"{channel}:{external_sender}".strip().lower()
@@ -191,18 +207,79 @@ class MessageProcessor:
             await send_message("Started a new conversation. How can I help?")
             return
 
+        request: Dict[str, Any] = {
+            "channel": channel,
+            "sender_key": sender_key,
+            "text": text,
+            "send_message": send_message,
+            "send_typing_start": send_typing_start,
+            "send_typing_stop": send_typing_stop,
+            "agent_client": agent_client,
+            "delegation_token_override": delegation_token_override,
+        }
+
+        # Email flow expects synchronous completion in-process to capture chunks.
+        if channel == "email":
+            await self._run_request(request)
+            return
+
+        queue = self._sender_queues[sender_key]
+        worker = self._sender_workers.get(sender_key)
+        active_cancel = self._sender_cancels.get(sender_key)
+
+        if worker and not worker.done():
+            if active_cancel and self._should_interrupt(text):
+                active_cancel.set()
+                queue.clear()
+                queue.append(request)
+                await send_message("Got it - switching to your latest request.")
+            else:
+                queue.append(request)
+                await send_message("Got it - I'll respond once I finish the current request.")
+            return
+
+        queue.append(request)
+        self._sender_workers[sender_key] = asyncio.create_task(
+            self._sender_worker(sender_key)
+        )
+
+    async def _sender_worker(self, sender_key: str) -> None:
+        """Process queued requests for a sender in order."""
+        try:
+            while True:
+                queue = self._sender_queues.get(sender_key)
+                if not queue:
+                    return
+                request = queue.pop(0)
+                cancel_event = asyncio.Event()
+                self._sender_cancels[sender_key] = cancel_event
+                request["cancel_event"] = cancel_event
+                await self._run_request(request)
+                self._sender_cancels.pop(sender_key, None)
+        finally:
+            self._sender_workers.pop(sender_key, None)
+            self._sender_cancels.pop(sender_key, None)
+            if not self._sender_queues.get(sender_key):
+                self._sender_queues.pop(sender_key, None)
+
+    async def _run_request(self, request: Dict[str, Any]) -> None:
+        channel = request["channel"]
+        send_message = request["send_message"]
+        send_typing_start = request["send_typing_start"]
+        send_typing_stop = request["send_typing_stop"]
+        cancel_event = request.get("cancel_event")
+
         if send_typing_start:
             await send_typing_start()
-
         try:
-            response = await self._process_simple(
-                text=text,
-                sender=sender_key,
-                agent_client=agent_client,
-                delegation_token_override=delegation_token_override,
+            await self._process_streaming(
+                text=request["text"],
+                sender=request["sender_key"],
+                agent_client=request["agent_client"],
+                delegation_token_override=request["delegation_token_override"],
+                send_message=send_message,
+                cancel_event=cancel_event,
             )
-            for chunk in self._split_response(response):
-                await send_message(chunk)
         except Exception as e:
             logger.error("Error processing %s message: %s", channel, e, exc_info=True)
             await send_message("Sorry, I encountered an error processing your message.")
@@ -210,32 +287,37 @@ class MessageProcessor:
             if send_typing_stop:
                 await send_typing_stop()
 
-    async def _process_simple(
+    async def _process_streaming(
         self,
         *,
         text: str,
         sender: str,
         agent_client: AgentClient,
-        delegation_token_override: str | None = None,
+        delegation_token_override: str | None,
+        send_message: Callable[[str], Awaitable[None]],
+        cancel_event: asyncio.Event | None = None,
     ) -> str:
-        if self.settings.debug:
-            parts: List[str] = []
-            async for event in agent_client.chat_message_stream(
-                message=text,
-                sender=sender,
-                enable_web_search=self.settings.enable_web_search,
-                enable_doc_search=self.settings.enable_doc_search,
-                model=self.settings.default_model,
-                agent_id=self.settings.default_agent_id or None,
-                delegation_token_override=delegation_token_override,
-            ):
-                if event.get("_event_type") == "content":
-                    parts.append(event.get("message", ""))
-                elif event.get("_event_type") == "complete":
-                    break
-            return "\n".join(parts) if parts else "No response generated."
+        """
+        Stream agent events and deliver user-visible content chunks incrementally.
+        """
+        partial_buffer = ""
+        collected_messages: List[str] = []
+        loop = asyncio.get_running_loop()
+        last_emit_at = loop.time()
+        debounce_seconds = 0.5
 
-        response = await agent_client.chat_message(
+        async def flush_partial_buffer() -> None:
+            nonlocal partial_buffer, last_emit_at
+            if not partial_buffer.strip():
+                partial_buffer = ""
+                return
+            for chunk in self._split_response(partial_buffer):
+                await send_message(chunk)
+            collected_messages.append(partial_buffer)
+            partial_buffer = ""
+            last_emit_at = loop.time()
+
+        async for event in agent_client.chat_message_stream(
             message=text,
             sender=sender,
             enable_web_search=self.settings.enable_web_search,
@@ -243,8 +325,46 @@ class MessageProcessor:
             model=self.settings.default_model,
             agent_id=self.settings.default_agent_id or None,
             delegation_token_override=delegation_token_override,
-        )
-        return response.content
+        ):
+            if cancel_event and cancel_event.is_set():
+                break
+
+            event_type = str(event.get("_event_type") or "")
+            if event_type == "error":
+                detail = str(event.get("message") or event.get("error") or "Unknown error")
+                raise RuntimeError(detail)
+
+            if event_type not in ("content", "complete", "message_complete"):
+                continue
+
+            if event_type in ("complete", "message_complete"):
+                await flush_partial_buffer()
+                continue
+
+            message = str(event.get("message") or "")
+            event_data = event.get("data") if isinstance(event.get("data"), dict) else {}
+            is_partial = bool(event_data.get("partial")) if isinstance(event_data, dict) else False
+            is_complete_marker = bool(event_data.get("complete")) if isinstance(event_data, dict) else False
+            if is_complete_marker:
+                await flush_partial_buffer()
+                continue
+            if not message:
+                continue
+
+            if is_partial:
+                partial_buffer += message
+                now = loop.time()
+                if now - last_emit_at >= debounce_seconds:
+                    await flush_partial_buffer()
+                continue
+
+            await flush_partial_buffer()
+            for chunk in self._split_response(message):
+                await send_message(chunk)
+            collected_messages.append(message)
+
+        await flush_partial_buffer()
+        return "\n".join(collected_messages).strip() or "No response generated."
 
     async def process_audio(
         self,
