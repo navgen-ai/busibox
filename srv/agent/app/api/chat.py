@@ -760,6 +760,18 @@ async def send_chat_message_stream_agentic(
     
     async def generate_events() -> AsyncGenerator[str, None]:
         """Generate SSE events from agentic dispatcher."""
+        import time as _time
+        _t_request = _time.monotonic()
+        logger.info(
+            "Agentic chat request started",
+            extra={
+                "user_id": principal.sub,
+                "message_preview": payload.message[:80],
+                "conversation_id": str(payload.conversation_id) if payload.conversation_id else None,
+                "agent_id": payload.agent_id if hasattr(payload, 'agent_id') else None,
+                "selected_agents": payload.selected_agents if hasattr(payload, 'selected_agents') else None,
+            }
+        )
         try:
             # Get or create conversation
             title_updated = False
@@ -861,6 +873,8 @@ async def send_chat_message_stream_agentic(
             # Collect content for storing
             full_content = []
             thoughts = []
+            run_events = []
+            selected_agent_id = None
             
             # Run agentic dispatcher
             async for event in run_agentic_dispatcher(
@@ -886,6 +900,19 @@ async def send_chat_message_stream_agentic(
                         "source": event.source,
                         "message": event.message,
                     })
+                
+                # Build run event log for RunRecord
+                run_events.append({
+                    "type": event.type,
+                    "source": event.source,
+                    "message": event.message[:500] if event.message else "",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                
+                # Capture the selected agent ID from dispatcher routing
+                if event.data and isinstance(event.data, dict):
+                    if "selected_agent" in event.data:
+                        selected_agent_id = event.data["selected_agent"]
             
             # Store assistant message
             # Join without separator - content chunks are already properly formatted
@@ -897,12 +924,51 @@ async def send_chat_message_stream_agentic(
                 content=response_text,
                 routing_decision={
                     "thoughts": thoughts,
-                    "selected_agents": available_agents,  # Store which agents were used
+                    "selected_agents": available_agents,
                 } if thoughts or available_agents else None,
             )
             session.add(assistant_message)
             
             conversation.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            
+            # Create a RunRecord so this chat shows in agent API logs
+            try:
+                from app.models.domain import RunRecord, AgentDefinition
+                
+                agent_uuid = None
+                if selected_agent_id:
+                    try:
+                        agent_uuid = uuid.UUID(selected_agent_id)
+                    except (ValueError, TypeError):
+                        # Name-based agent, look up UUID
+                        agent_name = selected_agent_id
+                        agent_row = (await session.execute(
+                            select(AgentDefinition).where(AgentDefinition.name == agent_name)
+                        )).scalar_one_or_none()
+                        if agent_row:
+                            agent_uuid = agent_row.id
+                
+                if not agent_uuid:
+                    # Fallback: look up "chat" agent by name
+                    chat_row = (await session.execute(
+                        select(AgentDefinition).where(AgentDefinition.name == "chat")
+                    )).scalar_one_or_none()
+                    if chat_row:
+                        agent_uuid = chat_row.id
+                
+                if agent_uuid:
+                    elapsed_s = round((_time.monotonic() - _t_request), 2)
+                    run_record = RunRecord(
+                        agent_id=agent_uuid,
+                        status="completed",
+                        input={"prompt": payload.message, "source": "chat", "conversation_id": str(conversation.id)},
+                        output={"response": response_text[:2000]},
+                        events=run_events[-50:],
+                        created_by=principal.sub,
+                    )
+                    session.add(run_record)
+            except Exception as run_err:
+                logger.warning(f"Failed to create chat RunRecord (non-critical): {run_err}")
             
             await session.commit()
             await session.refresh(assistant_message)
@@ -914,11 +980,27 @@ async def send_chat_message_stream_agentic(
             }
             yield f"event: message_complete\ndata: {json.dumps(completion_data)}\n\n"
             
+            logger.info(
+                "Agentic chat request complete",
+                extra={
+                    "total_ms": round((_time.monotonic() - _t_request) * 1000),
+                    "conversation_id": str(conversation.id),
+                    "response_length": len(response_text),
+                }
+            )
+            
         except asyncio.CancelledError:
-            logger.info("Agentic chat cancelled by client")
+            logger.info(
+                "Agentic chat cancelled by client",
+                extra={"elapsed_ms": round((_time.monotonic() - _t_request) * 1000)},
+            )
             cancel_event.set()
         except Exception as e:
-            logger.error(f"Agentic streaming chat failed: {e}", exc_info=True)
+            logger.error(
+                f"Agentic streaming chat failed: {e}",
+                extra={"elapsed_ms": round((_time.monotonic() - _t_request) * 1000)},
+                exc_info=True,
+            )
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
     
     return StreamingResponse(

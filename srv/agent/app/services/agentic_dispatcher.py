@@ -10,6 +10,7 @@ All thoughts and progress are streamed to the user in real-time.
 import asyncio
 import os
 import re
+import time
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Dict, List, Optional, Any, Tuple
 
@@ -420,12 +421,14 @@ Choose the most appropriate single agent for the query.""",
             extra={
                 "user_id": user_id,
                 "query_length": len(query),
+                "query_preview": query[:80],
                 "available_agents": available_agents,
             }
         )
         
         try:
             # Step 1: Resolve agents and determine routing strategy
+            t_resolve = time.monotonic()
             resolved_agents: List[Tuple[str, str, Optional[str]]] = []  # (id, display_name, streaming_key)
             
             if available_agents:
@@ -466,13 +469,21 @@ Choose the most appropriate single agent for the query.""",
                                 logger.warning(f"Could not resolve agent name: {agent_id}")
             
             # If no agents resolved, default to chat agent only
-            # Chat agent is the versatile general-purpose agent that can use tools when needed
             if not resolved_agents:
                 resolved_agents = [
                     ("chat", "Chat Assistant", "chat"),
                 ]
             
+            logger.info(
+                "Agent resolution complete",
+                extra={
+                    "elapsed_ms": round((time.monotonic() - t_resolve) * 1000),
+                    "resolved": [(rid, rname, rkey) for rid, rname, rkey in resolved_agents],
+                }
+            )
+            
             # Step 1.5: Fetch relevant insights (agent memories) for the query
+            t_insights = time.monotonic()
             relevant_insights = []
             if user_id:
                 try:
@@ -518,9 +529,16 @@ Choose the most appropriate single agent for the query.""",
                         )
                         
                 except Exception as e:
-                    # Don't fail if insights service is unavailable
                     logger.warning(f"Failed to fetch insights (non-critical): {e}")
                     relevant_insights = []
+            
+            logger.info(
+                "Insights fetch complete",
+                extra={
+                    "elapsed_ms": round((time.monotonic() - t_insights) * 1000),
+                    "insight_count": len(relevant_insights),
+                }
+            )
             
             # Step 2: Determine which agent to use
             # If only one agent is available, use it directly (no routing needed)
@@ -544,9 +562,18 @@ Choose the most appropriate single agent for the query.""",
                     return
                 
                 # Route to best agent
+                t_route = time.monotonic()
                 agent_names = [name for _, name, _ in resolved_agents]
                 selected_idx = await self._route_query_to_index(query, agent_names)
                 selected_id, selected_display_name, selected_streaming_key = resolved_agents[selected_idx]
+                logger.info(
+                    "Routing decision complete",
+                    extra={
+                        "elapsed_ms": round((time.monotonic() - t_route) * 1000),
+                        "selected_agent": selected_display_name,
+                        "from_options": agent_names,
+                    }
+                )
                 
                 yield thought(
                     source="dispatcher",
@@ -558,7 +585,15 @@ Choose the most appropriate single agent for the query.""",
                 return
             
             # Step 3: Execute the selected agent
-            logger.info(f"Executing agent: streaming_key={selected_streaming_key}, in_registry={selected_streaming_key in STREAMING_AGENTS if selected_streaming_key else False}")
+            t_exec = time.monotonic()
+            logger.info(
+                "Agent execution starting",
+                extra={
+                    "agent_name": selected_display_name,
+                    "streaming_key": selected_streaming_key,
+                    "in_registry": selected_streaming_key in STREAMING_AGENTS if selected_streaming_key else False,
+                }
+            )
             
             # Determine which agent to use
             agent: Optional[StreamingAgent] = None
@@ -647,6 +682,15 @@ Choose the most appropriate single agent for the query.""",
                 
                 # Wait for agent to finish
                 await agent_task
+                
+                logger.info(
+                    "Agent execution complete",
+                    extra={
+                        "agent_name": selected_display_name,
+                        "exec_elapsed_ms": round((time.monotonic() - t_exec) * 1000),
+                        "result_length": len(agent_result.get("output", "") or ""),
+                    }
+                )
             
             else:
                 # Fallback for non-streaming agents (chat, etc.) or when no agent resolved
