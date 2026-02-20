@@ -44,6 +44,7 @@ INTENT_CHAT = "chat"
 STATUS_DOC_PROJECTS = "busibox-projects-projects"
 STATUS_DOC_TASKS = "busibox-projects-tasks"
 STATUS_DOC_UPDATES = "busibox-projects-updates"
+STATUS_SOURCE_APP = "busibox-projects"
 
 # Synthesis prompt -- the LLM only needs to produce a nice response from tool results
 STATUS_SYNTHESIS_PROMPT = """You are a project status assistant. Given tool results and user context, create a clear, well-organized response.
@@ -126,6 +127,25 @@ def _ensure_openai_env():
         base_url=str(settings.litellm_base_url),
         api_key=settings.litellm_api_key,
     )
+
+
+def _is_status_app_document(doc: Dict[str, Any]) -> bool:
+    """
+    Return True if a data document belongs to the busibox-projects status app.
+
+    This prevents status agents from writing into similarly named docs owned by
+    other apps (e.g. busibox-appbuilder-projects), which can cause schema 400s.
+    """
+    name = str(doc.get("name", "")).strip()
+    if not name:
+        return False
+    lower_name = name.lower()
+    source_app = str(doc.get("sourceApp") or doc.get("source_app") or "").strip().lower()
+    if source_app == STATUS_SOURCE_APP:
+        return True
+    if name in {STATUS_DOC_PROJECTS, STATUS_DOC_TASKS, STATUS_DOC_UPDATES}:
+        return True
+    return lower_name.startswith(f"{STATUS_SOURCE_APP}-")
 
 
 class StatusAssistantAgent(BaseStreamingAgent):
@@ -456,7 +476,8 @@ class StatusAssistantAgent(BaseStreamingAgent):
         """
         # Extract document IDs by name -- prefer exact well-known names first
         if hasattr(result, 'documents') and result.documents:
-            for doc in result.documents:
+            candidate_docs = [doc for doc in result.documents if _is_status_app_document(doc)]
+            for doc in candidate_docs:
                 name = doc.get("name", "")
                 doc_id = doc.get("id", "")
                 if not name or not doc_id:
@@ -472,7 +493,7 @@ class StatusAssistantAgent(BaseStreamingAgent):
 
             # Fallback: substring match if well-known names not found
             if "projects" not in self._doc_ids or "tasks" not in self._doc_ids:
-                for doc in result.documents:
+                for doc in candidate_docs:
                     name = doc.get("name", "").lower()
                     doc_id = doc.get("id", "")
                     if "projects" not in self._doc_ids and "project" in name:
@@ -900,26 +921,53 @@ class StatusAssistantAgent(BaseStreamingAgent):
         if step.args.get("document_id") != projects_doc_id:
             return []  # This was the tasks insert, nothing more to do
 
+        def _norm(value: Any) -> str:
+            return str(value or "").strip().lower()
+
         # Map project names to IDs from the insert result
-        project_name_to_id = {}
+        project_name_to_id: Dict[str, str] = {}
         if hasattr(result, 'record_ids') and result.record_ids:
             projects = self._extracted_data.get("projects", [])
             for i, rid in enumerate(result.record_ids):
                 if i < len(projects):
-                    project_name_to_id[projects[i].get("name", "")] = rid
+                    name_key = _norm(projects[i].get("name", ""))
+                    if name_key:
+                        project_name_to_id[name_key] = rid
+
+        # Fallback for API responses that don't include record_ids:
+        # If exactly one project was extracted and one project row is known,
+        # bind all tasks to that project to avoid orphan task inserts.
+        if not project_name_to_id:
+            extracted_projects = self._extracted_data.get("projects", [])
+            known_projects = (self._query_results.get("projects", {}) or {}).get("records", [])
+            if len(extracted_projects) == 1 and len(known_projects) == 1:
+                single_name = _norm(extracted_projects[0].get("name", ""))
+                single_id = str(known_projects[0].get("id", ""))
+                if single_name and single_id:
+                    project_name_to_id[single_name] = single_id
 
         # Build task records with projectId references
         task_records = []
+        skipped_tasks = []
         for task in pending_tasks:
             project_name = task.get("project_name", "")
-            project_id = project_name_to_id.get(project_name, "")
+            normalized_project_name = _norm(project_name)
+            project_id = project_name_to_id.get(normalized_project_name, "")
 
             # If no exact match, try fuzzy matching
-            if not project_id and project_name:
+            if not project_id and normalized_project_name:
                 for pname, pid in project_name_to_id.items():
-                    if project_name.lower() in pname.lower() or pname.lower() in project_name.lower():
+                    if normalized_project_name in pname or pname in normalized_project_name:
                         project_id = pid
                         break
+
+            # Last-resort fallback: if only one created project is available, use it.
+            if not project_id and len(project_name_to_id) == 1:
+                project_id = next(iter(project_name_to_id.values()))
+
+            if not project_id:
+                skipped_tasks.append(task.get("title", "Untitled Task"))
+                continue
 
             task_records.append({
                 "projectId": project_id,
@@ -930,9 +978,15 @@ class StatusAssistantAgent(BaseStreamingAgent):
                 "assignee": task.get("assignee", ""),
             })
 
-        # Clear pending tasks to avoid re-insertion
-        self._extracted_data["_pending_tasks"] = []
+        if skipped_tasks:
+            logger.warning(
+                "Skipped %d tasks without project mapping: %s",
+                len(skipped_tasks),
+                skipped_tasks[:10],
+            )
 
+        # Clear pending tasks to avoid re-insertion once we decide on follow-up step.
+        self._extracted_data["_pending_tasks"] = []
         if task_records:
             return [PipelineStep(
                 tool="insert_records",
@@ -1385,7 +1439,8 @@ Guidelines:
     def _handle_list_docs(self, result: Any) -> List[PipelineStep]:
         """Extract doc IDs and queue query steps."""
         if hasattr(result, 'documents') and result.documents:
-            for doc in result.documents:
+            candidate_docs = [doc for doc in result.documents if _is_status_app_document(doc)]
+            for doc in candidate_docs:
                 name = doc.get("name", "")
                 doc_id = doc.get("id", "")
                 if not name or not doc_id:
