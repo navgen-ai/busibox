@@ -415,8 +415,27 @@ async def deploy_core_app(
     
     # Determine deployment command based on environment
     if is_docker_environment():
-        # Docker: Use entrypoint script
-        command = f"/usr/local/bin/entrypoint.sh deploy {app_id} {github_ref}"
+        # Docker: monorepo is volume-mounted at /srv/busibox-frontend.
+        # Build the shared lib, then build the specific app, then restart via
+        # the app-manager control API.
+        app_info = CORE_APPS[app_id]
+        monorepo_app_dir = app_info.get('monorepo_app_dir', '')
+        short_name = monorepo_app_dir.replace("apps/", "")  # e.g. "portal"
+        
+        command = f"""
+            set -e
+            cd /srv/busibox-frontend
+            echo "=== Building shared package ==="
+            pnpm --filter @jazzmind/busibox-app build
+            echo "=== Building {app_id} ==="
+            cd /srv/busibox-frontend/{monorepo_app_dir}
+            rm -rf .next 2>/dev/null || true
+            NODE_ENV=production pnpm run build
+            echo "=== Restarting {short_name} via app-manager ==="
+            curl -s -X POST http://localhost:9999/build -H 'Content-Type: application/json' -d '{{"app":"{short_name}"}}' || true
+            curl -s -X POST http://localhost:9999/restart -H 'Content-Type: application/json' -d '{{"app":"{short_name}"}}' || true
+            echo "=== Deploy complete ==="
+        """
     else:
         # Proxmox: Monorepo deployment
         # All core apps share a single clone of busibox-frontend.
@@ -516,7 +535,14 @@ NPMRC_EOF
             NODE_ENV=development pnpm install --frozen-lockfile || NODE_ENV=development pnpm install
             echo "=== PNPM INSTALL END ==="
             
-            # Build the specific app (turbo handles shared package deps automatically)
+            # Build the shared package first, then the app.
+            # We can't just cd into the app and run 'pnpm run build' because that
+            # invokes 'next build' directly without building workspace dependencies
+            # like @jazzmind/busibox-app (which compiles TS to dist/).
+            echo "=== BUILD SHARED PACKAGES ==="
+            pnpm --filter @jazzmind/busibox-app run build
+            echo "=== BUILD SHARED PACKAGES DONE ==="
+            
             cd "$APP_DIR"
             echo "=== BUILD START ({pnpm_pkg_name}) ==="
             rm -rf .next 2>/dev/null || true
