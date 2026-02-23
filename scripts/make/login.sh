@@ -18,6 +18,14 @@ source "${REPO_ROOT}/scripts/lib/profiles.sh"
 source "${REPO_ROOT}/scripts/lib/state.sh"
 source "${REPO_ROOT}/scripts/lib/services.sh"
 
+# Debug mode: set DEBUG=1 or pass --debug
+DEBUG="${DEBUG:-0}"
+[[ "${1:-}" == "--debug" ]] && DEBUG=1
+
+debug() {
+    [[ "$DEBUG" == "1" ]] && echo -e "${DIM}[DEBUG] $*${NC}" >&2
+}
+
 profile_init
 
 get_current_env() {
@@ -82,17 +90,31 @@ run_pg_sql() {
     local env="$4"
     local db_user="${POSTGRES_USER:-busibox_user}"
 
+    debug "run_pg_sql: backend=${backend} env=${env} db=${db}"
+    debug "run_pg_sql: SQL=${sql}"
+
     if [[ "$backend" == "proxmox" ]]; then
         local pg_host
         pg_host="$(get_service_ip "postgres" "$env" "proxmox" 2>/dev/null || true)"
         if [[ -z "$pg_host" ]]; then
+            debug "run_pg_sql: FAILED - could not resolve postgres host"
             return 1
         fi
-        echo "$sql" | ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "root@${pg_host}" \
-            "sudo -u postgres psql -d ${db} -t -A" 2>/dev/null
+        debug "run_pg_sql: pg_host=${pg_host} (via SSH)"
+        local result exit_code
+        result="$(echo "$sql" | ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "root@${pg_host}" \
+            "sudo -u postgres psql -d ${db} -t -A" 2>&1)"
+        exit_code=$?
+        debug "run_pg_sql: exit_code=${exit_code} result='${result}'"
+        if [[ $exit_code -ne 0 ]]; then
+            debug "run_pg_sql: FAILED with exit code ${exit_code}"
+        fi
+        echo "$result"
+        return $exit_code
     else
         local prefix
         prefix="$(get_container_prefix "$env")"
+        debug "run_pg_sql: docker container=${prefix}-postgres"
         docker exec "${prefix}-postgres" psql -U "$db_user" -d "$db" -t -A -c "$sql" 2>/dev/null
     fi
 }
@@ -121,6 +143,10 @@ main() {
     env="$(get_current_env)"
     backend="$(get_backend_type)"
 
+    debug "active_profile=$(profile_get_active)"
+    debug "env=${env} backend=${backend}"
+    debug "hostname=$(hostname) uname=$(uname -n)"
+
     if [[ "$backend" == "k8s" ]]; then
         error "Login magic-link helper is not implemented for K8s backend yet."
         exit 1
@@ -128,6 +154,7 @@ main() {
 
     local admin_email
     admin_email="$(get_state "ADMIN_EMAIL" "")"
+    debug "admin_email from state: '${admin_email}'"
     if [[ -z "$admin_email" ]]; then
         read -r -p "Admin email: " admin_email
     fi
@@ -143,27 +170,45 @@ main() {
 
     info "Generating admin login credentials for ${email_lower} (${env}/${backend})..."
 
+    # Test DB connectivity first
+    debug "Testing DB connectivity..."
+    local db_test
+    db_test="$(run_pg_sql "SELECT 'connected' as test;" authz "$backend" "$env" | head -1 | tr -d '[:space:]')"
+    debug "DB connectivity test: '${db_test}'"
+    if [[ "$db_test" != "connected" ]]; then
+        error "Cannot connect to authz database (backend=${backend}, env=${env})"
+        error "DB test returned: '${db_test}'"
+        exit 1
+    fi
+
     local user_id
     user_id="$(run_pg_sql "SELECT user_id::text FROM authz_users WHERE lower(email)='${email_sql}' LIMIT 1;" authz "$backend" "$env" | head -1 | tr -d '[:space:]')"
+    debug "user_id lookup: '${user_id}'"
 
     if [[ -z "$user_id" ]]; then
         user_id="$(generate_uuid)"
+        debug "Creating new user: ${user_id}"
         run_pg_sql "INSERT INTO authz_users (user_id, email, status) VALUES ('${user_id}'::uuid, '${email_sql}', 'active');" authz "$backend" "$env" >/dev/null || {
             error "Failed to create admin user record."
             exit 1
         }
     fi
+    debug "user_id=${user_id}"
 
     local admin_role_id
     admin_role_id="$(run_pg_sql "SELECT id::text FROM authz_roles WHERE name='Admin' LIMIT 1;" authz "$backend" "$env" | head -1 | tr -d '[:space:]')"
+    debug "admin_role_id=${admin_role_id}"
     if [[ -z "$admin_role_id" ]]; then
         admin_role_id="$(generate_uuid)"
+        debug "Creating Admin role: ${admin_role_id}"
         run_pg_sql "INSERT INTO authz_roles (id, name, description, scopes) VALUES ('${admin_role_id}'::uuid, 'Admin', 'Full system administrator', ARRAY['authz.*', 'busibox-admin.*']);" authz "$backend" "$env" >/dev/null
     fi
 
     local has_role
     has_role="$(run_pg_sql "SELECT 1 FROM authz_user_roles WHERE user_id='${user_id}'::uuid AND role_id='${admin_role_id}'::uuid;" authz "$backend" "$env" | head -1 | tr -d '[:space:]')"
+    debug "has_role=${has_role}"
     if [[ -z "$has_role" ]]; then
+        debug "Assigning Admin role to user"
         run_pg_sql "INSERT INTO authz_user_roles (user_id, role_id) VALUES ('${user_id}'::uuid, '${admin_role_id}'::uuid);" authz "$backend" "$env" >/dev/null
     fi
 
@@ -171,17 +216,36 @@ main() {
     local token token_sql
     token="$(openssl rand -base64 32 | tr -d '/+=' | cut -c1-43)"
     token_sql="$(sql_escape "$token")"
+    debug "Generated token: ${token}"
+    debug "Token SQL-escaped: ${token_sql}"
 
+    debug "Deleting old magic links..."
     run_pg_sql "DELETE FROM authz_magic_links WHERE user_id='${user_id}'::uuid;" authz "$backend" "$env" >/dev/null || true
+
+    debug "Inserting magic link..."
     run_pg_sql "INSERT INTO authz_magic_links (user_id, email, token, expires_at) VALUES ('${user_id}'::uuid, '${email_sql}', '${token_sql}', now() + interval '24 hours');" authz "$backend" "$env" >/dev/null || {
         error "Failed to insert magic link token."
         exit 1
     }
 
+    # Verify the token was actually saved
+    local verify_token
+    verify_token="$(run_pg_sql "SELECT token FROM authz_magic_links WHERE user_id='${user_id}'::uuid AND token='${token_sql}' LIMIT 1;" authz "$backend" "$env" | head -1 | tr -d '[:space:]')"
+    debug "Verification SELECT returned: '${verify_token}'"
+    if [[ "$verify_token" != "$token" ]]; then
+        error "Token verification FAILED - token was not saved to database!"
+        error "Expected: '${token}'"
+        error "Got:      '${verify_token}'"
+        error "Backend: ${backend}, Env: ${env}"
+        exit 1
+    fi
+    debug "Token verified in DB"
+
     # --- TOTP Code ---
     local totp_code totp_hash
     totp_code="$(generate_totp_code)"
     totp_hash="$(sha256_hash "$totp_code")"
+    debug "TOTP code: ${totp_code} hash: ${totp_hash}"
 
     run_pg_sql "DELETE FROM authz_totp_codes WHERE user_id='${user_id}'::uuid AND used_at IS NULL;" authz "$backend" "$env" >/dev/null || true
     run_pg_sql "INSERT INTO authz_totp_codes (user_id, code_hash, email, expires_at) VALUES ('${user_id}'::uuid, '${totp_hash}', '${email_sql}', now() + interval '15 minutes');" authz "$backend" "$env" >/dev/null || {
