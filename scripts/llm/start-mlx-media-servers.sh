@@ -43,10 +43,9 @@ IMAGE_PORT="${IMAGE_PORT:-8083}"
 
 TRANSCRIBE_MODEL_PATH="${TRANSCRIBE_MODEL_PATH:-mlx-community/whisper-tiny-mlx}"
 VOICE_MODEL_PATH="${VOICE_MODEL_PATH:-mlx-community/Kokoro-82M-bf16}"
-# Keep IMAGE_CONFIG_NAME as a backward-compatible alias.
-# Image model path must be a local directory for Flux models — downloaded by mlx-openai-server on first use.
-IMAGE_MODEL_PATH="${IMAGE_MODEL_PATH:-${IMAGE_CONFIG_NAME:-}}"
 IMAGE_CONFIG_NAME="${IMAGE_CONFIG_NAME:-flux2-klein-4b}"
+IMAGE_MODEL_HF="${IMAGE_MODEL_HF:-black-forest-labs/FLUX.2-klein-4B}"
+IMAGE_MODEL_PATH="${IMAGE_MODEL_PATH:-${IMAGE_MODEL_HF}}"
 IMAGE_QUANTIZE="${IMAGE_QUANTIZE:-4}"
 
 TRANSCRIBE_PID_FILE="/tmp/mlx-openai-transcribe.pid"
@@ -221,14 +220,11 @@ start_image() {
         launch
         --model-type image-generation
         --config-name "$IMAGE_CONFIG_NAME"
+        --model-path "$IMAGE_MODEL_PATH"
         --quantize "$IMAGE_QUANTIZE"
         --host 0.0.0.0
         --port "$IMAGE_PORT"
     )
-    # If a local model path is provided, add --model-path
-    if [[ -n "$IMAGE_MODEL_PATH" ]]; then
-        launch_args+=(--model-path "$IMAGE_MODEL_PATH")
-    fi
 
     nohup "$MLX_OPENAI_SERVER_BIN" "${launch_args[@]}" \
         > "$IMAGE_LOG_FILE" 2>&1 &

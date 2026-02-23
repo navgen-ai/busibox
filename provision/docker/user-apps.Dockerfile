@@ -37,7 +37,7 @@ RUN apt-get update && \
 RUN mkdir -p /srv/apps /srv/dev-apps /var/log/user-apps /var/log/supervisor /etc/supervisor/conf.d
 
 # Copy supervisord base configuration
-COPY provision/docker/user-apps-supervisord.conf /etc/supervisor/supervisord.conf
+COPY user-apps-supervisord.conf /etc/supervisor/supervisord.conf
 
 WORKDIR /srv/apps
 

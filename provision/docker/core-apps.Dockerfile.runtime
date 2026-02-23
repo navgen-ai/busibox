@@ -53,10 +53,10 @@ RUN mkdir -p \
 
 # Copy supervisord configuration for process management
 # Manages busibox-portal and busibox-agents processes
-COPY provision/docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 # Copy runtime entrypoint script
-COPY provision/docker/core-apps-entrypoint-runtime.sh /usr/local/bin/entrypoint.sh
+COPY core-apps-entrypoint-runtime.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 WORKDIR /srv

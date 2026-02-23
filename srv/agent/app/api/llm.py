@@ -1970,39 +1970,15 @@ async def create_speech(
 # Real-time Audio Transcription (WebSocket)
 # =============================================================================
 
-
-def _get_transcribe_backend() -> Tuple[str, str]:
-    """Resolve the transcribe model's api_base and backend type from LiteLLM config.
-
-    Returns (api_base, backend_type) where backend_type is 'vllm' or 'mlx'.
-    Raises HTTPException if no transcribe model is configured.
-    """
-    config = _read_local_litellm_config()
-    if not config:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="LiteLLM config not available; cannot discover transcribe backend",
-        )
-
-    for entry in config.get("model_list", []):
-        if entry.get("model_name") == "transcribe":
-            params = entry.get("litellm_params", {})
-            api_base = params.get("api_base", "")
-            model_id = params.get("model", "")
-
-            if "mlx-community" in model_id or "mlx" in model_id.lower():
-                backend_type = "mlx"
-            elif "vllm" in api_base.lower():
-                backend_type = "vllm"
-            else:
-                backend_type = "vllm"
-
-            return api_base.rstrip("/"), backend_type
-
-    raise HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail="No 'transcribe' model configured in LiteLLM",
-    )
+_TS_RATE = 16000         # Expected sample rate from browser
+_TS_BPS = 2              # Bytes per sample (int16)
+_TS_FRAME_MS = 30        # VAD analysis frame size in ms
+_TS_FRAME_BYTES = int(_TS_RATE * _TS_BPS * _TS_FRAME_MS / 1000)  # 960 bytes per frame
+_TS_SILENCE_THRESH = 300 # RMS threshold below which a frame is "silence" (int16 scale)
+_TS_SILENCE_DUR_MS = 600 # Consecutive silence ms needed to trigger a chunk boundary
+_TS_MIN_SPEECH_S = 1.5   # Don't send chunks shorter than this (avoids noise-only blips)
+_TS_MAX_CHUNK_S = 15.0   # Force-send even without silence after this much audio
+_TS_POLL_S = 0.08        # How often the loop checks the buffer
 
 
 async def _validate_ws_token(token: str) -> bool:
@@ -2016,141 +1992,188 @@ async def _validate_ws_token(token: str) -> bool:
         return False
 
 
-async def _proxy_vllm_realtime(ws_client: WebSocket, ws_upstream) -> None:
-    """Bidirectional proxy for vLLM's OpenAI Realtime WebSocket.
+def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000, channels: int = 1, sample_width: int = 2) -> bytes:
+    """Wrap raw PCM int16 bytes in a WAV container."""
+    import struct
+    data_len = len(pcm_bytes)
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        36 + data_len,
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,  # PCM
+        channels,
+        sample_rate,
+        sample_rate * channels * sample_width,
+        channels * sample_width,
+        sample_width * 8,
+        b"data",
+        data_len,
+    )
+    return header + pcm_bytes
 
-    Both client and vLLM speak the same OpenAI Realtime event protocol,
-    so this is a near-passthrough.
+
+def _rms_int16(frame: bytes) -> float:
+    """Compute RMS energy of a frame of int16 PCM samples."""
+    import array
+    import math
+    samples = array.array("h", frame)
+    if not samples:
+        return 0.0
+    return math.sqrt(sum(s * s for s in samples) / len(samples))
+
+
+def _find_silence_boundary(pcm: bytearray) -> Optional[int]:
+    """Scan PCM for a sustained silence gap and return byte offset of its start.
+
+    Returns None if no silence boundary meeting _TS_SILENCE_DUR_MS is found.
+    Scans from the end backwards so we split at the *latest* silence gap,
+    keeping the chunk as large as possible.
     """
-    import websockets
+    min_bytes = int(_TS_MIN_SPEECH_S * _TS_RATE * _TS_BPS)
+    if len(pcm) < min_bytes:
+        return None
 
-    async def client_to_upstream():
-        try:
-            while True:
-                data = await ws_client.receive_text()
-                await ws_upstream.send(data)
-        except WebSocketDisconnect:
-            pass
-        except Exception as e:
-            logger.debug("vLLM client->upstream ended: %s", e)
+    frames_needed = int(_TS_SILENCE_DUR_MS / _TS_FRAME_MS)
+    total_frames = len(pcm) // _TS_FRAME_BYTES
+    if total_frames < frames_needed:
+        return None
 
-    async def upstream_to_client():
-        try:
-            async for message in ws_upstream:
-                if isinstance(message, str):
-                    await ws_client.send_text(message)
-                else:
-                    await ws_client.send_bytes(message)
-        except websockets.exceptions.ConnectionClosed:
-            pass
-        except Exception as e:
-            logger.debug("vLLM upstream->client ended: %s", e)
+    min_frame = max(0, min_bytes // _TS_FRAME_BYTES)
 
-    tasks = [
-        asyncio.create_task(client_to_upstream()),
-        asyncio.create_task(upstream_to_client()),
-    ]
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-    for t in pending:
-        t.cancel()
+    consecutive_silent = 0
+    for i in range(total_frames - 1, min_frame - 1, -1):
+        start = i * _TS_FRAME_BYTES
+        end = start + _TS_FRAME_BYTES
+        rms = _rms_int16(pcm[start:end])
+        if rms < _TS_SILENCE_THRESH:
+            consecutive_silent += 1
+            if consecutive_silent >= frames_needed:
+                return (i + frames_needed) * _TS_FRAME_BYTES
+        else:
+            consecutive_silent = 0
+
+    return None
 
 
-async def _proxy_mlx_realtime(ws_client: WebSocket, ws_upstream) -> None:
-    """Bidirectional proxy translating OpenAI Realtime events to MLX protocol.
+async def _run_transcribe_loop(
+    websocket: WebSocket,
+    audio_buffer: bytearray,
+    buffer_lock: asyncio.Lock,
+    language: str,
+    stop_event: asyncio.Event,
+) -> None:
+    """Drain audio buffer at silence boundaries and transcribe via LiteLLM REST.
 
-    Client speaks OpenAI Realtime events (JSON text frames).
-    MLX server expects: initial JSON config, then raw binary int16 PCM frames,
-    and returns JSON with {text, is_partial} fields.
+    Strategy:
+    - Accumulate PCM from the shared buffer into a local pending chunk
+    - Scan pending chunk for sustained silence gaps (VAD)
+    - On silence boundary: slice there, send everything up to that point for transcription
+    - Safety valve: if no silence found after _TS_MAX_CHUNK_S, force-send anyway
+    - On stop: flush whatever remains
     """
-    import base64
     import json as json_mod
-    import websockets
 
-    mlx_config_sent = False
+    cumulative_pcm = bytearray()
+    pending_pcm = bytearray()
+    prev_text = ""
+    max_chunk_bytes = int(_TS_MAX_CHUNK_S * _TS_RATE * _TS_BPS)
 
-    async def client_to_upstream():
-        nonlocal mlx_config_sent
+    async def _transcribe_and_send(pcm_chunk: bytes, final: bool = False) -> str:
+        nonlocal prev_text
+        wav_bytes = _pcm_to_wav(pcm_chunk)
         try:
-            while True:
-                data = await ws_client.receive_text()
-                event = json_mod.loads(data)
-                event_type = event.get("type", "")
+            result = await _litellm_transcribe_audio(
+                file_bytes=wav_bytes,
+                filename="stream-final.wav" if final else "stream.wav",
+                content_type="audio/wav",
+                model="transcribe",
+                language=language or None,
+            )
+            text = result.get("text", "").strip()
+            if not text or text == prev_text:
+                return prev_text
 
-                if event_type == "session.update":
-                    cfg = {
-                        "model": event.get("model", ""),
-                        "language": event.get("language", "en"),
-                    }
-                    await ws_upstream.send(json_mod.dumps(cfg))
-                    mlx_config_sent = True
-
-                elif event_type == "input_audio_buffer.append":
-                    if not mlx_config_sent:
-                        await ws_upstream.send(json_mod.dumps({"language": "en"}))
-                        mlx_config_sent = True
-                    audio_b64 = event.get("audio", "")
-                    if audio_b64:
-                        pcm_bytes = base64.b64decode(audio_b64)
-                        await ws_upstream.send(pcm_bytes)
-
-                elif event_type == "input_audio_buffer.commit":
-                    pass
-
-        except WebSocketDisconnect:
-            pass
+            event_type = "transcription.done" if final else "transcription.delta"
+            key = "text" if final else "delta"
+            await websocket.send_text(json_mod.dumps({
+                "type": event_type,
+                key: text,
+            }))
+            prev_text = text
+            return text
         except Exception as e:
-            logger.debug("MLX client->upstream ended: %s", e)
+            logger.warning("Live transcription chunk failed: %s", e)
+            try:
+                await websocket.send_text(json_mod.dumps({
+                    "type": "error",
+                    "message": f"Transcription error: {e}",
+                }))
+            except Exception:
+                pass
+            return prev_text
 
-    async def upstream_to_client():
-        try:
-            async for message in ws_upstream:
-                if isinstance(message, bytes):
-                    continue
-                try:
-                    mlx_event = json_mod.loads(message)
-                except (json_mod.JSONDecodeError, TypeError):
-                    continue
+    while not stop_event.is_set():
+        await asyncio.sleep(_TS_POLL_S)
 
-                text = mlx_event.get("text", "")
-                is_partial = mlx_event.get("is_partial", True)
+        async with buffer_lock:
+            if audio_buffer:
+                pending_pcm.extend(audio_buffer)
+                audio_buffer.clear()
 
-                if is_partial:
-                    await ws_client.send_text(json_mod.dumps({
-                        "type": "transcription.delta",
-                        "delta": text,
-                    }))
-                else:
-                    await ws_client.send_text(json_mod.dumps({
-                        "type": "transcription.done",
-                        "text": text,
-                    }))
+        if not pending_pcm:
+            continue
 
-        except websockets.exceptions.ConnectionClosed:
-            pass
-        except Exception as e:
-            logger.debug("MLX upstream->client ended: %s", e)
+        split_at = _find_silence_boundary(pending_pcm)
 
-    tasks = [
-        asyncio.create_task(client_to_upstream()),
-        asyncio.create_task(upstream_to_client()),
-    ]
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-    for t in pending:
-        t.cancel()
+        if split_at is None and len(pending_pcm) >= max_chunk_bytes:
+            split_at = len(pending_pcm)
+
+        if split_at is not None:
+            chunk = bytes(pending_pcm[:split_at])
+            pending_pcm = pending_pcm[split_at:]
+            cumulative_pcm.extend(chunk)
+            await _transcribe_and_send(bytes(cumulative_pcm))
+
+    async with buffer_lock:
+        if audio_buffer:
+            pending_pcm.extend(audio_buffer)
+            audio_buffer.clear()
+
+    if pending_pcm:
+        cumulative_pcm.extend(pending_pcm)
+
+    if cumulative_pcm:
+        await _transcribe_and_send(bytes(cumulative_pcm), final=True)
 
 
 @router.websocket("/transcribe/stream")
 async def transcribe_stream(websocket: WebSocket):
     """Real-time audio transcription via WebSocket.
 
-    Exposes a unified OpenAI Realtime-compatible protocol and proxies to
-    either MLX Whisper or vLLM Whisper, translating as needed.
+    Accepts audio chunks from the browser, accumulates them, and periodically
+    sends the growing audio buffer to LiteLLM /v1/audio/transcriptions for
+    progressive transcription. Works with any backend LiteLLM supports
+    (MLX Whisper, OpenAI, Groq, etc.) without requiring upstream WebSocket.
+
+    Client protocol (JSON text frames):
+      -> session.update {model, language}
+      -> input_audio_buffer.append {audio: base64-encoded int16 PCM}
+      -> input_audio_buffer.commit  (signals end of stream)
+
+    Server responses:
+      <- session.created {session_id}
+      <- transcription.delta {delta: progressive text}
+      <- transcription.done {text: final transcription}
+      <- error {message}
 
     Authentication via ?token=<jwt> query parameter.
     """
+    import base64
     import json as json_mod
     import uuid as uuid_mod
-    import websockets
 
     await websocket.accept()
 
@@ -2169,59 +2192,66 @@ async def transcribe_stream(websocket: WebSocket):
         await websocket.close(code=4003)
         return
 
-    try:
-        api_base, backend_type = _get_transcribe_backend()
-    except HTTPException as e:
-        await websocket.send_text(json_mod.dumps({
-            "type": "error", "message": e.detail,
-        }))
-        await websocket.close(code=4004)
-        return
-
-    if backend_type == "vllm":
-        upstream_url = api_base.replace("http://", "ws://").replace("https://", "wss://")
-        if upstream_url.endswith("/v1"):
-            upstream_url += "/realtime"
-        else:
-            upstream_url += "/v1/realtime"
-    else:
-        upstream_url = api_base.replace("http://", "ws://").replace("https://", "wss://")
-        if upstream_url.endswith("/v1"):
-            upstream_url += "/audio/transcriptions/realtime"
-        else:
-            upstream_url += "/v1/audio/transcriptions/realtime"
-
-    logger.info(
-        "Transcribe stream: backend=%s upstream=%s",
-        backend_type, upstream_url,
-    )
-
     session_id = str(uuid_mod.uuid4())
     await websocket.send_text(json_mod.dumps({
         "type": "session.created",
         "session_id": session_id,
     }))
 
+    logger.info("Transcribe stream started: session=%s", session_id)
+
+    audio_buffer = bytearray()
+    buffer_lock = asyncio.Lock()
+    stop_event = asyncio.Event()
+    language = "en"
+    transcribe_task: Optional[asyncio.Task] = None
+
     try:
-        async with websockets.connect(upstream_url) as upstream_ws:
-            if backend_type == "vllm":
-                await _proxy_vllm_realtime(websocket, upstream_ws)
-            else:
-                await _proxy_mlx_realtime(websocket, upstream_ws)
-    except websockets.exceptions.InvalidURI as e:
-        logger.error("Invalid upstream WebSocket URI %s: %s", upstream_url, e)
-        await websocket.send_text(json_mod.dumps({
-            "type": "error", "message": f"Cannot connect to transcription backend: {e}",
-        }))
-    except (ConnectionRefusedError, OSError) as e:
-        logger.error("Cannot connect to upstream WebSocket %s: %s", upstream_url, e)
-        await websocket.send_text(json_mod.dumps({
-            "type": "error", "message": "Transcription backend unavailable",
-        }))
+        while True:
+            data = await websocket.receive_text()
+            event = json_mod.loads(data)
+            event_type = event.get("type", "")
+
+            if event_type == "session.update":
+                language = event.get("language", "en")
+                if transcribe_task is None:
+                    transcribe_task = asyncio.create_task(
+                        _run_transcribe_loop(
+                            websocket, audio_buffer, buffer_lock,
+                            language, stop_event,
+                        )
+                    )
+
+            elif event_type == "input_audio_buffer.append":
+                audio_b64 = event.get("audio", "")
+                if audio_b64:
+                    pcm_bytes = base64.b64decode(audio_b64)
+                    async with buffer_lock:
+                        audio_buffer.extend(pcm_bytes)
+
+                if transcribe_task is None:
+                    transcribe_task = asyncio.create_task(
+                        _run_transcribe_loop(
+                            websocket, audio_buffer, buffer_lock,
+                            language, stop_event,
+                        )
+                    )
+
+            elif event_type == "input_audio_buffer.commit":
+                stop_event.set()
+                if transcribe_task:
+                    try:
+                        await asyncio.wait_for(transcribe_task, timeout=30.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("Final transcription timed out")
+                break
+
     except WebSocketDisconnect:
-        logger.debug("Client disconnected from transcribe stream")
+        logger.debug("Client disconnected from transcribe stream: session=%s", session_id)
+        stop_event.set()
     except Exception as e:
         logger.error("Transcribe stream error: %s", e)
+        stop_event.set()
         try:
             await websocket.send_text(json_mod.dumps({
                 "type": "error", "message": str(e),
@@ -2229,6 +2259,13 @@ async def transcribe_stream(websocket: WebSocket):
         except Exception:
             pass
     finally:
+        stop_event.set()
+        if transcribe_task and not transcribe_task.done():
+            transcribe_task.cancel()
+            try:
+                await transcribe_task
+            except (asyncio.CancelledError, Exception):
+                pass
         try:
             await websocket.close()
         except Exception:

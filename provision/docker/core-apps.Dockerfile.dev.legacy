@@ -46,7 +46,7 @@ RUN if [ -n "$GITHUB_AUTH_TOKEN" ]; then \
     fi
 
 # Copy entrypoint script
-COPY provision/docker/core-apps-entrypoint.sh /usr/local/bin/core-apps-entrypoint.sh
+COPY core-apps-entrypoint.sh /usr/local/bin/core-apps-entrypoint.sh
 RUN chmod +x /usr/local/bin/core-apps-entrypoint.sh
 
 # Expose app ports

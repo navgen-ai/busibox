@@ -22,13 +22,13 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Copy requirements first (for caching)
-COPY docs/requirements.txt .
+COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source code
-COPY docs/src/ ./src/
+COPY src/ ./src/
 
 # Set Python path
 ENV PYTHONPATH=/app/src:/app

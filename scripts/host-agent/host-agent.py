@@ -172,6 +172,7 @@ VOICE_PORT = int(os.getenv("VOICE_PORT", "8082"))
 IMAGE_PORT = int(os.getenv("IMAGE_PORT", "8083"))
 TRANSCRIBE_MODEL = os.getenv("TRANSCRIBE_MODEL_PATH", "mlx-community/whisper-tiny-mlx")
 VOICE_MODEL = os.getenv("VOICE_MODEL_PATH", "mlx-community/Kokoro-82M-bf16")
+IMAGE_MODEL = os.getenv("IMAGE_MODEL_HF", "black-forest-labs/FLUX.2-klein-4B")
 MEDIA_SERVERS = {
     "transcribe": {
         "pid_file": Path("/tmp/mlx-openai-transcribe.pid"),
@@ -195,7 +196,7 @@ MEDIA_SERVERS = {
         "kind": "on-demand",
         "label": "Image Generation",
         "memory_estimate_mb": 3584,
-        "default_model": None,
+        "default_model": IMAGE_MODEL,
     },
 }
 
@@ -733,7 +734,6 @@ async def mlx_list_models(_: bool = Depends(verify_token)):
     }
 
 
-IMAGE_MODEL = os.getenv("IMAGE_MODEL_HF", "black-forest-labs/FLUX.2-klein-4B")
 GET_MODELS_SCRIPT = BUSIBOX_ROOT / "scripts" / "llm" / "get-models.sh"
 
 
