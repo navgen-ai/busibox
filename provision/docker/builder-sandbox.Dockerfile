@@ -32,7 +32,7 @@ RUN apt-get update && \
 RUN mkdir -p /srv/projects /var/log/builder /var/log/supervisor /etc/supervisor/conf.d
 
 # Supervisord base config
-COPY provision/docker/builder-sandbox-supervisord.conf /etc/supervisor/supervisord.conf
+COPY builder-sandbox-supervisord.conf /etc/supervisor/supervisord.conf
 
 WORKDIR /srv/projects
 

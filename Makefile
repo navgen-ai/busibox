@@ -48,7 +48,7 @@ MANAGER_RUN_IT = bash scripts/make/manager-run.sh --interactive
 # Build the manager image (explicit rebuild)
 build-manager:
 	@echo "Building manager container image..."
-	@docker build -t busibox-manager:latest -f provision/docker/manager.Dockerfile .
+	@docker build -t busibox-manager:latest -f provision/docker/manager.Dockerfile provision/docker
 	@echo "Manager image built."
 
 # Service for targeted operations (comma-separated for multiple)

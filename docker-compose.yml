@@ -261,8 +261,8 @@ services:
   # Creates the 'documents' collection with hybrid search support
   milvus-init:
     build:
-      context: .
-      dockerfile: provision/docker/milvus-init.Dockerfile
+      context: ./provision/docker
+      dockerfile: milvus-init.Dockerfile
     container_name: ${CONTAINER_PREFIX:-dev}-milvus-init
     volumes:
       - ./provision/ansible/roles/milvus/files/hybrid_schema.py:/app/hybrid_schema.py:ro
@@ -305,8 +305,8 @@ services:
   # LiteLLM - Unified LLM Gateway
   litellm:
     build:
-      context: .
-      dockerfile: provision/docker/litellm.Dockerfile
+      context: ./provision/docker
+      dockerfile: litellm.Dockerfile
     container_name: ${CONTAINER_PREFIX:-dev}-litellm
     hostname: litellm
     labels:
@@ -929,8 +929,7 @@ services:
   # Lightweight service for serving markdown docs and OpenAPI specs
   docs-api:
     build:
-      context: ./srv
-      dockerfile: docs/Dockerfile
+      context: ./srv/docs
       labels:
         - "version=${GIT_COMMIT:-unknown}"
     container_name: ${CONTAINER_PREFIX:-dev}-docs-api
@@ -1096,8 +1095,8 @@ services:
     # - Isolated network (only reaches internal services)
     # =========================================================================
     build:
-      context: .
-      dockerfile: provision/docker/user-apps.Dockerfile
+      context: ./provision/docker
+      dockerfile: user-apps.Dockerfile
     container_name: ${CONTAINER_PREFIX:-dev}-user-apps
     hostname: user-apps
     labels:
@@ -1146,8 +1145,8 @@ services:
   # =========================================================================
   builder-sandbox:
     build:
-      context: .
-      dockerfile: provision/docker/builder-sandbox.Dockerfile
+      context: ./provision/docker
+      dockerfile: builder-sandbox.Dockerfile
     container_name: ${CONTAINER_PREFIX:-dev}-builder-sandbox
     hostname: builder-sandbox
     labels:
@@ -1273,8 +1272,8 @@ services:
   manager:
     profiles: ["manager"]
     build:
-      context: .
-      dockerfile: provision/docker/manager.Dockerfile
+      context: ./provision/docker
+      dockerfile: manager.Dockerfile
     image: busibox-manager:latest
     container_name: ${CONTAINER_PREFIX:-dev}-manager
     working_dir: /busibox

@@ -47,8 +47,8 @@ RUN if [ -n "$GITHUB_AUTH_TOKEN" ]; then \
     fi
 
 # Copy monorepo entrypoint script and process manager
-COPY provision/docker/core-apps-entrypoint-monorepo.sh /usr/local/bin/core-apps-entrypoint.sh
-COPY provision/docker/app-manager.js /usr/local/bin/app-manager.js
+COPY core-apps-entrypoint-monorepo.sh /usr/local/bin/core-apps-entrypoint.sh
+COPY app-manager.js /usr/local/bin/app-manager.js
 RUN chmod +x /usr/local/bin/core-apps-entrypoint.sh
 
 # Expose app ports + control API port

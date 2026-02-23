@@ -1,0 +1,72 @@
+# =============================================================================
+# Root .dockerignore
+# =============================================================================
+# Applies to services with build context: . (repo root)
+# Services: milvus-init, litellm, user-apps, builder-sandbox, manager, core-apps
+#
+# The bulk of builds use context: ./srv which has its own .dockerignore
+
+# Version control
+.git
+.gitignore
+
+# IDE / editor
+.cursor
+.vscode
+*.swp
+*.swo
+*~
+
+# Documentation (not needed in any image)
+docs/
+specs/
+*.md
+!provision/docker/*.md
+LICENSE
+
+# MCP tooling
+tools/
+
+# Kubernetes manifests
+k8s/
+
+# Tests at repo level
+tests/
+
+# Scripts (only provision/docker/ files are COPYed)
+scripts/
+
+# Ansible (not COPYed into images; mounted at runtime where needed)
+provision/ansible/
+provision/pct/
+
+# Service source (not needed for root-context builds)
+srv/
+
+# Local development artifacts
+.env*
+.busibox/
+.busibox-state-*
+dev-apps/
+ssl/localhost.*
+
+# Python artifacts
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.venv
+.pytest_cache
+.mypy_cache
+
+# Node artifacts
+node_modules/
+.next/
+.turbo/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Agent transcripts / logs
+agent-transcripts/

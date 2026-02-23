@@ -48,7 +48,7 @@ if ! docker image inspect "${MANAGER_IMAGE}" >/dev/null 2>&1; then
     echo "[manager] Building manager container image (first run)..."
     docker build -t "${MANAGER_IMAGE}" \
         -f "${REPO_ROOT}/${MANAGER_DOCKERFILE}" \
-        "${REPO_ROOT}" >&2
+        "${REPO_ROOT}/provision/docker" >&2
     echo "[manager] Image built successfully." >&2
 fi
 

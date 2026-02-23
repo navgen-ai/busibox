@@ -35,8 +35,8 @@ services:
   # Runs all core Next.js apps in a single container using concurrently
   core-apps:
     build:
-      context: ${BUSIBOX_DIR:-.}
-      dockerfile: provision/docker/core-apps.Dockerfile.dev
+      context: ${BUSIBOX_DIR:-.}/provision/docker
+      dockerfile: core-apps.Dockerfile.dev
       args:
         GITHUB_AUTH_TOKEN: ${GITHUB_AUTH_TOKEN:-}
     container_name: ${CONTAINER_PREFIX:-local}-core-apps

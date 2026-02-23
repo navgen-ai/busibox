@@ -41,8 +41,8 @@ services:
   # Lightweight container with supervisord, apps deployed at runtime
   core-apps:
     build:
-      context: .
-      dockerfile: provision/docker/core-apps.Dockerfile.runtime
+      context: ./provision/docker
+      dockerfile: core-apps.Dockerfile.runtime
     container_name: ${CONTAINER_PREFIX:-local}-core-apps
     hostname: core-apps
     restart: "no"

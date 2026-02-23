@@ -1,0 +1,40 @@
+# =============================================================================
+# srv/.dockerignore
+# =============================================================================
+# Applies to services with build context: ./srv
+# Services: authz, data/data-worker, search, agent, docs, deploy
+#
+# These Dockerfiles only COPY:
+#   <service>/requirements.txt, <service>/src/ (or app/, alembic/), shared/
+# Everything else is waste.
+
+# Test virtual environments (biggest offenders: ~1GB combined)
+*/test_venv/
+*/.venv/
+
+# Test suites
+*/tests/
+*/.pytest_cache/
+
+# Build artifacts
+*/build/
+*/*.egg-info/
+*/__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Editor / IDE
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+
+# Voice agent (not built via docker-compose)
+voice-agent/
+
+# Embedding has its own narrow context (./srv/embedding)
+# but excluding it here doesn't hurt since it's never
+# referenced from a ./srv context build
