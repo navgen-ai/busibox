@@ -101,13 +101,18 @@ run_pg_sql() {
             return 1
         fi
         debug "run_pg_sql: pg_host=${pg_host} (via SSH)"
-        local result exit_code
+        local result stderr_out exit_code
+        # Capture stderr separately so psql warnings (e.g. "could not change directory")
+        # don't pollute the result. Redirect psql stderr on the remote side.
         result="$(echo "$sql" | ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "root@${pg_host}" \
-            "sudo -u postgres psql -d ${db} -t -A" 2>&1)"
+            "cd /tmp && sudo -u postgres psql -d ${db} -t -A" 2>/dev/null)"
         exit_code=$?
         debug "run_pg_sql: exit_code=${exit_code} result='${result}'"
         if [[ $exit_code -ne 0 ]]; then
-            debug "run_pg_sql: FAILED with exit code ${exit_code}"
+            # Re-run with stderr visible for debugging
+            stderr_out="$(echo "$sql" | ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "root@${pg_host}" \
+                "cd /tmp && sudo -u postgres psql -d ${db} -t -A" 2>&1 >/dev/null)"
+            debug "run_pg_sql: FAILED with exit code ${exit_code}, stderr: ${stderr_out}"
         fi
         echo "$result"
         return $exit_code
