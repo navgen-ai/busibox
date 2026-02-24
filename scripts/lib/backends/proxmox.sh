@@ -49,7 +49,8 @@ _proxmox_get_service_ip() {
         ingest|data|data-api|data-worker|redis) echo "${network_base}.206" ;;
         bridge|bridge-api) echo "${network_base}.211" ;;
         authz|authz-api|deploy|deploy-api|docs|docs-api) echo "${network_base}.210" ;;
-        search|search-api|embedding|embedding-api) echo "${network_base}.204" ;;
+        search|search-api) echo "${network_base}.204" ;;
+        embedding|embedding-api) echo "${network_base}.206" ;;
         core-apps|apps|busibox-portal|busibox-agents|busibox-appbuilder) echo "${network_base}.201" ;;
         nginx|proxy) echo "${network_base}.200" ;;
         litellm) echo "${network_base}.207" ;;
