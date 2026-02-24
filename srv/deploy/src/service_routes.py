@@ -2906,6 +2906,12 @@ _GPU_MEDIA_SERVICES = {
         "label": "Kokoro GPU (TTS)",
         "memory_estimate_gb": 0.5,
     },
+    "image": {
+        "service": "flux-gpu",
+        "port": 8008,
+        "label": "Flux GPU (Image Gen)",
+        "memory_estimate_gb": 5.0,
+    },
 }
 
 

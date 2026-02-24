@@ -308,6 +308,19 @@ available_models:
     memory_estimate_gb: 0.5   # ~500 MB VRAM (82M params on GPU)
     service_name: "kokoro-gpu"
 
+  "flux2-klein-4b-gpu":
+    provider: "gpu"
+    model: "flux2-klein-4b-gpu"
+    model_name: "black-forest-labs/FLUX.2-klein-4B"
+    description: "GPU-accelerated image generation (FLUX.2 Klein 4B, Q8, GPU 0)"
+    mode: "image_generation"
+    tier: "standard"
+    port: 8008
+    gpu: "0"
+    on_demand: true
+    memory_estimate_gb: 5.0   # ~5 GB VRAM (4B params Q8 + VAE/encoder)
+    service_name: "flux-gpu"
+
 # =============================================================================
 # Model Purposes - Staging/Production (vLLM + Bedrock)
 # =============================================================================
@@ -335,7 +348,7 @@ model_purposes:
 
   # Video generation (cloud API)
   video: "sora-2"   # Video generation model (OpenAI Sora-2)
-  image: "flux2-klein-4b"   # Image generation model (local MLX FLUX.2 Klein)
+  image: "flux2-klein-4b-gpu"   # Image generation model (GPU FLUX.2 Klein, on-demand GPU 0)
   # GPU media services (on-demand, GPU 0). Override to "whisper-large-v3" / "kokoro-82m" for MLX fallback.
   transcribe: "whisper-large-v3-gpu"   # GPU STT (faster-whisper, port 8006)
   voice: "kokoro-82m-gpu"   # GPU TTS (kokoro-fastapi, port 8007)

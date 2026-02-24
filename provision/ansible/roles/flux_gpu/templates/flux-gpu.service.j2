@@ -1,0 +1,39 @@
+[Unit]
+Description=Flux GPU Image Generation Server (FLUX.2 Klein 4B, GPU {{ flux_gpu_cuda_devices }}, Port {{ flux_gpu_port }})
+Documentation=https://huggingface.co/black-forest-labs/FLUX.2-klein-4B
+After=network.target
+
+[Service]
+Type=simple
+User={{ flux_gpu_user }}
+Group={{ flux_gpu_group }}
+WorkingDirectory={{ flux_gpu_install_dir }}
+
+# GPU assignment - share GPU 0 with ingestion stack
+Environment="CUDA_VISIBLE_DEVICES={{ flux_gpu_cuda_devices }}"
+Environment="HF_HOME={{ flux_gpu_cache_dir }}"
+
+ExecStart={{ flux_gpu_venv_dir }}/bin/python {{ flux_gpu_install_dir }}/flux_gpu_server.py \
+  --host {{ flux_gpu_host }} \
+  --port {{ flux_gpu_port }} \
+  --model {{ flux_gpu_model }} \
+  --quantize {{ flux_gpu_quantize }}
+
+# On-demand: do not auto-restart on failure; let deploy-api manage lifecycle
+Restart=no
+RestartSec={{ flux_gpu_restart_sec }}
+TimeoutStartSec={{ flux_gpu_startup_timeout }}
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{ flux_gpu_install_dir }}
+ReadWritePaths={{ flux_gpu_cache_dir }}
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier={{ flux_gpu_service_name }}
+
+[Install]
+WantedBy=multi-user.target

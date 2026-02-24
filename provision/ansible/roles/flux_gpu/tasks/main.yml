@@ -1,0 +1,57 @@
+---
+# flux_gpu role - main tasks
+# Installs and configures on-demand GPU-accelerated FLUX.2 image generation service
+
+- name: Create flux-gpu install directory
+  file:
+    path: "{{ flux_gpu_install_dir }}"
+    state: directory
+    owner: "{{ flux_gpu_user }}"
+    group: "{{ flux_gpu_group }}"
+    mode: "0755"
+
+- name: Create virtual environment for flux-gpu
+  command: python3 -m venv "{{ flux_gpu_venv_dir }}"
+  args:
+    creates: "{{ flux_gpu_venv_dir }}/bin/python"
+  become_user: "{{ flux_gpu_user }}"
+
+- name: Install diffusers and CUDA dependencies
+  pip:
+    name:
+      - "diffusers[torch]"
+      - "transformers"
+      - "accelerate"
+      - "bitsandbytes"
+      - "safetensors"
+      - "sentencepiece"
+      - "fastapi"
+      - "uvicorn"
+      - "pillow"
+      - "torch"
+    virtualenv: "{{ flux_gpu_venv_dir }}"
+    extra_args: "--extra-index-url https://download.pytorch.org/whl/cu121"
+  become_user: "{{ flux_gpu_user }}"
+
+- name: Deploy flux-gpu server script
+  copy:
+    src: flux_gpu_server.py
+    dest: "{{ flux_gpu_install_dir }}/flux_gpu_server.py"
+    owner: "{{ flux_gpu_user }}"
+    group: "{{ flux_gpu_group }}"
+    mode: "0644"
+
+- name: Deploy flux-gpu systemd service
+  template:
+    src: flux-gpu.service.j2
+    dest: "/etc/systemd/system/{{ flux_gpu_service_name }}.service"
+    mode: "0644"
+  notify: reload systemd
+
+- name: Enable flux-gpu service (but do not start - on-demand)
+  systemd:
+    name: "{{ flux_gpu_service_name }}"
+    enabled: "{{ flux_gpu_enable_service }}"
+    state: stopped
+    daemon_reload: true
+  when: flux_gpu_enable_service
