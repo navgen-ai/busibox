@@ -248,13 +248,16 @@
     - role: colpali
       when: "'vllm' in group_names"
       tags: [llm, llm_colpali, colpali]
-    # On-demand GPU media services (STT + TTS, share GPU 0 with ingestion stack)
+    # On-demand GPU media services (STT + TTS + image gen, share GPU 0 with ingestion stack)
     - role: whisper_gpu
       when: "'vllm' in group_names"
       tags: [llm, llm_media, gpu_media, whisper_gpu]
     - role: kokoro_gpu
       when: "'vllm' in group_names"
       tags: [llm, llm_media, gpu_media, kokoro_gpu]
+    - role: flux_gpu
+      when: "'vllm' in group_names"
+      tags: [llm, llm_media, gpu_media, flux_gpu]
 
 # 2.2 LiteLLM (LLM gateway/proxy)
 - name: Deploy LiteLLM Proxy

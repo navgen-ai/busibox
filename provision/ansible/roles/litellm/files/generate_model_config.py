@@ -92,6 +92,17 @@ def main():
                     'api_key': 'EMPTY'
                 }
             })
+        elif provider == 'gpu' and model_entry.get('port'):
+            # GPU media service (on-demand systemd, OpenAI-compatible API)
+            vllm_ip = os.environ.get('VLLM_IP', '10.96.200.208')
+            models.append({
+                'model_name': purpose,
+                'litellm_params': {
+                    'model': "openai/{}".format(model_name),
+                    'api_base': "http://{}:{}/v1".format(vllm_ip, model_entry['port']),
+                    'api_key': 'EMPTY'
+                }
+            })
         # Skip fastembed, colpali, marker, and other non-LiteLLM providers
     
     print(json.dumps(models))

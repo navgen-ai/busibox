@@ -1,0 +1,27 @@
+---
+# flux_gpu Role - Default Variables
+# On-demand GPU-accelerated FLUX.2 image generation service
+# Runs on GPU 0 alongside the ingestion stack; started/stopped via systemctl on-demand.
+
+flux_gpu_port: 8008
+flux_gpu_service_name: "flux-gpu"
+flux_gpu_model: "black-forest-labs/FLUX.2-klein-4B"
+flux_gpu_quantize: "8bit"              # 8-bit via bitsandbytes (~5 GB VRAM)
+flux_gpu_cuda_devices: "0"             # Share GPU 0 with ingestion stack
+flux_gpu_host: "0.0.0.0"
+
+# Installation
+flux_gpu_install_dir: /opt/flux-gpu
+flux_gpu_venv_dir: "{{ flux_gpu_install_dir }}/venv"
+flux_gpu_user: "{{ vllm_user | default('ollama') }}"
+flux_gpu_group: "{{ vllm_group | default('ollama') }}"
+flux_gpu_cache_dir: /var/lib/llm-models/huggingface
+
+# On-demand: service is NOT auto-started; it is started via deploy-api toggle
+flux_gpu_enable_service: true
+flux_gpu_start_on_boot: false          # on-demand only
+flux_gpu_restart_sec: 10
+flux_gpu_startup_timeout: 300          # 5 min (model download on first run)
+
+# Memory (for reference / dashboard display)
+flux_gpu_memory_estimate_gb: 5.0       # FLUX.2 Klein 4B Q8 on GPU
