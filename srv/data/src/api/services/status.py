@@ -47,6 +47,7 @@ class StatusService:
                     s.pages_processed,
                     s.total_pages,
                     s.error_message,
+                    s.status_message,
                     s.started_at,
                     s.completed_at,
                     s.updated_at
@@ -66,6 +67,7 @@ class StatusService:
                 "pagesProcessed": row["pages_processed"],
                 "totalPages": row["total_pages"],
                 "errorMessage": row["error_message"],
+                "statusMessage": row["status_message"],
                 "startedAt": row["started_at"].isoformat() if row["started_at"] else None,
                 "completedAt": row["completed_at"].isoformat() if row["completed_at"] else None,
                 "updatedAt": row["updated_at"].isoformat() if row["updated_at"] else None,

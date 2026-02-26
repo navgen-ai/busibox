@@ -154,6 +154,60 @@ class PDFSplitter:
         
         return splits
     
+    def split_single_pages(self, pdf_path: str) -> List[Tuple[str, int, int]]:
+        """
+        Split a PDF into individual single-page files for page-by-page processing.
+        
+        Unlike split() which uses pages_per_split, this always creates one file
+        per page. Used for page-by-page Marker extraction with progress reporting.
+        
+        Args:
+            pdf_path: Path to PDF file to split
+            
+        Returns:
+            List of tuples: (split_file_path, page_number, page_number)
+            Page numbers are 1-indexed.
+        """
+        try:
+            from pypdf import PdfReader, PdfWriter
+        except ImportError:
+            from PyPDF2 import PdfReader, PdfWriter
+        
+        reader = PdfReader(pdf_path)
+        total_pages = len(reader.pages)
+        
+        if total_pages <= 1:
+            return [(pdf_path, 1, 1)]
+        
+        logger.info(
+            "Splitting PDF into single pages",
+            pdf_path=pdf_path,
+            total_pages=total_pages,
+        )
+        
+        splits = []
+        base_name = Path(pdf_path).stem
+        
+        for page_idx in range(total_pages):
+            writer = PdfWriter()
+            writer.add_page(reader.pages[page_idx])
+            
+            split_filename = f"{base_name}_page_{page_idx + 1:04d}.pdf"
+            split_path = os.path.join(self.temp_dir, split_filename)
+            
+            with open(split_path, "wb") as f:
+                writer.write(f)
+            
+            splits.append((split_path, page_idx + 1, page_idx + 1))
+        
+        logger.info(
+            "PDF single-page split complete",
+            pdf_path=pdf_path,
+            total_pages=total_pages,
+        )
+        
+        return splits
+    
     def cleanup_splits(self, splits: List[Tuple[str, int, int]], original_path: str):
         """
         Clean up temporary split files.

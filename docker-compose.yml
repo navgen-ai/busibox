@@ -976,7 +976,7 @@ services:
     volumes:
       - ./srv/deploy/src:/app/src:ro
       - ./provision/ansible:/ansible:ro
-      - ~/.ssh:/root/.ssh:ro  # SSH keys for remote operations
+      - ${HOST_SSH_DIR:-~/.ssh}:/root/.ssh:ro  # SSH keys for remote operations
       - /var/run/docker.sock:/var/run/docker.sock  # Docker socket for docker exec
       # DEV_APPS_DIR should point to a directory containing your app source folders
       # e.g., /Users/you/Code which contains estimator/, busibox-analysis/, etc.

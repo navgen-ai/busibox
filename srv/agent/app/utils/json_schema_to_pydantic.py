@@ -17,7 +17,7 @@ import logging
 from enum import Enum as _Enum
 from typing import Any, Dict, List, Optional, Type
 
-from pydantic import BaseModel, ConfigDict, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,11 @@ _SCALAR_MAP: Dict[str, type] = {
     "number": float,
     "boolean": bool,
 }
+
+RESERVED_FIELD_NAMES = frozenset({
+    "type", "schema", "validate", "model_fields", "model_config",
+    "model_computed_fields", "model_extra", "model_fields_set",
+})
 
 _counter = 0
 
@@ -68,22 +73,47 @@ def _build_model(
     field_defs: Dict[str, Any] = {}
     for prop_name, prop_schema in properties.items():
         python_type = _resolve_type(prop_schema, f"{name}_{prop_name}")
-        if prop_name in required:
-            field_defs[prop_name] = (python_type, ...)
-        else:
-            field_defs[prop_name] = (Optional[python_type], None)
+        field_alias = None
 
-    config: Dict[str, Any] = {}
+        safe_name = prop_name
+        if prop_name in RESERVED_FIELD_NAMES:
+            safe_name = f"field_{prop_name}"
+            field_alias = prop_name
+
+        if prop_name in required:
+            if field_alias:
+                field_defs[safe_name] = (python_type, Field(..., alias=field_alias))
+            else:
+                field_defs[safe_name] = (python_type, ...)
+        else:
+            if field_alias:
+                field_defs[safe_name] = (Optional[python_type], Field(None, alias=field_alias))
+            else:
+                field_defs[safe_name] = (Optional[python_type], None)
+
+    extra_mode = "ignore"
     if additional is False:
-        config["extra"] = "forbid"
+        extra_mode = "forbid"
     elif additional is True:
-        config["extra"] = "allow"
+        extra_mode = "allow"
     elif isinstance(additional, dict):
-        config["extra"] = "allow"
+        extra_mode = "allow"
+
+    has_aliases = any(pn in RESERVED_FIELD_NAMES for pn in properties)
+
+    config = ConfigDict(extra=extra_mode)  # type: ignore[typeddict-item]
+    if has_aliases:
+        config = ConfigDict(extra=extra_mode, populate_by_name=True)  # type: ignore[typeddict-item]
+
+    base: Type[BaseModel] = type(
+        _unique_name(f"{name}_Base"),
+        (BaseModel,),
+        {"model_config": config},
+    )
 
     model = create_model(
         _unique_name(name),
-        __config__=type("Config", (), config) if config else None,
+        __base__=base,
         **field_defs,
     )
     return model
@@ -96,7 +126,11 @@ def _resolve_type(prop_schema: Dict[str, Any], context_name: str) -> type:
     if "enum" in prop_schema:
         values = prop_schema["enum"]
         if values and all(isinstance(v, str) for v in values):
-            enum_cls = _Enum(_unique_name(f"{context_name}_Enum"), {v: v for v in values})
+            safe_members = {}
+            for v in values:
+                member_name = v if v.isidentifier() and v not in {"type", "class"} else f"v_{v}"
+                safe_members[member_name] = v
+            enum_cls = _Enum(_unique_name(f"{context_name}_Enum"), safe_members)
             return enum_cls
         return str
 
@@ -117,10 +151,10 @@ def _resolve_object_type(prop_schema: Dict[str, Any], context_name: str) -> type
 
     Three patterns:
 
-    1. Has ``properties`` → build a nested Pydantic model.
+    1. Has ``properties`` -> build a nested Pydantic model.
     2. Has ``additionalProperties`` with a sub-schema (but no ``properties``)
-       → ``Dict[str, ValueType]``.
-    3. Neither → ``Dict[str, Any]``.
+       -> ``Dict[str, ValueType]``.
+    3. Neither -> ``Dict[str, Any]``.
     """
     properties = prop_schema.get("properties")
     additional = prop_schema.get("additionalProperties")
@@ -129,6 +163,9 @@ def _resolve_object_type(prop_schema: Dict[str, Any], context_name: str) -> type
         return _build_model(prop_schema, context_name)
 
     if isinstance(additional, dict) and additional:
+        if additional.get("properties"):
+            value_model = _build_model(additional, f"{context_name}_val")
+            return Dict[str, value_model]  # type: ignore[valid-type]
         value_type = _resolve_type(additional, f"{context_name}_val")
         return Dict[str, value_type]  # type: ignore[valid-type]
 

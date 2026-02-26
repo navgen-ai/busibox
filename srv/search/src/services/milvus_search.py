@@ -187,8 +187,8 @@ class MilvusSearchService:
                 top_k=top_k,
             )
             
-            # Build filter expression (modality only, partitions handle access)
-            filter_expr = 'modality == "text"'
+            # Include text chunks and extracted field values
+            filter_expr = 'modality in ["text", "extracted_field"]'
             if filters and filters.get("file_ids"):
                 file_ids_str = '", "'.join(filters["file_ids"])
                 filter_expr += f' && file_id in ["{file_ids_str}"]'
@@ -285,8 +285,8 @@ class MilvusSearchService:
                 top_k=top_k,
             )
             
-            # Build filter expression (modality only, partitions handle access)
-            filter_expr = 'modality == "text"'
+            # Include text chunks and extracted field values
+            filter_expr = 'modality in ["text", "extracted_field"]'
             if filters and filters.get("file_ids"):
                 file_ids_str = '", "'.join(filters["file_ids"])
                 filter_expr += f' && file_id in ["{file_ids_str}"]'

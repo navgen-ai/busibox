@@ -204,11 +204,11 @@ docker_services:
   user:
     - user-apps
 
-# Service health check endpoints
+# Service health check endpoints (use Docker service hostnames since manager runs on Docker network)
 docker_health_endpoints:
   postgres: "pg_isready -U postgres"
-  authz-api: "http://localhost:{{ authz_port }}/health"
-  data-api: "http://localhost:{{ data_port }}/health"
-  search-api: "http://localhost:{{ search_port }}/health"
-  agent-api: "http://localhost:{{ agent_port }}/health"
-  busibox-portal: "http://localhost:{{ ai_portal_port }}/portal/api/health"
+  authz-api: "http://authz-api:{{ authz_port }}/health"
+  data-api: "http://data-api:{{ data_port }}/health"
+  search-api: "http://search-api:{{ search_port }}/health"
+  agent-api: "http://agent-api:{{ agent_port }}/health"
+  busibox-portal: "http://core-apps:{{ ai_portal_port }}/portal/api/health"

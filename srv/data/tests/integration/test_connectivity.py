@@ -28,7 +28,7 @@ logger = structlog.get_logger()
 @pytest.mark.integration
 def test_postgres_connectivity():
     """Test PostgreSQL connectivity."""
-    import asyncpg
+    import psycopg2
     
     host = os.getenv("POSTGRES_HOST", "postgres")
     port = int(os.getenv("POSTGRES_PORT", "5432"))
@@ -38,42 +38,31 @@ def test_postgres_connectivity():
     
     logger.info("Testing PostgreSQL connectivity", host=host, port=port, database=database, user=user)
     
-    async def test_connection():
-        try:
-            conn = await asyncpg.connect(
-                host=host,
-                port=port,
-                database=database,
-                user=user,
-                password=password,
-                timeout=5,
-            )
-            
-            # Test query
-            result = await conn.fetchval("SELECT version()")
-            logger.info("PostgreSQL connected successfully", version=result[:50])
-            
-            # Check if data tables exist
-            tables = await conn.fetch("""
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'public' 
-                AND table_name LIKE 'data%'
-                ORDER BY table_name
-            """)
-            
-            table_names = [row["table_name"] for row in tables]
-            logger.info("Data tables found", tables=table_names)
-            
-            await conn.close()
-            return True
-        except Exception as e:
-            logger.error("PostgreSQL connection failed", error=str(e))
-            raise
-    
-    import asyncio
-    result = asyncio.run(test_connection())
-    assert result is True
+    conn = psycopg2.connect(
+        host=host, port=port, dbname=database,
+        user=user, password=password, connect_timeout=5,
+    )
+    try:
+        cur = conn.cursor()
+        
+        cur.execute("SELECT version()")
+        result = cur.fetchone()[0]
+        logger.info("PostgreSQL connected successfully", version=result[:50])
+        
+        cur.execute("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            AND table_name LIKE 'data%%'
+            ORDER BY table_name
+        """)
+        
+        table_names = [row[0] for row in cur.fetchall()]
+        logger.info("Data tables found", tables=table_names)
+        
+        cur.close()
+    finally:
+        conn.close()
 
 
 @pytest.mark.integration
@@ -127,109 +116,88 @@ def test_milvus_connectivity():
 
 
 @pytest.mark.integration
-def test_litellm_connectivity():
+@pytest.mark.asyncio
+async def test_litellm_connectivity():
     """Test liteLLM connectivity."""
     import httpx
     
-    base_url = os.getenv("LITELLM_BASE_URL", "http://10.96.201.207:4000")
+    base_url = os.getenv("LITELLM_BASE_URL", "http://litellm:4000")
     api_key = os.getenv("LITELLM_API_KEY", "")
     
     logger.info("Testing liteLLM connectivity", base_url=base_url, has_api_key=bool(api_key))
     
-    async def test_connection():
-        try:
-            headers = {}
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-            
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                # Test health endpoint with API key if available
-                health_response = await client.get(f"{base_url}/health", headers=headers)
-                health_response.raise_for_status()
-                logger.info("liteLLM health check passed", status=health_response.status_code)
-                
-                # Test models endpoint (with API key if available)
-                models_response = await client.get(f"{base_url}/v1/models", headers=headers)
-                models_response.raise_for_status()
-                models_data = models_response.json()
-                logger.info("liteLLM models endpoint accessible", model_count=len(models_data.get("data", [])))
-                
-                # Test embedding endpoint if available
-                headers = {}
-                if api_key:
-                    headers["Authorization"] = f"Bearer {api_key}"
-                
-                embedding_response = await client.post(
-                    f"{base_url}/v1/embeddings",
-                    headers=headers,
-                    json={
-                        "model": "bge-large-en-v1.5",
-                        "input": "test"
-                    },
-                    timeout=10.0,
-                )
-                
-                if embedding_response.status_code == 200:
-                    embedding_data = embedding_response.json()
-                    logger.info(
-                        "liteLLM embedding test passed",
-                        model=embedding_data.get("model"),
-                        embedding_dim=len(embedding_data.get("data", [{}])[0].get("embedding", [])) if embedding_data.get("data") else 0,
-                    )
-                else:
-                    logger.warning(
-                        "liteLLM embedding test failed",
-                        status=embedding_response.status_code,
-                        response=embedding_response.text[:200],
-                    )
-                
-                return True
-        except Exception as e:
-            logger.error("liteLLM connection failed", error=str(e))
-            pytest.skip(f"liteLLM not reachable: {e}")
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     
-    import asyncio
-    result = asyncio.run(test_connection())
-    assert result is True
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        # /v1/models is the fastest connectivity check
+        models_response = await client.get(f"{base_url}/v1/models", headers=headers)
+        models_response.raise_for_status()
+        models_data = models_response.json()
+        model_count = len(models_data.get("data", []))
+        logger.info("liteLLM models endpoint accessible", model_count=model_count)
+        assert model_count > 0, "liteLLM has no models registered"
+        
+        # /health probes all backends and can be slow; use a generous timeout
+        try:
+            health_response = await client.get(
+                f"{base_url}/health", headers=headers, timeout=30.0,
+            )
+            health_response.raise_for_status()
+            logger.info("liteLLM health check passed", status=health_response.status_code)
+        except httpx.ReadTimeout:
+            logger.warning("liteLLM /health timed out (backend probes slow) - connectivity OK via /v1/models")
+        
+        # Test embedding endpoint
+        embedding_response = await client.post(
+            f"{base_url}/v1/embeddings",
+            headers=headers,
+            json={
+                "model": "bge-large-en-v1.5",
+                "input": "test"
+            },
+            timeout=30.0,
+        )
+        
+        if embedding_response.status_code == 200:
+            embedding_data = embedding_response.json()
+            logger.info(
+                "liteLLM embedding test passed",
+                model=embedding_data.get("model"),
+                embedding_dim=len(embedding_data.get("data", [{}])[0].get("embedding", [])) if embedding_data.get("data") else 0,
+            )
+        else:
+            logger.warning(
+                "liteLLM embedding test failed",
+                status=embedding_response.status_code,
+                response=embedding_response.text[:200],
+            )
 
 
 @pytest.mark.integration
 def test_redis_connectivity():
     """Test Redis connectivity."""
-    import redis.asyncio as redis
+    import redis as sync_redis
     
-    # Redis might be on data container or separate
-    # Try common locations
     host = os.getenv("REDIS_HOST", "redis")
     port = int(os.getenv("REDIS_PORT", "6379"))
     
     logger.info("Testing Redis connectivity", host=host, port=port)
     
-    async def test_connection():
-        try:
-            r = redis.Redis(host=host, port=port, decode_responses=True, socket_connect_timeout=5)
-            
-            # Test ping
-            pong = await r.ping()
-            assert pong is True
-            logger.info("Redis ping successful")
-            
-            # Test set/get
-            await r.set("test_key", "test_value")
-            value = await r.get("test_key")
-            assert value == "test_value"
-            await r.delete("test_key")
-            logger.info("Redis set/get test passed")
-            
-            await r.close()
-            return True
-        except Exception as e:
-            logger.error("Redis connection failed", error=str(e))
-            raise
-    
-    import asyncio
-    result = asyncio.run(test_connection())
-    assert result is True
+    r = sync_redis.Redis(host=host, port=port, decode_responses=True, socket_connect_timeout=5)
+    try:
+        pong = r.ping()
+        assert pong is True
+        logger.info("Redis ping successful")
+        
+        r.set("test_key", "test_value")
+        value = r.get("test_key")
+        assert value == "test_value"
+        r.delete("test_key")
+        logger.info("Redis set/get test passed")
+    finally:
+        r.close()
 
 
 @pytest.mark.integration

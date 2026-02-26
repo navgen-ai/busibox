@@ -81,7 +81,8 @@
 - name: Verify Busibox Portal health endpoint
   ansible.builtin.uri:
     # Use basePath-aware endpoint since Busibox Portal runs with NEXT_PUBLIC_BASE_PATH=/portal
-    url: "http://localhost:{{ ai_portal_port }}/portal/api/health"
+    # Use Docker service hostname (manager runs on Docker network)
+    url: "http://core-apps:{{ ai_portal_port }}/portal/api/health"
     method: GET
     status_code: [200]
     timeout: 10
@@ -95,5 +96,5 @@
   ansible.builtin.debug:
     msg: |
       Core apps are running and ready
-      Busibox Portal: http://localhost:{{ ai_portal_port }}
-      Agent Manager: http://localhost:{{ agent_manager_port }}
+      Busibox Portal: http://core-apps:{{ ai_portal_port }}
+      Agent Manager: http://core-apps:{{ agent_manager_port }}

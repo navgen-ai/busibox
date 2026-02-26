@@ -906,6 +906,112 @@ class MilvusService:
             )
             raise
     
+    def insert_extracted_fields(
+        self,
+        file_id: str,
+        user_id: str,
+        field_entries: List[Dict],
+        visibility: str = "personal",
+        role_ids: Optional[List[str]] = None,
+    ) -> int:
+        """
+        Insert extracted field values into Milvus with modality='extracted_field'.
+
+        Each entry must include:
+          - id: unique vector id (e.g. "{file_id}-field-{field_name}-{record_index}")
+          - text: stringified field value
+          - text_dense: embedding vector (or zeros for keyword-only)
+          - metadata: {"field_name": ..., "schema_document_id": ..., "record_index": N}
+        """
+        if not self.connected:
+            self.connect()
+
+        if not field_entries:
+            return 0
+
+        entities = []
+        for entry in field_entries:
+            entities.append({
+                "id": entry["id"],
+                "file_id": file_id,
+                "chunk_index": -2,
+                "page_number": 0,
+                "modality": "extracted_field",
+                "text": entry["text"],
+                "text_dense": entry["text_dense"],
+                "page_vectors": [0.0] * 128,
+                "user_id": user_id,
+                "metadata": entry.get("metadata", {}),
+            })
+
+        partition_names = self.get_partition_names_for_document(visibility, user_id, role_ids)
+        self.ensure_partitions_exist(partition_names)
+
+        try:
+            total_inserted = 0
+            for partition_name in partition_names:
+                self.collection.insert(entities, partition_name=partition_name)
+                total_inserted += len(entities)
+
+            self.collection.flush()
+
+            logger.info(
+                "Extracted fields inserted into Milvus",
+                file_id=file_id,
+                field_count=len(entities),
+                partitions=partition_names,
+                total_inserted=total_inserted,
+            )
+            return total_inserted
+
+        except Exception as e:
+            logger.error(
+                "Failed to insert extracted fields",
+                file_id=file_id,
+                error=str(e),
+                exc_info=True,
+            )
+            raise
+
+    def delete_extracted_fields(self, file_id: str, partition_names: Optional[List[str]] = None):
+        """
+        Delete all extracted-field entries for a file (modality == 'extracted_field').
+
+        Used before re-extraction to avoid stale field values.
+        """
+        try:
+            if not self.connected:
+                self.connect()
+        except MilvusConnectionError as e:
+            logger.warning(
+                "Milvus unavailable, skipping extracted field deletion",
+                file_id=file_id,
+                error=str(e),
+            )
+            return
+
+        try:
+            expr = f'file_id == "{file_id}" and modality == "extracted_field"'
+
+            if partition_names:
+                existing = set(self.list_partitions())
+                for pname in partition_names:
+                    if pname in existing:
+                        self.collection.delete(expr, partition_name=pname)
+            else:
+                self.collection.delete(expr)
+
+            self.collection.flush()
+            logger.info("Deleted extracted field vectors", file_id=file_id)
+
+        except Exception as e:
+            logger.error(
+                "Failed to delete extracted field vectors",
+                file_id=file_id,
+                error=str(e),
+                exc_info=True,
+            )
+
     def delete_vectors_from_partition(
         self,
         file_id: str,

@@ -65,11 +65,23 @@ except ImportError:
                     await conn.execute(sql)
                 except Exception as e:
                     error_str = str(e).lower()
-                    # Ignore idempotent errors
                     if "already exists" in error_str or "does not exist" in error_str:
                         pass
                     else:
                         raise
+        
+        def apply_sync(self, conn) -> None:
+            with conn.cursor() as cur:
+                for sql in self._sql_statements:
+                    try:
+                        cur.execute(sql)
+                    except Exception as e:
+                        error_str = str(e).lower()
+                        if "already exists" in error_str or "does not exist" in error_str:
+                            pass
+                        else:
+                            raise
+            conn.commit()
 
 
 def get_data_schema() -> SchemaManager:
@@ -181,6 +193,7 @@ def get_data_schema() -> SchemaManager:
             pages_processed INTEGER,
             total_pages INTEGER,
             error_message TEXT,
+            status_message TEXT,
             retry_count INTEGER DEFAULT 0,
             started_at TIMESTAMP,
             completed_at TIMESTAMP,
@@ -647,6 +660,19 @@ def get_data_schema() -> SchemaManager:
                         'chunking', 'cleanup', 'markdown', 'entity_extraction',
                         'embedding', 'indexing', 'completed', 'failed'
                     ));
+            END IF;
+        END $$;
+    """)
+    
+    # status_message column on data_status
+    schema.add_migration("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name = 'data_status' AND column_name = 'status_message'
+            ) THEN
+                ALTER TABLE data_status ADD COLUMN status_message TEXT;
             END IF;
         END $$;
     """)

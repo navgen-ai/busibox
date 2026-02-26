@@ -1016,7 +1016,9 @@ host_service_menu() {
                                 curl -sf -X POST http://localhost:8089/mlx/stop || error "Failed to stop MLX (may need auth)"
                             fi
                         else
-                            pkill -f "mlx_lm.server" 2>/dev/null && success "MLX stopped" || warn "MLX not running"
+                            pkill -f "mlx_lm.server" 2>/dev/null || true
+                            pkill -f "mlx-outlines-server/server.py" 2>/dev/null || true
+                            success "MLX stopped"
                         fi
                         ;;
                     host-agent)
@@ -1038,6 +1040,7 @@ host_service_menu() {
                             fi
                         else
                             pkill -f "mlx_lm.server" 2>/dev/null || true
+                            pkill -f "mlx-outlines-server/server.py" 2>/dev/null || true
                         fi
                         sleep 2
                         # Start
@@ -1304,6 +1307,21 @@ services_start_with_deps() {
     pause
 }
 
+# Map menu service names to app-manager API names (for core-apps sub-services)
+# Returns the app-manager name if it's a core-apps sub-service, empty string otherwise
+get_app_manager_name() {
+    case "$1" in
+        busibox-portal)     echo "portal" ;;
+        busibox-agents)     echo "agents" ;;
+        busibox-admin)      echo "admin" ;;
+        busibox-chat)       echo "chat" ;;
+        busibox-appbuilder) echo "appbuilder" ;;
+        busibox-media)      echo "media" ;;
+        busibox-documents)  echo "documents" ;;
+        *)                  echo "" ;;
+    esac
+}
+
 # Stop services (reverse dependency order)
 # Usage: services_stop_group "Group Name" "service1 service2..."
 services_stop_group() {
@@ -1383,13 +1401,47 @@ services_restart_with_deps() {
         save_last_command "make docker-restart ENV=$env"
         (cd "$REPO_ROOT" && make docker-down && make docker-up ENV="$env")
     else
-        # Translate logical service names to docker-compose service names
-        local docker_services
-        docker_services=$(translate_service_names "$services")
-        
-        info "Restarting $group_name..."
-        (cd "$REPO_ROOT" && docker compose -f docker-compose.yml restart $docker_services)
-        success "$group_name restarted"
+        # Separate core-apps sub-services from regular docker services
+        local app_manager_names=""
+        local non_app_services=""
+        for svc in $services; do
+            local app_name
+            app_name=$(get_app_manager_name "$svc")
+            if [[ -n "$app_name" ]]; then
+                app_manager_names="$app_manager_names $app_name"
+            else
+                non_app_services="$non_app_services $svc"
+            fi
+        done
+        app_manager_names=$(echo "$app_manager_names" | xargs)
+        non_app_services=$(echo "$non_app_services" | xargs)
+
+        # Restart core-apps sub-services via app-manager API (per-app)
+        if [[ -n "$app_manager_names" ]]; then
+            local container_prefix="${CONTAINER_PREFIX:-dev}"
+            for app_name in $app_manager_names; do
+                info "Restarting $app_name via app-manager..."
+                local result
+                result=$(docker exec "${container_prefix}-core-apps" \
+                    curl -s -X POST http://localhost:9999/restart \
+                    -H 'Content-Type: application/json' \
+                    -d "{\"app\":\"${app_name}\"}" 2>/dev/null)
+                if echo "$result" | grep -q '"success":true'; then
+                    success "$app_name restarted"
+                else
+                    error "Failed to restart $app_name: $result"
+                fi
+            done
+        fi
+
+        # Restart non-core-apps services via docker compose
+        if [[ -n "$non_app_services" ]]; then
+            local docker_services
+            docker_services=$(translate_service_names "$non_app_services")
+            info "Restarting $group_name..."
+            (cd "$REPO_ROOT" && docker compose -f docker-compose.yml restart $docker_services)
+            success "$group_name restarted"
+        fi
     fi
     set_install_status "deployed"
     pause
@@ -1397,8 +1449,9 @@ services_restart_with_deps() {
 
 # Translate logical service names to docker-compose service names
 # In local dev, busibox-portal and busibox-agents run in a single core-apps container
-# Usage: translate_service_names "busibox-portal busibox-agents nginx"
-# Returns: "core-apps nginx" (deduplicated)
+# and "nginx" maps to docker-compose service "proxy"
+# Usage: translate_service_names "busibox-portal busibox-agents proxy"
+# Returns: "core-apps proxy" (deduplicated)
 translate_service_names() {
     local services="$1"
     local translated=""
@@ -1412,6 +1465,10 @@ translate_service_names() {
                     translated="$translated core-apps"
                     seen_core_apps=true
                 fi
+                ;;
+            nginx)
+                # docker-compose service is named "proxy"
+                translated="$translated proxy"
                 ;;
             *)
                 translated="$translated $svc"
@@ -1453,20 +1510,58 @@ services_rebuild_group() {
             (cd "$REPO_ROOT" && make docker-build ENV="$env")
         fi
     else
-        # Translate logical service names to docker-compose service names
-        local docker_services
-        docker_services=$(translate_service_names "$services")
-        
-        # Build specific services
-        info "Building services: $docker_services"
-        for svc in $docker_services; do
-            info "Building $svc..."
-            if [[ "$no_cache" == "no-cache" ]]; then
-                (cd "$REPO_ROOT" && make docker-build SERVICE="$svc" ENV="$env" NO_CACHE=1)
+        # Check if ALL services are core-apps sub-services (use app-manager API)
+        local app_manager_names=""
+        local non_app_services=""
+        for svc in $services; do
+            local app_name
+            app_name=$(get_app_manager_name "$svc")
+            if [[ -n "$app_name" ]]; then
+                app_manager_names="$app_manager_names $app_name"
             else
-                (cd "$REPO_ROOT" && make docker-build SERVICE="$svc" ENV="$env")
+                non_app_services="$non_app_services $svc"
             fi
         done
+        app_manager_names=$(echo "$app_manager_names" | xargs)
+        non_app_services=$(echo "$non_app_services" | xargs)
+
+        # Rebuild core-apps sub-services via app-manager API (per-app, not full image)
+        if [[ -n "$app_manager_names" ]]; then
+            local container_prefix="${CONTAINER_PREFIX:-dev}"
+            for app_name in $app_manager_names; do
+                info "Rebuilding $app_name via app-manager..."
+                if [[ "$no_cache" == "no-cache" ]]; then
+                    # Clear .next cache contents (can't rm the dir itself — it's a volume mount)
+                    docker exec "${container_prefix}-core-apps" sh -c "rm -rf /srv/busibox-frontend/apps/${app_name}/.next/* /srv/busibox-frontend/apps/${app_name}/.next/.[!.]* 2>/dev/null" || true
+                fi
+                local result
+                result=$(docker exec "${container_prefix}-core-apps" \
+                    curl -s -X POST http://localhost:9999/restart \
+                    -H 'Content-Type: application/json' \
+                    -d "{\"app\":\"${app_name}\", \"clean\": true}" 2>/dev/null)
+                if echo "$result" | grep -q '"success":true'; then
+                    success "$app_name rebuilt"
+                else
+                    error "Failed to rebuild $app_name: $result"
+                fi
+            done
+        fi
+
+        # Rebuild non-core-apps services via docker compose build
+        if [[ -n "$non_app_services" ]]; then
+            local docker_services
+            docker_services=$(translate_service_names "$non_app_services")
+            
+            info "Building services: $docker_services"
+            for svc in $docker_services; do
+                info "Building $svc..."
+                if [[ "$no_cache" == "no-cache" ]]; then
+                    (cd "$REPO_ROOT" && make docker-build SERVICE="$svc" ENV="$env" NO_CACHE=1)
+                else
+                    (cd "$REPO_ROOT" && make docker-build SERVICE="$svc" ENV="$env")
+                fi
+            done
+        fi
         success "$group_name rebuilt"
     fi
     
@@ -1527,7 +1622,7 @@ services_select_specific() {
             "redis" \
             "milvus" \
             "minio" \
-            "nginx" \
+            "proxy" \
             "litellm" \
             "$llm_backend_label" \
             "embedding-api" \
@@ -1551,7 +1646,7 @@ services_select_specific() {
             3) services_group_menu "redis" "redis" ;;
             4) services_group_menu "milvus" "milvus" ;;
             5) services_group_menu "minio" "minio" ;;
-            6) services_group_menu "nginx" "nginx" ;;
+            6) services_group_menu "proxy" "proxy" ;;
             7) services_group_menu "litellm" "litellm" ;;
             8) 
                 # MLX or vLLM based on platform
@@ -1581,7 +1676,7 @@ services_select_specific() {
             "redis" \
             "milvus" \
             "minio" \
-            "nginx" \
+            "proxy" \
             "litellm" \
             "embedding-api" \
             "deploy-api" \
@@ -1603,7 +1698,7 @@ services_select_specific() {
             3) services_group_menu "redis" "redis" ;;
             4) services_group_menu "milvus" "milvus" ;;
             5) services_group_menu "minio" "minio" ;;
-            6) services_group_menu "nginx" "nginx" ;;
+            6) services_group_menu "proxy" "proxy" ;;
             7) services_group_menu "litellm" "litellm" ;;
             8) services_group_menu "embedding-api" "embedding-api" ;;
             9) services_group_menu "deploy-api" "deploy-api" ;;
@@ -1664,7 +1759,7 @@ handle_services() {
                     "Core Services (authz, postgres, redis, milvus, minio)" \
                     "LLM Services ($llm_desc)" \
                     "API Services (deploy, data, search, agent, docs)" \
-                    "App Services (nginx, busibox-portal, busibox-agents)" \
+                    "App Services (proxy, busibox-portal, busibox-agents)" \
                     "Back to Main Menu"
                 echo -e "  ${DIM}Press 's' to refresh status and return to main menu${NC}"
                 
@@ -1703,7 +1798,7 @@ handle_services() {
                         [[ $? -eq $RETURN_TO_STATUS ]] && return $RETURN_TO_STATUS
                         ;;
                     6)
-                        services_group_menu "App Services" "nginx busibox-portal busibox-agents"
+                        services_group_menu "App Services" "proxy busibox-portal busibox-agents"
                         [[ $? -eq $RETURN_TO_STATUS ]] && return $RETURN_TO_STATUS
                         ;;
                     7|b|B)

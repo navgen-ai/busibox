@@ -27,15 +27,20 @@ class TestImageExtractor:
         # Use shared test doc path utility
         self.test_data_dir = get_test_doc_repo_path()
     
-    def _find_sample(self, new_path, old_path):
-        """Find sample file in new or old location."""
-        new_full = self.test_data_dir / new_path
-        if new_full.exists():
-            return new_full
-        old_full = self.test_data_dir / old_path
-        if old_full.exists():
-            return old_full
+    def _find_sample(self, *candidate_paths):
+        """Find sample file across multiple candidate locations."""
+        for p in candidate_paths:
+            full = self.test_data_dir / p
+            if full.exists():
+                return full
         return None
+
+    def _find_general_doc(self, doc_dir, filename="source.pdf"):
+        """Find a general PDF doc in the new or old directory layout."""
+        return self._find_sample(
+            f"pdf/general/{doc_dir}/{filename}",
+            f"docs/{doc_dir}/{filename}",
+        )
 
     def test_extract_images_from_pdf(self):
         """Test extracting images from a PDF file"""
@@ -72,18 +77,23 @@ class TestImageExtractor:
             img = Image.open(BytesIO(first_data))
             assert img is not None
 
-    def test_extract_images_from_docx(self):
-        """Test extracting images from a DOCX file"""
-        # This would require a sample DOCX file
-        pytest.skip("DOCX sample not available yet")
+    def test_extract_images_from_pptx(self):
+        """Test extracting images from an Office file (PPTX)."""
+        pptx_path = self._find_sample("office/Gamma-Tips-and-Tricks.pptx")
+        if pptx_path is None:
+            pytest.skip("Sample PPTX not found")
+        
+        metadata_list, images_data = self.extractor.extract(str(pptx_path))
+        assert isinstance(metadata_list, list)
+        assert isinstance(images_data, list)
+        assert len(metadata_list) == len(images_data)
 
     def test_image_format_conversion(self):
         """Test that images are converted to target format (PNG)"""
-        # Use presentation file which should have images
-        pdf_path = self.test_data_dir / "docs" / "doc08_us_bancorp_q4_2023_presentation" / "source.pdf"
+        pdf_path = self._find_general_doc("doc08_us_bancorp_q4_2023_presentation")
         
-        if not pdf_path.exists():
-            pytest.skip(f"Sample PDF not found: {pdf_path}")
+        if pdf_path is None:
+            pytest.skip("Sample PDF not found for doc08_us_bancorp_q4_2023_presentation")
         
         metadata_list, images_data = self.extractor.extract_from_pdf(str(pdf_path))
         
@@ -109,14 +119,10 @@ class TestImageExtractor:
 
     def test_image_quality_preservation(self):
         """Test that image quality is preserved during extraction"""
-        # Use financial statements PDF which has logos/charts
-        pdf_path = self._find_sample(
-            "pdf/general/doc10_nestle_2022_financial_statements/source.pdf",
-            "docs/doc10_nestle_2022_financial_statements/source.pdf"
-        )
+        pdf_path = self._find_general_doc("doc10_nestle_2022_financial_statements")
         
         if pdf_path is None:
-            pytest.skip("Sample PDF not found in either location")
+            pytest.skip("Sample PDF not found for doc10_nestle_2022_financial_statements")
         
         metadata_list, images_data = self.extractor.extract_from_pdf(str(pdf_path))
         
@@ -130,14 +136,12 @@ class TestImageExtractor:
 
     def test_large_image_handling(self):
         """Test handling of very large images with size limits"""
-        # Create extractor with small size limit
         small_extractor = ImageExtractor(max_image_size=1000)  # 1KB limit
         
-        # Use brochure PDF which likely has large images
-        pdf_path = self.test_data_dir / "docs" / "doc09_visit_phoenix_destination_brochure" / "source.pdf"
+        pdf_path = self._find_general_doc("doc09_visit_phoenix_destination_brochure")
         
-        if not pdf_path.exists():
-            pytest.skip(f"Sample PDF not found: {pdf_path}")
+        if pdf_path is None:
+            pytest.skip("Sample PDF not found for doc09_visit_phoenix_destination_brochure")
         
         metadata_list, images_data = small_extractor.extract_from_pdf(str(pdf_path))
         
@@ -157,11 +161,10 @@ class TestImageExtractor:
 
     def test_extract_auto_detect_pdf(self):
         """Test auto-detection of PDF format"""
-        # Use NASA technical document
-        pdf_path = self.test_data_dir / "docs" / "doc07_nasa_composite_boom" / "source.pdf"
+        pdf_path = self._find_general_doc("doc07_nasa_composite_boom")
         
-        if not pdf_path.exists():
-            pytest.skip(f"Sample PDF not found: {pdf_path}")
+        if pdf_path is None:
+            pytest.skip("Sample PDF not found for doc07_nasa_composite_boom")
         
         metadata, images = self.extractor.extract(str(pdf_path), mime_type="application/pdf")
         
@@ -170,11 +173,10 @@ class TestImageExtractor:
 
     def test_extract_auto_detect_from_extension(self):
         """Test format detection from file extension"""
-        # Use whitepaper PDF
-        pdf_path = self.test_data_dir / "docs" / "doc06_urgent_care_whitepaper" / "source.pdf"
+        pdf_path = self._find_general_doc("doc06_urgent_care_whitepaper")
         
-        if not pdf_path.exists():
-            pytest.skip(f"Sample PDF not found: {pdf_path}")
+        if pdf_path is None:
+            pytest.skip("Sample PDF not found for doc06_urgent_care_whitepaper")
         
         # Don't provide mime_type, should detect from extension
         metadata, images = self.extractor.extract(str(pdf_path))
@@ -192,11 +194,10 @@ class TestImageExtractor:
 
     def test_metadata_includes_original_format(self):
         """Test that metadata includes original image format"""
-        # Use datasheet PDF
-        pdf_path = self.test_data_dir / "docs" / "doc05_rslzva1_datasheet" / "source.pdf"
+        pdf_path = self._find_general_doc("doc05_rslzva1_datasheet")
         
-        if not pdf_path.exists():
-            pytest.skip(f"Sample PDF not found: {pdf_path}")
+        if pdf_path is None:
+            pytest.skip("Sample PDF not found for doc05_rslzva1_datasheet")
         
         metadata_list, _ = self.extractor.extract_from_pdf(str(pdf_path))
         
@@ -205,11 +206,10 @@ class TestImageExtractor:
 
     def test_image_index_sequential(self):
         """Test that image indices are sequential"""
-        # Use research paper PDF
-        pdf_path = self.test_data_dir / "docs" / "doc04_zero_shot_reasoners" / "source.pdf"
+        pdf_path = self._find_general_doc("doc04_zero_shot_reasoners")
         
-        if not pdf_path.exists():
-            pytest.skip(f"Sample PDF not found: {pdf_path}")
+        if pdf_path is None:
+            pytest.skip("Sample PDF not found for doc04_zero_shot_reasoners")
         
         metadata_list, _ = self.extractor.extract_from_pdf(str(pdf_path))
         
@@ -218,11 +218,10 @@ class TestImageExtractor:
 
     def test_multiple_images_same_page(self):
         """Test handling of multiple images on the same page"""
-        # Use patent document which likely has multiple figures per page
-        pdf_path = self.test_data_dir / "docs" / "doc02_polymer_nanocapsules_patent" / "source.pdf"
+        pdf_path = self._find_general_doc("doc02_polymer_nanocapsules_patent")
         
-        if not pdf_path.exists():
-            pytest.skip(f"Sample PDF not found: {pdf_path}")
+        if pdf_path is None:
+            pytest.skip("Sample PDF not found for doc02_polymer_nanocapsules_patent")
         
         metadata_list, images_data = self.extractor.extract_from_pdf(str(pdf_path))
         
@@ -234,11 +233,10 @@ class TestImageExtractor:
         """Test using a custom target format (e.g., JPEG)"""
         jpeg_extractor = ImageExtractor(target_format="JPEG")
         
-        # Use RFP document
-        pdf_path = self.test_data_dir / "docs" / "doc01_rfp_project_management" / "source.pdf"
+        pdf_path = self._find_general_doc("doc01_rfp_project_management")
         
-        if not pdf_path.exists():
-            pytest.skip(f"Sample PDF not found: {pdf_path}")
+        if pdf_path is None:
+            pytest.skip("Sample PDF not found for doc01_rfp_project_management")
         
         metadata_list, images_data = jpeg_extractor.extract_from_pdf(str(pdf_path))
         

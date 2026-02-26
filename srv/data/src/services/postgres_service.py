@@ -103,6 +103,7 @@ class PostgresService:
         pages_processed: Optional[int] = None,
         total_pages: Optional[int] = None,
         error_message: Optional[str] = None,
+        status_message: Optional[str] = None,
         retry_count: Optional[int] = None,
     ):
         """
@@ -117,12 +118,12 @@ class PostgresService:
             pages_processed: Pages processed so far
             total_pages: Total pages
             error_message: Error message if failed
+            status_message: Human-readable progress text
             retry_count: Number of retry attempts (optional)
         """
         conn = self._get_connection()
         try:
             with conn.cursor() as cur:
-                # Update status
                 if retry_count is not None:
                     update_query = """
                         UPDATE data_status
@@ -133,6 +134,7 @@ class PostgresService:
                             pages_processed = %s,
                             total_pages = %s,
                             error_message = %s,
+                            status_message = %s,
                             retry_count = %s,
                             updated_at = NOW()
                         WHERE file_id = %s
@@ -147,8 +149,9 @@ class PostgresService:
                             pages_processed,
                             total_pages,
                             error_message,
+                            status_message,
                             retry_count,
-                            file_id,  # Pass string directly, not UUID object
+                            file_id,
                         ),
                     )
                 else:
@@ -161,6 +164,7 @@ class PostgresService:
                             pages_processed = %s,
                             total_pages = %s,
                             error_message = %s,
+                            status_message = %s,
                             updated_at = NOW()
                         WHERE file_id = %s
                     """
@@ -174,28 +178,24 @@ class PostgresService:
                             pages_processed,
                             total_pages,
                             error_message,
-                            file_id,  # Pass string directly, not UUID object
+                            status_message,
+                            file_id,
                         ),
                     )
                 
-                # Set started_at if queued -> parsing transition
                 if stage == "parsing":
                     cur.execute(
                         "UPDATE data_status SET started_at = NOW() WHERE file_id = %s AND started_at IS NULL",
-                        (file_id,),  # Pass string directly, not UUID object
+                        (file_id,),
                     )
                 
-                # Set completed_at if completed or failed
                 if stage in ["completed", "failed"]:
                     cur.execute(
                         "UPDATE data_status SET completed_at = NOW() WHERE file_id = %s",
-                        (file_id,),  # Pass string directly, not UUID object
+                        (file_id,),
                     )
                 
                 conn.commit()
-                
-                # Send NOTIFY (triggered automatically by database trigger, but we can also send explicitly)
-                # The trigger in the database handles NOTIFY automatically
                 
                 logger.debug(
                     "Status updated",

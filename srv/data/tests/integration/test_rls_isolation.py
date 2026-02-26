@@ -403,47 +403,32 @@ _API_PORT = os.getenv("API_PORT", "8002")
 _SERVICE_URL = os.getenv("DATA_API_URL", f"http://localhost:{_API_PORT}")
 
 
-def _make_client(token: str) -> AsyncClient:
-    """Build an HTTP test client pre-configured with auth + test-mode headers."""
-    client = AsyncClient(base_url=_SERVICE_URL)
-    client.headers.update({
-        "Authorization": f"Bearer {token}",
-        "X-Test-Mode": "true",
-    })
-    return client
-
-
 @pytest.fixture(scope="module")
-async def clients(rls_users, rls_test_data):
+def clients(rls_users, rls_test_data):
     """
-    Module-scoped fixture providing 3 HTTP clients (one per user).
+    Module-scoped fixture providing tokens and test data.
 
-    Returns a dict with keys "a", "b", "c" mapping to AsyncClient instances,
+    Returns a dict with keys "a", "b", "c" mapping to token strings,
     plus the test data dict under key "data".
     """
-    docs = rls_test_data
-
-    token_a = rls_users.get_data_token("a")
-    token_b = rls_users.get_data_token("b")
-    token_c = rls_users.get_data_token("c")
-
-    client_a = _make_client(token_a)
-    client_b = _make_client(token_b)
-    client_c = _make_client(token_c)
-
     yield {
-        "a": client_a,
-        "b": client_b,
-        "c": client_c,
-        "data": docs,
+        "a": rls_users.get_data_token("a"),
+        "b": rls_users.get_data_token("b"),
+        "c": rls_users.get_data_token("c"),
+        "data": rls_test_data,
     }
 
-    try:
-        await client_a.aclose()
-        await client_b.aclose()
-        await client_c.aclose()
-    except RuntimeError:
-        pass
+
+def _make_client(token: str) -> AsyncClient:
+    """Build an HTTP test client pre-configured with auth + test-mode headers."""
+    return AsyncClient(
+        base_url=_SERVICE_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Test-Mode": "true",
+        },
+        timeout=30.0,
+    )
 
 
 # =============================================================================
@@ -454,78 +439,71 @@ async def clients(rls_users, rls_test_data):
 @pytest.mark.asyncio
 async def test_user_a_sees_own_personal_doc(clients):
     """User A can access their own personal document."""
-    c = clients["a"]
     fid = str(clients["data"]["a_personal"])
-
-    resp = await c.get(f"/files/{fid}")
-    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
-
-    body = resp.json()
-    assert body.get("fileId") or body.get("file_id") == fid
+    async with _make_client(clients["a"]) as c:
+        resp = await c.get(f"/files/{fid}")
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        body = resp.json()
+        actual_fid = body.get("fileId") or body.get("file_id")
+        assert actual_fid == fid
 
 
 @pytest.mark.asyncio
 async def test_user_a_sees_own_media_file(clients):
     """User A can access their own media file."""
-    c = clients["a"]
     fid = str(clients["data"]["a_media"])
-
-    resp = await c.get(f"/files/{fid}")
-    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+    async with _make_client(clients["a"]) as c:
+        resp = await c.get(f"/files/{fid}")
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
 
 
 @pytest.mark.asyncio
 async def test_user_a_sees_shared_doc(clients):
     """User A can access the shared document (via share-ab role)."""
-    c = clients["a"]
     fid = str(clients["data"]["shared"])
-
-    resp = await c.get(f"/files/{fid}")
-    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+    async with _make_client(clients["a"]) as c:
+        resp = await c.get(f"/files/{fid}")
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
 
 
 @pytest.mark.asyncio
 async def test_user_a_cannot_see_b_personal_doc(clients):
     """User A cannot access User B's personal document."""
-    c = clients["a"]
     fid = str(clients["data"]["b_personal"])
-
-    resp = await c.get(f"/files/{fid}")
-    assert resp.status_code == 404, f"Expected 404, got {resp.status_code}: {resp.text}"
+    async with _make_client(clients["a"]) as c:
+        resp = await c.get(f"/files/{fid}")
+        assert resp.status_code == 404, f"Expected 404, got {resp.status_code}: {resp.text}"
 
 
 @pytest.mark.asyncio
 async def test_user_a_cannot_see_b_personal_chunks(clients):
     """User A cannot read chunks from User B's personal document."""
-    c = clients["a"]
     fid = str(clients["data"]["b_personal"])
-
-    resp = await c.get(f"/files/{fid}/chunks")
-    assert resp.status_code == 404, f"Expected 404, got {resp.status_code}: {resp.text}"
+    async with _make_client(clients["a"]) as c:
+        resp = await c.get(f"/files/{fid}/chunks")
+        assert resp.status_code == 404, f"Expected 404, got {resp.status_code}: {resp.text}"
 
 
 @pytest.mark.asyncio
 async def test_user_a_sees_own_chunks(clients):
     """User A can read chunks from their own personal document."""
-    c = clients["a"]
     fid = str(clients["data"]["a_personal"])
-
-    resp = await c.get(f"/files/{fid}/chunks")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["total"] > 0 or len(body["chunks"]) > 0
+    async with _make_client(clients["a"]) as c:
+        resp = await c.get(f"/files/{fid}/chunks")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] > 0 or len(body["chunks"]) > 0
 
 
 @pytest.mark.asyncio
 async def test_user_a_sees_shared_chunks(clients):
     """User A can read chunks from the shared document."""
-    c = clients["a"]
     fid = str(clients["data"]["shared"])
-
-    resp = await c.get(f"/files/{fid}/chunks")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert len(body["chunks"]) > 0
+    async with _make_client(clients["a"]) as c:
+        resp = await c.get(f"/files/{fid}/chunks")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["chunks"]) > 0
 
 
 # ------------- User B isolation --------------------------------------------- #
@@ -534,73 +512,66 @@ async def test_user_a_sees_shared_chunks(clients):
 @pytest.mark.asyncio
 async def test_user_b_sees_own_personal_doc(clients):
     """User B can access their own personal document."""
-    c = clients["b"]
     fid = str(clients["data"]["b_personal"])
-
-    resp = await c.get(f"/files/{fid}")
-    assert resp.status_code == 200
+    async with _make_client(clients["b"]) as c:
+        resp = await c.get(f"/files/{fid}")
+        assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
 async def test_user_b_sees_shared_doc(clients):
     """User B can access the shared document."""
-    c = clients["b"]
     fid = str(clients["data"]["shared"])
-
-    resp = await c.get(f"/files/{fid}")
-    assert resp.status_code == 200
+    async with _make_client(clients["b"]) as c:
+        resp = await c.get(f"/files/{fid}")
+        assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
 async def test_user_b_sees_shared_chunks(clients):
     """User B can read chunks from the shared document."""
-    c = clients["b"]
     fid = str(clients["data"]["shared"])
-
-    resp = await c.get(f"/files/{fid}/chunks")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert len(body["chunks"]) > 0
+    async with _make_client(clients["b"]) as c:
+        resp = await c.get(f"/files/{fid}/chunks")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["chunks"]) > 0
 
 
 @pytest.mark.asyncio
 async def test_user_b_cannot_see_a_personal_doc(clients):
     """User B cannot access User A's personal document."""
-    c = clients["b"]
     fid = str(clients["data"]["a_personal"])
-
-    resp = await c.get(f"/files/{fid}")
-    assert resp.status_code == 404
+    async with _make_client(clients["b"]) as c:
+        resp = await c.get(f"/files/{fid}")
+        assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_user_b_cannot_see_a_media_file(clients):
     """User B cannot access User A's media file."""
-    c = clients["b"]
     fid = str(clients["data"]["a_media"])
-
-    resp = await c.get(f"/files/{fid}")
-    assert resp.status_code == 404
+    async with _make_client(clients["b"]) as c:
+        resp = await c.get(f"/files/{fid}")
+        assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_user_b_cannot_see_a_personal_chunks(clients):
     """User B cannot read chunks from User A's personal document."""
-    c = clients["b"]
     fid = str(clients["data"]["a_personal"])
-
-    resp = await c.get(f"/files/{fid}/chunks")
-    assert resp.status_code == 404
+    async with _make_client(clients["b"]) as c:
+        resp = await c.get(f"/files/{fid}/chunks")
+        assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_user_b_cannot_see_a_media_chunks(clients):
     """User B cannot read chunks from User A's media file."""
-    c = clients["b"]
     fid = str(clients["data"]["a_media"])
-
-    resp = await c.get(f"/files/{fid}/chunks")
-    assert resp.status_code == 404
+    async with _make_client(clients["b"]) as c:
+        resp = await c.get(f"/files/{fid}/chunks")
+        assert resp.status_code == 404
 
 
 # ------------- User C isolation --------------------------------------------- #
@@ -609,27 +580,25 @@ async def test_user_b_cannot_see_a_media_chunks(clients):
 @pytest.mark.asyncio
 async def test_user_c_cannot_see_any_doc(clients):
     """User C cannot access any document."""
-    c = clients["c"]
-
-    for key in ("a_personal", "a_media", "shared", "b_personal"):
-        fid = str(clients["data"][key])
-        resp = await c.get(f"/files/{fid}")
-        assert resp.status_code in (403, 404), (
-            f"User C should not see {key} ({fid}): got {resp.status_code}"
-        )
+    async with _make_client(clients["c"]) as c:
+        for key in ("a_personal", "a_media", "shared", "b_personal"):
+            fid = str(clients["data"][key])
+            resp = await c.get(f"/files/{fid}")
+            assert resp.status_code in (403, 404), (
+                f"User C should not see {key} ({fid}): got {resp.status_code}"
+            )
 
 
 @pytest.mark.asyncio
 async def test_user_c_cannot_see_any_chunks(clients):
     """User C cannot read chunks from any document."""
-    c = clients["c"]
-
-    for key in ("a_personal", "a_media", "shared", "b_personal"):
-        fid = str(clients["data"][key])
-        resp = await c.get(f"/files/{fid}/chunks")
-        assert resp.status_code in (403, 404), (
-            f"User C should not see chunks for {key} ({fid}): got {resp.status_code}"
-        )
+    async with _make_client(clients["c"]) as c:
+        for key in ("a_personal", "a_media", "shared", "b_personal"):
+            fid = str(clients["data"][key])
+            resp = await c.get(f"/files/{fid}/chunks")
+            assert resp.status_code in (403, 404), (
+                f"User C should not see chunks for {key} ({fid}): got {resp.status_code}"
+            )
 
 
 # =============================================================================
@@ -643,40 +612,40 @@ async def test_move_personal_to_shared_grants_access(clients):
     When User A moves their personal doc to shared (ShareAB), User B
     gains access to the document and its chunks.  User C still cannot see it.
     """
-    client_a = clients["a"]
-    client_b = clients["b"]
-    client_c = clients["c"]
     fid = str(clients["data"]["a_personal"])
     share_role_id = clients["data"]["share_ab_role_id"]
 
-    # -- Pre-condition: B cannot see it ------------------------------------
-    resp = await client_b.get(f"/files/{fid}")
-    assert resp.status_code == 404, "Pre-condition failed: B should not see A's personal doc"
+    async with _make_client(clients["b"]) as client_b:
+        # -- Pre-condition: B cannot see it
+        resp = await client_b.get(f"/files/{fid}")
+        assert resp.status_code == 404, "Pre-condition failed: B should not see A's personal doc"
 
-    # -- User A moves doc to shared ----------------------------------------
-    resp = await client_a.post(
-        f"/files/{fid}/move",
-        json={"visibility": "shared", "roleIds": [share_role_id]},
-    )
-    assert resp.status_code == 200, f"Move to shared failed: {resp.status_code} {resp.text}"
+    async with _make_client(clients["a"]) as client_a:
+        # -- User A moves doc to shared
+        resp = await client_a.post(
+            f"/files/{fid}/move",
+            json={"visibility": "shared", "roleIds": [share_role_id]},
+        )
+        assert resp.status_code == 200, f"Move to shared failed: {resp.status_code} {resp.text}"
 
-    # -- User B can now see the doc ----------------------------------------
-    resp = await client_b.get(f"/files/{fid}")
-    assert resp.status_code == 200, (
-        f"After move to shared, B should see the doc: got {resp.status_code}"
-    )
+    async with _make_client(clients["b"]) as client_b:
+        # -- User B can now see the doc
+        resp = await client_b.get(f"/files/{fid}")
+        assert resp.status_code == 200, (
+            f"After move to shared, B should see the doc: got {resp.status_code}"
+        )
+        # -- User B can see the chunks
+        resp = await client_b.get(f"/files/{fid}/chunks")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["chunks"]) > 0, "B should see chunks after doc was shared"
 
-    # -- User B can see the chunks -----------------------------------------
-    resp = await client_b.get(f"/files/{fid}/chunks")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert len(body["chunks"]) > 0, "B should see chunks after doc was shared"
-
-    # -- User C still cannot see it ----------------------------------------
-    resp = await client_c.get(f"/files/{fid}")
-    assert resp.status_code in (403, 404), (
-        f"C should still not see the doc after it's shared to AB: got {resp.status_code}"
-    )
+    async with _make_client(clients["c"]) as client_c:
+        # -- User C still cannot see it
+        resp = await client_c.get(f"/files/{fid}")
+        assert resp.status_code in (403, 404), (
+            f"C should still not see the doc after it's shared to AB: got {resp.status_code}"
+        )
 
 
 @pytest.mark.asyncio
@@ -685,42 +654,42 @@ async def test_move_shared_back_to_personal_revokes_access(clients):
     When User A moves the doc back to personal, User B loses access to
     the document and its chunks.  User A retains access.
     """
-    client_a = clients["a"]
-    client_b = clients["b"]
     fid = str(clients["data"]["a_personal"])
 
-    # -- Pre-condition: doc is currently shared (from previous test) -------
-    resp = await client_b.get(f"/files/{fid}")
-    assert resp.status_code == 200, "Pre-condition failed: B should see the shared doc"
+    async with _make_client(clients["b"]) as client_b:
+        # -- Pre-condition: doc is currently shared (from previous test)
+        resp = await client_b.get(f"/files/{fid}")
+        assert resp.status_code == 200, "Pre-condition failed: B should see the shared doc"
 
-    # -- User A moves doc back to personal ---------------------------------
-    resp = await client_a.post(
-        f"/files/{fid}/move",
-        json={"visibility": "personal"},
-    )
-    assert resp.status_code == 200, f"Move to personal failed: {resp.status_code} {resp.text}"
+    async with _make_client(clients["a"]) as client_a:
+        # -- User A moves doc back to personal
+        resp = await client_a.post(
+            f"/files/{fid}/move",
+            json={"visibility": "personal"},
+        )
+        assert resp.status_code == 200, f"Move to personal failed: {resp.status_code} {resp.text}"
 
-    # -- User B can no longer see the doc ----------------------------------
-    resp = await client_b.get(f"/files/{fid}")
-    assert resp.status_code == 404, (
-        f"After move to personal, B should NOT see the doc: got {resp.status_code}"
-    )
+    async with _make_client(clients["b"]) as client_b:
+        # -- User B can no longer see the doc
+        resp = await client_b.get(f"/files/{fid}")
+        assert resp.status_code == 404, (
+            f"After move to personal, B should NOT see the doc: got {resp.status_code}"
+        )
+        # -- User B cannot see chunks either
+        resp = await client_b.get(f"/files/{fid}/chunks")
+        assert resp.status_code == 404, (
+            f"After move to personal, B should NOT see chunks: got {resp.status_code}"
+        )
 
-    # -- User B cannot see chunks either -----------------------------------
-    resp = await client_b.get(f"/files/{fid}/chunks")
-    assert resp.status_code == 404, (
-        f"After move to personal, B should NOT see chunks: got {resp.status_code}"
-    )
-
-    # -- User A still sees the doc -----------------------------------------
-    resp = await client_a.get(f"/files/{fid}")
-    assert resp.status_code == 200, (
-        f"After move to personal, A should still see own doc: got {resp.status_code}"
-    )
-
-    # -- User A still sees chunks ------------------------------------------
-    resp = await client_a.get(f"/files/{fid}/chunks")
-    assert resp.status_code == 200
+    async with _make_client(clients["a"]) as client_a:
+        # -- User A still sees the doc
+        resp = await client_a.get(f"/files/{fid}")
+        assert resp.status_code == 200, (
+            f"After move to personal, A should still see own doc: got {resp.status_code}"
+        )
+        # -- User A still sees chunks
+        resp = await client_a.get(f"/files/{fid}/chunks")
+        assert resp.status_code == 200
 
 
 # =============================================================================
@@ -734,23 +703,19 @@ async def test_graph_isolation(clients):
     Graph endpoint returns different results per user based on ownership.
     Skipped if the graph service is not available.
     """
-    client_a = clients["a"]
+    async with _make_client(clients["a"]) as client_a:
+        resp_a = await client_a.get("/data/graph")
+        if resp_a.status_code == 200:
+            body = resp_a.json()
+            if not body.get("graph_available", True):
+                pytest.skip("Graph database not available")
+        else:
+            pytest.skip("Graph endpoint returned non-200; graph service may not be running")
 
-    resp_a = await client_a.get("/data/graph")
-    if resp_a.status_code == 200:
-        body = resp_a.json()
-        if not body.get("graph_available", True):
-            pytest.skip("Graph database not available")
-    else:
-        pytest.skip("Graph endpoint returned non-200; graph service may not be running")
+    async with _make_client(clients["b"]) as client_b:
+        resp_b = await client_b.get("/data/graph")
+        assert resp_b.status_code == 200
 
-    client_b = clients["b"]
-    client_c = clients["c"]
-
-    # User B should not see A-only personal nodes
-    resp_b = await client_b.get("/data/graph")
-    assert resp_b.status_code == 200
-
-    # User C should see no nodes from A or B
-    resp_c = await client_c.get("/data/graph")
-    assert resp_c.status_code in (200, 403)
+    async with _make_client(clients["c"]) as client_c:
+        resp_c = await client_c.get("/data/graph")
+        assert resp_c.status_code in (200, 403)

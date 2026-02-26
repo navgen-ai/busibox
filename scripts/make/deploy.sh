@@ -918,7 +918,7 @@ docker_select_service() {
             "search-api" \
             "agent-api" \
             "docs-api" \
-            "nginx" \
+            "proxy" \
             "litellm" \
             "postgres" \
             "redis" \
@@ -936,7 +936,7 @@ docker_select_service() {
             4) service_name="search-api" ;;
             5) service_name="agent-api" ;;
             6) service_name="docs-api" ;;
-            7) service_name="nginx" ;;
+            7) service_name="proxy" ;;
             8) service_name="litellm" ;;
             9) service_name="postgres" ;;
             10) service_name="redis" ;;
@@ -1078,7 +1078,7 @@ docker_individual_service_menu() {
             "search-api" \
             "agent-api" \
             "docs-api" \
-            "nginx" \
+            "proxy" \
             "litellm" \
             "postgres" \
             "redis" \
@@ -1096,7 +1096,7 @@ docker_individual_service_menu() {
             4) service_name="search-api" ;;
             5) service_name="agent-api" ;;
             6) service_name="docs-api" ;;
-            7) service_name="nginx" ;;
+            7) service_name="proxy" ;;
             8) service_name="litellm" ;;
             9) service_name="postgres" ;;
             10) service_name="redis" ;;

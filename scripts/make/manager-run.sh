@@ -98,6 +98,11 @@ fi
 # Host path for docker compose volume resolution
 DOCKER_ARGS+=(-e "BUSIBOX_HOST_PATH=${REPO_ROOT}")
 
+# Absolute host path for SSH key mount resolution inside docker compose.
+# Needed because manager container sets HOME=/root, which would otherwise
+# expand ~/.ssh to /root/.ssh on the host daemon (invalid on macOS).
+DOCKER_ARGS+=(-e "HOST_SSH_DIR=${HOME}/.ssh")
+
 # Container prefix and project name
 DOCKER_ARGS+=(-e "CONTAINER_PREFIX=${CONTAINER_PREFIX:-dev}")
 DOCKER_ARGS+=(-e "COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-dev-busibox}")

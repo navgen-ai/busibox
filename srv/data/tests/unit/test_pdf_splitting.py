@@ -265,6 +265,74 @@ class TestPDFSplitter:
         pytest.skip("No suitable PDFs found for testing")
 
 
+class TestSplitSinglePages:
+    """Test the split_single_pages() method."""
+    
+    def test_split_single_pages_creates_one_per_page(self, samples_dir: Path, pdf_splitter: PDFSplitter):
+        """Each page becomes its own file."""
+        for rel_path, desc in MEDIUM_PDFS:
+            pdf_path = samples_dir / rel_path
+            if pdf_path.exists():
+                page_count = pdf_splitter.get_page_count(str(pdf_path))
+                if page_count > 1:
+                    splits = pdf_splitter.split_single_pages(str(pdf_path))
+                    try:
+                        assert len(splits) == page_count, (
+                            f"Expected {page_count} single-page splits, got {len(splits)}"
+                        )
+                        for i, (split_path, start_page, end_page) in enumerate(splits):
+                            assert start_page == end_page == i + 1
+                            actual_pages = pdf_splitter.get_page_count(split_path)
+                            assert actual_pages == 1, (
+                                f"Split {i+1} should have 1 page, got {actual_pages}"
+                            )
+                        print(f"✓ {desc}: {page_count} single-page splits created")
+                        return
+                    finally:
+                        pdf_splitter.cleanup_splits(splits, str(pdf_path))
+        
+        pytest.skip("No suitable PDFs found for testing")
+    
+    def test_split_single_pages_single_page_pdf(self, samples_dir: Path, pdf_splitter: PDFSplitter):
+        """Single-page PDF returns the original path."""
+        for rel_path, desc in SMALL_PDFS:
+            pdf_path = samples_dir / rel_path
+            if pdf_path.exists():
+                page_count = pdf_splitter.get_page_count(str(pdf_path))
+                if page_count == 1:
+                    splits = pdf_splitter.split_single_pages(str(pdf_path))
+                    assert len(splits) == 1
+                    assert splits[0][0] == str(pdf_path)
+                    print(f"✓ Single-page PDF returned original path")
+                    return
+        
+        pytest.skip("No single-page PDFs found")
+    
+    def test_split_single_pages_cleanup(self, samples_dir: Path, pdf_splitter: PDFSplitter):
+        """Cleanup removes split files but not original."""
+        for rel_path, desc in MEDIUM_PDFS:
+            pdf_path = samples_dir / rel_path
+            if pdf_path.exists():
+                page_count = pdf_splitter.get_page_count(str(pdf_path))
+                if page_count > 1:
+                    splits = pdf_splitter.split_single_pages(str(pdf_path))
+                    split_paths = [s[0] for s in splits if s[0] != str(pdf_path)]
+                    
+                    for path in split_paths:
+                        assert os.path.exists(path)
+                    
+                    pdf_splitter.cleanup_splits(splits, str(pdf_path))
+                    
+                    for path in split_paths:
+                        assert not os.path.exists(path)
+                    assert os.path.exists(pdf_path)
+                    
+                    print(f"✓ Cleaned up {len(split_paths)} single-page split files")
+                    return
+        
+        pytest.skip("No suitable PDFs found for testing")
+
+
 class TestPDFSplitContext:
     """Test the PDFSplitContext context manager."""
     
@@ -376,6 +444,57 @@ class TestTextExtractorWithSplitting:
                 
                 print(f"✓ {desc}: split={len_split} chars, no-split={len_no_split} chars "
                       f"(diff={abs(len_split - len_no_split)})")
+                return
+        
+        pytest.skip("No suitable PDFs found for testing")
+    
+    def test_progress_callback_invoked(
+        self, samples_dir: Path, text_extractor_with_splitting: TextExtractor
+    ):
+        """Test that progress_callback is invoked for each page during extraction."""
+        for rel_path, desc in MEDIUM_PDFS:
+            pdf_path = samples_dir / rel_path
+            if pdf_path.exists():
+                progress_calls = []
+                
+                def on_progress(page_num: int, total_pages: int):
+                    progress_calls.append((page_num, total_pages))
+                
+                result = text_extractor_with_splitting.extract(
+                    str(pdf_path), "application/pdf",
+                    progress_callback=on_progress,
+                )
+                
+                assert len(progress_calls) > 0, "Progress callback should be invoked"
+                
+                page_count = result.page_count
+                assert progress_calls[-1][0] == page_count, (
+                    f"Last page_num should be {page_count}, got {progress_calls[-1][0]}"
+                )
+                assert all(t == page_count for _, t in progress_calls), (
+                    "total_pages should be consistent across all calls"
+                )
+                
+                page_nums = [p for p, _ in progress_calls]
+                assert page_nums == sorted(page_nums), "Pages should be reported in order"
+                
+                print(f"✓ {desc}: progress_callback invoked {len(progress_calls)} times")
+                return
+        
+        pytest.skip("No suitable PDFs found for testing")
+    
+    def test_extract_without_progress_callback(
+        self, samples_dir: Path, text_extractor_with_splitting: TextExtractor
+    ):
+        """Test that extract() still works without progress_callback (backward compat)."""
+        for rel_path, desc in SMALL_PDFS:
+            pdf_path = samples_dir / rel_path
+            if pdf_path.exists():
+                result = text_extractor_with_splitting.extract(
+                    str(pdf_path), "application/pdf"
+                )
+                assert len(result.text) > 0
+                print(f"✓ {desc}: extracted without callback")
                 return
         
         pytest.skip("No suitable PDFs found for testing")

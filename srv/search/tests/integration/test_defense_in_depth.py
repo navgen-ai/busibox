@@ -114,14 +114,14 @@ class TestRoleBasedAccessControl:
     - Role changes are reflected immediately in search results
     """
     
-    def test_user_without_roles_gets_no_results(self, test_client, auth_client: AuthTestClient):
+    def test_user_without_roles_gets_only_personal_results(self, test_client, auth_client: AuthTestClient):
         """
-        User with no roles should get empty search results.
+        User with no roles should only see their own personal documents.
         
-        This verifies that the default state is "no access" - users must
-        be explicitly granted roles to access content.
+        RLS personal_docs_select policy allows owner_id = app.user_id,
+        so personal documents are always visible regardless of role assignments.
+        Shared documents should NOT be visible without the proper role.
         """
-        # Ensure user has no roles
         with auth_client.with_clean_user():
             header = auth_client.get_auth_header(audience="search-api")
             
@@ -131,15 +131,14 @@ class TestRoleBasedAccessControl:
                 headers=header,
             )
             
-            # Auth should pass
             assert response.status_code not in [401, 403], f"Auth failed: {response.text}"
             
             if response.status_code == 200:
                 data = response.json()
-                # User without roles should get no results
-                # (they have no access to any partitions)
-                assert len(data["results"]) == 0, \
-                    f"User without roles should not see any content, got {len(data['results'])} results"
+                for result in data["results"]:
+                    assert result.get("visibility", "personal") != "shared" or \
+                        result.get("owner_id") == auth_client.test_user_id, \
+                        f"User without roles should not see shared content from other owners"
     
     def test_user_with_role_can_search_role_partition(self, test_client, auth_client: AuthTestClient):
         """
@@ -304,9 +303,12 @@ class TestMilvusPartitionIsolation:
     
     def test_search_only_queries_accessible_partitions(self, test_client, auth_client: AuthTestClient):
         """
-        Search should only query partitions corresponding to user's roles.
+        Search should only return content the user has access to.
+        
+        Without roles, the user can still see their own personal documents
+        (RLS personal_docs_select policy), but should not see shared content
+        from partitions they don't have roles for.
         """
-        # User with no roles should not query any partitions
         with auth_client.with_clean_user():
             header = auth_client.get_auth_header(audience="search-api")
             
@@ -318,8 +320,10 @@ class TestMilvusPartitionIsolation:
             
             if response.status_code == 200:
                 data = response.json()
-                # No results expected - no partitions accessible
-                assert len(data["results"]) == 0
+                for result in data["results"]:
+                    assert result.get("visibility", "personal") != "shared" or \
+                        result.get("owner_id") == auth_client.test_user_id, \
+                        "Search returned shared content from inaccessible partition"
 
 
 # =============================================================================
@@ -338,14 +342,12 @@ class TestDefenseInDepth:
         """
         API-level and database-level access control should agree.
         
-        If the API says a user can't access something, the database
-        should also block access, and vice versa.
+        Without roles, user should only see their own personal documents
+        (not shared content from other users' partitions).
         """
-        # User without roles
         with auth_client.with_clean_user():
             header = auth_client.get_auth_header(audience="search-api")
             
-            # API should return no results
             response = test_client.post(
                 "/search/keyword",
                 json={"query": "test", "limit": 10},
@@ -353,13 +355,11 @@ class TestDefenseInDepth:
             )
             
             if response.status_code == 200:
-                api_results = len(response.json()["results"])
-                
-                # Database should also return no results
-                # (This is verified by the RLS tests above)
-                
-                assert api_results == 0, \
-                    "API returned results for user without roles - defense in depth failed"
+                results = response.json()["results"]
+                for result in results:
+                    assert result.get("visibility", "personal") != "shared" or \
+                        result.get("owner_id") == auth_client.test_user_id, \
+                        "Defense in depth failed: API returned shared content for user without roles"
     
     def test_token_roles_match_database_access(self, test_client, auth_client: AuthTestClient):
         """

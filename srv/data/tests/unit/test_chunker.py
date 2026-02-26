@@ -462,6 +462,95 @@ class TestPerformance:
             assert chunk.token_count <= chunker.max_tokens
 
 
+class TestMarkdownChunking:
+    """Tests for markdown-aware chunking (chunk_markdown)."""
+    
+    def test_chunk_markdown_splits_by_headers(self, chunker):
+        """Headers create chunk boundaries."""
+        md = "# Introduction\n\nSome intro text here.\n\n# Methods\n\nDescribing methods.\n\n# Results\n\nHere are results."
+        chunks = chunker.chunk_markdown(md)
+        assert len(chunks) == 3
+        assert "Introduction" in chunks[0].text
+        assert "Methods" in chunks[1].text
+        assert "Results" in chunks[2].text
+    
+    def test_chunk_markdown_preserves_code_blocks(self, chunker):
+        """Never split inside fenced code blocks."""
+        md = "# Setup\n\n```python\ndef foo():\n    return 1\n```\n\nSome text after code."
+        chunks = chunker.chunk_markdown(md)
+        code_chunk = chunks[0].text
+        assert "```python" in code_chunk
+        assert "def foo():" in code_chunk
+        assert "```" in code_chunk
+    
+    def test_chunk_markdown_preserves_tables(self, chunker):
+        """Never split inside markdown tables."""
+        md = "# Data\n\n| Name | Value |\n|------|-------|\n| A    | 1     |\n| B    | 2     |\n\nAfter table."
+        chunks = chunker.chunk_markdown(md)
+        found_table = False
+        for c in chunks:
+            if "| Name | Value |" in c.text:
+                assert "| A    | 1     |" in c.text
+                assert "| B    | 2     |" in c.text
+                found_table = True
+        assert found_table
+    
+    def test_chunk_markdown_section_heading_in_metadata(self, chunker):
+        """Section headings propagated to chunk metadata."""
+        md = "# Overview\n\nSome content.\n\n## Details\n\nMore content."
+        chunks = chunker.chunk_markdown(md)
+        assert chunks[0].section_heading == "# Overview"
+        assert chunks[1].section_heading == "## Details"
+    
+    def test_chunk_markdown_token_limits(self, small_chunker):
+        """Large sections get sub-split respecting token limits."""
+        long_body = "\n\n".join([f"Paragraph {i}. " + ("Word " * 30) for i in range(20)])
+        md = f"# Big Section\n\n{long_body}"
+        chunks = small_chunker.chunk_markdown(md)
+        assert len(chunks) > 1
+        for c in chunks:
+            assert c.token_count <= small_chunker.max_tokens + 50  # some tolerance for heading
+    
+    def test_chunk_markdown_overlap_includes_heading(self, small_chunker):
+        """When a section is sub-split, each sub-chunk includes the section heading."""
+        long_body = "\n\n".join([f"Paragraph {i}. " + ("Word " * 30) for i in range(20)])
+        md = f"# My Section\n\n{long_body}"
+        chunks = small_chunker.chunk_markdown(md)
+        for c in chunks:
+            assert "# My Section" in c.text
+    
+    def test_chunk_markdown_empty_input(self, chunker):
+        """Empty input returns empty list."""
+        assert chunker.chunk_markdown("") == []
+        assert chunker.chunk_markdown("   ") == []
+        assert chunker.chunk_markdown(None) == []
+    
+    def test_chunk_markdown_no_headers(self, chunker):
+        """Text without headers still produces chunks."""
+        md = "Just some text.\n\nAnother paragraph.\n\nMore content here."
+        chunks = chunker.chunk_markdown(md)
+        assert len(chunks) >= 1
+        assert chunks[0].section_heading is None or chunks[0].section_heading == ""
+    
+    def test_chunk_markdown_page_breaks(self, chunker):
+        """--- page breaks create natural section boundaries."""
+        md = "# Part 1\n\nContent A.\n\n---\n\n# Part 2\n\nContent B."
+        chunks = chunker.chunk_markdown(md)
+        assert len(chunks) >= 2
+    
+    def test_chunk_markdown_nested_headers(self, chunker):
+        """Nested headers (h1 > h2 > h3) each start new sections."""
+        md = "# Chapter 1\n\nIntro.\n\n## Section 1.1\n\nDetails.\n\n### Subsection 1.1.1\n\nDeep details."
+        chunks = chunker.chunk_markdown(md)
+        assert len(chunks) == 3
+    
+    def test_chunk_markdown_detected_languages(self, chunker):
+        """Language metadata is propagated to chunks."""
+        md = "# Title\n\nSome text."
+        chunks = chunker.chunk_markdown(md, detected_languages=["fr"])
+        assert chunks[0].language == "fr"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
 

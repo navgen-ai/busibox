@@ -286,6 +286,14 @@ async function stopApp(name) {
   state.stopping = false;
 }
 
+function emptyDir(dirPath) {
+  let entries;
+  try { entries = fs.readdirSync(dirPath); } catch { return; }
+  for (const entry of entries) {
+    try { fs.rmSync(path.join(dirPath, entry), { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+
 function cleanNextCache(def, full = false) {
   const appDir = path.join(ROOT_DIR, 'apps', def.name);
   const nextDir = path.join(appDir, '.next');
@@ -293,16 +301,14 @@ function cleanNextCache(def, full = false) {
 
   if (full) {
     log(def.name, def.color, 'Cleaning .next directory...');
-    try { fs.rmSync(nextDir, { recursive: true, force: true }); } catch (e) {
-      log(def.name, def.color, `WARNING: Could not fully clean .next: ${e.message}`);
-    }
+    emptyDir(nextDir);
   } else {
     const subdirs = ['dev', 'cache'];
     for (const sub of subdirs) {
       const target = path.join(nextDir, sub);
       if (fs.existsSync(target)) {
         log(def.name, def.color, `Cleaning .next/${sub}...`);
-        try { fs.rmSync(target, { recursive: true, force: true }); } catch (e) {}
+        emptyDir(target);
       }
     }
   }
@@ -608,6 +614,20 @@ async function main() {
 
   const modes = getInitialModes();
   managerLog(`Initial modes: ${JSON.stringify(modes)}`);
+
+  // Clean stale .next caches from volume mounts on startup
+  for (const def of APP_DEFS) {
+    const mode = modes[def.name];
+    const nextDir = path.join(ROOT_DIR, 'apps', def.name, '.next');
+    if (fs.existsSync(nextDir)) {
+      managerLog(`Cleaning stale .next for ${def.name} (${mode} mode)...`);
+      if (mode === 'dev') {
+        cleanNextCache(def, true);
+      } else {
+        cleanNextCache(def);
+      }
+    }
+  }
 
   // Check if any apps need prod builds
   const needsBuild = Object.entries(modes).filter(([, mode]) => mode === 'prod');
