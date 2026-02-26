@@ -514,6 +514,15 @@ _ensure-env:
 # Requires valid GitHub token for private repos
 docker-up:
 	@echo "Starting Docker services (ENV=$(ENV), overlay=$(notdir $(COMPOSE_OVERLAY)))..."
+	@existing_id=$$(docker inspect -f '{{.Id}}' "$(CONTAINER_PREFIX)-user-apps" 2>/dev/null || true); \
+	if [ -n "$$existing_id" ]; then \
+		existing_status=$$(docker inspect -f '{{.State.Status}}' "$(CONTAINER_PREFIX)-user-apps" 2>/dev/null || echo "unknown"); \
+		existing_project=$$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$(CONTAINER_PREFIX)-user-apps" 2>/dev/null || echo ""); \
+		if [ "$$existing_status" != "running" ] || [ -n "$$existing_project" -a "$$existing_project" != "$(COMPOSE_PROJECT)" ]; then \
+			echo "[WARN] Removing stale container $(CONTAINER_PREFIX)-user-apps (status=$$existing_status, project=$$existing_project, expected=$(COMPOSE_PROJECT))"; \
+			docker rm -f "$(CONTAINER_PREFIX)-user-apps" >/dev/null 2>&1 || true; \
+		fi; \
+	fi
 	$(eval GITHUB_AUTH_TOKEN := $(or $(GITHUB_AUTH_TOKEN),$(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.github.personal_access_token 2>/dev/null || echo ""')))
 	$(eval POSTGRES_PASSWORD := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.postgresql.password 2>/dev/null || echo "devpassword"'))
 	$(eval MINIO_ACCESS_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.minio.root_user 2>/dev/null || echo "minioadmin"'))
@@ -536,6 +545,11 @@ endif
 ifdef SERVICE
 	GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)" DEV_APPS_DIR="$(DEV_APPS_DIR)" BUSIBOX_HOST_PATH="$(BUSIBOX_HOST_PATH)" CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" LITELLM_SALT_KEY="$(LITELLM_SALT_KEY)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) up -d $(SERVICE)
 else
+	@echo "Phase 1/3: starting infrastructure prerequisites..."
+	GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)" DEV_APPS_DIR="$(DEV_APPS_DIR)" BUSIBOX_HOST_PATH="$(BUSIBOX_HOST_PATH)" CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" LITELLM_SALT_KEY="$(LITELLM_SALT_KEY)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) up -d postgres redis minio etcd milvus-minio milvus neo4j
+	@echo "Phase 2/3: running one-time init services..."
+	GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)" DEV_APPS_DIR="$(DEV_APPS_DIR)" BUSIBOX_HOST_PATH="$(BUSIBOX_HOST_PATH)" CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" LITELLM_SALT_KEY="$(LITELLM_SALT_KEY)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) up -d minio-init milvus-init
+	@echo "Phase 3/3: starting remaining services..."
 	GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)" DEV_APPS_DIR="$(DEV_APPS_DIR)" BUSIBOX_HOST_PATH="$(BUSIBOX_HOST_PATH)" CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" LITELLM_SALT_KEY="$(LITELLM_SALT_KEY)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) up -d
 endif
 	@echo ""
@@ -553,6 +567,15 @@ docker-up-prod: _ensure-env
 
 # Start Docker services without rebuilding (fast start)
 docker-start:
+	@existing_id=$$(docker inspect -f '{{.Id}}' "$(CONTAINER_PREFIX)-user-apps" 2>/dev/null || true); \
+	if [ -n "$$existing_id" ]; then \
+		existing_status=$$(docker inspect -f '{{.State.Status}}' "$(CONTAINER_PREFIX)-user-apps" 2>/dev/null || echo "unknown"); \
+		existing_project=$$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$(CONTAINER_PREFIX)-user-apps" 2>/dev/null || echo ""); \
+		if [ "$$existing_status" != "running" ] || [ -n "$$existing_project" -a "$$existing_project" != "$(COMPOSE_PROJECT)" ]; then \
+			echo "[WARN] Removing stale container $(CONTAINER_PREFIX)-user-apps (status=$$existing_status, project=$$existing_project, expected=$(COMPOSE_PROJECT))"; \
+			docker rm -f "$(CONTAINER_PREFIX)-user-apps" >/dev/null 2>&1 || true; \
+		fi; \
+	fi
 	$(eval POSTGRES_PASSWORD := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.postgresql.password 2>/dev/null || echo "devpassword"'))
 	$(eval MINIO_ACCESS_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.minio.root_user 2>/dev/null || echo "minioadmin"'))
 	$(eval MINIO_SECRET_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.minio.root_password 2>/dev/null || echo "minioadmin"'))
@@ -605,7 +628,7 @@ endif
 # Use this when developing - embedding model stays loaded, so restarts are fast
 docker-restart-apis:
 	@echo "Restarting API services (infrastructure tier preserved)..."
-	CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) restart authz-api deploy-api bridge-api data-api data-worker search-api agent-api docs-api nginx
+	CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) restart authz-api deploy-api bridge-api data-api data-worker search-api agent-api docs-api proxy
 
 # Restart data services only
 docker-restart-data:
@@ -1057,7 +1080,7 @@ endif
 # Check MLX server status
 mlx-status:
 	@echo "=== MLX Server Status ==="
-	@PRIMARY_MODEL=$$(ps -ax -o command= | awk '/mlx_lm\.server/ && /--port 8080/ {for(i=1;i<=NF;i++) if($$i=="--model" && (i+1)<=NF){print $$(i+1); exit}}'); \
+	@PRIMARY_MODEL=$$(ps -ax -o command= | awk '(/mlx_lm\.server/ || /mlx-outlines-server/) && /--port 8080/ {for(i=1;i<=NF;i++) if($$i=="--model" && (i+1)<=NF){print $$(i+1); exit}}'); \
 	if [ -n "$$PRIMARY_MODEL" ]; then \
 		echo "MLX Primary: Running (port 8080)"; \
 		echo "  Active model: $$PRIMARY_MODEL"; \
@@ -1070,7 +1093,7 @@ mlx-status:
 		echo "MLX Primary: Not running"; \
 	fi
 	@FAST_PORT=$${MLX_FAST_PORT:-18081}; \
-	FAST_MODEL=$$(ps -ax -o command= | awk -v p="$$FAST_PORT" '/mlx_lm\.server/ { \
+	FAST_MODEL=$$(ps -ax -o command= | awk -v p="$$FAST_PORT" '/mlx_lm\.server/ || /mlx-outlines-server/ { \
 		has_port=0; \
 		for(i=1;i<=NF;i++) { \
 			if($$i=="--port" && (i+1)<=NF && $$(i+1)==p) has_port=1; \
@@ -1156,7 +1179,9 @@ mlx-stop:
 			curl -sf -X POST http://localhost:8089/mlx/stop | bash scripts/lib/host-agent-format.sh || echo "Failed - authentication may be required"; \
 		fi; \
 	else \
-		pkill -f "mlx_lm.server" 2>/dev/null && echo "MLX server stopped" || echo "MLX server not running"; \
+		(pkill -f "mlx_lm.server" 2>/dev/null || true); \
+		(pkill -f "mlx-outlines-server/server.py" 2>/dev/null || true); \
+		echo "MLX server stopped"; \
 	fi
 
 # Restart MLX server (also restarts host-agent so it picks up config changes)

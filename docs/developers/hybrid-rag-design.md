@@ -16,11 +16,43 @@ This document describes the phased approach to implementing hybrid retrieval aug
 
 Entity extraction is no longer automatic during the document processing pipeline. Instead, it is **schema-driven and on-demand**:
 
-1. A user selects or generates an extraction schema with fields tagged `search: ["graph"]`
+1. A user selects or generates an extraction schema with per-field `search` tags
 2. The agent API `/extract` endpoint runs schema extraction and stores records
-3. After extraction, `POST /data/graph/from-extraction` creates Neo4j entities from graph-tagged fields
+3. After extraction, the pipeline indexes fields based on their search tags:
+   - `"graph"` fields: `POST /data/graph/from-extraction` creates Neo4j entities
+   - `"keyword"` fields: inserted into Milvus with `modality=extracted_field` for BM25 search
+   - `"embed"` fields: embedded via the embedding service and inserted into Milvus for semantic search
 4. Entity types are normalized to canonical labels (Person, Organization, Technology, Location, Keyword, Concept, Project)
-5. Entities are linked to documents via `MENTIONED_IN` relationships and to each other via `CO_OCCURS_WITH`
+5. Graph entities are linked to documents via `MENTIONED_IN` relationships and to each other via `CO_OCCURS_WITH`
+
+### Field-Level Search Indexing
+
+Each field in an extraction schema can include an optional `search` array with one or more indexing modes:
+
+| Search Tag | Storage | Use Case |
+|-----------|---------|----------|
+| `keyword` | Milvus BM25 (`modality=extracted_field`) | Exact match, filtering (names, IDs, dates) |
+| `embed` | Milvus dense vector (`modality=extracted_field`) | Semantic similarity (descriptions, summaries) |
+| `graph` | Neo4j entity nodes | Knowledge graph traversal (people, orgs, skills) |
+| *(none)* | PostgreSQL only | Stored but not indexed for search |
+
+A field can have multiple tags (e.g., `["keyword", "graph"]` for a person's name).
+
+**Endpoint**: `POST /data/index-from-extraction?file_id=...&schema_document_id=...`
+
+This endpoint:
+1. Loads the extraction schema and classifies fields by search tags
+2. Loads extraction records for the given file
+3. Deletes any existing Milvus entries with `modality=extracted_field` for this file
+4. For keyword-only fields: inserts text into Milvus (BM25 auto-generated from text)
+5. For embed fields: calls the embedding service, inserts with dense vectors
+6. Returns the count of indexed entries
+
+Milvus entries for extracted fields use `chunk_index=-2` and `modality="extracted_field"` to distinguish them from document text chunks (`chunk_index>=0`, `modality="text"`).
+
+The search service includes extracted field entries alongside document chunks by filtering for `modality in ["text", "extracted_field"]`.
+
+> **Migration Note**: The `"index"` search tag was renamed to `"keyword"` for clarity. Both values are accepted during the transition period — the indexing endpoint normalizes `"index"` to `"keyword"` on read.
 
 ### Graph Context in Agent Search
 
@@ -34,8 +66,8 @@ The `document_search` agent tool now passes `expand_graph=True` to the search AP
 ### Default Entity Extraction Schemas
 
 Built-in schemas are available via `POST /data/seed-default-schemas`:
-- **General Entity Extraction**: People, Organizations, Technologies, Locations, Keywords, Concepts (all `graph`-tagged)
-- **People & Organizations**: Focused extraction with role and context fields
+- **General Entity Extraction**: People, Organizations, Technologies, Locations, Keywords, Concepts (all `keyword` + `graph` tagged; Concepts are `embed` + `graph`)
+- **People & Organizations**: Focused extraction with role (`keyword`), context (`embed`), and entity fields (`keyword` + `graph`)
 
 ---
 
@@ -65,9 +97,11 @@ Neo4j lookup: Alice -> mentioned in docs [A, B, C]; Acme -> mentioned in docs [A
 Intersection: doc A mentions both Alice and Acme
 ```
 
-### 2.2 Entity Embeddings
+### 2.2 Entity Embeddings (Neo4j)
 
 **Goal**: Store entity-level embeddings in Neo4j for semantic entity matching.
+
+> **Note**: Field-level embeddings for search (the `embed` search tag) are now handled separately via `POST /data/index-from-extraction`, which inserts embeddings into Milvus with `modality=extracted_field`. Entity embeddings described here are a future enhancement for Neo4j nodes to enable semantic entity matching.
 
 **Approach**:
 - When creating graph entities from extraction, also generate an embedding for each entity
@@ -217,8 +251,13 @@ POST /search
 ## Related Files
 
 - `srv/search/src/services/graph_search.py` - Graph search service (Tier 1 implemented)
+- `srv/search/src/services/milvus_search.py` - Milvus search service (includes `extracted_field` modality)
 - `srv/search/src/api/routes/search.py` - Search API with `expand_graph` parameter
+- `srv/data/src/api/routes/data.py` - Data API with `index-from-extraction` endpoint
 - `srv/data/src/api/routes/graph.py` - Graph entity management (`/from-extraction` endpoint)
+- `srv/data/src/services/milvus_service.py` - Milvus service with extracted field insertion
+- `srv/data/src/services/embedding_client.py` - Embedding service client for field embeddings
 - `srv/data/src/services/graph_service.py` - Neo4j CRUD operations
+- `srv/agent/app/api/extraction.py` - Extraction pipeline (graph + field indexing hooks)
 - `srv/agent/app/tools/document_search_tool.py` - Agent RAG tool with graph context
 - `srv/agent/app/clients/busibox.py` - BusiboxClient with `expand_graph` support

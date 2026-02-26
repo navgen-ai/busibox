@@ -14,6 +14,7 @@ Handles structured data document operations:
 - GET /data/{id}/schema: Get schema
 - PUT /data/{id}/schema: Update schema
 - POST /data/{id}/embed: Generate embeddings for fields
+- POST /data/index-from-extraction: Index extracted fields into Milvus
 - GET /data/{id}/cache: Get cache status
 - POST /data/{id}/cache: Activate caching
 - DELETE /data/{id}/cache: Deactivate caching
@@ -21,6 +22,7 @@ Handles structured data document operations:
 All endpoints respect RLS policies for security.
 """
 
+import json
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -51,11 +53,13 @@ class SchemaFieldDef(BaseModel):
     """Schema field definition."""
     type: str = Field(..., description="Field type: string, integer, number, boolean, array, object, enum, datetime")
     required: bool = Field(default=False, description="Whether field is required")
+    description: Optional[str] = Field(None, description="Human-readable field description")
     values: Optional[List[Any]] = Field(None, description="Allowed values for enum type")
     min: Optional[float] = Field(None, description="Minimum value for numeric types")
     max: Optional[float] = Field(None, description="Maximum value for numeric types")
     items: Optional[Dict] = Field(None, description="Item schema for array type")
     auto: Optional[str] = Field(None, description="Auto-fill: 'now' for datetime, 'uuid' for string")
+    search: Optional[List[str]] = Field(None, description="Search/indexing modes: keyword, embed, graph")
 
 
 class GraphRelationshipDef(BaseModel):
@@ -922,18 +926,231 @@ async def embed_fields(
 ):
     """Generate embeddings for specified fields in a data document."""
     validate_uuid(document_id, "document_id")
-    
-    # TODO: Implement embedding generation
-    # This will:
-    # 1. Extract text from specified fields
-    # 2. Generate embeddings using FastEmbed
-    # 3. Store embeddings in Milvus
-    # 4. Update document metadata with embedding info
-    
-    raise HTTPException(
-        status_code=501,
-        detail="Embedding generation not yet implemented"
+
+    from services.embedding_client import EmbeddingClient
+    from shared.config import Config
+
+    config = Config().to_dict()
+    embedding_client = EmbeddingClient(config)
+
+    data_service: DataService = await get_data_service(request)
+    user_id = getattr(request.state, "user_id", None)
+    role_ids = getattr(request.state, "role_ids", [])
+
+    doc = data_service.get(document_id, user_id=user_id, role_ids=role_ids, include_records=True)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    records = doc.get("records", [])
+    if not records:
+        return {"indexed": 0, "message": "No records to embed"}
+
+    texts: List[str] = []
+    for record in records:
+        for field_name in body.fields:
+            val = record.get("data", {}).get(field_name)
+            if val is not None:
+                text = ", ".join(val) if isinstance(val, list) else str(val)
+                if text.strip():
+                    texts.append(text)
+
+    if not texts:
+        return {"indexed": 0, "message": "No non-empty field values to embed"}
+
+    embeddings = await embedding_client.embed_chunks(texts)
+    embedding_client.close()
+
+    return {
+        "indexed": len(embeddings),
+        "dimension": config.get("embedding_dimension", 1024),
+    }
+
+
+# =============================================================================
+# Field Indexing from Extraction
+# =============================================================================
+
+def _field_value_to_text(value: Any) -> str:
+    """Convert a field value to a text representation for indexing."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value)
+    if isinstance(value, dict):
+        return json.dumps(value, default=str)
+    return str(value)
+
+
+@router.post(
+    "/index-from-extraction",
+    summary="Index extracted fields into Milvus",
+    dependencies=[Depends(require_data_write)],
+)
+async def index_from_extraction(
+    request: Request,
+    file_id: str = Query(..., description="Source document file_id"),
+    schema_document_id: str = Query(..., description="Schema data-document ID"),
+):
+    """
+    Index extracted field values into Milvus based on schema search tags.
+
+    Fields tagged with ``keyword`` get BM25 indexing, ``embed`` get semantic
+    vector indexing. Fields tagged ``graph`` are handled by the graph endpoint.
+    """
+    validate_uuid(schema_document_id, "schema_document_id")
+
+    from services.milvus_service import MilvusService, MilvusConnectionError
+    from services.embedding_client import EmbeddingClient
+    from shared.config import Config
+
+    config = Config().to_dict()
+    data_service: DataService = await get_data_service(request)
+    user_id = getattr(request.state, "user_id", None)
+    role_ids = getattr(request.state, "role_ids", [])
+
+    schema_doc = data_service.get(
+        schema_document_id, user_id=user_id, role_ids=role_ids, include_records=False,
     )
+    if not schema_doc:
+        raise HTTPException(status_code=404, detail="Schema document not found")
+
+    schema = schema_doc.get("schema") or schema_doc.get("data_schema") or {}
+    fields_def = schema.get("fields", {})
+    if not fields_def:
+        raise HTTPException(status_code=400, detail="Schema has no field definitions")
+
+    keyword_fields: List[str] = []
+    embed_fields_list: List[str] = []
+
+    for fname, fdef in fields_def.items():
+        if not isinstance(fdef, dict):
+            continue
+        search_tags = fdef.get("search") or []
+        # Accept legacy "index" as alias for "keyword"
+        normalised = [("keyword" if t == "index" else t) for t in search_tags]
+        if "keyword" in normalised:
+            keyword_fields.append(fname)
+        if "embed" in normalised:
+            embed_fields_list.append(fname)
+
+    if not keyword_fields and not embed_fields_list:
+        return {"indexed_count": 0, "message": "No fields have keyword or embed search tags"}
+
+    # Load extraction records for this file_id (stored in the schema doc records)
+    records_doc = data_service.get(
+        schema_document_id, user_id=user_id, role_ids=role_ids, include_records=True,
+    )
+    all_records = records_doc.get("records", []) if records_doc else []
+
+    file_records = [
+        r for r in all_records
+        if r.get("data", {}).get("_file_id") == file_id
+        or r.get("metadata", {}).get("file_id") == file_id
+    ]
+
+    if not file_records:
+        return {"indexed_count": 0, "message": "No extraction records found for this file"}
+
+    # Build Milvus entries
+    embedding_client: Optional[EmbeddingClient] = None
+    embed_dim = config.get("embedding_dimension", 1024)
+
+    texts_to_embed: List[str] = []
+    entries_needing_embed: List[int] = []
+
+    field_entries: List[Dict] = []
+
+    for record_idx, record in enumerate(file_records):
+        record_data = record.get("data", {})
+        all_tagged = set(keyword_fields) | set(embed_fields_list)
+
+        for fname in all_tagged:
+            value = record_data.get(fname)
+            text = _field_value_to_text(value)
+            if not text.strip():
+                continue
+
+            entry: Dict[str, Any] = {
+                "id": f"{file_id}-field-{fname}-{record_idx}",
+                "text": text[:65000],
+                "text_dense": [0.0] * embed_dim,
+                "metadata": {
+                    "field_name": fname,
+                    "schema_document_id": schema_document_id,
+                    "record_index": record_idx,
+                },
+            }
+
+            if fname in embed_fields_list:
+                texts_to_embed.append(text[:8000])
+                entries_needing_embed.append(len(field_entries))
+
+            field_entries.append(entry)
+
+    if not field_entries:
+        return {"indexed_count": 0, "message": "All field values are empty"}
+
+    # Generate embeddings for embed-tagged fields
+    if texts_to_embed:
+        embedding_client = EmbeddingClient(config)
+        try:
+            embeddings = await embedding_client.embed_chunks(texts_to_embed)
+            for i, embed_idx in enumerate(entries_needing_embed):
+                if i < len(embeddings):
+                    field_entries[embed_idx]["text_dense"] = embeddings[i]
+        finally:
+            embedding_client.close()
+
+    # Determine visibility from the file metadata
+    from api.main import pg_service
+    conn = pg_service.pool.getconn()
+    visibility = "personal"
+    file_role_ids: List[str] = []
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT visibility, role_ids FROM data_files WHERE file_id = %s",
+            (file_id,),
+        )
+        row = cur.fetchone()
+        if row:
+            visibility = row[0] or "personal"
+            file_role_ids = row[1] or []
+    finally:
+        pg_service.pool.putconn(conn)
+
+    # Insert into Milvus
+    milvus = MilvusService(config)
+    try:
+        milvus.connect()
+        milvus.delete_extracted_fields(file_id)
+        inserted = milvus.insert_extracted_fields(
+            file_id=file_id,
+            user_id=user_id,
+            field_entries=field_entries,
+            visibility=visibility,
+            role_ids=file_role_ids if visibility == "shared" else None,
+        )
+    except MilvusConnectionError as e:
+        logger.warning("Milvus unavailable for field indexing", error=str(e))
+        return {"indexed_count": 0, "error": "Milvus unavailable"}
+    finally:
+        milvus.close()
+
+    logger.info(
+        "Field indexing complete",
+        file_id=file_id,
+        keyword_fields=keyword_fields,
+        embed_fields=embed_fields_list,
+        total_entries=len(field_entries),
+        inserted=inserted,
+    )
+
+    return {
+        "indexed_count": len(field_entries),
+        "keyword_fields": keyword_fields,
+        "embed_fields": embed_fields_list,
+    }
 
 
 # =============================================================================
@@ -1160,35 +1377,35 @@ DEFAULT_EXTRACTION_SCHEMAS = [
                 "people": {
                     "type": "array",
                     "description": "People mentioned in the document (names of individuals)",
-                    "search": ["index", "graph"],
+                    "search": ["keyword", "graph"],
                     "items": {"type": "string"},
                     "display_order": 1,
                 },
                 "organizations": {
                     "type": "array",
                     "description": "Organizations, companies, or institutions mentioned",
-                    "search": ["index", "graph"],
+                    "search": ["keyword", "graph"],
                     "items": {"type": "string"},
                     "display_order": 2,
                 },
                 "technologies": {
                     "type": "array",
                     "description": "Technologies, tools, frameworks, or platforms mentioned",
-                    "search": ["index", "graph"],
+                    "search": ["keyword", "graph"],
                     "items": {"type": "string"},
                     "display_order": 3,
                 },
                 "locations": {
                     "type": "array",
                     "description": "Geographic locations, cities, countries, or regions",
-                    "search": ["index", "graph"],
+                    "search": ["keyword", "graph"],
                     "items": {"type": "string"},
                     "display_order": 4,
                 },
                 "keywords": {
                     "type": "array",
                     "description": "Key topics, tags, or subject matter keywords",
-                    "search": ["index", "graph"],
+                    "search": ["keyword", "graph"],
                     "items": {"type": "string"},
                     "display_order": 5,
                 },
@@ -1216,19 +1433,19 @@ DEFAULT_EXTRACTION_SCHEMAS = [
                 "person": {
                     "type": "string",
                     "description": "Name of a person mentioned",
-                    "search": ["index", "graph"],
+                    "search": ["keyword", "graph"],
                     "display_order": 1,
                 },
                 "role": {
                     "type": "string",
                     "description": "Role or title of the person",
-                    "search": ["index"],
+                    "search": ["keyword"],
                     "display_order": 2,
                 },
                 "organization": {
                     "type": "string",
                     "description": "Organization the person is associated with",
-                    "search": ["index", "graph"],
+                    "search": ["keyword", "graph"],
                     "display_order": 3,
                 },
                 "context": {
@@ -1240,7 +1457,7 @@ DEFAULT_EXTRACTION_SCHEMAS = [
                 "keywords": {
                     "type": "array",
                     "description": "Related keywords or topics",
-                    "search": ["index", "graph"],
+                    "search": ["keyword", "graph"],
                     "items": {"type": "string"},
                     "display_order": 5,
                 },

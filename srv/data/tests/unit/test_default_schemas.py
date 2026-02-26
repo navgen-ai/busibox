@@ -97,7 +97,7 @@ class TestGraphTaggedFields:
 # =============================================================================
 
 class TestSearchModes:
-    VALID_SEARCH_MODES = {"index", "embed", "graph"}
+    VALID_SEARCH_MODES = {"keyword", "embed", "graph"}
 
     @pytest.mark.parametrize("idx", range(len(DEFAULT_EXTRACTION_SCHEMAS)))
     def test_all_search_modes_are_valid(self, idx):

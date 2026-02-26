@@ -193,6 +193,36 @@ backend_service_action() {
                 cd "$REPO_ROOT"
                 export CORE_APPS_MODE
                 export CORE_APPS_SOURCE
+                if [[ "$env" == "development" ]]; then
+                    info "Development mode detected; clearing core-apps cache volumes..."
+                    docker stop "$container" >/dev/null 2>&1 || true
+
+                    # Collect mounted cache volumes on core-apps, then remove them.
+                    # We clear:
+                    # - .next caches (stale Next.js build artifacts)
+                    # - node_modules volumes (stale pnpm workspace links/cached deps)
+                    local cache_volumes
+                    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
+                        cache_volumes=$(
+                            docker inspect --format '{{ range .Mounts }}{{ .Name }} {{ .Destination }} {{ .Type }}{{ "\n" }}{{ end }}' "$container" 2>/dev/null \
+                                | awk '$3 == "volume" && ($2 ~ /\/\.next$/ || $2 ~ /\/node_modules$/) { print $1 }' \
+                                | sort -u
+                        )
+                    else
+                        cache_volumes=""
+                        info "${container} not present; skipping mounted cache discovery"
+                    fi
+
+                    if [[ -n "$cache_volumes" ]]; then
+                        while IFS= read -r volume_name; do
+                            [[ -z "$volume_name" ]] && continue
+                            info "Removing cache volume: ${volume_name}"
+                            docker volume rm -f "$volume_name" >/dev/null 2>&1 || true
+                        done <<< "$cache_volumes"
+                    else
+                        info "No attached .next/node_modules cache volumes found on ${container}"
+                    fi
+                fi
                 make docker-build SERVICE="core-apps" ENV="$env" && make docker-up SERVICE="core-apps" ENV="$env"
                 success "core-apps redeployed"
                 return $?

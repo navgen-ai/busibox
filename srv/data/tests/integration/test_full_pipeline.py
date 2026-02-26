@@ -63,23 +63,38 @@ class TestFullDocumentPipeline:
         max_wait = 120  # 2 minutes max
         start_time = time.time()
         status = None
+        seen_status_messages = set()
+        seen_pages_processed = False
         
         while time.time() - start_time < max_wait:
             response = await async_client.get(f"/files/{file_id}")
             assert response.status_code == 200, f"Status check failed: {response.text}"
             
             data = response.json()
-            status = data.get("status", {}).get("stage")
+            status_obj = data.get("status", {})
+            status = status_obj.get("stage")
+            
+            status_message = status_obj.get("statusMessage")
+            if status_message:
+                seen_status_messages.add(status_message)
+            
+            if status_obj.get("pagesProcessed") and status_obj.get("totalPages"):
+                seen_pages_processed = True
             
             if status == "completed":
                 break
             elif status == "failed":
-                error = data.get("status", {}).get("errorMessage", "Unknown error")
+                error = status_obj.get("errorMessage", "Unknown error")
                 pytest.fail(f"Processing failed: {error}")
             
             await asyncio.sleep(2)
         
         assert status == "completed", f"Processing did not complete in {max_wait}s. Last status: {status}"
+        
+        if seen_status_messages:
+            print(f"  Status messages seen: {seen_status_messages}")
+        if seen_pages_processed:
+            print(f"  Page progress was reported during processing")
         
         # Step 3: Verify file metadata
         response = await async_client.get(f"/files/{file_id}")

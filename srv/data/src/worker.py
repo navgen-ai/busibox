@@ -188,6 +188,9 @@ class IngestWorker:
         self.file_service = FileService(self.config)
         self.postgres_service = PostgresService(self.config)
         self.postgres_service.connect()
+        
+        self._run_schema_migrations()
+        
         self.milvus_service = MilvusService(self.config)
         self.milvus_service.connect()
         self.history_service = ProcessingHistoryService(self.config)
@@ -228,6 +231,21 @@ class IngestWorker:
         self.image_extractor = ImageExtractor()
         
         logger.info("All services connected")
+    
+    def _run_schema_migrations(self):
+        """Run idempotent schema migrations on startup via sync psycopg2 connection."""
+        try:
+            from schema import get_data_schema
+            schema = get_data_schema()
+            conn = self.postgres_service._get_connection()
+            try:
+                schema.apply_sync(conn)
+                logger.info("Schema migrations applied by worker")
+            finally:
+                self.postgres_service._return_connection(conn)
+        except Exception as e:
+            logger.error("Failed to apply schema migrations", error=str(e), exc_info=True)
+            raise
     
     def disconnect(self):
         """Disconnect from all services."""
@@ -378,13 +396,13 @@ class IngestWorker:
                     if existing:
                         existing_file_id, chunk_count, vector_count = existing
                         
-                        # Update current file to completed status
                         self.postgres_service.update_status(
                             file_id=file_id,
                             stage="completed",
                             progress=100,
                             chunks_processed=chunk_count,
                             total_chunks=chunk_count,
+                            status_message="Processing complete (duplicate detected)",
                         )
                         
                         # Update file metadata (pass RLS context)
@@ -513,7 +531,10 @@ class IngestWorker:
             self.postgres_service.update_status(
                 file_id=file_id,
                 stage="embedding",
-                progress=60,
+                progress=50,
+                chunks_processed=0,
+                total_chunks=total_chunks,
+                status_message=f"Embedding {total_chunks} chunks",
             )
             
             # Generate text embeddings
@@ -551,7 +572,8 @@ class IngestWorker:
         self.postgres_service.update_status(
             file_id=file_id,
             stage="indexing",
-            progress=80,
+            progress=82,
+            status_message="Indexing in vector database",
         )
         
         # Prepare vectors for Milvus
@@ -607,6 +629,7 @@ class IngestWorker:
             progress=100,
             chunks_processed=total_chunks,
             total_chunks=total_chunks,
+            status_message="Processing complete",
         )
         
         self.postgres_service.update_file_metadata(
@@ -1405,9 +1428,10 @@ class IngestWorker:
                 )
         
         # Get start_stage for partial reprocessing
-        # Stages in order: parsing, chunking, cleanup, markdown, entity_extraction, embedding, indexing
+        # Stages in order: parsing, chunking, cleanup, markdown, embedding, indexing
+        # (entity_extraction removed -- now schema-driven and on-demand via /extract API)
         start_stage = job_data.get("start_stage", "parsing")
-        stage_order = ["parsing", "chunking", "cleanup", "markdown", "entity_extraction", "embedding", "indexing"]
+        stage_order = ["parsing", "chunking", "cleanup", "markdown", "embedding", "indexing"]
         start_stage_idx = stage_order.index(start_stage) if start_stage in stage_order else 0
         
         if start_stage != "parsing":
@@ -1502,13 +1526,13 @@ class IngestWorker:
                 # User explicitly selected this reprocess option - always run extraction
                 existing_chunks = self._load_chunks_from_db(file_id)
                 if existing_chunks:
-                    # Set status to entity_extraction (preserving existing counts)
                     self.postgres_service.update_status(
                         file_id=file_id,
                         stage="entity_extraction",
                         progress=50,
                         chunks_processed=len(existing_chunks),
                         total_chunks=len(existing_chunks),
+                        status_message="Extracting entities for knowledge graph",
                     )
                     try:
                         from processors.entity_extractor import EntityExtractor
@@ -1561,12 +1585,12 @@ class IngestWorker:
                             file_id=file_id,
                             error=str(e),
                         )
-                    # Restore status to completed with original chunk counts
                     self.postgres_service.update_status(
                         file_id=file_id,
                         stage="completed",
                         progress=100,
                         chunks_processed=len(existing_chunks),
+                        status_message="Processing complete",
                         total_chunks=len(existing_chunks),
                     )
                     logger.info(
@@ -1628,13 +1652,12 @@ class IngestWorker:
             self.postgres_service.update_status(
                 file_id=file_id,
                 stage="parsing",
-                progress=10,
+                progress=5,
+                status_message="Downloading file",
             )
             
             logger.debug("Downloading file from storage", file_id=file_id, storage_path=storage_path)
             download_start = time.time()
-            # Pass file_id, user_token, user_id, and role_ids for decryption
-            # user_token comes from delegation token exchange (Zero Trust)
             temp_file_path = self.file_service.download(
                 storage_path,
                 file_id=file_id,
@@ -1661,10 +1684,22 @@ class IngestWorker:
                     marker_enabled=self.text_extractor.marker_enabled,
                 )
             
+            def _page_progress(page_num: int, total_pages: int):
+                progress = 5 + int((page_num / total_pages) * 15)  # 5-20% range
+                self.postgres_service.update_status(
+                    file_id=file_id,
+                    stage="parsing",
+                    progress=progress,
+                    pages_processed=page_num,
+                    total_pages=total_pages,
+                    status_message=f"Parsing page {page_num} of {total_pages}",
+                )
+            
             extract_start = time.time()
             extraction_result: ExtractionResult = self.text_extractor.extract(
                 temp_file_path,
                 mime_type,
+                progress_callback=_page_progress,
             )
             
             # Restore original marker_enabled setting
@@ -1716,8 +1751,9 @@ class IngestWorker:
             self.postgres_service.update_status(
                 file_id=file_id,
                 stage="classifying",
-                progress=20,
+                progress=22,
                 total_pages=page_count,
+                status_message="Classifying document type",
             )
             
             document_type, confidence = self.classifier.classify(
@@ -1734,7 +1770,8 @@ class IngestWorker:
             self.postgres_service.update_status(
                 file_id=file_id,
                 stage="extracting_metadata",
-                progress=30,
+                progress=28,
+                status_message="Extracting metadata",
             )
             
             metadata = self.metadata_extractor.extract(
@@ -1801,7 +1838,8 @@ class IngestWorker:
             self.postgres_service.update_status(
                 file_id=file_id,
                 stage="chunking",
-                progress=40,
+                progress=32,
+                status_message="Creating semantic chunks",
             )
             
             # Apply custom chunking config if provided
@@ -1826,11 +1864,22 @@ class IngestWorker:
                     self.chunker.overlap_pct = chunk_overlap_pct
                     logger.info(f"Using custom chunk_overlap_pct: {chunk_overlap_pct}")
             
-            chunks: List[Chunk] = self.chunker.chunk(
-                extraction_result.text,
-                page_number=None,  # Will be set per chunk if available
-                detected_languages=detected_languages,
-            )
+            if extraction_result.markdown:
+                logger.info(
+                    "Using markdown-aware chunking",
+                    file_id=file_id,
+                    markdown_length=len(extraction_result.markdown),
+                )
+                chunks: List[Chunk] = self.chunker.chunk_markdown(
+                    extraction_result.markdown,
+                    detected_languages=detected_languages,
+                )
+            else:
+                chunks: List[Chunk] = self.chunker.chunk(
+                    extraction_result.text,
+                    page_number=None,
+                    detected_languages=detected_languages,
+                )
             
             # Restore original chunker config
             if processing_config:
@@ -1858,9 +1907,10 @@ class IngestWorker:
             self.postgres_service.update_status(
                 file_id=file_id,
                 stage="chunking",
-                progress=45,
+                progress=38,
                 chunks_processed=total_chunks,
                 total_chunks=total_chunks,
+                status_message=f"Created {total_chunks} chunks",
             )
             
             # Stage 4.5: LLM Cleanup (optional)
@@ -1882,9 +1932,10 @@ class IngestWorker:
                 self.postgres_service.update_status(
                     file_id=file_id,
                     stage="cleanup",
-                    progress=47,
+                    progress=40,
                     chunks_processed=0,
                     total_chunks=total_chunks,
+                    status_message=f"Cleaning up {total_chunks} chunks",
                 )
                 
                 # Run async cleanup in sync context
@@ -1913,9 +1964,10 @@ class IngestWorker:
                 self.postgres_service.update_status(
                     file_id=file_id,
                     stage="cleanup",
-                    progress=50,
+                    progress=48,
                     chunks_processed=total_chunks,
                     total_chunks=total_chunks,
+                    status_message="Cleanup complete",
                 )
             else:
                 logger.debug("LLM cleanup disabled, skipping", file_id=file_id)
@@ -1927,22 +1979,21 @@ class IngestWorker:
                 self.postgres_service.update_status(
                     file_id=file_id,
                     stage="chunking",
-                    progress=50,
+                    progress=48,
                     chunks_processed=total_chunks,
                     total_chunks=total_chunks,
+                    status_message="Chunks ready for embedding",
                 )
             
             # Store chunks in PostgreSQL (after cleanup)
             chunk_dicts = [c.to_dict() for c in chunks]
             self.postgres_service.insert_chunks(file_id, chunk_dicts)
             
-            # Stage 4.55: Entity Extraction for Knowledge Graph (optional)
-            # Disabled by default -- entity extraction is now schema-driven
-            # and runs on-demand or via library triggers after processing.
-            entity_extraction_enabled = (
-                processing_config.get("entity_extraction_enabled", False)
-                if processing_config else False
-            )
+            # Stage 4.55: Entity Extraction for Knowledge Graph (LEGACY - DISABLED)
+            # Entity extraction is now schema-driven and runs on-demand via
+            # the /extract API after document processing completes.
+            # The config flag is ignored; this block is kept for reference only.
+            entity_extraction_enabled = False
             if entity_extraction_enabled:
                 try:
                     from processors.entity_extractor import EntityExtractor
@@ -1956,6 +2007,7 @@ class IngestWorker:
                         file_id=file_id,
                         stage="entity_extraction",
                         progress=51,
+                        status_message="Extracting entities for knowledge graph",
                     )
                     
                     # Get library_id for graph filtering (Document nodes store library_id)
@@ -2307,9 +2359,10 @@ class IngestWorker:
             self.postgres_service.update_status(
                 file_id=file_id,
                 stage="embedding",
-                progress=60,
+                progress=50,
                 chunks_processed=0,
                 total_chunks=total_chunks,
+                status_message=f"Embedding {total_chunks} chunks",
             )
             
             # Generate dense embeddings
@@ -2335,9 +2388,10 @@ class IngestWorker:
             self.postgres_service.update_status(
                 file_id=file_id,
                 stage="embedding",
-                progress=80,
+                progress=78,
                 chunks_processed=total_chunks,
                 total_chunks=total_chunks,
+                status_message="Embeddings generated",
             )
             
             # Generate ColPali embeddings for PDF pages (if available and enabled)
@@ -2413,9 +2467,10 @@ class IngestWorker:
             self.postgres_service.update_status(
                 file_id=file_id,
                 stage="indexing",
-                progress=90,
+                progress=85,
                 chunks_processed=total_chunks,
                 total_chunks=total_chunks,
+                status_message="Indexing in vector database",
             )
             
             # Insert text chunks into Milvus
@@ -2640,6 +2695,7 @@ class IngestWorker:
                 total_chunks=total_chunks,
                 pages_processed=page_count,
                 total_pages=page_count,
+                status_message="Processing complete",
             )
             
             logger.info(
@@ -2968,6 +3024,8 @@ class IngestWorker:
                     if claimed:
                         logger.info(f"Periodic check: claimed and processed {claimed} pending messages")
                     pending_check_counter = 0
+                    
+                    TextExtractor.cleanup_if_idle()
                 
                 # Read from stream (block for 5 seconds)
                 messages = self.redis_client.xreadgroup(

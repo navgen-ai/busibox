@@ -631,6 +631,26 @@ class BaseStreamingAgent(StreamingAgent):
         if cancel.is_set():
             return ""
         
+        # For programmatic structured-output calls, skip synthesis entirely.
+        # The structured output stored in tool_results IS the final result.
+        if agent_context.response_schema is not None:
+            raw = agent_context.tool_results.get("llm_response", "")
+            if raw:
+                await stream(content(source=self.name, message=raw))
+                logger.info(
+                    f"{self.name} structured output returned directly (no synthesis)",
+                    extra={
+                        "total_ms": round((time.monotonic() - t0) * 1000),
+                        "result_length": len(raw),
+                    },
+                )
+                return raw
+            else:
+                err_msg = "Structured output call produced no result"
+                logger.error(f"{self.name}: {err_msg}")
+                await stream(error(source=self.name, message=err_msg))
+                return ""
+        
         # Synthesize final response
         t_synth = time.monotonic()
         result = await self._synthesize(query, stream, cancel, agent_context)
@@ -1210,8 +1230,8 @@ class BaseStreamingAgent(StreamingAgent):
             # AND validates the response with Pydantic (retry on mismatch).
             # Falls back to the direct OpenAI call if model conversion fails.
             if context.response_schema:
+                t_struct = time.monotonic()
                 try:
-                    t_struct = time.monotonic()
                     structured_output = await self._run_native_structured_output(
                         query=prompt_with_context,
                         context=context,
@@ -1226,13 +1246,28 @@ class BaseStreamingAgent(StreamingAgent):
                     context.tool_results["llm_response"] = structured_output
                 except Exception as e:
                     logger.error(
-                        f"{self.name} structured output call failed: {e}",
+                        f"{self.name} NativeOutput structured output failed: {e}",
                         exc_info=True,
                     )
-                    await stream(error(
-                        source=self.name,
-                        message=f"Error: {str(e)}"
-                    ))
+                    # Last-resort fallback: direct OpenAI call with jsonschema validation
+                    try:
+                        logger.info(f"{self.name} attempting direct OpenAI structured output fallback")
+                        structured_output = await self._call_structured_output(
+                            prompt=prompt_with_context,
+                            system_prompt=self.config.instructions,
+                            response_schema=context.response_schema,
+                            max_tokens=context.max_tokens or self.config.max_tokens,
+                        )
+                        context.tool_results["llm_response"] = structured_output
+                    except Exception as fallback_err:
+                        logger.error(
+                            f"{self.name} all structured output paths failed: {fallback_err}",
+                            exc_info=True,
+                        )
+                        await stream(error(
+                            source=self.name,
+                            message=f"Structured output failed: {str(fallback_err)}"
+                        ))
                 return
 
             # Build model settings - only include max_tokens if explicitly set
@@ -1371,13 +1406,17 @@ class BaseStreamingAgent(StreamingAgent):
         PydanticAI's ``NativeOutput`` mode, which sends ``response_format`` to the
         provider *and* validates + retries on the application side.
 
-        Falls back to ``_call_structured_output`` (direct OpenAI call with
-        jsonschema validation) if the schema cannot be converted.
-        """
-        from app.utils.json_schema_to_pydantic import json_schema_to_pydantic
+        When the backend does not enforce structured output (e.g. bare MLX),
+        skips NativeOutput entirely and delegates to ``_call_structured_output``
+        which injects the schema into the prompt.
 
+        Falls back to ``_call_structured_output`` if the schema cannot be
+        converted to a Pydantic model or NativeOutput is unavailable.
+        """
         response_schema = context.response_schema
         assert response_schema is not None
+
+        from app.utils.json_schema_to_pydantic import json_schema_to_pydantic
 
         try:
             dynamic_model = json_schema_to_pydantic(response_schema)
@@ -1413,6 +1452,8 @@ class BaseStreamingAgent(StreamingAgent):
         runtime_max_tokens = context.max_tokens if context.max_tokens is not None else self.config.max_tokens
         if runtime_max_tokens is not None:
             model_settings["max_tokens"] = runtime_max_tokens
+        else:
+            model_settings["max_tokens"] = 32768
 
         if not self.config.allow_frontier_fallback:
             model_settings.setdefault("extra_body", {})["disable_fallbacks"] = True
@@ -1445,10 +1486,47 @@ class BaseStreamingAgent(StreamingAgent):
             return json.dumps(output)
         return str(output)
 
-    def _is_structured_output_enforced(self) -> bool:
-        """Check whether the current LLM backend enforces structured output at the token level."""
-        backend = get_settings().llm_backend.lower()
-        return backend == "vllm"
+    @staticmethod
+    def _extract_json_from_response(content: str) -> str:
+        """Extract clean JSON from an LLM response that may contain thinking
+        tokens, markdown fences, or preamble text."""
+        import re
+
+        # 1) Strip Qwen3-style <think>...</think> reasoning blocks
+        cleaned = re.sub(r"<think>[\s\S]*?</think>", "", content).strip()
+
+        # 2) Try direct parse first
+        try:
+            json.loads(cleaned)
+            return cleaned
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # 3) Extract from ```json ... ``` fenced code blocks
+        fenced = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, flags=re.IGNORECASE)
+        for block in fenced:
+            block = block.strip()
+            try:
+                json.loads(block)
+                return block
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+        # 4) Find the first { ... } or [ ... ] blob
+        for start_char, end_char in [("{", "}"), ("[", "]")]:
+            start_idx = cleaned.find(start_char)
+            if start_idx == -1:
+                continue
+            end_idx = cleaned.rfind(end_char)
+            if end_idx > start_idx:
+                candidate = cleaned[start_idx : end_idx + 1]
+                try:
+                    json.loads(candidate)
+                    return candidate
+                except (json.JSONDecodeError, ValueError):
+                    continue
+
+        return cleaned
 
     async def _call_structured_output(
         self,
@@ -1463,6 +1541,10 @@ class BaseStreamingAgent(StreamingAgent):
         Bypasses PydanticAI so response_format reaches LiteLLM as a first-class
         parameter rather than being tunnelled through extra_body.
 
+        Prepends ``/no_think`` to suppress Qwen3 reasoning blocks.
+        Falls back to ``_extract_json_from_response`` if the raw content
+        contains stray ``<think>`` tags or markdown fences.
+
         After receiving the response, validates it against the JSON Schema and
         retries once on validation failure.
         """
@@ -1475,31 +1557,29 @@ class BaseStreamingAgent(StreamingAgent):
             api_key=settings.litellm_api_key,
         )
 
-        if not self._is_structured_output_enforced():
-            logger.warning(
-                f"{self.name} structured output requested but backend '{settings.llm_backend or 'unknown'}' "
-                "may not enforce grammar-level constraints (only vLLM+Outlines guarantees schema conformance)"
-            )
-
         model_name = self.config.model or settings.default_model
         schema_name = response_schema.get("name", "unknown")
         json_schema = response_schema.get("schema", response_schema)
 
+        if max_tokens is None:
+            max_tokens = 32768
+
+        effective_prompt = "/no_think\n" + prompt
+
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": effective_prompt},
         ]
 
         kwargs: Dict[str, Any] = {
             "model": model_name,
             "messages": messages,
+            "max_tokens": max_tokens,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": response_schema,
             },
         }
-        if max_tokens is not None:
-            kwargs["max_tokens"] = max_tokens
 
         max_attempts = 2
         last_error: Optional[str] = None
@@ -1510,12 +1590,13 @@ class BaseStreamingAgent(StreamingAgent):
                 extra={
                     "model": model_name,
                     "schema_name": schema_name,
-                    "prompt_length": len(prompt),
+                    "prompt_length": len(effective_prompt),
                 },
             )
 
             response = await client.chat.completions.create(**kwargs)
-            content = response.choices[0].message.content or ""
+            raw_content = response.choices[0].message.content or ""
+            content = self._extract_json_from_response(raw_content)
 
             try:
                 parsed = json.loads(content)
@@ -1523,14 +1604,15 @@ class BaseStreamingAgent(StreamingAgent):
                 last_error = f"Response is not valid JSON: {e}"
                 logger.warning(
                     f"{self.name} structured output attempt {attempt} returned invalid JSON",
-                    extra={"error": last_error, "content_preview": content[:500]},
+                    extra={"error": last_error, "content_preview": raw_content[:500]},
                 )
                 if attempt < max_attempts:
                     kwargs["messages"] = [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt},
-                        {"role": "assistant", "content": content},
+                        {"role": "user", "content": effective_prompt},
+                        {"role": "assistant", "content": raw_content},
                         {"role": "user", "content": (
+                            "/no_think\n"
                             f"Your response was not valid JSON. Error: {last_error}\n"
                             "Please try again and return ONLY valid JSON matching the required schema."
                         )},
@@ -1549,9 +1631,10 @@ class BaseStreamingAgent(StreamingAgent):
                 if attempt < max_attempts:
                     kwargs["messages"] = [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt},
+                        {"role": "user", "content": effective_prompt},
                         {"role": "assistant", "content": content},
                         {"role": "user", "content": (
+                            "/no_think\n"
                             f"Your response did not match the required schema. Validation error: {last_error}\n"
                             "Please try again and return JSON that strictly conforms to the schema."
                         )},

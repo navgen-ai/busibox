@@ -63,6 +63,19 @@ For schema generation from raw document content:
 - Prefer practical fields that generalize across similar documents
 - Keep the schema concise and usable (typically 8-15 fields)
 
+**Field Search/Indexing (optional per field):**
+
+Each field can include an optional `search` array controlling how extracted values are indexed:
+- `"keyword"` — BM25 keyword index for exact match and filtering
+- `"embed"` — semantic vector embedding for similarity search
+- `"graph"` — entity extraction into the knowledge graph (Neo4j)
+
+Fields without a `search` array are stored but not indexed. Examples:
+- A person's name: `["keyword", "graph"]`
+- A description or summary: `["embed"]`
+- A list of skills: `["keyword", "embed", "graph"]`
+- A phone number: no `search` (just stored)
+
 **Example Schema for Resumes:**
 ```json
 {
@@ -70,14 +83,14 @@ For schema generation from raw document content:
   "itemLabel": "Resume",
   "graphNode": "Resume",
   "fields": {
-    "name": {"type": "string", "required": true},
-    "email": {"type": "string"},
+    "name": {"type": "string", "required": true, "search": ["keyword", "graph"]},
+    "email": {"type": "string", "search": ["keyword"]},
     "phone": {"type": "string"},
-    "summary": {"type": "string"},
-    "skills": {"type": "array", "items": {"type": "string"}},
-    "experience": {"type": "array", "items": {"type": "object"}},
+    "summary": {"type": "string", "search": ["embed"]},
+    "skills": {"type": "array", "items": {"type": "string"}, "search": ["keyword", "embed", "graph"]},
+    "experience": {"type": "array", "items": {"type": "object"}, "search": ["embed"]},
     "education": {"type": "array", "items": {"type": "object"}},
-    "certifications": {"type": "array", "items": {"type": "string"}}
+    "certifications": {"type": "array", "items": {"type": "string"}, "search": ["keyword"]}
   },
   "graphRelationships": [
     {"source_label": "Resume", "target_field": "name", "target_label": "Person", "relationship": "RESUME_OF"}

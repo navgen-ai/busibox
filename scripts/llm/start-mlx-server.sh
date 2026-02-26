@@ -3,14 +3,13 @@
 # Start MLX-LM server for Apple Silicon
 #
 # Usage:
-#   start-mlx-server.sh           # Start with agent model
+#   start-mlx-server.sh           # Start with agent model (Outlines enabled by default)
 #   start-mlx-server.sh fast      # Start with fast model
 #   start-mlx-server.sh --stop    # Stop the server
 #   start-mlx-server.sh --status  # Check server status
-#   start-mlx-server.sh --outlines  # Start with Outlines structured output support
 #
 # Environment:
-#   MLX_USE_OUTLINES=1   Enable Outlines-based server for structured output
+#   MLX_USE_OUTLINES=0   Disable Outlines server (plain mlx_lm.server fallback)
 #
 
 set -euo pipefail
@@ -20,6 +19,10 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 # Source UI library
 source "${SCRIPT_DIR}/../lib/ui.sh"
+
+# Outlines-based server is the default (structured output enforcement).
+# Set MLX_USE_OUTLINES=0 to disable.
+: "${MLX_USE_OUTLINES:=1}"
 
 # MLX virtual environment (PEP 668 compliance for modern macOS)
 MLX_VENV_DIR="${HOME}/.busibox/mlx-venv"
@@ -75,8 +78,9 @@ stop_server_instance() {
         rm -f "$pid_file"
     fi
 
-    # Clean up any orphaned mlx_lm.server processes on this port
+    # Clean up any orphaned server processes on this port
     pkill -f "mlx_lm.server.*--port ${port}" 2>/dev/null || true
+    pkill -f "mlx-outlines-server/server.py.*--port ${port}" 2>/dev/null || true
 }
 
 stop_server() {
@@ -302,15 +306,6 @@ main() {
             ;;
         --dual)
             start_dual_servers
-            ;;
-        --outlines)
-            export MLX_USE_OUTLINES=1
-            local role="${2:-agent}"
-            if [[ "$role" == "--dual" ]]; then
-                start_dual_servers
-            else
-                start_server "$role"
-            fi
             ;;
         fast|agent|frontier|test|default)
             start_server "$action"

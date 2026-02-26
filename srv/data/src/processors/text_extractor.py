@@ -19,7 +19,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import pdfplumber
 import structlog
@@ -114,9 +114,10 @@ class TextExtractor:
     """Extract text from various file formats."""
     
     # Class-level cache for Marker models to avoid reloading on every extraction
-    # This prevents OOM when processing multiple documents
     _marker_models = None
     _marker_converter = None
+    _marker_last_used: float = 0.0
+    _marker_idle_timeout: float = 30 * 60  # 30 minutes
     
     @classmethod
     def get_marker_models(cls):
@@ -126,31 +127,32 @@ class TextExtractor:
         try/except so that table recognition failures don't cause the
         entire extraction to fall back to pdfplumber.
         """
+        import time as _time
         if cls._marker_models is None:
             try:
                 from marker.models import create_model_dict
                 
                 logger.info("Loading Marker models (will be cached for reuse)...")
                 cls._marker_models = create_model_dict()
-                # Use resilient converter that handles processor failures gracefully
                 cls._marker_converter = _create_resilient_converter(cls._marker_models)
                 logger.info("Marker models loaded and cached (resilient mode)", models=list(cls._marker_models.keys()))
             except Exception as e:
                 logger.error("Failed to load Marker models", error=str(e))
                 raise
+        cls._marker_last_used = _time.time()
         return cls._marker_models, cls._marker_converter
     
     @classmethod
     def cleanup_marker_models(cls):
-        """Clean up cached Marker models to free GPU memory."""
+        """Clean up cached Marker models to free GPU/CPU memory."""
         if cls._marker_models is not None:
             logger.info("Cleaning up Marker models...")
             del cls._marker_models
             del cls._marker_converter
             cls._marker_models = None
             cls._marker_converter = None
+            cls._marker_last_used = 0.0
             
-            # Force GPU memory cleanup
             try:
                 import torch
                 if torch.cuda.is_available():
@@ -158,6 +160,26 @@ class TextExtractor:
                     logger.info("GPU memory cleared")
             except Exception:
                 pass
+            
+            try:
+                import gc
+                gc.collect()
+            except Exception:
+                pass
+    
+    @classmethod
+    def cleanup_if_idle(cls):
+        """Release Marker models if they haven't been used within the idle timeout."""
+        if cls._marker_models is None:
+            return
+        import time as _time
+        idle_seconds = _time.time() - cls._marker_last_used
+        if idle_seconds >= cls._marker_idle_timeout:
+            logger.info(
+                "Marker models idle, releasing memory",
+                idle_minutes=round(idle_seconds / 60, 1),
+            )
+            cls.cleanup_marker_models()
     
     def __init__(self, config: dict):
         """Initialize text extractor."""
@@ -194,20 +216,26 @@ class TextExtractor:
         
         os.makedirs(self.temp_dir, exist_ok=True)
     
-    def extract(self, file_path: str, mime_type: str) -> ExtractionResult:
+    def extract(
+        self,
+        file_path: str,
+        mime_type: str,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> ExtractionResult:
         """
         Extract text from file.
         
         Args:
             file_path: Path to file
             mime_type: MIME type of file
+            progress_callback: Optional callback(page_num, total_pages) for progress reporting
             
         Returns:
             ExtractionResult with text, markdown, page images, etc.
         """
         # PDF
         if mime_type == "application/pdf":
-            return self._extract_pdf(file_path)
+            return self._extract_pdf(file_path, progress_callback=progress_callback)
         
         # Microsoft Office formats
         elif mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
@@ -244,42 +272,47 @@ class TextExtractor:
         else:
             raise ValueError(f"Unsupported MIME type: {mime_type}")
     
-    def _extract_pdf(self, file_path: str) -> ExtractionResult:
+    def _extract_pdf(
+        self,
+        file_path: str,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> ExtractionResult:
         """Extract text from PDF using Marker, TATR, and page images.
         
-        For large PDFs (>pdf_split_pages pages), the PDF is split into smaller
-        chunks before processing to prevent memory issues and timeouts.
-        Results from each chunk are then combined.
+        Always processes page-by-page when progress_callback is provided
+        (or for large PDFs), reporting progress per page. For single-page PDFs
+        or when no callback is given and the PDF is small, processes in one shot.
         """
-        # Check if PDF needs splitting
-        if self.pdf_split_enabled and self.pdf_splitter.needs_splitting(file_path):
-            return self._extract_pdf_with_splitting(file_path)
+        page_count = self.pdf_splitter.get_page_count(file_path)
         
-        # Process as single PDF (no splitting needed)
+        if page_count > 1 and (progress_callback or (self.pdf_split_enabled and page_count > self.pdf_split_pages)):
+            return self._extract_pdf_with_splitting(file_path, progress_callback=progress_callback)
+        
+        if progress_callback:
+            progress_callback(1, max(page_count, 1))
         return self._extract_single_pdf(file_path)
     
-    def _extract_pdf_with_splitting(self, file_path: str) -> ExtractionResult:
-        """Extract text from a large PDF by splitting it into chunks.
+    def _extract_pdf_with_splitting(
+        self,
+        file_path: str,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> ExtractionResult:
+        """Extract text from a PDF by splitting into individual pages.
         
-        Args:
-            file_path: Path to PDF file
-            
-        Returns:
-            Combined ExtractionResult from all chunks
+        Each page is processed separately through Marker, with progress
+        reported via the callback. Results are reassembled with page-break
+        markers in the combined markdown.
         """
         total_page_count = self.pdf_splitter.get_page_count(file_path)
         
         logger.info(
-            "Processing large PDF with splitting",
+            "Processing PDF page-by-page",
             file_path=file_path,
             total_pages=total_page_count,
-            pages_per_split=self.pdf_split_pages,
         )
         
-        # Split the PDF
-        splits = self.pdf_splitter.split(file_path)
+        splits = self.pdf_splitter.split_single_pages(file_path)
         
-        # Accumulate results from all splits
         all_text_parts = []
         all_markdown_parts = []
         all_page_images = []
@@ -288,75 +321,54 @@ class TextExtractor:
         
         try:
             for split_idx, (split_path, start_page, end_page) in enumerate(splits):
+                page_num = split_idx + 1
                 logger.info(
-                    "Processing PDF split",
-                    split_num=split_idx + 1,
-                    total_splits=len(splits),
-                    pages=f"{start_page}-{end_page}",
+                    "Processing page",
+                    page=page_num,
+                    total_pages=total_page_count,
                     split_path=split_path,
                 )
                 
-                # Extract from this split
-                logger.debug(f"Calling _extract_single_pdf for split {split_idx + 1}")
                 result = self._extract_single_pdf(split_path)
-                logger.debug(f"_extract_single_pdf returned for split {split_idx + 1}")
                 
-                # Accumulate text
-                logger.debug(f"Accumulating text for split {split_idx + 1}")
                 if result.text:
-                    # Add page range marker for debugging/reference
                     all_text_parts.append(result.text)
-                logger.debug(f"Text accumulated for split {split_idx + 1}")
                 
-                # Accumulate markdown
-                logger.debug(f"Accumulating markdown for split {split_idx + 1}")
                 if result.markdown:
                     all_markdown_parts.append(result.markdown)
-                logger.debug(f"Markdown accumulated for split {split_idx + 1}")
                 
-                # Accumulate page images (adjust paths to avoid conflicts)
-                logger.debug(f"Accumulating page images for split {split_idx + 1}")
                 if result.page_images:
                     all_page_images.extend(result.page_images)
-                logger.debug(f"Page images accumulated for split {split_idx + 1}: {len(result.page_images) if result.page_images else 0}")
                 
-                # Accumulate tables
-                logger.debug(f"Accumulating tables for split {split_idx + 1}")
                 if result.tables:
-                    # Add page offset to table metadata
                     for table in result.tables:
                         if isinstance(table, dict):
                             table["page_offset"] = start_page - 1
                     all_tables.extend(result.tables)
-                logger.debug(f"Tables accumulated for split {split_idx + 1}")
                 
-                # Use extraction method from first successful extraction
-                logger.debug(f"Checking extraction method for split {split_idx + 1}")
                 if extraction_method == "unknown" and result.metadata.get("extraction_method"):
                     extraction_method = result.metadata.get("extraction_method")
-                logger.debug(f"Extraction method set: {extraction_method}")
+                
+                if progress_callback:
+                    progress_callback(page_num, total_page_count)
                 
                 logger.info(
-                    "Split extraction complete",
-                    split_num=split_idx + 1,
+                    "Page extraction complete",
+                    page=page_num,
                     text_length=len(result.text) if result.text else 0,
-                    page_images=len(result.page_images) if result.page_images else 0,
                     has_markdown=result.markdown is not None,
                 )
         
         finally:
-            # Clean up split files
             self.pdf_splitter.cleanup_splits(splits, file_path)
         
-        # Combine results
         combined_text = "\n\n".join(all_text_parts)
-        combined_markdown = "\n\n".join(all_markdown_parts) if all_markdown_parts else None
+        combined_markdown = "\n\n---\n\n".join(all_markdown_parts) if all_markdown_parts else None
         
         logger.info(
-            "PDF splitting extraction complete",
+            "PDF page-by-page extraction complete",
             file_path=file_path,
             total_pages=total_page_count,
-            num_splits=len(splits),
             combined_text_length=len(combined_text),
             combined_page_images=len(all_page_images),
             combined_tables=len(all_tables),
@@ -372,7 +384,7 @@ class TextExtractor:
                 "extraction_method": extraction_method,
                 "split_processing": True,
                 "num_splits": len(splits),
-                "pages_per_split": self.pdf_split_pages,
+                "pages_per_split": 1,
             },
         )
     

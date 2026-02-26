@@ -1493,6 +1493,35 @@ async def extract_document(
             },
         )
 
+    # Index keyword and embed fields from extraction into Milvus
+    index_result: Dict[str, Any] = {"indexed_count": 0}
+    try:
+        index_result = await client.request(
+            "POST",
+            "/data/index-from-extraction",
+            params={
+                "file_id": payload.file_id,
+                "schema_document_id": payload.schema_document_id,
+            },
+        )
+        logger.info(
+            "Field indexing complete from extraction",
+            extra={
+                "file_id": payload.file_id,
+                "schema_document_id": payload.schema_document_id,
+                "indexed_count": index_result.get("indexed_count", 0),
+            },
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to index extracted fields (non-fatal)",
+            extra={
+                "file_id": payload.file_id,
+                "schema_document_id": payload.schema_document_id,
+                "error": str(exc),
+            },
+        )
+
     # Persist extraction results summary + records in source doc metadata.
     try:
         await client.request(
@@ -1533,4 +1562,5 @@ async def extract_document(
         "records": enriched_records,
         "storage": insert_result,
         "graph": graph_result,
+        "indexing": index_result,
     }

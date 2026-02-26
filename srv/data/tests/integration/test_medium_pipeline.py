@@ -113,17 +113,28 @@ class TestMediumPipeline:
         max_wait = 60  # 1 minute for small PDF
         start_time = time.time()
         status = None
+        seen_status_messages = []
+        max_pages_processed = 0
         
         while time.time() - start_time < max_wait:
             response = await async_client.get(f"/files/{file_id}")
             if response.status_code == 200:
                 file_data = response.json()
-                status = file_data.get("status", {}).get("stage")
+                status_obj = file_data.get("status", {})
+                status = status_obj.get("stage")
+                
+                sm = status_obj.get("statusMessage")
+                if sm and (not seen_status_messages or seen_status_messages[-1] != sm):
+                    seen_status_messages.append(sm)
+                
+                pp = status_obj.get("pagesProcessed")
+                if pp and pp > max_pages_processed:
+                    max_pages_processed = pp
                 
                 if status == "completed":
                     break
                 elif status == "failed":
-                    error = file_data.get("status", {}).get("errorMessage", "Unknown")
+                    error = status_obj.get("errorMessage", "Unknown")
                     pytest.fail(f"Processing failed: {error}")
             
             time.sleep(2)
@@ -152,6 +163,11 @@ class TestMediumPipeline:
         assert response.status_code == 200
         md_data = response.json()
         assert md_data.get("markdown"), "No markdown content"
+        
+        if seen_status_messages:
+            print(f"  Status messages: {seen_status_messages}")
+        if max_pages_processed > 0:
+            print(f"  Max pages processed: {max_pages_processed}")
         
         # Cleanup
         await async_client.delete(f"/files/{file_id}")

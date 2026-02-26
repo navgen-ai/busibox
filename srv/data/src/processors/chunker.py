@@ -688,3 +688,255 @@ class Chunker:
         new_char_offset = current_char_offset - sum(len(p) + 2 for p in overlap_paras)
         
         return overlap_paras, overlap_token_count, new_char_offset
+    
+    def chunk_markdown(
+        self,
+        markdown: str,
+        detected_languages: Optional[List[str]] = None,
+    ) -> List[Chunk]:
+        """
+        Chunk markdown text using header-based semantic splitting.
+        
+        Splits on markdown headers (# through ######), preserving code blocks
+        and tables as atomic units. Each chunk includes section heading context.
+        
+        Args:
+            markdown: Markdown-formatted text (e.g. from Marker extraction)
+            detected_languages: Detected languages for metadata
+            
+        Returns:
+            List of Chunk objects with section_heading metadata
+        """
+        if not markdown or not markdown.strip():
+            return []
+        
+        primary_lang = detected_languages[0] if detected_languages else "en"
+        
+        sections = self._split_markdown_by_headers(markdown)
+        
+        chunks = []
+        chunk_index = 0
+        char_offset = 0
+        
+        for section in sections:
+            heading = section["heading"]
+            body = section["body"]
+            
+            if not body.strip():
+                char_offset += len(heading) + len(body) + 2
+                continue
+            
+            section_text = f"{heading}\n\n{body}".strip() if heading else body.strip()
+            section_tokens = self._count_tokens(section_text)
+            
+            if section_tokens <= self.max_tokens:
+                if len(section_text) > 65000:
+                    section_text = section_text[:65000] + "... [truncated]"
+                
+                chunk = Chunk(
+                    text=section_text,
+                    chunk_index=chunk_index,
+                    token_count=self._count_tokens(section_text),
+                    char_offset=char_offset,
+                    section_heading=heading if heading else None,
+                    language=primary_lang,
+                )
+                chunks.append(chunk)
+                chunk_index += 1
+            else:
+                sub_chunks = self._sub_split_markdown_section(
+                    body, heading, char_offset, chunk_index, primary_lang,
+                )
+                chunks.extend(sub_chunks)
+                chunk_index += len(sub_chunks)
+            
+            char_offset += len(section_text) + 2
+        
+        logger.info(
+            "Markdown chunked",
+            chunk_count=len(chunks),
+            total_tokens=sum(c.token_count for c in chunks),
+            avg_tokens=sum(c.token_count for c in chunks) / len(chunks) if chunks else 0,
+        )
+        
+        return chunks
+    
+    def _split_markdown_by_headers(self, markdown: str) -> List[Dict]:
+        """
+        Split markdown into sections by headers while keeping code blocks and
+        tables intact.
+        
+        Returns list of dicts: {"heading": str, "body": str}
+        """
+        lines = markdown.split("\n")
+        sections: List[Dict] = []
+        current_heading = ""
+        current_body_lines: List[str] = []
+        in_code_block = False
+        
+        for line in lines:
+            stripped = line.strip()
+            
+            if stripped.startswith("```"):
+                in_code_block = not in_code_block
+                current_body_lines.append(line)
+                continue
+            
+            if in_code_block:
+                current_body_lines.append(line)
+                continue
+            
+            if re.match(r"^#{1,6}\s+", stripped):
+                if current_heading or current_body_lines:
+                    sections.append({
+                        "heading": current_heading,
+                        "body": "\n".join(current_body_lines),
+                    })
+                current_heading = stripped
+                current_body_lines = []
+            elif stripped == "---":
+                current_body_lines.append(line)
+            else:
+                current_body_lines.append(line)
+        
+        if current_heading or current_body_lines:
+            sections.append({
+                "heading": current_heading,
+                "body": "\n".join(current_body_lines),
+            })
+        
+        return sections
+    
+    def _sub_split_markdown_section(
+        self,
+        body: str,
+        heading: str,
+        base_char_offset: int,
+        base_chunk_index: int,
+        language: str,
+    ) -> List[Chunk]:
+        """
+        Split a large markdown section into smaller chunks by paragraphs,
+        prepending the section heading to each chunk for context.
+        
+        Keeps code blocks and tables as atomic units.
+        """
+        blocks = self._split_into_atomic_blocks(body)
+        
+        chunks = []
+        current_blocks: List[str] = []
+        current_tokens = self._count_tokens(heading) if heading else 0
+        char_offset = base_char_offset
+        chunk_index = base_chunk_index
+        
+        for block in blocks:
+            block_tokens = self._count_tokens(block)
+            
+            if current_tokens + block_tokens > self.max_tokens and current_blocks:
+                chunk_text = self._assemble_chunk_text(heading, current_blocks)
+                if len(chunk_text) > 65000:
+                    chunk_text = chunk_text[:65000] + "... [truncated]"
+                
+                chunk = Chunk(
+                    text=chunk_text,
+                    chunk_index=chunk_index,
+                    token_count=self._count_tokens(chunk_text),
+                    char_offset=char_offset,
+                    section_heading=heading if heading else None,
+                    language=language,
+                )
+                chunks.append(chunk)
+                chunk_index += 1
+                
+                overlap_tokens = int(current_tokens * self.overlap_pct)
+                current_blocks, current_tokens, char_offset = self._get_overlap_simple(
+                    current_blocks, overlap_tokens, char_offset,
+                )
+                current_tokens += self._count_tokens(heading) if heading else 0
+            
+            current_blocks.append(block)
+            current_tokens += block_tokens
+        
+        if current_blocks:
+            chunk_text = self._assemble_chunk_text(heading, current_blocks)
+            if len(chunk_text) > 65000:
+                chunk_text = chunk_text[:65000] + "... [truncated]"
+            
+            chunk = Chunk(
+                text=chunk_text,
+                chunk_index=chunk_index,
+                token_count=self._count_tokens(chunk_text),
+                char_offset=char_offset,
+                section_heading=heading if heading else None,
+                language=language,
+            )
+            chunks.append(chunk)
+        
+        return chunks
+    
+    def _split_into_atomic_blocks(self, text: str) -> List[str]:
+        """
+        Split text into atomic blocks that should not be broken apart:
+        code blocks, tables, and paragraphs.
+        """
+        lines = text.split("\n")
+        blocks: List[str] = []
+        current_block: List[str] = []
+        in_code_block = False
+        in_table = False
+        
+        for line in lines:
+            stripped = line.strip()
+            
+            if stripped.startswith("```"):
+                if in_code_block:
+                    current_block.append(line)
+                    blocks.append("\n".join(current_block))
+                    current_block = []
+                    in_code_block = False
+                else:
+                    if current_block:
+                        blocks.append("\n".join(current_block))
+                        current_block = []
+                    current_block.append(line)
+                    in_code_block = True
+                continue
+            
+            if in_code_block:
+                current_block.append(line)
+                continue
+            
+            is_table_line = stripped.startswith("|") and stripped.endswith("|")
+            
+            if is_table_line:
+                if not in_table:
+                    if current_block:
+                        blocks.append("\n".join(current_block))
+                        current_block = []
+                    in_table = True
+                current_block.append(line)
+            else:
+                if in_table:
+                    blocks.append("\n".join(current_block))
+                    current_block = []
+                    in_table = False
+                
+                if not stripped:
+                    if current_block:
+                        blocks.append("\n".join(current_block))
+                        current_block = []
+                else:
+                    current_block.append(line)
+        
+        if current_block:
+            blocks.append("\n".join(current_block))
+        
+        return [b for b in blocks if b.strip()]
+    
+    @staticmethod
+    def _assemble_chunk_text(heading: str, blocks: List[str]) -> str:
+        """Join heading and body blocks into a single chunk string."""
+        body = "\n\n".join(blocks)
+        if heading:
+            return f"{heading}\n\n{body}"
+        return body

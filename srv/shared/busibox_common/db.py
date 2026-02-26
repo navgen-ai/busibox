@@ -175,6 +175,41 @@ class SchemaManager:
         
         logger.info("Schema initialization complete")
     
+    def apply_sync(self, conn) -> None:
+        """
+        Apply all schema definitions using a synchronous psycopg2 connection.
+        
+        Args:
+            conn: A psycopg2 connection (autocommit or manual commit)
+        """
+        with conn.cursor() as cur:
+            for ext in self._extensions:
+                cur.execute(f'CREATE EXTENSION IF NOT EXISTS "{ext}";')
+            logger.debug(f"Extensions ensured: {len(self._extensions)}")
+            
+            for table_sql in self._tables:
+                cur.execute(table_sql)
+            logger.debug(f"Tables ensured: {len(self._tables)}")
+            
+            for migration_sql in self._migrations:
+                cur.execute(migration_sql)
+            logger.debug(f"Migrations applied: {len(self._migrations)}")
+            
+            for index_sql in self._indexes:
+                cur.execute(index_sql)
+            logger.debug(f"Indexes ensured: {len(self._indexes)}")
+            
+            for rls_sql in self._rls_policies:
+                cur.execute(rls_sql)
+            logger.debug(f"RLS policies applied: {len(self._rls_policies)}")
+            
+            for function_sql in self._functions:
+                cur.execute(function_sql)
+            logger.debug(f"Functions created: {len(self._functions)}")
+        
+        conn.commit()
+        logger.info("Schema initialization complete (sync)")
+    
     def _get_execute_func(self, conn) -> Callable[[str], Awaitable]:
         """Get the appropriate execute function for the connection type."""
         # Check for asyncpg connection by module name (more reliable than coroutine check)
