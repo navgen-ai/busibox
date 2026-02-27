@@ -1301,9 +1301,11 @@ wizard_github_token() {
 # APP DIRECTORY DETECTION
 # =============================================================================
 
-# Detect the busibox-frontend monorepo directory
+# Detect the busibox-frontend monorepo directory.
 # All frontend apps (portal, agents, appbuilder) and the shared package (busibox-app)
 # now live inside the busibox-frontend monorepo.
+# If not found locally, auto-clones it as a sibling of busibox using the available
+# GitHub token.
 detect_app_directories() {
     show_stage 35 "Detecting App Directories" "Looking for the busibox-frontend monorepo."
     
@@ -1328,21 +1330,37 @@ detect_app_directories() {
         fi
     fi
     
+    # If still not found, auto-clone as a sibling of busibox
     if [[ -z "${BUSIBOX_FRONTEND_DIR:-}" ]]; then
-        warn "Could not find busibox-frontend"
-        echo ""
-        echo -e "┌──────────────────────────────────────────────────────────────────────────────┐"
-        box_line "  ${BOLD}MISSING REPOSITORY${NC}" "single"
-        echo -e "├──────────────────────────────────────────────────────────────────────────────┤"
-        box_line "  The busibox-frontend monorepo was not found." "single"
-        box_line "" "single"
-        box_line "  Please clone it to the same parent directory as busibox:" "single"
-        box_line "    $parent_dir" "single"
-        box_line "" "single"
-        box_line "  Or set this environment variable before running install:" "single"
-        box_line "    export BUSIBOX_FRONTEND_DIR=/path/to/busibox-frontend" "single"
-        echo -e "└──────────────────────────────────────────────────────────────────────────────┘"
-        return 1
+        local clone_target="${parent_dir}/busibox-frontend"
+        info "busibox-frontend not found locally — cloning to ${clone_target}"
+        
+        # Build the clone URL, injecting the token for private repo access
+        local clone_url="https://github.com/jazzmind/busibox-frontend.git"
+        local token="${GITHUB_AUTH_TOKEN:-${GITHUB_TOKEN:-}}"
+        if [[ -n "$token" ]]; then
+            clone_url="https://${token}@github.com/jazzmind/busibox-frontend.git"
+        fi
+        
+        if git clone --depth 1 "$clone_url" "$clone_target" 2>&1; then
+            export BUSIBOX_FRONTEND_DIR="$clone_target"
+            success "Cloned busibox-frontend to ${clone_target}"
+        else
+            warn "Failed to clone busibox-frontend"
+            echo ""
+            echo -e "┌──────────────────────────────────────────────────────────────────────────────┐"
+            box_line "  ${BOLD}MISSING REPOSITORY${NC}" "single"
+            echo -e "├──────────────────────────────────────────────────────────────────────────────┤"
+            box_line "  Could not find or clone busibox-frontend." "single"
+            box_line "" "single"
+            box_line "  Clone it manually to the same parent directory as busibox:" "single"
+            box_line "    git clone https://github.com/jazzmind/busibox-frontend.git ${parent_dir}/busibox-frontend" "single"
+            box_line "" "single"
+            box_line "  Or set this environment variable before running install:" "single"
+            box_line "    export BUSIBOX_FRONTEND_DIR=/path/to/busibox-frontend" "single"
+            echo -e "└──────────────────────────────────────────────────────────────────────────────┘"
+            return 1
+        fi
     fi
     
     info "Found busibox-frontend at: ${BUSIBOX_FRONTEND_DIR}"
