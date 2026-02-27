@@ -313,6 +313,10 @@ parse_args() {
                 FULL_INSTALL=true
                 shift
                 ;;
+            --mlx-host-setup)
+                MLX_HOST_SETUP=true
+                shift
+                ;;
             --env)
                 ENV_FROM_LAUNCHER="$2"
                 shift 2
@@ -4323,7 +4327,7 @@ check_existing_install() {
                     1)
                         # Ensure MLX is running on Apple Silicon before opening portal
                         LLM_BACKEND=$(get_state "LLM_BACKEND" 2>/dev/null || echo "")
-                        if [[ "$LLM_BACKEND" == "mlx" ]]; then
+                        if [[ "$LLM_BACKEND" == "mlx" && ! -f /.dockerenv ]]; then
                             ensure_mlx_running
                         fi
                         info "Opening browser..."
@@ -4354,7 +4358,7 @@ check_existing_install() {
             # Non-interactive mode - just open browser and exit
             # Ensure MLX is running on Apple Silicon before opening portal
             LLM_BACKEND=$(get_state "LLM_BACKEND" 2>/dev/null || echo "")
-            if [[ "$LLM_BACKEND" == "mlx" ]]; then
+            if [[ "$LLM_BACKEND" == "mlx" && ! -f /.dockerenv ]]; then
                 ensure_mlx_running
             fi
             if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -4462,6 +4466,19 @@ set_install_phase() {
 
 main() {
     parse_args "$@"
+    
+    # MLX host setup mode: only run MLX steps on the macOS host.
+    # Called by the Makefile after the manager container finishes.
+    if [[ "${MLX_HOST_SETUP:-false}" == true ]]; then
+        ENVIRONMENT="${BUSIBOX_ENV:-development}"
+        LLM_BACKEND="mlx"
+        PLATFORM="docker"
+        setup_mlx
+        setup_host_agent
+        wait_for_model_download
+        ensure_mlx_running
+        return $?
+    fi
     
     # Detect system capabilities
     detect_system
@@ -4900,14 +4917,20 @@ main() {
         exit 1
     fi
     
-    # Setup MLX and host-agent if on Apple Silicon
-    if [[ "$LLM_BACKEND" == "mlx" ]]; then
+    # Setup MLX and host-agent if on Apple Silicon.
+    # These operations require the actual macOS host (Apple Silicon Metal, launchd,
+    # pip install into host venv). When inside the manager container, write a marker
+    # so the Makefile runs MLX setup on the host after the container exits.
+    if [[ "$LLM_BACKEND" == "mlx" && ! -f /.dockerenv ]]; then
         setup_mlx
         setup_host_agent
         # Wait for background model download if still running
         wait_for_model_download
         # Ensure MLX server is running for Busibox Portal setup
         ensure_mlx_running
+    elif [[ "$LLM_BACKEND" == "mlx" && -f /.dockerenv ]]; then
+        info "MLX setup will run on the macOS host after container deployment completes..."
+        touch "${REPO_ROOT}/.mlx-setup-needed"
     elif [[ "$PLATFORM" != "proxmox" && "$PLATFORM" != "k8s" ]]; then
         # For Docker non-MLX backends, download the embedding model
         # (embeddings run locally regardless of LLM backend)
