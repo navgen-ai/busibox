@@ -204,7 +204,7 @@ docker_services:
 # Service health check endpoints (use Docker service hostnames since manager runs on Docker network)
 docker_health_endpoints:
   postgres: "pg_isready -U postgres"
-  authz-api: "http://authz-api:{{ authz_port }}/health"
+  authz-api: "http://authz-api:{{ authz_port }}/health/live"
   data-api: "http://data-api:{{ data_port }}/health"
   search-api: "http://search-api:{{ search_port }}/health"
   agent-api: "http://agent-api:{{ agent_port }}/health"
