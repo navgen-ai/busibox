@@ -434,28 +434,37 @@ show_stage() {
 
 detect_system() {
     local os arch ram_gb ram_bytes
-    
-    os=$(uname -s)
-    arch=$(uname -m)
-    
+
+    # Prefer HOST_OS/HOST_ARCH/HOST_RAM_GB env vars (forwarded by
+    # manager-run.sh from the host). Inside the manager container uname
+    # reports the container's Linux arch, not the host's.
+    os="${HOST_OS:-$(uname -s)}"
+    arch="${HOST_ARCH:-$(uname -m)}"
+
     # Detect RAM (with fallback on error)
-    ram_gb=8  # Default fallback
-    if [[ "$os" == "Darwin" ]]; then
-        ram_bytes=$(sysctl -n hw.memsize 2>/dev/null || echo "")
-        if [[ -n "$ram_bytes" && "$ram_bytes" =~ ^[0-9]+$ ]]; then
-            ram_gb=$((ram_bytes / 1024 / 1024 / 1024))
-        fi
-    else
-        local mem_kb
-        mem_kb=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "")
-        if [[ -n "$mem_kb" && "$mem_kb" =~ ^[0-9]+$ ]]; then
-            ram_gb=$((mem_kb / 1024 / 1024))
+    ram_gb="${HOST_RAM_GB:-}"
+    if [[ -z "$ram_gb" || ! "$ram_gb" =~ ^[0-9]+$ ]]; then
+        ram_gb=8  # Default fallback
+        if [[ "$os" == "Darwin" ]]; then
+            ram_bytes=$(sysctl -n hw.memsize 2>/dev/null || echo "")
+            if [[ -n "$ram_bytes" && "$ram_bytes" =~ ^[0-9]+$ ]]; then
+                ram_gb=$((ram_bytes / 1024 / 1024 / 1024))
+            fi
+        else
+            local mem_kb
+            mem_kb=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "")
+            if [[ -n "$mem_kb" && "$mem_kb" =~ ^[0-9]+$ ]]; then
+                ram_gb=$((mem_kb / 1024 / 1024))
+            fi
         fi
     fi
-    
-    # Detect LLM backend capability
+
+    # Detect LLM backend capability.
+    # Check LLM_BACKEND env var first (set by manager-run.sh).
     local backend="cloud"
-    if [[ "$os" == "Darwin" && ("$arch" == "arm64" || "$arch" == "aarch64") ]]; then
+    if [[ -n "${LLM_BACKEND:-}" ]]; then
+        backend="$LLM_BACKEND"
+    elif [[ "$os" == "Darwin" && ("$arch" == "arm64" || "$arch" == "aarch64") ]]; then
         backend="mlx"
     elif command -v nvidia-smi &>/dev/null; then
         local gpu_count
@@ -464,7 +473,7 @@ detect_system() {
             backend="vllm"
         fi
     fi
-    
+
     # Determine tier based on RAM
     local tier="minimal"
     if [[ $ram_gb -ge 256 ]]; then
@@ -478,7 +487,7 @@ detect_system() {
     elif [[ $ram_gb -ge 24 ]]; then
         tier="standard"
     fi
-    
+
     # Export for use
     export DETECTED_OS="$os"
     export DETECTED_ARCH="$arch"
@@ -1292,118 +1301,75 @@ wizard_github_token() {
 # APP DIRECTORY DETECTION
 # =============================================================================
 
-# Detect where the app repositories are located
-# This finds busibox-portal, busibox-agents, busibox-appbuilder, and busibox-app relative to busibox
+# Detect the busibox-frontend monorepo directory.
+# All frontend apps (portal, agents, appbuilder) and the shared package (busibox-app)
+# now live inside the busibox-frontend monorepo.
+# If not found locally, auto-clones it as a sibling of busibox using the available
+# GitHub token.
 detect_app_directories() {
-    show_stage 35 "Detecting App Directories" "Looking for busibox-portal, busibox-agents, busibox-appbuilder, and busibox-app repositories."
+    show_stage 35 "Detecting App Directories" "Looking for the busibox-frontend monorepo."
     
-    # Get the parent directory of busibox
     local parent_dir
     parent_dir=$(dirname "$REPO_ROOT")
     
-    # Look for busibox-portal
-    if [[ -d "${parent_dir}/busibox-portal" ]]; then
-        export BUSIBOX_PORTAL_DIR="${parent_dir}/busibox-portal"
-        info "Found busibox-portal at: ${BUSIBOX_PORTAL_DIR}"
+    # Allow override via environment variable
+    if [[ -n "${BUSIBOX_FRONTEND_DIR:-}" ]] && [[ -d "$BUSIBOX_FRONTEND_DIR" ]]; then
+        info "Using BUSIBOX_FRONTEND_DIR from environment: ${BUSIBOX_FRONTEND_DIR}"
     else
-        # Search in common locations
-        for search_dir in "$HOME/Code" "$HOME/code" "$HOME/src" "$HOME/projects" "$HOME/dev"; do
-            if [[ -d "${search_dir}/busibox-portal" ]]; then
-                export BUSIBOX_PORTAL_DIR="${search_dir}/busibox-portal"
-                info "Found busibox-portal at: ${BUSIBOX_PORTAL_DIR}"
-                break
-            fi
-        done
+        # Look in sibling directory first
+        if [[ -d "${parent_dir}/busibox-frontend" ]]; then
+            export BUSIBOX_FRONTEND_DIR="${parent_dir}/busibox-frontend"
+        else
+            # Search in common locations
+            for search_dir in "$HOME/Code" "$HOME/code" "$HOME/src" "$HOME/projects" "$HOME/dev"; do
+                if [[ -d "${search_dir}/busibox-frontend" ]]; then
+                    export BUSIBOX_FRONTEND_DIR="${search_dir}/busibox-frontend"
+                    break
+                fi
+            done
+        fi
     fi
     
-    # Look for busibox-agents
-    if [[ -d "${parent_dir}/busibox-agents" ]]; then
-        export BUSIBOX_AGENTS_DIR="${parent_dir}/busibox-agents"
-        info "Found busibox-agents at: ${BUSIBOX_AGENTS_DIR}"
-    else
-        for search_dir in "$HOME/Code" "$HOME/code" "$HOME/src" "$HOME/projects" "$HOME/dev"; do
-            if [[ -d "${search_dir}/busibox-agents" ]]; then
-                export BUSIBOX_AGENTS_DIR="${search_dir}/busibox-agents"
-                info "Found busibox-agents at: ${BUSIBOX_AGENTS_DIR}"
-                break
-            fi
-        done
+    # If still not found, auto-clone as a sibling of busibox
+    if [[ -z "${BUSIBOX_FRONTEND_DIR:-}" ]]; then
+        local clone_target="${parent_dir}/busibox-frontend"
+        info "busibox-frontend not found locally — cloning to ${clone_target}"
+        
+        # Build the clone URL, injecting the token for private repo access
+        local clone_url="https://github.com/jazzmind/busibox-frontend.git"
+        local token="${GITHUB_AUTH_TOKEN:-${GITHUB_TOKEN:-}}"
+        if [[ -n "$token" ]]; then
+            clone_url="https://${token}@github.com/jazzmind/busibox-frontend.git"
+        fi
+        
+        if git clone --depth 1 "$clone_url" "$clone_target" 2>&1; then
+            export BUSIBOX_FRONTEND_DIR="$clone_target"
+            success "Cloned busibox-frontend to ${clone_target}"
+        else
+            warn "Failed to clone busibox-frontend"
+            echo ""
+            echo -e "┌──────────────────────────────────────────────────────────────────────────────┐"
+            box_line "  ${BOLD}MISSING REPOSITORY${NC}" "single"
+            echo -e "├──────────────────────────────────────────────────────────────────────────────┤"
+            box_line "  Could not find or clone busibox-frontend." "single"
+            box_line "" "single"
+            box_line "  Clone it manually to the same parent directory as busibox:" "single"
+            box_line "    git clone https://github.com/jazzmind/busibox-frontend.git ${parent_dir}/busibox-frontend" "single"
+            box_line "" "single"
+            box_line "  Or set this environment variable before running install:" "single"
+            box_line "    export BUSIBOX_FRONTEND_DIR=/path/to/busibox-frontend" "single"
+            echo -e "└──────────────────────────────────────────────────────────────────────────────┘"
+            return 1
+        fi
     fi
     
-    # Look for busibox-app
-    if [[ -d "${parent_dir}/busibox-app" ]]; then
-        export BUSIBOX_APP_DIR="${parent_dir}/busibox-app"
-        info "Found busibox-app at: ${BUSIBOX_APP_DIR}"
-    else
-        for search_dir in "$HOME/Code" "$HOME/code" "$HOME/src" "$HOME/projects" "$HOME/dev"; do
-            if [[ -d "${search_dir}/busibox-app" ]]; then
-                export BUSIBOX_APP_DIR="${search_dir}/busibox-app"
-                info "Found busibox-app at: ${BUSIBOX_APP_DIR}"
-                break
-            fi
-        done
-    fi
-
-    # Look for busibox-appbuilder
-    if [[ -d "${parent_dir}/busibox-appbuilder" ]]; then
-        export BUSIBOX_APPBUILDER_DIR="${parent_dir}/busibox-appbuilder"
-        info "Found busibox-appbuilder at: ${BUSIBOX_APPBUILDER_DIR}"
-    else
-        for search_dir in "$HOME/Code" "$HOME/code" "$HOME/src" "$HOME/projects" "$HOME/dev"; do
-            if [[ -d "${search_dir}/busibox-appbuilder" ]]; then
-                export BUSIBOX_APPBUILDER_DIR="${search_dir}/busibox-appbuilder"
-                info "Found busibox-appbuilder at: ${BUSIBOX_APPBUILDER_DIR}"
-                break
-            fi
-        done
-    fi
+    info "Found busibox-frontend at: ${BUSIBOX_FRONTEND_DIR}"
     
-    # Determine the apps base directory (common parent of all app repos)
-    if [[ -n "${BUSIBOX_PORTAL_DIR:-}" ]]; then
-        export APPS_BASE_DIR=$(dirname "$BUSIBOX_PORTAL_DIR")
-    else
-        export APPS_BASE_DIR="$parent_dir"
-    fi
+    # Derive paths that downstream scripts and docker-compose still reference
+    export BUSIBOX_APP_DIR="${BUSIBOX_FRONTEND_DIR}/packages/app"
+    export APPS_BASE_DIR=$(dirname "$BUSIBOX_FRONTEND_DIR")
     
-    # Validate required directories
-    local missing=()
-    if [[ -z "${BUSIBOX_PORTAL_DIR:-}" ]]; then
-        missing+=("busibox-portal")
-    fi
-    if [[ -z "${BUSIBOX_AGENTS_DIR:-}" ]]; then
-        missing+=("busibox-agents")
-    fi
-    if [[ -z "${BUSIBOX_APP_DIR:-}" ]]; then
-        missing+=("busibox-app")
-    fi
-    if [[ -z "${BUSIBOX_APPBUILDER_DIR:-}" ]]; then
-        missing+=("busibox-appbuilder")
-    fi
-    
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        warn "Could not find: ${missing[*]}"
-        echo ""
-        echo -e "┌──────────────────────────────────────────────────────────────────────────────┐"
-        box_line "  ${BOLD}MISSING REPOSITORIES${NC}" "single"
-        echo -e "├──────────────────────────────────────────────────────────────────────────────┤"
-        box_line "  The following repositories were not found:" "single"
-        for repo in "${missing[@]}"; do
-            box_line "    - $repo" "single"
-        done
-        box_line "" "single"
-        box_line "  Please clone them to the same parent directory as busibox:" "single"
-        box_line "    $parent_dir" "single"
-        box_line "" "single"
-        box_line "  Or set these environment variables before running install:" "single"
-        box_line "    export BUSIBOX_PORTAL_DIR=/path/to/busibox-portal" "single"
-        box_line "    export BUSIBOX_AGENTS_DIR=/path/to/busibox-agents" "single"
-        box_line "    export BUSIBOX_APPBUILDER_DIR=/path/to/busibox-appbuilder" "single"
-        box_line "    export BUSIBOX_APP_DIR=/path/to/busibox-app" "single"
-        echo -e "└──────────────────────────────────────────────────────────────────────────────┘"
-        return 1
-    fi
-    
-    success "All app directories found"
+    success "busibox-frontend monorepo found"
     return 0
 }
 
@@ -1562,9 +1528,7 @@ EOF
         cat >> "$env_file" << EOF
 
 # App Directories (for volume mounts in docker-compose.local-dev.yml)
-BUSIBOX_PORTAL_DIR=${BUSIBOX_PORTAL_DIR}
-BUSIBOX_AGENTS_DIR=${BUSIBOX_AGENTS_DIR}
-BUSIBOX_APPBUILDER_DIR=${BUSIBOX_APPBUILDER_DIR}
+BUSIBOX_FRONTEND_DIR=${BUSIBOX_FRONTEND_DIR}
 BUSIBOX_APP_DIR=${BUSIBOX_APP_DIR}
 APPS_BASE_DIR=${APPS_BASE_DIR}
 
@@ -1583,13 +1547,10 @@ EOF
         cat >> "$env_file" << EOF
 
 # GitHub Release Configuration (for docker-compose.github.yml)
-BUSIBOX_PORTAL_GITHUB_REF=${BUSIBOX_PORTAL_GITHUB_REF:-main}
-BUSIBOX_AGENTS_GITHUB_REF=${BUSIBOX_AGENTS_GITHUB_REF:-main}
+BUSIBOX_FRONTEND_GITHUB_REF=${BUSIBOX_FRONTEND_GITHUB_REF:-main}
 
 # Empty local paths (not used in github mode)
-BUSIBOX_PORTAL_DIR=
-BUSIBOX_AGENTS_DIR=
-BUSIBOX_APPBUILDER_DIR=
+BUSIBOX_FRONTEND_DIR=
 BUSIBOX_APP_DIR=
 APPS_BASE_DIR=
 DEV_APPS_DIR=
@@ -3999,9 +3960,10 @@ check_prerequisites() {
         fi
     fi
     
-    # Disk space
+    # Disk space — use runtime OS for df flags since BSD and GNU df
+    # differ (DETECTED_OS reflects the host, not the container)
     local available_gb
-    if [[ "$DETECTED_OS" == "Darwin" ]]; then
+    if [[ "$(uname -s)" == "Darwin" ]]; then
         available_gb=$(df -g "${REPO_ROOT}" | tail -1 | awk '{print $4}')
     else
         available_gb=$(df -BG "${REPO_ROOT}" | tail -1 | awk '{print $4}' | tr -d 'G')
@@ -4348,7 +4310,7 @@ check_existing_install() {
                             ensure_mlx_running
                         fi
                         info "Opening browser..."
-                        if [[ "$DETECTED_OS" == "Darwin" ]]; then
+                        if [[ "$(uname -s)" == "Darwin" ]]; then
                             open "$magic_link" 2>/dev/null || true
                         else
                             xdg-open "$magic_link" 2>/dev/null || true
@@ -4378,7 +4340,7 @@ check_existing_install() {
             if [[ "$LLM_BACKEND" == "mlx" ]]; then
                 ensure_mlx_running
             fi
-            if [[ "$DETECTED_OS" == "Darwin" ]]; then
+            if [[ "$(uname -s)" == "Darwin" ]]; then
                 open "$magic_link" 2>/dev/null || true
             else
                 xdg-open "$magic_link" 2>/dev/null || true
@@ -4662,32 +4624,28 @@ main() {
         
         if [[ "$current_phase" == "secrets_generated" || "$current_phase" == "bootstrap_started" || "$current_phase" == "bootstrap_complete" ]]; then
             # Load saved paths from state
-            BUSIBOX_PORTAL_DIR=$(get_state "BUSIBOX_PORTAL_DIR" "")
-            BUSIBOX_AGENTS_DIR=$(get_state "BUSIBOX_AGENTS_DIR" "")
-            BUSIBOX_APPBUILDER_DIR=$(get_state "BUSIBOX_APPBUILDER_DIR" "")
-            BUSIBOX_APP_DIR=$(get_state "BUSIBOX_APP_DIR" "")
+            BUSIBOX_FRONTEND_DIR=$(get_state "BUSIBOX_FRONTEND_DIR" "")
             APPS_BASE_DIR=$(get_state "APPS_BASE_DIR" "")
             DEV_APPS_DIR=$(get_dev_apps_dir)
             
             # If not in state, detect them
-            if [[ -z "$BUSIBOX_PORTAL_DIR" || -z "$BUSIBOX_APPBUILDER_DIR" || -z "$BUSIBOX_APP_DIR" ]]; then
+            if [[ -z "$BUSIBOX_FRONTEND_DIR" ]]; then
                 if ! detect_app_directories; then
-                    error "Cannot proceed without app directories"
+                    error "Cannot proceed without busibox-frontend"
                     exit 1
                 fi
+            else
+                export BUSIBOX_APP_DIR="${BUSIBOX_FRONTEND_DIR}/packages/app"
             fi
             # Default DEV_APPS_DIR if not set
             DEV_APPS_DIR="${DEV_APPS_DIR:-$APPS_BASE_DIR}"
         else
             if ! detect_app_directories; then
-                error "Cannot proceed without app directories"
+                error "Cannot proceed without busibox-frontend"
                 exit 1
             fi
             # Save paths to state
-            set_state "BUSIBOX_PORTAL_DIR" "$BUSIBOX_PORTAL_DIR"
-            set_state "BUSIBOX_AGENTS_DIR" "$BUSIBOX_AGENTS_DIR"
-            set_state "BUSIBOX_APPBUILDER_DIR" "$BUSIBOX_APPBUILDER_DIR"
-            set_state "BUSIBOX_APP_DIR" "$BUSIBOX_APP_DIR"
+            set_state "BUSIBOX_FRONTEND_DIR" "$BUSIBOX_FRONTEND_DIR"
             set_state "APPS_BASE_DIR" "$APPS_BASE_DIR"
             # Set DEV_APPS_DIR (defaults to APPS_BASE_DIR if not set by wizard)
             DEV_APPS_DIR="${DEV_APPS_DIR:-$APPS_BASE_DIR}"
@@ -4705,9 +4663,7 @@ main() {
         info "Using GitHub mode - apps will be deployed from latest releases"
         
         # Set empty values to prevent docker-compose from complaining about missing vars
-        BUSIBOX_PORTAL_DIR=""
-        BUSIBOX_AGENTS_DIR=""
-        BUSIBOX_APPBUILDER_DIR=""
+        BUSIBOX_FRONTEND_DIR=""
         BUSIBOX_APP_DIR=""
         APPS_BASE_DIR=""
         DEV_APPS_DIR=""
@@ -4961,9 +4917,10 @@ main() {
     # Show completion message
     show_completion "$magic_link"
     
-    # Open browser
+    # Open browser (use runtime OS — neither open nor xdg-open work
+    # inside the manager container, but the || true keeps it harmless)
     info "Opening browser..."
-    if [[ "$DETECTED_OS" == "Darwin" ]]; then
+    if [[ "$(uname -s)" == "Darwin" ]]; then
         open "$magic_link" 2>/dev/null || true
     else
         xdg-open "$magic_link" 2>/dev/null || true

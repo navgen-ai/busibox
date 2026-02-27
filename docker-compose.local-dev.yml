@@ -201,8 +201,8 @@ services:
       # Mount DEV_APPS_DIR from env (set in .env.local)
       # If not set, falls back to local ./dev-apps directory
       - ${DEV_APPS_DIR:-./dev-apps}:/srv/dev-apps
-      # Mount busibox-app for shared utilities
-      - ${BUSIBOX_APP_DIR:-../busibox-app}:/srv/busibox-app:ro
+      # Mount busibox-app shared package from busibox-frontend monorepo
+      - ${BUSIBOX_APP_DIR:-../busibox-frontend/packages/app}:/srv/busibox-app:ro
 
   # Re-expose Neo4j ports for local development browser access
   neo4j:
