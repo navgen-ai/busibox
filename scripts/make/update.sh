@@ -791,45 +791,17 @@ pull_latest_code() {
         warn "Could not fast-forward busibox - you may have local changes"
     fi
     
-    # Get app directories from state
-    local busibox_portal_dir
-    local busibox_agents_dir
-    local busibox_app_dir
+    # Pull busibox-frontend monorepo if exists
+    local busibox_frontend_dir
+    busibox_frontend_dir=$(get_state "BUSIBOX_FRONTEND_DIR" "")
     
-    busibox_portal_dir=$(get_state "BUSIBOX_PORTAL_DIR" "")
-    busibox_agents_dir=$(get_state "BUSIBOX_AGENTS_DIR" "")
-    busibox_app_dir=$(get_state "BUSIBOX_APP_DIR" "")
-    
-    # Pull busibox-portal if exists
-    if [[ -n "$busibox_portal_dir" && -d "$busibox_portal_dir/.git" ]]; then
-        info "Pulling busibox-portal repository..."
-        cd "$busibox_portal_dir"
+    if [[ -n "$busibox_frontend_dir" && -d "$busibox_frontend_dir/.git" ]]; then
+        info "Pulling busibox-frontend repository..."
+        cd "$busibox_frontend_dir"
         if git pull --ff-only 2>/dev/null; then
-            success "busibox-portal repository updated"
+            success "busibox-frontend repository updated"
         else
-            warn "Could not fast-forward busibox-portal - you may have local changes"
-        fi
-    fi
-    
-    # Pull busibox-agents if exists
-    if [[ -n "$busibox_agents_dir" && -d "$busibox_agents_dir/.git" ]]; then
-        info "Pulling busibox-agents repository..."
-        cd "$busibox_agents_dir"
-        if git pull --ff-only 2>/dev/null; then
-            success "busibox-agents repository updated"
-        else
-            warn "Could not fast-forward busibox-agents - you may have local changes"
-        fi
-    fi
-    
-    # Pull busibox-app if exists
-    if [[ -n "$busibox_app_dir" && -d "$busibox_app_dir/.git" ]]; then
-        info "Pulling busibox-app repository..."
-        cd "$busibox_app_dir"
-        if git pull --ff-only 2>/dev/null; then
-            success "busibox-app repository updated"
-        else
-            warn "Could not fast-forward busibox-app - you may have local changes"
+            warn "Could not fast-forward busibox-frontend - you may have local changes"
         fi
     fi
     
@@ -903,9 +875,8 @@ rebuild_containers() {
     export GITHUB_AUTH_TOKEN="$github_token"
     
     # Load app directories from state for volume mounts
-    export BUSIBOX_PORTAL_DIR=$(get_state "BUSIBOX_PORTAL_DIR" "")
-    export BUSIBOX_AGENTS_DIR=$(get_state "BUSIBOX_AGENTS_DIR" "")
-    export BUSIBOX_APP_DIR=$(get_state "BUSIBOX_APP_DIR" "")
+    export BUSIBOX_FRONTEND_DIR=$(get_state "BUSIBOX_FRONTEND_DIR" "")
+    export BUSIBOX_APP_DIR="${BUSIBOX_FRONTEND_DIR:+${BUSIBOX_FRONTEND_DIR}/packages/app}"
     export APPS_BASE_DIR=$(get_state "APPS_BASE_DIR" "")
     export DEV_APPS_DIR=$(get_state "DEV_APPS_DIR" "$APPS_BASE_DIR")
     export BUSIBOX_HOST_PATH="${BUSIBOX_HOST_PATH:-$REPO_ROOT}"
@@ -1020,9 +991,8 @@ start_api_services() {
     export BUSIBOX_HOST_PATH="${BUSIBOX_HOST_PATH:-$REPO_ROOT}"
     
     # Load app directories for volume mounts
-    export BUSIBOX_PORTAL_DIR=$(get_state "BUSIBOX_PORTAL_DIR" "")
-    export BUSIBOX_AGENTS_DIR=$(get_state "BUSIBOX_AGENTS_DIR" "")
-    export BUSIBOX_APP_DIR=$(get_state "BUSIBOX_APP_DIR" "")
+    export BUSIBOX_FRONTEND_DIR=$(get_state "BUSIBOX_FRONTEND_DIR" "")
+    export BUSIBOX_APP_DIR="${BUSIBOX_FRONTEND_DIR:+${BUSIBOX_FRONTEND_DIR}/packages/app}"
     export APPS_BASE_DIR=$(get_state "APPS_BASE_DIR" "")
     export DEV_APPS_DIR=$(get_state "DEV_APPS_DIR" "$APPS_BASE_DIR")
     
@@ -1076,9 +1046,8 @@ start_frontend_services() {
     export BUSIBOX_HOST_PATH="${BUSIBOX_HOST_PATH:-$REPO_ROOT}"
     
     # Load app directories
-    export BUSIBOX_PORTAL_DIR=$(get_state "BUSIBOX_PORTAL_DIR" "")
-    export BUSIBOX_AGENTS_DIR=$(get_state "BUSIBOX_AGENTS_DIR" "")
-    export BUSIBOX_APP_DIR=$(get_state "BUSIBOX_APP_DIR" "")
+    export BUSIBOX_FRONTEND_DIR=$(get_state "BUSIBOX_FRONTEND_DIR" "")
+    export BUSIBOX_APP_DIR="${BUSIBOX_FRONTEND_DIR:+${BUSIBOX_FRONTEND_DIR}/packages/app}"
     export APPS_BASE_DIR=$(get_state "APPS_BASE_DIR" "")
     export DEV_APPS_DIR=$(get_state "DEV_APPS_DIR" "$APPS_BASE_DIR")
     
@@ -1343,54 +1312,20 @@ save_all_deployed_versions() {
         fi
     fi
     
-    # Save busibox-portal version
-    local busibox_portal_dir
-    busibox_portal_dir=$(get_state "BUSIBOX_PORTAL_DIR" "")
-    if [[ -n "$busibox_portal_dir" ]] && [[ -d "$busibox_portal_dir/.git" ]]; then
-        cd "$busibox_portal_dir"
-        local ap_commit ap_branch ap_tag
-        ap_commit=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-        ap_tag=$(git describe --tags --exact-match 2>/dev/null || true)
+    # Save busibox-frontend version
+    local busibox_frontend_dir
+    busibox_frontend_dir=$(get_state "BUSIBOX_FRONTEND_DIR" "")
+    if [[ -n "$busibox_frontend_dir" ]] && [[ -d "$busibox_frontend_dir/.git" ]]; then
+        cd "$busibox_frontend_dir"
+        local fe_commit fe_branch fe_tag
+        fe_commit=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+        fe_tag=$(git describe --tags --exact-match 2>/dev/null || true)
         
-        if [[ -n "$ap_tag" ]]; then
-            save_deployed_version "busibox-portal" "release" "$ap_tag" "$ap_commit"
+        if [[ -n "$fe_tag" ]]; then
+            save_deployed_version "busibox-frontend" "release" "$fe_tag" "$fe_commit"
         else
-            ap_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
-            save_deployed_version "busibox-portal" "branch" "$ap_branch" "$ap_commit"
-        fi
-    fi
-    
-    # Save busibox-agents version
-    local busibox_agents_dir
-    busibox_agents_dir=$(get_state "BUSIBOX_AGENTS_DIR" "")
-    if [[ -n "$busibox_agents_dir" ]] && [[ -d "$busibox_agents_dir/.git" ]]; then
-        cd "$busibox_agents_dir"
-        local am_commit am_branch am_tag
-        am_commit=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-        am_tag=$(git describe --tags --exact-match 2>/dev/null || true)
-        
-        if [[ -n "$am_tag" ]]; then
-            save_deployed_version "busibox-agents" "release" "$am_tag" "$am_commit"
-        else
-            am_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
-            save_deployed_version "busibox-agents" "branch" "$am_branch" "$am_commit"
-        fi
-    fi
-    
-    # Save busibox-app version
-    local busibox_app_dir
-    busibox_app_dir=$(get_state "BUSIBOX_APP_DIR" "")
-    if [[ -n "$busibox_app_dir" ]] && [[ -d "$busibox_app_dir/.git" ]]; then
-        cd "$busibox_app_dir"
-        local ba_commit ba_branch ba_tag
-        ba_commit=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-        ba_tag=$(git describe --tags --exact-match 2>/dev/null || true)
-        
-        if [[ -n "$ba_tag" ]]; then
-            save_deployed_version "busibox-app" "release" "$ba_tag" "$ba_commit"
-        else
-            ba_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
-            save_deployed_version "busibox-app" "branch" "$ba_branch" "$ba_commit"
+            fe_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+            save_deployed_version "busibox-frontend" "branch" "$fe_branch" "$fe_commit"
         fi
     fi
     

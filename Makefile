@@ -84,7 +84,6 @@ WORKER ?=
 #   demo/staging/production -> COMPOSE_GITHUB (built from GitHub)
 COMPOSE_FILE := docker-compose.yml
 COMPOSE_DEV_MONOREPO := docker-compose.local-dev.yml
-COMPOSE_DEV_LEGACY := docker-compose.local-dev-legacy.yml
 COMPOSE_GITHUB := docker-compose.github.yml
 
 # Environment-prefixed files (allows multiple installations to coexist)

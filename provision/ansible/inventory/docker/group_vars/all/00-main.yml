@@ -165,14 +165,11 @@ deploy_environment: docker
 # ============================================================================
 github_token: "{{ secrets.github.personal_access_token | default(lookup('env', 'GITHUB_AUTH_TOKEN')) | default('') }}"
 
-# Application repository URLs
-ai_portal_repo: "https://github.com/jazzmind/busibox-portal.git"
-agent_manager_repo: "https://github.com/jazzmind/busibox-agents.git"
-busibox_app_repo: "https://github.com/jazzmind/busibox-app.git"
+# Frontend monorepo (contains all apps and the shared busibox-app package)
+busibox_frontend_repo: "https://github.com/jazzmind/busibox-frontend.git"
 
 # Local paths for development mode
-ai_portal_dir: "{{ lookup('env', 'BUSIBOX_PORTAL_DIR') | default('') }}"
-agent_manager_dir: "{{ lookup('env', 'BUSIBOX_AGENTS_DIR') | default('') }}"
+busibox_frontend_dir: "{{ lookup('env', 'BUSIBOX_FRONTEND_DIR') | default('') }}"
 busibox_app_dir: "{{ lookup('env', 'BUSIBOX_APP_DIR') | default('') }}"
 
 # ============================================================================
