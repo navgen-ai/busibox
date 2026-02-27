@@ -607,8 +607,9 @@ container_configuration() {
 # ========================================================================
 
 app_configuration() {
-    # Check if we're on Proxmox without local app repos
-    local BUSIBOX_PORTAL_DIR="${BUSIBOX_PORTAL_DIR:-$(cd "${REPO_ROOT}/../busibox-portal" 2>/dev/null && pwd || echo "")}"
+    # Check if busibox-frontend monorepo is available locally
+    local BUSIBOX_FRONTEND_DIR="${BUSIBOX_FRONTEND_DIR:-$(cd "${REPO_ROOT}/../busibox-frontend" 2>/dev/null && pwd || echo "")}"
+    local BUSIBOX_PORTAL_DIR="${BUSIBOX_FRONTEND_DIR:+${BUSIBOX_FRONTEND_DIR}/apps/portal}"
     local has_local_repos=true
     
     if [[ -z "$BUSIBOX_PORTAL_DIR" ]] || [[ ! -d "$BUSIBOX_PORTAL_DIR" ]]; then
@@ -619,14 +620,14 @@ app_configuration() {
         echo ""
         
         if [[ "$has_local_repos" == "false" ]]; then
-            warn "busibox-portal directory not found locally"
+            warn "busibox-frontend monorepo not found locally"
             info "On Proxmox, app configuration must be run from the apps container"
             echo ""
             echo "To configure apps, SSH to the apps container and run:"
             echo "  ${CYAN}cd /srv/apps/busibox-portal && npx tsx scripts/activate-user.ts${NC}"
             echo "  ${CYAN}cd /srv/apps/busibox-portal && npx tsx scripts/fix-builtin-apps.ts${NC}"
             echo ""
-            echo "Or set BUSIBOX_PORTAL_DIR environment variable if busibox-portal is elsewhere."
+            echo "Or set BUSIBOX_FRONTEND_DIR environment variable if busibox-frontend is elsewhere."
             echo ""
             
             menu "App Configuration (Limited - No Local Repos)" \
