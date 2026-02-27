@@ -42,7 +42,8 @@ Rules are numbered and categorized:
 *Reserved for future development workflow rules*
 
 ### Testing Rules (300-399)
-*Reserved for future testing and validation rules*
+
+- **300-testing.md** - Test invocation patterns (`make test-docker`, `ARGS=`, targeting specific tests)
 
 ## How Rules Are Applied
 

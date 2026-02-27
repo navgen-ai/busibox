@@ -520,8 +520,6 @@ def _build_records_response_schema(schema_obj: Dict[str, Any], max_records: int 
                 continue
             record_properties[field_name] = _map_field_type_to_json_schema(field_def)
 
-    record_properties["_provenance"] = {"type": "object", "additionalProperties": True}
-
     # Never mark individual record fields as required in the response schema.
     # With strict structured output, a required field the LLM can't populate
     # forces it to return an empty records array instead of a partial record.
@@ -529,8 +527,7 @@ def _build_records_response_schema(schema_obj: Dict[str, Any], max_records: int 
     # _validate_and_enrich_records where it can be lenient.
     #
     # Use additionalProperties: False to prevent local LLMs (vLLM/Outlines)
-    # from encoding records as stringified JSON inside the array. All known
-    # fields + _provenance are explicitly listed in properties.
+    # from encoding records as stringified JSON inside the array.
     record_schema: Dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
@@ -574,7 +571,7 @@ def _estimate_max_tokens_for_response_schema(response_schema: Dict[str, Any]) ->
                 continue
             ptype = prop.get("type")
             if ptype == "string":
-                per_record_chars += min(int(prop.get("maxLength", 120) or 120), 300) + 8
+                per_record_chars += min(int(prop.get("maxLength", 120) or 120), 120) + 8
             elif ptype in ("integer", "number", "boolean"):
                 per_record_chars += 16
             elif ptype == "array":
@@ -594,10 +591,35 @@ def _estimate_max_tokens_for_response_schema(response_schema: Dict[str, Any]) ->
         total_chars = 64 + (record_max_items * per_record_chars)
         # ~3.5 chars/token + safety buffer for formatting/completions
         estimated_tokens = int(math.ceil(total_chars / 3.5) + 300)
-        # Keep within practical boundaries
-        return max(1200, min(12000, estimated_tokens))
+        # Keep within practical boundaries — 4096 is sufficient for extraction
+        # without provenance, even for schemas with many fields.
+        return max(1200, min(4096, estimated_tokens))
     except Exception:
         return 2400
+
+
+def _clean_markdown_for_extraction(markdown: str) -> str:
+    """Strip noise from markdown before sending to the LLM for extraction.
+
+    Removes picture placeholders, OCR picture-text blocks, and collapses
+    excessive blank lines.  The original markdown should be kept separately
+    for provenance text-matching (which needs exact char offsets).
+    """
+    # Remove picture placeholders: **==> picture ... <==**
+    cleaned = re.sub(r"\*\*==>.*?<==\*\*", "", markdown)
+
+    # Remove picture-text blocks (start marker -> content -> end marker)
+    cleaned = re.sub(
+        r"\*\*-{3,}\s*Start of picture text\s*-{3,}\*\*.*?\*\*-{3,}\s*End of picture text\s*-{3,}\*\*",
+        "",
+        cleaned,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    # Collapse 3+ consecutive blank lines to 2
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+
+    return cleaned.strip()
 
 
 def _estimate_markdown_tokens(markdown: str) -> int:
@@ -1014,18 +1036,6 @@ def _build_extraction_prompt(
     instructions: str,
     compact_mode: bool,
 ) -> str:
-    provenance_instructions = (
-        "Provenance requirements (critical):\n"
-        "- Return `_provenance` as an object mirroring the extracted record shape.\n"
-        "- For each extracted scalar leaf value, include provenance node(s) with:\n"
-        "  - `text`: exact source snippet from document markdown\n"
-        "  - `charOffset`: 0-based start character offset\n"
-        "  - `charLength`: snippet length in characters\n"
-        "- If multiple matches are plausible, use `{ \"candidates\": [ ...nodes ] }`.\n"
-        "- For arrays, `_provenance` must be an array aligned by item index.\n"
-        "- For nested objects, `_provenance` must nest by matching property names.\n"
-        "- Do NOT output top-level `source_text` or `char_offsets`; keep provenance only under `_provenance`."
-    )
     mode_instructions = (
         "Return ONLY valid JSON with shape {\"records\":[...]} and no markdown/prose. "
         "If a field is not present in the document, omit it or set null — do NOT return an empty records array just because some fields are missing. "
@@ -1047,7 +1057,6 @@ def _build_extraction_prompt(
     )
     return (
         f"{instructions}\n\n"
-        f"{provenance_instructions}\n\n"
         f"{mode_instructions}\n\n"
         f"Schema document ID: {schema_document_id}\n"
         f"Source file ID: {file_id}\n\n"
@@ -1834,6 +1843,9 @@ async def _run_extraction_pipeline(
         records: List[Dict[str, Any]] = []
         run_id = "unknown"
 
+        original_markdown = markdown
+        markdown = _clean_markdown_for_extraction(markdown)
+
         logger.info(
             "Extraction pipeline starting",
             extra={
@@ -1841,6 +1853,7 @@ async def _run_extraction_pipeline(
                 "extraction_tier": extraction_tier,
                 "file_id": payload.file_id,
                 "markdown_tokens": _estimate_markdown_tokens(markdown),
+                "original_markdown_tokens": _estimate_markdown_tokens(original_markdown),
             },
         )
 
@@ -2013,11 +2026,6 @@ async def _run_extraction_pipeline(
         run_id = str(run.id) if run is not None else "unknown"
         _extraction_tasks[task_id]["step"] = "post_processing"
 
-        _populate_provenance_from_markdown(
-            records=records,
-            markdown=markdown,
-            schema=schema_obj if isinstance(schema_obj, dict) else {},
-        )
         enriched_records = _validate_and_enrich_records(
             records=records,
             schema=schema_obj if isinstance(schema_obj, dict) else {},
@@ -2025,6 +2033,7 @@ async def _run_extraction_pipeline(
             agent_id=str(agent_uuid),
         )
 
+        # -- Phase 1: store records immediately so the frontend can show them --
         _extraction_tasks[task_id]["step"] = "storing_records"
 
         insert_result: Dict[str, Any] = {"stored": False, "count": 0}
@@ -2051,6 +2060,68 @@ async def _run_extraction_pipeline(
                 )
                 raise RuntimeError(f"Failed to store extracted records: {exc}") from exc
 
+        try:
+            await client.request(
+                "PATCH",
+                f"/files/{payload.file_id}",
+                json={
+                    "metadata": {
+                        "extraction": {
+                            "schemaDocumentId": payload.schema_document_id,
+                            "schemaName": schema_doc.get("name"),
+                            "status": "extracted",
+                            "runId": run_id,
+                            "agentId": str(agent_uuid),
+                            "recordCount": len(enriched_records),
+                            "records": enriched_records,
+                            "updatedAt": datetime.now(timezone.utc).isoformat(),
+                        }
+                    }
+                },
+            )
+        except Exception:
+            logger.warning(
+                "Failed to persist extracted data to file metadata (extracted phase)",
+                extra={
+                    "file_id": payload.file_id,
+                    "schema_document_id": payload.schema_document_id,
+                    "run_id": run_id,
+                },
+            )
+
+        # -- Phase 2: compute provenance via text-search and patch records --
+        _extraction_tasks[task_id]["step"] = "provenance"
+
+        _populate_provenance_from_markdown(
+            records=enriched_records,
+            markdown=original_markdown,
+            schema=schema_obj if isinstance(schema_obj, dict) else {},
+        )
+
+        if payload.store_results:
+            try:
+                await client.request(
+                    "PATCH",
+                    f"/files/{payload.file_id}",
+                    json={
+                        "metadata": {
+                            "extraction": {
+                                "records": enriched_records,
+                                "updatedAt": datetime.now(timezone.utc).isoformat(),
+                            }
+                        }
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to patch provenance into file metadata (non-fatal)",
+                    extra={
+                        "file_id": payload.file_id,
+                        "schema_document_id": payload.schema_document_id,
+                    },
+                )
+
+        # -- Phase 3: graph and field indexing --
         _extraction_tasks[task_id]["step"] = "graph_indexing"
 
         graph_result: Dict[str, Any] = {"entity_count": 0}
@@ -2111,6 +2182,7 @@ async def _run_extraction_pipeline(
                 },
             )
 
+        # -- Phase 4: finalize --
         _extraction_tasks[task_id]["step"] = "finalizing"
 
         try:
@@ -2120,13 +2192,7 @@ async def _run_extraction_pipeline(
                 json={
                     "metadata": {
                         "extraction": {
-                            "schemaDocumentId": payload.schema_document_id,
-                            "schemaName": schema_doc.get("name"),
                             "status": "completed",
-                            "runId": run_id,
-                            "agentId": str(agent_uuid),
-                            "recordCount": len(enriched_records),
-                            "records": enriched_records,
                             "updatedAt": datetime.now(timezone.utc).isoformat(),
                         }
                     }
@@ -2134,7 +2200,7 @@ async def _run_extraction_pipeline(
             )
         except Exception:
             logger.warning(
-                "Failed to persist extracted data to file metadata",
+                "Failed to persist final completed status to file metadata",
                 extra={
                     "file_id": payload.file_id,
                     "schema_document_id": payload.schema_document_id,
@@ -2275,8 +2341,7 @@ async def extract_document(
         raise HTTPException(status_code=400, detail=f"Invalid agent_id: {resolved_agent_id}") from exc
 
     instructions = payload.prompt_override or (
-        "Extract data from this document into records matching the schema. "
-        "Include _provenance per extracted field with source text and char offsets when available."
+        "Extract data from this document into records matching the schema."
     )
     markdown_tokens = _estimate_markdown_tokens(markdown)
     extraction_tier = _select_extraction_tier(markdown_tokens)

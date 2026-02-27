@@ -15,6 +15,38 @@ For comprehensive testing documentation, see:
 
 ## Quick Reference
 
+### Docker Testing (Local Development)
+
+```bash
+# Test a specific service
+make test-docker SERVICE=agent
+
+# Target specific test(s) — use ARGS=, NOT PYTEST_ARGS=
+make test-docker SERVICE=agent ARGS="tests/integration/test_schema_extraction.py::test_clean_markdown_for_extraction"
+
+# Multiple specific tests
+make test-docker SERVICE=agent ARGS="tests/integration/test_file.py::test_a tests/integration/test_file.py::test_b"
+
+# Test directory
+make test-docker SERVICE=agent ARGS="tests/unit"
+
+# Include slow/GPU tests (FAST=1 is default)
+make test-docker SERVICE=agent FAST=0
+
+# Discover available tests
+make test-docker ACTION=list SERVICE=agent
+```
+
+**Important**: Always use `ARGS=` to pass pytest arguments. When `ARGS` starts with `tests/`, the script uses it directly as the test path and skips the default marker filter. Quoting `-k` filters through `make` is fragile; prefer full `tests/path::test_name` targeting.
+
+### Remote Testing (Local Code vs Staging/Production)
+
+```bash
+make test-local SERVICE=agent INV=staging
+make test-local SERVICE=authz INV=production
+make test-local SERVICE=data INV=staging ARGS="-m pvt"
+```
+
 ### Infrastructure Testing
 
 ```bash
@@ -23,44 +55,11 @@ cd /root/busibox
 bash scripts/test-infrastructure.sh full
 ```
 
-### Service Testing (from Host)
+## Documentation
 
-```bash
-# On Proxmox host or workstation
-cd /root/busibox/provision/ansible
-
-# All tests
-make test-all
-
-# Individual services
-make test-data
-make test-search
-make test-agent
-make test-apps
-
-# Health checks
-make verify
-```
-
-### Direct Container Testing
-
-```bash
-# Data tests
-ssh root@10.96.200.206
-data-test
-
-# Search tests
-ssh root@10.96.200.204
-search-test
-```
-
-## Documentation Index
-
-- **[Master Guide](docs/testing/master-guide.md)** - Complete testing guide
-- **[Testing Strategy](docs/testing/testing-strategy.md)** - Infrastructure tests
-- **[Makefile Targets](docs/testing/makefile-test-targets.md)** - Make commands
-- **[Search API Testing](docs/testing/search-api-testing.md)** - Search tests
-- **[ColPali Testing](docs/testing/colpali-testing.md)** - ColPali tests
+- **[Testing Architecture](docs/developers/architecture/08-tests.md)** - Philosophy, execution methods, debugging
+- **[Test Databases](docs/developers/01-testing.md)** - Test database isolation and setup
+- **[Import Gotchas](docs/developers/reference/python-test-import-gotchas.md)** - Python import debugging
 
 ---
 

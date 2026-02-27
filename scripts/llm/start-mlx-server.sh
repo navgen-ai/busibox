@@ -78,9 +78,18 @@ stop_server_instance() {
         rm -f "$pid_file"
     fi
 
-    # Clean up any orphaned server processes on this port
+    # Clean up any orphaned server or caffeinate processes on this port
     pkill -f "mlx_lm.server.*--port ${port}" 2>/dev/null || true
     pkill -f "mlx-outlines-server/server.py.*--port ${port}" 2>/dev/null || true
+
+    # Kill any lsof-visible process still holding the port
+    local port_pid
+    port_pid=$(lsof -ti :"${port}" 2>/dev/null | head -1)
+    if [[ -n "$port_pid" ]]; then
+        kill "$port_pid" 2>/dev/null || true
+        sleep 1
+        kill -0 "$port_pid" 2>/dev/null && kill -9 "$port_pid" 2>/dev/null || true
+    fi
 }
 
 stop_server() {
@@ -192,6 +201,8 @@ start_server_instance() {
     # Start server in background using venv python.
     # caffeinate -di prevents macOS from throttling/killing the Metal-based
     # MLX process when the display sleeps (-d = display, -i = idle).
+    # disown detaches the job from bash's job table so dual startup doesn't
+    # SIGTERM the first server when starting the second (macOS bash 3.2 quirk).
     if [[ "${MLX_USE_OUTLINES:-0}" == "1" ]]; then
         local outlines_server="${REPO_ROOT}/config/mlx-outlines-server/server.py"
         info "Using Outlines-based server (structured output enforcement enabled)"
@@ -210,9 +221,11 @@ start_server_instance() {
             > "$log_file" 2>&1 &
     fi
     
-    echo $! > "$pid_file"
+    local server_pid=$!
+    echo "$server_pid" > "$pid_file"
+    disown "$server_pid" 2>/dev/null || true
     
-    info "Server started with PID: $(cat "$pid_file")"
+    info "Server started with PID: ${server_pid}"
     echo ""
     
     # Wait for server to be ready

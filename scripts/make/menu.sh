@@ -1016,6 +1016,7 @@ host_service_menu() {
                                 curl -sf -X POST http://localhost:8089/mlx/stop || error "Failed to stop MLX (may need auth)"
                             fi
                         else
+                            bash "${REPO_ROOT}/scripts/llm/start-mlx-server.sh" --stop 2>/dev/null || true
                             pkill -f "mlx_lm.server" 2>/dev/null || true
                             pkill -f "mlx-outlines-server/server.py" 2>/dev/null || true
                             success "MLX stopped"

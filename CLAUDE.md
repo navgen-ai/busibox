@@ -81,8 +81,20 @@ make test                # Testing menu
 
 **Testing**:
 ```bash
-# Docker testing
+# Docker testing (local development)
 make test-docker SERVICE=authz
+
+# Run specific test file or test function
+make test-docker SERVICE=agent ARGS="tests/integration/test_schema_extraction.py::test_clean_markdown_for_extraction"
+
+# Run multiple specific tests (space-separated paths)
+make test-docker SERVICE=agent ARGS="tests/integration/test_file.py::test_one tests/integration/test_file.py::test_two"
+
+# Run a test directory
+make test-docker SERVICE=agent ARGS="tests/unit"
+
+# Include slow/GPU tests (FAST=1 is default)
+make test-docker SERVICE=agent ARGS="tests/integration/test_slow.py" FAST=0
 
 # Remote testing (against staging/production)
 make test-local SERVICE=agent INV=staging
@@ -90,6 +102,8 @@ make test-local SERVICE=agent INV=staging
 # Interactive test menu
 make test
 ```
+
+**Important**: Use `ARGS=` (not `PYTEST_ARGS=`) to pass pytest arguments through the Makefile. When targeting specific tests by path, prefix with `tests/` so the script uses it as the test path directly and skips the default `-m` filter. Quoting `-k` filters through `make` is fragile; prefer full `tests/path::test_name` targeting instead.
 
 **Proxmox Host Setup** (run ON Proxmox host as root):
 ```bash

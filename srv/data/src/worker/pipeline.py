@@ -80,6 +80,7 @@ class PipelineMixin:
                 chunks_processed=0,
                 total_chunks=total_chunks,
                 status_message=f"Embedding {total_chunks} chunks",
+                request=self._current_rls_context,
             )
             
             # Generate text embeddings
@@ -119,6 +120,7 @@ class PipelineMixin:
             stage="indexing",
             progress=82,
             status_message="Indexing in vector database",
+            request=self._current_rls_context,
         )
         
         # Prepare vectors for Milvus
@@ -175,6 +177,7 @@ class PipelineMixin:
             chunks_processed=total_chunks,
             total_chunks=total_chunks,
             status_message="Processing complete",
+            request=self._current_rls_context,
         )
         
         self.postgres_service.update_file_metadata(
@@ -250,6 +253,7 @@ class PipelineMixin:
                 pages_processed=pct,
                 total_pages=ctx.page_count,
                 status_message=msg,
+                request=self._current_rls_context,
             )
         
         # ── Pass 1: Fast Extract ──────────────────────────────────────────
@@ -409,6 +413,7 @@ class PipelineMixin:
             pages_processed=ctx.page_count,
             total_pages=ctx.page_count,
             status_message="Content available - enhancing quality",
+            request=self._current_rls_context,
         )
         
         self.history.log_stage_complete(
@@ -464,6 +469,7 @@ class PipelineMixin:
                 chunks_processed=total_chunks,
                 total_chunks=total_chunks,
                 status_message=f"OCR enhanced {pass2.pages_changed} pages",
+                request=self._current_rls_context,
             )
         else:
             logger.info(
@@ -583,6 +589,7 @@ class PipelineMixin:
             pages_processed=ctx.page_count,
             total_pages=ctx.page_count,
             status_message="Processing complete",
+            request=self._current_rls_context,
         )
         
         self.history.log_stage_complete(

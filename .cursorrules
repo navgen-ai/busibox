@@ -168,10 +168,16 @@ bash create_lxc_base.sh [production|staging]
 
 **Testing**:
 ```bash
-make test-docker SERVICE=authz     # Docker tests
-make test-local SERVICE=agent INV=staging  # Remote tests
-make test                          # Interactive menu
+make test-docker SERVICE=authz                          # All tests for a service
+make test-docker SERVICE=agent ARGS="tests/unit"        # Test directory only
+make test-docker SERVICE=agent ARGS="tests/integration/test_file.py::test_name"  # Specific test
+make test-docker SERVICE=agent ARGS="tests/integration/test_file.py::test_a tests/integration/test_file.py::test_b"  # Multiple tests
+make test-docker SERVICE=agent FAST=0                   # Include slow/GPU tests
+make test-local SERVICE=agent INV=staging               # Remote tests
+make test                                               # Interactive menu
 ```
+
+**Important**: Always use `ARGS=` (not `PYTEST_ARGS=`) to pass pytest arguments. Start `ARGS` with `tests/` to target specific paths and bypass the default marker filter. Quoting `-k` filters through `make` is fragile; prefer `tests/path::test_name` targeting.
 
 **MCP Servers** (Cursor): `make mcp` builds core-dev, app-builder, admin. See CLAUDE.md for config.
 
