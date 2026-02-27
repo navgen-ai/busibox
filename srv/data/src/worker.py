@@ -403,6 +403,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                             chunks_processed=chunk_count,
                             total_chunks=chunk_count,
                             status_message="Processing complete (duplicate detected)",
+                            request=self._current_rls_context,
                         )
                         
                         # Update file metadata (pass RLS context)
@@ -646,6 +647,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                         chunks_processed=len(existing_chunks),
                         total_chunks=len(existing_chunks),
                         status_message="Extracting entities for knowledge graph",
+                        request=self._current_rls_context,
                     )
                     try:
                         from processors.entity_extractor import EntityExtractor
@@ -705,6 +707,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                         chunks_processed=len(existing_chunks),
                         status_message="Processing complete",
                         total_chunks=len(existing_chunks),
+                        request=self._current_rls_context,
                     )
                     logger.info(
                         "Entity extraction reprocess complete",
@@ -767,6 +770,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                 stage="parsing",
                 progress=5,
                 status_message="Downloading file",
+                request=self._current_rls_context,
             )
             
             logger.debug("Downloading file from storage", file_id=file_id, storage_path=storage_path)
@@ -806,6 +810,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                     pages_processed=page_num,
                     total_pages=total_pages,
                     status_message=f"Parsing page {page_num} of {total_pages}",
+                    request=self._current_rls_context,
                 )
             
             extract_start = time.time()
@@ -867,6 +872,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                 progress=22,
                 total_pages=page_count,
                 status_message="Classifying document type",
+                request=self._current_rls_context,
             )
             
             document_type, confidence = self.classifier.classify(
@@ -885,6 +891,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                 stage="extracting_metadata",
                 progress=28,
                 status_message="Extracting metadata",
+                request=self._current_rls_context,
             )
             
             metadata = self.metadata_extractor.extract(
@@ -953,6 +960,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                 stage="chunking",
                 progress=32,
                 status_message="Creating semantic chunks",
+                request=self._current_rls_context,
             )
             
             # Apply custom chunking config if provided
@@ -1024,6 +1032,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                 chunks_processed=total_chunks,
                 total_chunks=total_chunks,
                 status_message=f"Created {total_chunks} chunks",
+                request=self._current_rls_context,
             )
             
             # Stage 4.5: LLM Cleanup (optional)
@@ -1049,6 +1058,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                     chunks_processed=0,
                     total_chunks=total_chunks,
                     status_message=f"Cleaning up {total_chunks} chunks",
+                    request=self._current_rls_context,
                 )
                 
                 # Run async cleanup in sync context
@@ -1081,6 +1091,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                     chunks_processed=total_chunks,
                     total_chunks=total_chunks,
                     status_message="Cleanup complete",
+                    request=self._current_rls_context,
                 )
             else:
                 logger.debug("LLM cleanup disabled, skipping", file_id=file_id)
@@ -1096,6 +1107,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                     chunks_processed=total_chunks,
                     total_chunks=total_chunks,
                     status_message="Chunks ready for embedding",
+                    request=self._current_rls_context,
                 )
             
             # Store chunks in PostgreSQL (after cleanup)
@@ -1121,6 +1133,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                         stage="entity_extraction",
                         progress=51,
                         status_message="Extracting entities for knowledge graph",
+                        request=self._current_rls_context,
                     )
                     
                     # Get library_id for graph filtering (Document nodes store library_id)
@@ -1490,6 +1503,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                 chunks_processed=0,
                 total_chunks=total_chunks,
                 status_message=f"Embedding {total_chunks} chunks",
+                request=self._current_rls_context,
             )
             
             # Generate dense embeddings
@@ -1519,6 +1533,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                 chunks_processed=total_chunks,
                 total_chunks=total_chunks,
                 status_message="Embeddings generated",
+                request=self._current_rls_context,
             )
             
             # Generate ColPali embeddings for PDF pages (if available and enabled)
@@ -1598,6 +1613,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                 chunks_processed=total_chunks,
                 total_chunks=total_chunks,
                 status_message="Indexing in vector database",
+                request=self._current_rls_context,
             )
             
             # Insert text chunks into Milvus
@@ -1823,6 +1839,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                 pages_processed=page_count,
                 total_pages=page_count,
                 status_message="Processing complete",
+                request=self._current_rls_context,
             )
             
             logger.info(
@@ -1863,7 +1880,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
             )
             
             # Timeout is considered permanent (document too large)
-            self.error_handler.mark_failed(file_id, e)
+            self.error_handler.mark_failed(file_id, e, rls_context=self._current_rls_context)
             
             logger.error(
                 "Job processing timeout",
@@ -1898,7 +1915,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
             # Pass job_retry_count to prevent infinite loops when file doesn't exist in DB
             if self.error_handler.should_retry(file_id, e, job_retry_count):
                 # Transient error - requeue for retry
-                self.error_handler.requeue_job(job_id, file_id, job_data_for_retry, e)
+                self.error_handler.requeue_job(job_id, file_id, job_data_for_retry, e, rls_context=self._current_rls_context)
                 logger.warning(
                     "Job processing failed (transient, will retry)",
                     job_id=job_id,
@@ -1909,7 +1926,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                 return
             else:
                 # Permanent error or max retries exceeded
-                self.error_handler.mark_failed(file_id, e)
+                self.error_handler.mark_failed(file_id, e, rls_context=self._current_rls_context)
                 logger.error(
                     "Job processing failed",
                     job_id=job_id,

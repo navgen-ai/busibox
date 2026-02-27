@@ -666,42 +666,10 @@ def _looks_like_real_key(value: str) -> bool:
     return True
 
 
-async def _clean_stale_config_env_vars(
-    client: "httpx.AsyncClient",
-    base_url: str,
-    headers: Dict[str, str],
+async def _clean_stale_litellm_db(
+    config_model_names: Optional[List[str]] = None,
+    purge_user_data: bool = False,
 ) -> None:
-    """Remove environment_variables from LiteLLM_Config to prevent stale encrypted
-    values from poisoning LiteLLM's env on its periodic DB reload.
-
-    LiteLLM encrypts env vars with LITELLM_SALT_KEY. If the salt key changes
-    (e.g. container recreated with a new master key), old encrypted blobs become
-    undecryptable and LiteLLM uses the raw ciphertext as the env var value,
-    causing auth failures and DNS errors.
-
-    We use a direct DB query because LiteLLM has no API to delete config entries.
-    """
-    if not (hasattr(settings, "litellm_database_url") and settings.litellm_database_url):
-        return
-    try:
-        import asyncpg
-        conn = await asyncpg.connect(str(settings.litellm_database_url))
-        try:
-            result = await conn.execute(
-                'DELETE FROM "LiteLLM_Config" '
-                "WHERE param_name = 'environment_variables'"
-            )
-            if result and "DELETE" in result:
-                logger.info(f"Cleaned stale LiteLLM config environment_variables: {result}")
-        finally:
-            await conn.close()
-    except ImportError:
-        logger.debug("asyncpg not available, skipping stale config cleanup")
-    except Exception as e:
-        logger.warning(f"Failed to clean stale config env vars from DB: {e}")
-
-
-async def _clean_stale_litellm_db(config_model_names: Optional[List[str]] = None) -> None:
     """Remove stale encrypted data from LiteLLM's database tables.
 
     LiteLLM encrypts model params (model, api_key, api_base) and credentials
@@ -710,14 +678,22 @@ async def _clean_stale_litellm_db(config_model_names: Optional[List[str]] = None
     raw ciphertext as model identifiers, causing "LLM Provider NOT provided"
     errors and decryption warnings.
 
-    This function cleans:
+    This function always cleans:
     1. LiteLLM_ProxyModelTable - model deployments matching config-file names
-    2. LiteLLM_Config - stale environment_variables
-    3. LiteLLM_CredentialsTable - all stored credentials (re-saved on next key entry)
+       (these are re-synced automatically after cleanup)
+
+    When purge_user_data=True, also cleans:
+    2. LiteLLM_Config - stale environment_variables (API keys saved via /config/update)
+    3. LiteLLM_CredentialsTable - stored credentials (API keys saved via /credentials)
+
+    User data (steps 2-3) is only purged on explicit admin action (e.g.
+    "Clean Stale Data" button or key rotation), NOT on every restart.
 
     Args:
         config_model_names: If provided, only delete model entries whose
             model_name matches these names. If None, skip model table cleanup.
+        purge_user_data: If True, also delete environment_variables and
+            credentials. Only set this for explicit admin actions, not startup.
     """
     if not (hasattr(settings, "litellm_database_url") and settings.litellm_database_url):
         return
@@ -750,28 +726,29 @@ async def _clean_stale_litellm_db(config_model_names: Optional[List[str]] = None
             except Exception as e:
                 logger.warning(f"Failed to clean LiteLLM_ProxyModelTable: {e}")
 
-        # 2. Clean stale environment_variables from LiteLLM_Config
-        try:
-            result = await conn.execute(
-                'DELETE FROM "LiteLLM_Config" '
-                "WHERE param_name = 'environment_variables'"
-            )
-            if result and "DELETE" in result and result != "DELETE 0":
-                logger.info(f"Cleaned stale LiteLLM config env vars: {result}")
-        except Exception as e:
-            logger.warning(f"Failed to clean LiteLLM_Config: {e}")
+        if purge_user_data:
+            # 2. Clean stale environment_variables from LiteLLM_Config
+            try:
+                result = await conn.execute(
+                    'DELETE FROM "LiteLLM_Config" '
+                    "WHERE param_name = 'environment_variables'"
+                )
+                if result and "DELETE" in result and result != "DELETE 0":
+                    logger.info(f"Cleaned stale LiteLLM config env vars: {result}")
+            except Exception as e:
+                logger.warning(f"Failed to clean LiteLLM_Config: {e}")
 
-        # 3. Clean all credentials — they'll be re-saved when the admin
-        # enters keys via the UI. This prevents undecryptable credential
-        # blobs from breaking model routing.
-        try:
-            result = await conn.execute(
-                'DELETE FROM "LiteLLM_CredentialsTable"'
-            )
-            if result and "DELETE" in result and result != "DELETE 0":
-                logger.info(f"Cleaned stale LiteLLM credentials: {result}")
-        except Exception as e:
-            logger.warning(f"Failed to clean LiteLLM_CredentialsTable: {e}")
+            # 3. Clean all credentials — they'll be re-saved when the admin
+            # enters keys via the UI. This prevents undecryptable credential
+            # blobs from breaking model routing.
+            try:
+                result = await conn.execute(
+                    'DELETE FROM "LiteLLM_CredentialsTable"'
+                )
+                if result and "DELETE" in result and result != "DELETE 0":
+                    logger.info(f"Cleaned stale LiteLLM credentials: {result}")
+            except Exception as e:
+                logger.warning(f"Failed to clean LiteLLM_CredentialsTable: {e}")
     finally:
         await conn.close()
 
@@ -1059,10 +1036,10 @@ async def sync_config_models_to_litellm() -> None:
         if entry.get("model_name")
     ]
 
-    # Clean stale encrypted data from LiteLLM DB before re-registering.
-    # This prevents "Unable to decrypt" / "LLM Provider NOT provided" errors
-    # that occur when LITELLM_SALT_KEY changes between container recreates.
-    await _clean_stale_litellm_db(config_model_names=config_model_names)
+    # Re-register config-file models by deleting stale entries first.
+    # Only config-file model entries are cleaned here (they get re-synced
+    # immediately below). User data (env vars, credentials) is preserved.
+    await _clean_stale_litellm_db(config_model_names=config_model_names, purge_user_data=False)
 
     base_url = _get_litellm_base_url()
     headers = _get_litellm_headers()
@@ -1573,9 +1550,8 @@ async def save_provider_key(
             # as actual environment variables on its periodic DB reload.
             # /credentials is for models that reference credentials by name,
             # /config/update sets them as env vars for all models to use.
-            # Clean stale encrypted env vars first to prevent salt-key-mismatch
-            # issues where old ciphertext poisons LiteLLM's environment.
-            await _clean_stale_config_env_vars(client, base_url, headers)
+            # LiteLLM merges env vars on /config/update, so existing keys
+            # for other providers are preserved.
             try:
                 resp = await client.post(
                     f"{base_url}/config/update",
@@ -1681,7 +1657,7 @@ async def clean_stale_encrypted_data(
             if entry.get("model_name")
         ]
 
-    await _clean_stale_litellm_db(config_model_names=config_model_names)
+    await _clean_stale_litellm_db(config_model_names=config_model_names, purge_user_data=True)
 
     # Re-sync config-file models with fresh encryption
     resync_count = 0

@@ -129,10 +129,6 @@ RECORDS_RESPONSE_SCHEMA = {
                             "maxItems": 20,
                             "items": {"type": "string", "maxLength": 200},
                         },
-                        "_provenance": {
-                            "type": "object",
-                            "additionalProperties": True,
-                        },
                     },
                 },
             }
@@ -514,3 +510,178 @@ async def test_generate_then_extract_via_agent_run(test_session, mock_auth_conte
 
     rec = records[0]
     assert rec.get("name"), f"Missing 'name' in record: {list(rec.keys())}"
+
+
+# =============================================================================
+# Markdown cleaning
+# =============================================================================
+
+
+def test_clean_markdown_for_extraction():
+    """Verify _clean_markdown_for_extraction strips noise without losing data."""
+    from app.api.extraction import _clean_markdown_for_extraction
+
+    raw = (
+        "# Title\n\n"
+        "**==> picture 1x1 inch <==**\n\n"
+        "Some important text.\n\n\n\n\n"
+        "**----- Start of picture text -----**\n"
+        "OCR garbage here\n"
+        "**----- End of picture text -----**\n\n"
+        "More content."
+    )
+    cleaned = _clean_markdown_for_extraction(raw)
+    assert "picture" not in cleaned.lower()
+    assert "OCR garbage" not in cleaned
+    assert "Some important text." in cleaned
+    assert "More content." in cleaned
+    assert "\n\n\n" not in cleaned
+
+
+# =============================================================================
+# Progressive provenance (text-search based)
+# =============================================================================
+
+
+def test_populate_provenance_from_markdown():
+    """Verify text-search provenance populates charOffset/charLength correctly."""
+    from app.api.extraction import _populate_provenance_from_markdown
+
+    markdown = "Name: Alice Smith\nRole: Engineer\nCity: Denver\n"
+    records = [{"name": "Alice Smith", "role": "Engineer", "city": "Denver"}]
+    schema = {
+        "fields": {
+            "name": {"type": "string"},
+            "role": {"type": "string"},
+            "city": {"type": "string"},
+        }
+    }
+
+    _populate_provenance_from_markdown(records, markdown, schema)
+
+    rec = records[0]
+    prov = rec.get("_provenance", {})
+    assert "name" in prov, f"Missing provenance for 'name': {prov}"
+    assert prov["name"]["charOffset"] == markdown.index("Alice Smith")
+    assert prov["name"]["charLength"] == len("Alice Smith")
+
+
+# =============================================================================
+# Large-doc extraction (sanitized Greenfield Clean Energy fixture)
+# =============================================================================
+
+
+import os
+
+FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
+
+ENERGY_INVESTMENT_SCHEMA_OBJ = {
+    "displayName": "Clean Energy Investment Profile",
+    "itemLabel": "Investment Profile",
+    "fields": {
+        "organization": {
+            "type": "string",
+            "display_order": 1,
+            "description": "Name of the renewable energy investment firm",
+        },
+        "location": {
+            "type": "string",
+            "display_order": 2,
+            "description": "Primary location or region of operations",
+        },
+        "specialization": {
+            "type": "string",
+            "display_order": 4,
+            "description": "Core focus area of the firm",
+        },
+        "investmentFocus": {
+            "type": "string",
+            "display_order": 5,
+            "description": "Renewable energy technologies or asset classes targeted",
+        },
+        "portfolioSize": {
+            "type": "string",
+            "display_order": 7,
+            "description": "Total size of the renewable energy portfolio",
+        },
+        "totalProjects": {
+            "type": "string",
+            "display_order": 8,
+            "description": "Total number of renewable energy projects invested in",
+        },
+        "parentOrganization": {
+            "type": "string",
+            "display_order": 23,
+            "description": "Parent or holding company",
+        },
+    },
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_large_doc_extraction(test_session):
+    """Extract from a large energy investment doc (~27K chars).
+
+    Validates that the efficient extraction pipeline (cleaned markdown,
+    no LLM provenance, tight max_tokens) can handle a real-world document
+    without crashing or timing out.
+    """
+    _check_llm_reachable()
+
+    fixture_path = os.path.join(FIXTURES_DIR, "greenfield-clean-energy.md")
+    if not os.path.exists(fixture_path):
+        pytest.skip(f"Fixture not found: {fixture_path}")
+
+    with open(fixture_path, "r") as f:
+        raw_markdown = f.read()
+
+    from app.api.extraction import (
+        _build_records_response_schema,
+        _build_extraction_prompt,
+        _extract_records,
+        _clean_markdown_for_extraction,
+        _populate_provenance_from_markdown,
+        _estimate_max_tokens_for_response_schema,
+    )
+
+    cleaned_markdown = _clean_markdown_for_extraction(raw_markdown)
+    assert len(cleaned_markdown) < len(raw_markdown), "Cleaning should reduce size"
+
+    response_schema = _build_records_response_schema(ENERGY_INVESTMENT_SCHEMA_OBJ, max_records=1)
+    max_tokens = _estimate_max_tokens_for_response_schema(response_schema)
+    assert max_tokens <= 4096, f"max_tokens should be <= 4096, got {max_tokens}"
+
+    prompt = _build_extraction_prompt(
+        schema_document_id="test-energy-schema",
+        file_id="test-energy-file",
+        schema_obj=ENERGY_INVESTMENT_SCHEMA_OBJ,
+        markdown=cleaned_markdown,
+        instructions="Extract data from this document into records matching the schema.",
+        compact_mode=True,
+    )
+
+    agent = _TestExtractorAgent()
+    result = await agent._call_structured_output(
+        prompt=prompt,
+        system_prompt="You are a data extraction assistant. Return ONLY valid JSON.",
+        response_schema=response_schema,
+        max_tokens=max_tokens,
+    )
+
+    parsed = json.loads(result)
+    records = _extract_records(parsed)
+    assert len(records) >= 1, (
+        f"Expected at least 1 record, got {len(records)}. "
+        f"Output: {json.dumps(parsed, indent=2)[:500]}"
+    )
+
+    rec = records[0]
+    assert rec.get("organization"), f"Missing 'organization': {list(rec.keys())}"
+    assert rec.get("location"), f"Missing 'location': {list(rec.keys())}"
+    assert rec.get("specialization"), f"Missing 'specialization': {list(rec.keys())}"
+
+    # Verify provenance can be computed from the original (uncleaned) markdown
+    _populate_provenance_from_markdown(records, raw_markdown, ENERGY_INVESTMENT_SCHEMA_OBJ)
+    prov = rec.get("_provenance", {})
+    assert "organization" in prov, f"Provenance missing for 'organization': {prov.keys()}"

@@ -510,8 +510,15 @@ def _stop_mlx_target(target: str) -> Dict[str, Any]:
     if not status.running:
         return {"success": True, "message": f"{target} server not running"}
     
+    port = MLX_FAST_PORT if target == "fast" else MLX_PORT
     try:
-        os.kill(status.pid, signal.SIGTERM)
+        # Kill the entire process group (caffeinate + child python) to avoid
+        # orphaned server processes that keep the port occupied.
+        try:
+            os.killpg(os.getpgid(status.pid), signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            os.kill(status.pid, signal.SIGTERM)
+
         for _ in range(10):
             time.sleep(0.5)
             try:
@@ -520,17 +527,41 @@ def _stop_mlx_target(target: str) -> Dict[str, Any]:
                 break
         else:
             try:
-                os.kill(status.pid, signal.SIGKILL)
-            except OSError:
-                pass
+                os.killpg(os.getpgid(status.pid), signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                try:
+                    os.kill(status.pid, signal.SIGKILL)
+                except OSError:
+                    pass
         
         if target == "fast":
             MLX_FAST_PID_FILE.unlink(missing_ok=True)
         else:
             MLX_PID_FILE.unlink(missing_ok=True)
+
+        # Also kill any orphaned server processes on this port (e.g. child python
+        # that survived caffeinate termination)
+        _cleanup_orphaned_server(port)
+
         return {"success": True, "message": f"{target} server stopped"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+def _cleanup_orphaned_server(port: int) -> None:
+    """Kill any server process still listening on the given port."""
+    orphan_pid = _find_pid_for_port(port)
+    if orphan_pid is not None:
+        try:
+            os.kill(orphan_pid, signal.SIGTERM)
+            time.sleep(1)
+            try:
+                os.kill(orphan_pid, 0)
+                os.kill(orphan_pid, signal.SIGKILL)
+            except OSError:
+                pass
+        except OSError:
+            pass
 
 
 def stop_mlx_server(target: str = "all") -> Dict[str, Any]:

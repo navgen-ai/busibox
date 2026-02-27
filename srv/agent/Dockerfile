@@ -27,16 +27,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -r
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy and install busibox_common shared library
-COPY shared/ ./shared/
-RUN pip install --no-cache-dir ./shared
-
 # Install aider-chat in an isolated venv to avoid dependency conflicts.
 # The BuilderLocalAgent calls `aider` as a subprocess CLI tool.
+# Placed before COPY shared/ so that frequent shared-library changes don't
+# bust the cache for this expensive (~5 min) install.
 RUN python -m venv /opt/aider && \
     /opt/aider/bin/pip install --no-cache-dir aider-chat>=0.78.0
 # Keep system Python first for migrations/runtime; only use aider CLI when invoked.
 ENV PATH="$PATH:/opt/aider/bin"
+
+# Copy and install busibox_common shared library
+COPY shared/ ./shared/
+RUN pip install --no-cache-dir ./shared
 
 # Copy source code
 COPY agent/app/ ./app/

@@ -186,7 +186,58 @@ If no virtual environment exists, `make test-local` automatically:
 - FAST mode filtering
 - Proper PYTHONPATH configuration
 
-### 4. Direct Execution on Container
+### 4. Docker Testing (Recommended for Local Development)
+
+```bash
+make test-docker SERVICE=agent
+```
+
+This runs pytest inside the Docker container for the service. Test files are synced from your local filesystem before each run.
+
+**When to use:** Local development with Docker, iterating on tests, CI/CD.
+
+#### Targeting Specific Tests
+
+Use `ARGS=` (NOT `PYTEST_ARGS=`) to pass pytest arguments:
+
+```bash
+# Specific test function
+make test-docker SERVICE=agent ARGS="tests/integration/test_schema_extraction.py::test_clean_markdown_for_extraction"
+
+# Multiple specific tests (space-separated paths)
+make test-docker SERVICE=agent ARGS="tests/integration/test_file.py::test_one tests/integration/test_file.py::test_two"
+
+# Test directory
+make test-docker SERVICE=agent ARGS="tests/unit"
+
+# Test file
+make test-docker SERVICE=agent ARGS="tests/integration/test_schema_extraction.py"
+
+# Include slow/GPU tests (FAST=1 is default)
+make test-docker SERVICE=agent FAST=0
+```
+
+**Important**: When `ARGS` starts with `tests/`, the script uses it as the test path directly and skips the default `-m 'not slow and not gpu'` filter. Quoting `-k` filters through `make` is fragile due to shell expansion; prefer full `tests/path::test_name` targeting instead.
+
+#### Discovering Tests
+
+```bash
+make test-docker ACTION=list                                    # Overview of all services
+make test-docker ACTION=list SERVICE=agent                      # List agent test files
+make test-docker ACTION=list SERVICE=agent CATEGORY=unit        # List unit test files
+make test-docker ACTION=list SERVICE=agent CATEGORY=unit DETAIL=full  # Show individual test IDs
+```
+
+#### Options and Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `SERVICE` | Required | authz, agent, data, search |
+| `ARGS` | "" | Pytest arguments or test paths |
+| `FAST` | 1 | Skip `@pytest.mark.slow` and `@pytest.mark.gpu` tests |
+| `WORKER` | 0 | Start local data worker for pipeline tests |
+
+### 5. Direct Execution on Container
 
 SSH to the container and run pytest directly:
 

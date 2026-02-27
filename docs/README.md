@@ -7,11 +7,25 @@ Documentation is organized by **audience** to make it easy to find what you need
 ```
 docs/
   README.md              # This file
+  overview/              # Platform positioning: benefits, value proposition, use cases
   administrators/        # Deployment, configuration, operations, troubleshooting
   developers/            # Architecture, API guides, reference, security, dev notes
   users/                 # End-user platform guides (served via docs-api)
   archive/               # Historical/outdated content (not served by docs-api)
 ```
+
+### overview/
+
+Platform positioning docs for a mixed audience — business decision-makers and technical evaluators.
+
+0. **Why Busibox** -- the case for a self-hosted AI platform
+1. **Data Sovereignty** -- data ownership, local processing, and compliance
+2. **Security Architecture** -- Zero Trust auth, RLS, container isolation, RBAC
+3. **Hybrid AI** -- local and cloud model routing
+4. **Platform Capabilities** -- document processing, search, agents, and apps
+5. **Use Cases** -- real-world applications across industries
+
+docs-api category: `overview`
 
 ### administrators/
 
@@ -82,6 +96,7 @@ The docs-api service (`srv/docs/`) serves documentation to the AI Portal and oth
 
 | Category | Audience | Directory |
 |---|---|---|
+| `overview` | Mixed (business + technical) | `docs/overview/` |
 | `platform` | End users | `docs/users/` |
 | `administrator` | Operators/admins | `docs/administrators/` |
 | `developer` | Developers | `docs/developers/` |
@@ -94,7 +109,7 @@ Every doc served by docs-api must have YAML frontmatter:
 ```yaml
 ---
 title: "Document Title"
-category: "platform"          # platform, administrator, developer, or apps
+category: "platform"          # overview, platform, administrator, developer, or apps
 order: 1                      # Sort order within category
 description: "Brief summary"
 published: true               # Set false to hide from docs-api
