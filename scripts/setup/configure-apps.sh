@@ -35,9 +35,10 @@ else
     header() { echo ""; echo "=== $1 ==="; echo ""; }
 fi
 
-# Configuration
-BUSIBOX_PORTAL_DIR="${BUSIBOX_PORTAL_DIR:-$(cd "${REPO_ROOT}/../busibox-portal" 2>/dev/null && pwd || echo "")}"
-BUSIBOX_AGENTS_DIR="${BUSIBOX_AGENTS_DIR:-$(cd "${REPO_ROOT}/../busibox-agents" 2>/dev/null && pwd || echo "")}"
+# Configuration — derive app paths from the busibox-frontend monorepo
+BUSIBOX_FRONTEND_DIR="${BUSIBOX_FRONTEND_DIR:-$(cd "${REPO_ROOT}/../busibox-frontend" 2>/dev/null && pwd || echo "")}"
+BUSIBOX_PORTAL_DIR="${BUSIBOX_PORTAL_DIR:-${BUSIBOX_FRONTEND_DIR:+${BUSIBOX_FRONTEND_DIR}/apps/portal}}"
+BUSIBOX_AGENTS_DIR="${BUSIBOX_AGENTS_DIR:-${BUSIBOX_FRONTEND_DIR:+${BUSIBOX_FRONTEND_DIR}/apps/agents}}"
 AUTHZ_BASE_URL="${AUTHZ_BASE_URL:-https://localhost/api/authz}"
 
 # =============================================================================
@@ -46,8 +47,8 @@ AUTHZ_BASE_URL="${AUTHZ_BASE_URL:-https://localhost/api/authz}"
 
 check_busibox_portal() {
     if [ -z "$BUSIBOX_PORTAL_DIR" ] || [ ! -d "$BUSIBOX_PORTAL_DIR" ]; then
-        error "busibox-portal directory not found. Expected at: ${REPO_ROOT}/../busibox-portal"
-        error "Set BUSIBOX_PORTAL_DIR environment variable to override"
+        error "busibox-portal not found. Expected at: ${REPO_ROOT}/../busibox-frontend/apps/portal"
+        error "Set BUSIBOX_FRONTEND_DIR environment variable to override"
         return 1
     fi
     return 0
@@ -55,8 +56,8 @@ check_busibox_portal() {
 
 check_busibox_agents() {
     if [ -z "$BUSIBOX_AGENTS_DIR" ] || [ ! -d "$BUSIBOX_AGENTS_DIR" ]; then
-        error "busibox-agents directory not found. Expected at: ${REPO_ROOT}/../busibox-agents"
-        error "Set BUSIBOX_AGENTS_DIR environment variable to override"
+        error "busibox-agents not found. Expected at: ${REPO_ROOT}/../busibox-frontend/apps/agents"
+        error "Set BUSIBOX_FRONTEND_DIR environment variable to override"
         return 1
     fi
     return 0
@@ -322,10 +323,9 @@ case "${1:-}" in
         echo "  --authz   Only register authz clients"
         echo ""
         echo "Environment variables:"
-        echo "  BUSIBOX_PORTAL_DIR  Path to busibox-portal (default: ../busibox-portal)"
-        echo "  BUSIBOX_AGENTS_DIR  Path to busibox-agents (default: ../busibox-agents)"
-        echo "  AUTHZ_BASE_URL      AuthZ service URL (default: https://localhost/api/authz)"
-        echo "  (none required)     AuthZ uses Zero Trust JWTs; no admin token is supported"
+        echo "  BUSIBOX_FRONTEND_DIR  Path to busibox-frontend monorepo (default: ../busibox-frontend)"
+        echo "  AUTHZ_BASE_URL        AuthZ service URL (default: https://localhost/api/authz)"
+        echo "  (none required)       AuthZ uses Zero Trust JWTs; no admin token is supported"
         ;;
     *)
         error "Unknown option: $1"
