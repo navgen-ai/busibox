@@ -1947,12 +1947,21 @@ bootstrap_docker_ansible() {
         return 1
     fi
     
+    # Resolve health check hosts: inside the manager container, localhost doesn't
+    # reach other Docker containers — use Docker compose service hostnames instead.
+    local authz_host="localhost" deploy_host="localhost" portal_host="localhost"
+    if [[ -f /.dockerenv ]]; then
+        authz_host="authz-api"
+        deploy_host="deploy-api"
+        portal_host="core-apps"
+    fi
+    
     # Wait for AuthZ to be ready before creating admin user
     info "Waiting for AuthZ API to be healthy..."
     local max_attempts=30
     local attempt=0
     while [[ $attempt -lt $max_attempts ]]; do
-        if curl -sf http://localhost:8010/health/live &>/dev/null; then
+        if curl -sf "http://${authz_host}:8010/health/live" &>/dev/null; then
             success "AuthZ API is ready"
             break
         fi
@@ -1980,7 +1989,7 @@ bootstrap_docker_ansible() {
     info "Waiting for Deploy API to be healthy..."
     attempt=0
     while [[ $attempt -lt 30 ]]; do
-        if curl -sf http://localhost:8011/health/live &>/dev/null; then
+        if curl -sf "http://${deploy_host}:8011/health/live" &>/dev/null; then
             success "Deploy API is ready"
             break
         fi
@@ -2003,7 +2012,7 @@ bootstrap_docker_ansible() {
     max_attempts=90
     attempt=0
     while [[ $attempt -lt $max_attempts ]]; do
-        if curl -sf http://localhost:3000/portal/api/health &>/dev/null; then
+        if curl -sf "http://${portal_host}:3000/portal/api/health" &>/dev/null; then
             success "Busibox Portal is ready"
             break
         fi
@@ -2638,11 +2647,19 @@ bootstrap_docker() {
         ADMIN_EMAIL="${ADMIN_EMAIL}" docker compose $compose_files up -d --no-deps authz-api 2>&1 | grep -v "^$" || true
     fi
     
+    # Resolve health check hosts for the legacy path too
+    local authz_host="localhost" deploy_host="localhost" portal_host="localhost"
+    if [[ -f /.dockerenv ]]; then
+        authz_host="authz-api"
+        deploy_host="deploy-api"
+        portal_host="core-apps"
+    fi
+    
     # Wait for authz
     info "Waiting for AuthZ API to be healthy..."
     attempt=0
     while [[ $attempt -lt $max_attempts ]]; do
-        if curl -sf http://localhost:8010/health/live &>/dev/null; then
+        if curl -sf "http://${authz_host}:8010/health/live" &>/dev/null; then
             break
         fi
         sleep 2
@@ -2692,7 +2709,7 @@ bootstrap_docker() {
     info "Waiting for Deploy API to be healthy..."
     attempt=0
     while [[ $attempt -lt 30 ]]; do
-        if curl -sf http://localhost:8011/health/live > /dev/null 2>&1; then
+        if curl -sf "http://${deploy_host}:8011/health/live" > /dev/null 2>&1; then
             success "Deploy API is ready"
             break
         fi
@@ -2788,7 +2805,7 @@ bootstrap_docker() {
     max_attempts=90
     attempt=0
     while [[ $attempt -lt $max_attempts ]]; do
-        if curl -sf http://localhost:3000/portal/api/health &>/dev/null; then
+        if curl -sf "http://${portal_host}:3000/portal/api/health" &>/dev/null; then
             break
         fi
         sleep 2
