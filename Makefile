@@ -781,6 +781,11 @@ ifdef SERVICE
 else
 	@USE_ANSIBLE_FOR_DOCKER=$(USE_ANSIBLE) $(MANAGER_RUN_IT) bash scripts/make/install-menu.sh $(if $(VERBOSE),-v)
 endif
+	@if [ -f .mlx-setup-needed ]; then \
+		rm -f .mlx-setup-needed; \
+		echo "[INFO] Running MLX setup on macOS host..."; \
+		bash scripts/make/mlx-host-setup.sh; \
+	fi
 else
 ifdef SERVICE
 	@bash scripts/make/service-deploy.sh "$(SERVICE)"
