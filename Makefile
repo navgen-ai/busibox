@@ -10,7 +10,8 @@
         k8s-gpu-up k8s-gpu-down k8s-gpu-status k8s-gpu-window \
         spot-check spot-swap spot-price \
         connect disconnect k8s-connect-status \
-        build-manager
+        build-manager \
+        busibox-build busibox
 
 # Default target - interactive menu with health check
 .DEFAULT_GOAL := menu
@@ -1482,3 +1483,20 @@ disconnect:
 
 k8s-connect-status:
 	@bash scripts/k8s/connect.sh --status
+
+# ============================================================================
+# BUSIBOX CLI (Rust TUI)
+# ============================================================================
+# Interactive TUI for setup, hardware detection, model config, and service
+# management. Gradually replaces bash scripts with native Rust.
+#
+# Usage:
+#   make busibox-build    # Compile the CLI binary
+#   make busibox          # Build and run the CLI
+
+busibox-build:
+	@. "$$HOME/.cargo/env" 2>/dev/null; cd cli/busibox && CARGO_TARGET_DIR=target cargo build --release
+	@echo "Built: cli/busibox/target/release/busibox"
+
+busibox:
+	@. "$$HOME/.cargo/env" 2>/dev/null; cd cli/busibox && CARGO_TARGET_DIR=target cargo run --release

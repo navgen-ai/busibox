@@ -97,6 +97,9 @@ dev-apps/*
 !dev-apps/.gitkeep
 !dev-apps/README.md
 
+# Rust build artifacts
+cli/busibox/target/
+
 # Kubernetes - sensitive files
 k8s/kubeconfig-*.yaml
 k8s/secrets/secrets.yaml

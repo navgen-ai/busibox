@@ -3422,15 +3422,16 @@ start_embedding_download_background() {
     mkdir -p "$fastembed_cache"
     
     # Check if model is already cached
-    local model_size=""
+    local model_cache_pattern=""
     case "$embedding_model" in
-        *small*) model_size="small" ;;
-        *base*) model_size="base" ;;
-        *large*) model_size="large" ;;
+        *nomic*)  model_cache_pattern="nomic" ;;
+        *small*)  model_cache_pattern="bge-small" ;;
+        *base*)   model_cache_pattern="bge-base" ;;
+        *large*)  model_cache_pattern="bge-large" ;;
     esac
     
-    if [[ -n "$model_size" ]]; then
-        if find "${fastembed_cache}" -name "model*.onnx" -path "*bge-${model_size}*" 2>/dev/null | grep -q .; then
+    if [[ -n "$model_cache_pattern" ]]; then
+        if find "${fastembed_cache}" -name "model*.onnx" -path "*${model_cache_pattern}*" 2>/dev/null | grep -q .; then
             info "Embedding model already cached, skipping background download"
             return 0
         fi
@@ -3439,6 +3440,7 @@ start_embedding_download_background() {
     # Show size estimate
     local size_info=""
     case "$embedding_model" in
+        *nomic*) size_info="(~520MB)" ;;
         *small*) size_info="(~134MB)" ;;
         *base*) size_info="(~438MB)" ;;
         *large*) size_info="(~1.3GB)" ;;
@@ -3501,16 +3503,8 @@ get_embedding_model_for_env() {
         return
     fi
     
-    # Choose based on environment
-    case "${ENVIRONMENT:-development}" in
-        staging|production)
-            echo "BAAI/bge-large-en-v1.5"
-            ;;
-        *)
-            # development, demo, or unset - use small model
-            echo "BAAI/bge-small-en-v1.5"
-            ;;
-    esac
+    # nomic-embed for all environments (Matryoshka: dimension set via EMBEDDING_DIMENSION)
+    echo "nomic-ai/nomic-embed-text-v1.5"
 }
 
 # Download FastEmbed embedding model for offline use
@@ -3527,18 +3521,19 @@ download_embedding_model() {
     mkdir -p "$fastembed_cache"
     
     # Check if model is already cached
-    # FastEmbed uses HuggingFace hub cache format: qdrant/bge-small-en-v1.5-onnx-q
-    # Extract model size to match the right cached model
-    local model_size=""
+    # FastEmbed normalizes model names for cache: BAAI/bge-small-en-v1.5 -> BAAI_bge-small-en-v1.5
+    # nomic-ai/nomic-embed-text-v1.5 -> nomic-ai_nomic-embed-text-v1.5
+    local model_cache_pattern=""
     case "$embedding_model" in
-        *small*) model_size="small" ;;
-        *base*) model_size="base" ;;
-        *large*) model_size="large" ;;
+        *nomic*)  model_cache_pattern="nomic" ;;
+        *small*)  model_cache_pattern="bge-small" ;;
+        *base*)   model_cache_pattern="bge-base" ;;
+        *large*)  model_cache_pattern="bge-large" ;;
     esac
     
     local is_cached=false
-    if [[ -n "$model_size" ]]; then
-        if find "${fastembed_cache}" -name "model*.onnx" -path "*bge-${model_size}*" 2>/dev/null | grep -q .; then
+    if [[ -n "$model_cache_pattern" ]]; then
+        if find "${fastembed_cache}" -name "model*.onnx" -path "*${model_cache_pattern}*" 2>/dev/null | grep -q .; then
             is_cached=true
         fi
     fi
@@ -3600,14 +3595,15 @@ print('Download complete!')
     return 0
 }
 
-# Get embedding dimension based on model
+# Get native embedding dimension based on model (before Matryoshka truncation)
 get_embedding_dimension() {
     local model="$1"
     case "$model" in
+        *nomic*) echo "768" ;;
         *small*) echo "384" ;;
-        *base*) echo "768" ;;
+        *base*)  echo "768" ;;
         *large*) echo "1024" ;;
-        *) echo "1024" ;;  # Default to large dimension
+        *)       echo "768" ;;  # Default to nomic-embed native dimension
     esac
 }
 
