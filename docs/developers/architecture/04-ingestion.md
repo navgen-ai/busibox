@@ -86,11 +86,14 @@ graph LR
 2. **Metadata**: PostgreSQL record with visibility + role IDs.
 3. **Queue**: Redis Streams entry (`jobs:data`).
 4. **Processing worker** (`srv/data/src/worker.py`):
-   - **PDF Splitting**: Large PDFs (>5 pages) automatically split into 5-page chunks before processing to prevent memory issues and timeouts. Configurable via `PDF_SPLIT_PAGES` and `PDF_SPLIT_ENABLED`.
-   - Extraction: Marker (GPU) with remote override; fallbacks (pdfplumber, etc.).
+   - **PDFs use progressive enhancement pipeline** (`worker/pipeline.py` + `processors/progressive_pipeline.py`):
+     - **Pass 1 (Fast Extract)**: pymupdf4llm per-page text extraction with layout analysis. Document becomes viewable and searchable after this pass.
+     - **Pass 2 (OCR Enhancement)**: Tesseract OCR improves scanned/low-quality pages. Only re-indexes pages that changed.
+     - **Pass 3 (LLM Cleanup + Marker)**: LLM cleans text quality issues; selective Marker re-extraction for complex pages (requires CUDA GPU and 48GB+ RAM).
+   - Non-PDF documents use single-pass extraction (pdfplumber/Marker fallback path).
    - Classification and metadata enrichment.
    - Chunking: configurable 400-800 tokens, ~12% overlap.
-   - Embeddings: FastEmbed (`bge-large-en-v1.5`); optional ColPali for visual.
+   - Embeddings: Embedding API (`nomic-embed-text-v1.5`), 768d native / 256d Docker dev via Matryoshka truncation; optional ColPali for visual.
    - Indexing: Milvus collection `documents`, partitions per user/role.
    - Status: Updates persisted for SSE/polling.
 5. **Outputs**: Milvus vectors, PostgreSQL metadata/status, MinIO originals + markdown.
@@ -105,7 +108,7 @@ graph LR
 - Postgres: `POSTGRES_HOST`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`
 - Milvus: `MILVUS_HOST`, `MILVUS_COLLECTION`
 - MinIO: `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`
-- Embeddings: `FASTEMBED_MODEL`, `EMBEDDING_BATCH_SIZE`
+- Embeddings: `FASTEMBED_MODEL`, `EMBEDDING_DIMENSION`, `EMBEDDING_BATCH_SIZE`
 - Visual: `COLPALI_BASE_URL`, `COLPALI_ENABLED`
 - Extraction: `MARKER_ENABLED`, `MARKER_SERVICE_URL`, `MARKER_USE_GPU`
 - **PDF Splitting**: `PDF_SPLIT_ENABLED` (default: true), `PDF_SPLIT_PAGES` (default: 5)
@@ -118,3 +121,9 @@ graph LR
 - SSE status streaming is internal-only and proxied by apps; no public ingest endpoints.
 - Video/image uploads are stored but not processed; return `status=completed` without queuing.
 - Embedding API runs as a separate service on the same container (port `8005`).
+
+## Marker Memory Gating
+
+Marker PDF extraction loads several large PyTorch/Surya models (~2-3 GB RAM). The worker automatically disables Marker when the available system RAM is below 48 GB, falling back to pdfplumber. This prevents OOM crashes in Docker dev environments. The `MARKER_ENABLED` environment variable and the admin UI toggle still control whether Marker is *offered*, but the worker applies a hard RAM floor regardless.
+
+**Future direction**: MinerU or running Marker via MLX on the host would better suit Apple Silicon dev environments where Docker's memory budget is constrained. This would allow high-quality ML extraction without competing for container RAM.

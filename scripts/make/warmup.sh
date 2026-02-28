@@ -156,30 +156,28 @@ ensure_mlx_dependencies() {
 check_embedding_model() {
     local model="$1"
     
-    # FastEmbed uses HuggingFace hub cache format
-    # BAAI/bge-small-en-v1.5 is stored as qdrant/bge-small-en-v1.5-onnx-q
-    # Extract the model size (small/base/large) to match the right cached model
-    local model_size=""
-    case "$model" in
-        *small*) model_size="small" ;;
-        *base*) model_size="base" ;;
-        *large*) model_size="large" ;;
-    esac
-    
-    # Check for matching model in cache
-    if [[ -n "$model_size" ]]; then
-        if find "${FASTEMBED_CACHE_DIR}" -name "model*.onnx" -path "*bge-${model_size}*" 2>/dev/null | grep -q .; then
-            return 0
-        fi
-    fi
-    
-    # Also check the old-style cache format just in case
+    # FastEmbed normalizes model names for cache: org/model -> org_model
     local model_normalized="${model//\//_}"
     model_normalized="${model_normalized//:/_}"
     local model_dir="${FASTEMBED_CACHE_DIR}/${model_normalized}"
     
     if [[ -d "$model_dir" ]] && [[ -f "${model_dir}/model.onnx" || -f "${model_dir}/model_optimized.onnx" ]]; then
         return 0
+    fi
+    
+    # Pattern-based fallback for various cache layouts
+    local model_cache_pattern=""
+    case "$model" in
+        *nomic*)  model_cache_pattern="nomic" ;;
+        *small*)  model_cache_pattern="bge-small" ;;
+        *base*)   model_cache_pattern="bge-base" ;;
+        *large*)  model_cache_pattern="bge-large" ;;
+    esac
+    
+    if [[ -n "$model_cache_pattern" ]]; then
+        if find "${FASTEMBED_CACHE_DIR}" -name "model*.onnx" -path "*${model_cache_pattern}*" 2>/dev/null | grep -q .; then
+            return 0
+        fi
     fi
     
     return 1

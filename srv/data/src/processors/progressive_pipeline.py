@@ -311,7 +311,7 @@ class ProgressivePipeline:
             if assessment.needs_marker:
                 marker_pages.append(i + 1)  # 1-based
 
-        # Selective Marker extraction for flagged pages (GPU only)
+        # Selective Marker extraction (requires CUDA GPU and 48GB+ RAM)
         marker_improved = 0
         cuda_available = False
         try:
@@ -320,7 +320,21 @@ class ProgressivePipeline:
         except ImportError:
             pass
 
-        if marker_pages and cuda_available:
+        sufficient_ram = True
+        try:
+            total_ram_gb = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / (1024 ** 3)
+            if total_ram_gb < 48:
+                sufficient_ram = False
+                logger.info(
+                    "Marker gated: insufficient RAM for Pass 3",
+                    file_id=ctx.file_id,
+                    total_ram_gb=round(total_ram_gb, 1),
+                    min_required_gb=48,
+                )
+        except (ValueError, OSError):
+            pass
+
+        if marker_pages and cuda_available and sufficient_ram:
             if progress_callback:
                 progress_callback(
                     "available", 65,
@@ -329,9 +343,11 @@ class ProgressivePipeline:
             marker_improved = self._run_selective_marker(ctx, marker_pages, progress_callback)
             pages_changed += marker_improved
         elif marker_pages:
+            reason = "no CUDA GPU" if not cuda_available else "insufficient RAM (<48GB)"
             logger.info(
-                "Skipping Marker extraction (no CUDA GPU available)",
+                "Skipping Marker extraction",
                 file_id=ctx.file_id,
+                reason=reason,
                 marker_pages_requested=len(marker_pages),
             )
 

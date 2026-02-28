@@ -7,8 +7,13 @@ use ratatui::widgets::*;
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn get_bootstrap_stages(_app: &App) -> Vec<(&'static str, &'static str, Vec<String>)> {
     vec![
+        ("Prerequisites", "Ansible & Dependencies", vec!["_prerequisites".into()]),
         ("Database", "PostgreSQL", vec!["postgres".into()]),
         ("Authentication", "AuthZ API", vec!["authz".into()]),
         ("Deployment", "Deploy API", vec!["deploy".into()]),
@@ -496,6 +501,182 @@ fn spawn_install_worker(app: &mut App) {
                 let _ = tx.send(InstallUpdate::Log(format!(
                     "✓ {stage_name} already installed, skipping"
                 )));
+                continue;
+            }
+
+            // Handle prerequisites specially - install Ansible etc. instead of make install
+            if stage_services_to_deploy.len() == 1
+                && stage_services_to_deploy.first().map(|s| s.as_str()) == Some("_prerequisites")
+            {
+                let _ = tx.send(InstallUpdate::Log(
+                    "Checking and installing prerequisites...".into(),
+                ));
+                for svc in services {
+                    let _ = tx.send(InstallUpdate::ServiceStatus {
+                        name: svc.clone(),
+                        status: InstallStatus::Deploying,
+                    });
+                }
+
+                let prereq_script = r#"
+                    set -e
+                    # Expand PATH to include common pip install locations
+                    for pydir in "$HOME/.local/bin" "$HOME/Library/Python"/*/bin /usr/local/bin; do
+                        [ -d "$pydir" ] && export PATH="$pydir:$PATH"
+                    done
+                    # Ensure pip is available
+                    if ! command -v pip3 &>/dev/null && ! command -v pip &>/dev/null; then
+                        echo "Installing pip..."
+                        if command -v apt-get &>/dev/null; then
+                            apt-get update -qq && apt-get install -y -qq python3-pip 2>&1
+                        elif command -v yum &>/dev/null; then
+                            yum install -y python3-pip 2>&1
+                        elif command -v brew &>/dev/null; then
+                            brew install python3 2>&1
+                        fi
+                    fi
+                    PIP=$(command -v pip3 2>/dev/null || command -v pip 2>/dev/null || echo pip3)
+                    # Install ansible if not present
+                    if ! command -v ansible-playbook &>/dev/null; then
+                        echo "Installing Ansible..."
+                        $PIP install --quiet ansible 2>&1
+                        # Re-expand PATH after install (pip may have created new dirs)
+                        for pydir in "$HOME/.local/bin" "$HOME/Library/Python"/*/bin /usr/local/bin; do
+                            [ -d "$pydir" ] && export PATH="$pydir:$PATH"
+                        done
+                    fi
+                    if ! command -v ansible-vault &>/dev/null; then
+                        echo "Installing Ansible (vault missing)..."
+                        $PIP install --quiet ansible 2>&1
+                        for pydir in "$HOME/.local/bin" "$HOME/Library/Python"/*/bin /usr/local/bin; do
+                            [ -d "$pydir" ] && export PATH="$pydir:$PATH"
+                        done
+                    fi
+                    # Verify
+                    if command -v ansible-playbook &>/dev/null; then
+                        echo "✓ ansible-playbook: $(ansible-playbook --version | head -1)"
+                    else
+                        echo "ERROR: ansible-playbook still not found after install"
+                        echo "Searched PATH: $PATH"
+                        exit 1
+                    fi
+                    echo "✓ Prerequisites installed"
+                "#;
+
+                let result: color_eyre::Result<(i32, String)> = if is_remote {
+                    if let Some((ref host, ref user, ref key)) = ssh_details {
+                        let ssh = crate::modules::ssh::SshConnection::new(
+                            profile_host.as_deref().unwrap_or(host),
+                            user,
+                            key,
+                        );
+                        let full_cmd = format!(
+                            "for d in \"$HOME/.local/bin\" \"$HOME/Library/Python\"/*/bin /usr/local/bin; do [ -d \"$d\" ] && export PATH=\"$d:$PATH\"; done; bash -c {}",
+                            shell_escape(prereq_script)
+                        );
+                        let mut args: Vec<String> = vec![
+                            "-o".into(),
+                            "BatchMode=yes".into(),
+                            "-o".into(),
+                            "StrictHostKeyChecking=accept-new".into(),
+                            "-o".into(),
+                            "ConnectTimeout=10".into(),
+                        ];
+                        let key_expanded =
+                            crate::modules::ssh::shellexpand_path(key);
+                        if !key_expanded.is_empty()
+                            && std::path::Path::new(&key_expanded).exists()
+                        {
+                            args.push("-i".into());
+                            args.push(key_expanded);
+                        }
+                        args.push(ssh.ssh_target());
+                        args.push(full_cmd);
+                        match std::process::Command::new("ssh").args(&args).output() {
+                            Ok(output) => {
+                                let exit_code = output.status.code().unwrap_or(1);
+                                let combined = format!(
+                                    "{}{}",
+                                    String::from_utf8_lossy(&output.stdout),
+                                    String::from_utf8_lossy(&output.stderr)
+                                );
+                                Ok((exit_code, remote::strip_ansi(&combined)))
+                            }
+                            Err(e) => Err(color_eyre::eyre::eyre!("{e}")),
+                        }
+                    } else {
+                        Err(color_eyre::eyre::eyre!("No SSH connection"))
+                    }
+                } else {
+                    match std::process::Command::new("bash")
+                        .arg("-c")
+                        .arg(prereq_script)
+                        .output()
+                    {
+                        Ok(output) => {
+                            let exit_code = output.status.code().unwrap_or(1);
+                            let combined = format!(
+                                "{}{}",
+                                String::from_utf8_lossy(&output.stdout),
+                                String::from_utf8_lossy(&output.stderr)
+                            );
+                            Ok((exit_code, remote::strip_ansi(&combined)))
+                        }
+                        Err(e) => Err(color_eyre::eyre::eyre!("{e}")),
+                    }
+                };
+
+                match result {
+                    Ok((0, output)) => {
+                        for line in output.lines() {
+                            let trimmed = line.trim();
+                            if !trimmed.is_empty() {
+                                let _ = tx.send(InstallUpdate::Log(format!("  {trimmed}")));
+                            }
+                        }
+                        for svc in services {
+                            let _ = tx.send(InstallUpdate::ServiceStatus {
+                                name: svc.clone(),
+                                status: InstallStatus::Healthy,
+                            });
+                        }
+                        let _ = tx.send(InstallUpdate::Log("✓ Prerequisites ready".into()));
+                    }
+                    Ok((code, output)) => {
+                        any_failed = true;
+                        for line in output.lines() {
+                            let trimmed = line.trim();
+                            if !trimmed.is_empty() {
+                                let _ = tx.send(InstallUpdate::Log(format!("  {trimmed}")));
+                            }
+                        }
+                        for svc in services {
+                            let _ = tx.send(InstallUpdate::ServiceStatus {
+                                name: svc.clone(),
+                                status: InstallStatus::Failed(format!("exit code {code}")),
+                            });
+                        }
+                        let _ = tx.send(InstallUpdate::Log(format!(
+                            "FAILED: Prerequisites (exit code {code})"
+                        )));
+                    }
+                    Err(e) => {
+                        any_failed = true;
+                        for svc in services {
+                            let _ = tx.send(InstallUpdate::ServiceStatus {
+                                name: svc.clone(),
+                                status: InstallStatus::Failed(e.to_string()),
+                            });
+                        }
+                        let _ = tx.send(InstallUpdate::Log(format!(
+                            "ERROR: Prerequisites: {e}"
+                        )));
+                    }
+                }
+
+                if any_failed {
+                    break;
+                }
                 continue;
             }
 
