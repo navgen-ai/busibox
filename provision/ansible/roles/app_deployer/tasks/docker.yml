@@ -28,7 +28,7 @@
     tasks_from: wait_healthy
   vars:
     docker_wait_service: proxy
-    docker_wait_timeout: 60
+    docker_wait_timeout: 120
 
 - name: Start core-apps container
   include_role:

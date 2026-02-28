@@ -2,8 +2,9 @@ use crate::app::{App, DownloadStatus, MessageKind, ModelDownloadState, Screen, S
 use crate::modules::remote;
 use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::Margin;
 use ratatui::prelude::*;
-use ratatui::widgets::*;
+use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState, *};
 use std::process::Command;
 
 pub fn render(f: &mut Frame, app: &App) {
@@ -97,14 +98,43 @@ pub fn render(f: &mut Frame, app: &App) {
         }
     }
 
-    let content = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::dim())
-            .title(" Downloads ")
-            .title_style(theme::heading()),
-    );
+    let total_lines = lines.len();
+    let content_height = chunks[1].height.saturating_sub(2) as usize;
+    let max_scroll = total_lines.saturating_sub(content_height);
+    let scroll_offset = app.model_download_scroll.min(max_scroll);
+
+    let content = Paragraph::new(lines)
+        .scroll((scroll_offset as u16, 0))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::dim())
+                .title(if total_lines > content_height {
+                    format!(
+                        " Downloads ({}-{} of {}) ",
+                        scroll_offset + 1,
+                        (scroll_offset + content_height).min(total_lines),
+                        total_lines
+                    )
+                } else {
+                    " Downloads ".to_string()
+                })
+                .title_style(theme::heading()),
+        );
     f.render_widget(content, chunks[1]);
+
+    if total_lines > content_height {
+        let mut scrollbar_state = ScrollbarState::new(total_lines)
+            .position(scroll_offset);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        f.render_stateful_widget(
+            scrollbar,
+            chunks[1].inner(Margin { vertical: 1, horizontal: 0 }),
+            &mut scrollbar_state,
+        );
+    }
 
     let help = Paragraph::new(Line::from(Span::styled(
         " Enter Start/Continue  Esc Back",
@@ -117,6 +147,14 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {
             app.screen = Screen::ModelConfig;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.model_download_scroll > 0 {
+                app.model_download_scroll -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.model_download_scroll = app.model_download_scroll.saturating_add(1);
         }
         KeyCode::Enter => {
             if app.model_download_progress.is_empty() {
@@ -285,11 +323,12 @@ fn save_profile_and_continue(app: &mut App) {
         format!("{} {} (local)", environment, backend)
     };
 
-    let profile_id = format!("{}-{}", environment, backend);
+    let backend_lower = backend.to_lowercase();
+    let profile_id = format!("{}-{}", environment, backend_lower);
 
     let profile = Profile {
         environment: environment.to_string(),
-        backend: backend.to_string(),
+        backend: backend_lower.clone(),
         label,
         created: Some(chrono_now()),
         vault_prefix: Some(if *environment == "production" {
@@ -320,6 +359,8 @@ fn save_profile_and_continue(app: &mut App) {
             .and_then(|s| s.ip.clone()),
         hardware: hw,
         kubeconfig: None,
+        model_tier: None,
+        admin_email: None,
     };
 
     match profile::upsert_profile(&app.repo_root, &profile_id, profile, true) {

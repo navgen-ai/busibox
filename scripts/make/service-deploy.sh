@@ -214,7 +214,7 @@ get_backend_type() {
     
     if [[ -z "$backend" ]]; then
         case "$env" in
-            development|demo) backend="docker" ;;
+            development) backend="docker" ;;
             *) backend="docker" ;;
         esac
     fi
@@ -243,7 +243,6 @@ get_inventory_path() {
 get_container_prefix() {
     local env="$1"
     case "$env" in
-        demo) echo "demo" ;;
         development) echo "dev" ;;
         staging) echo "staging" ;;
         production) echo "prod" ;;
@@ -278,9 +277,19 @@ deploy_service() {
     # Build ansible-playbook command
     local cmd="ansible-playbook -i ${inventory} ${playbook} --tags ${tag}"
     
-    # Add vault password file when available (prefer env-specific file)
+    # Add vault password file when available
+    # Priority: existing ANSIBLE_VAULT_PASSWORD_FILE → ANSIBLE_VAULT_PASSWORD env var → VAULT_PASS_FILE → ~/.vault_pass
     if [[ -n "${ANSIBLE_VAULT_PASSWORD_FILE:-}" && -f "${ANSIBLE_VAULT_PASSWORD_FILE}" ]]; then
+        # Caller already set a valid password file (e.g. temp file from CLI)
         cmd="${cmd} --vault-password-file ${ANSIBLE_VAULT_PASSWORD_FILE}"
+    elif [[ -n "${ANSIBLE_VAULT_PASSWORD:-}" ]]; then
+        # Env var set — use vault-pass-from-env.sh script to relay it
+        local env_script="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}/scripts/lib/vault-pass-from-env.sh"
+        if [[ -f "$env_script" ]]; then
+            [[ -x "$env_script" ]] || chmod +x "$env_script"
+            export ANSIBLE_VAULT_PASSWORD_FILE="$env_script"
+            cmd="${cmd} --vault-password-file ${env_script}"
+        fi
     elif [[ -n "${VAULT_PASS_FILE:-}" && -f "${VAULT_PASS_FILE}" ]]; then
         cmd="${cmd} --vault-password-file ${VAULT_PASS_FILE}"
     elif [[ -f "$HOME/.vault_pass" ]]; then
@@ -291,6 +300,12 @@ deploy_service() {
     if [[ "$backend" == "docker" ]]; then
         export CONTAINER_PREFIX="$prefix"
         export BUSIBOX_ENV="$env"
+        # Set Docker dev mode: local-dev for development, github for staging/production
+        if [[ "$env" == "development" ]]; then
+            export DOCKER_DEV_MODE="local-dev"
+        else
+            export DOCKER_DEV_MODE="github"
+        fi
     fi
     
     # Run the deployment with reduced noise
@@ -301,6 +316,58 @@ deploy_service() {
     # Set ANSIBLE_DISPLAY_SKIPPED_HOSTS=no to reduce noise
     export ANSIBLE_DISPLAY_SKIPPED_HOSTS=no
     export ANSIBLE_FORCE_COLOR=1
+    
+    # Test vault decryption before running ansible-playbook
+    if [[ -n "${ANSIBLE_VAULT_PASSWORD_FILE:-}" ]]; then
+        local vault_dir="${REPO_ROOT}/provision/ansible/roles/secrets/vars"
+        local vault_test_file="${vault_dir}/vault.${prefix}.yml"
+        if [[ -f "$vault_test_file" ]]; then
+            echo "[vault-test] Testing decryption of vault.${prefix}.yml..."
+            echo "[vault-test] Password file: ${ANSIBLE_VAULT_PASSWORD_FILE}"
+            echo "[vault-test] Password file contents length: $(wc -c < "${ANSIBLE_VAULT_PASSWORD_FILE}" | tr -d ' ')"
+            echo "[vault-test] Password file first 10 chars: $(head -c 10 "${ANSIBLE_VAULT_PASSWORD_FILE}")..."
+            echo "[vault-test] Vault file: ${vault_test_file}"
+            echo "[vault-test] Vault file first line: $(head -1 "${vault_test_file}")"
+            echo "[vault-test] Vault file realpath: $(realpath "${vault_test_file}" 2>/dev/null || readlink -f "${vault_test_file}" 2>/dev/null || echo "${vault_test_file}")"
+            
+            # Test with the provided password file
+            local test_output
+            test_output=$(ansible-vault view "$vault_test_file" --vault-password-file "${ANSIBLE_VAULT_PASSWORD_FILE}" 2>&1)
+            local test_rc=$?
+            if [[ $test_rc -eq 0 ]]; then
+                echo "[vault-test] ✓ Vault decryption successful with provided file"
+            else
+                echo "[vault-test] ✗ Vault decryption FAILED (rc=$test_rc)"
+                echo "[vault-test] Error: $test_output"
+                
+                # Also test with a fresh temp file to isolate
+                local fresh_tmp=$(mktemp)
+                cat "${ANSIBLE_VAULT_PASSWORD_FILE}" > "$fresh_tmp"
+                chmod 600 "$fresh_tmp"
+                echo "[vault-test] Fresh temp file contents length: $(wc -c < "$fresh_tmp" | tr -d ' ')"
+                if ansible-vault view "$vault_test_file" --vault-password-file "$fresh_tmp" > /dev/null 2>&1; then
+                    echo "[vault-test] ✓ Fresh temp file WORKS - original file may be corrupt/stale"
+                else
+                    echo "[vault-test] ✗ Fresh temp file also fails"
+                    # Try with inline password
+                    local inline_tmp=$(mktemp)
+                    echo -n "${ANSIBLE_VAULT_PASSWORD}" > "$inline_tmp"
+                    chmod 600 "$inline_tmp"
+                    echo "[vault-test] Inline password length: ${#ANSIBLE_VAULT_PASSWORD}"
+                    if ansible-vault view "$vault_test_file" --vault-password-file "$inline_tmp" > /dev/null 2>&1; then
+                        echo "[vault-test] ✓ Inline ANSIBLE_VAULT_PASSWORD WORKS"
+                    else
+                        echo "[vault-test] ✗ Inline also fails - password does not match vault file"
+                        echo "[vault-test] The vault file is encrypted with a DIFFERENT password"
+                    fi
+                    rm -f "$inline_tmp"
+                fi
+                rm -f "$fresh_tmp"
+            fi
+        else
+            echo "[vault-test] vault.${prefix}.yml not found at ${vault_test_file}"
+        fi
+    fi
     
     if eval "$cmd"; then
         success "Service ${service} deployed successfully"

@@ -52,7 +52,7 @@
   when: docker_build_first | default(false)
   register: build_result
   changed_when: "'Building' in build_result.stdout or 'built' in build_result.stdout"
-  no_log: true
+  no_log: false
 
 - name: Show docker compose command (debug)
   ansible.builtin.debug:
@@ -73,7 +73,7 @@
   environment: *docker_secrets_env
   register: up_result
   changed_when: "'Creating' in up_result.stdout or 'Recreating' in up_result.stdout or 'Started' in up_result.stdout or 'Creating' in up_result.stderr or 'Recreating' in up_result.stderr"
-  no_log: true
+  no_log: false
 
 - name: Show docker compose output
   ansible.builtin.debug:

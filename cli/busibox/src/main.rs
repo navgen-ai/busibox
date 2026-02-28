@@ -48,9 +48,12 @@ fn main() -> Result<()> {
     while !app.should_quit {
         terminal.draw(|f| render(&app, f))?;
 
-        // Tick spinner animation on install screen
+        // Tick spinner animation on install and manage screens
         if app.screen == Screen::Install {
             app.install_tick = app.install_tick.wrapping_add(1);
+        }
+        if app.screen == Screen::Manage && app.manage_action_running {
+            app.manage_tick = app.manage_tick.wrapping_add(1);
         }
 
         // Drain install updates from background worker
@@ -60,7 +63,12 @@ fn main() -> Result<()> {
             loop {
                 match rx.try_recv() {
                     Ok(app::InstallUpdate::Log(msg)) => {
+                        let was_at_bottom =
+                            app.install_log_scroll >= app.install_log.len().saturating_sub(1);
                         app.install_log.push(msg);
+                        if was_at_bottom || !app.install_log_visible {
+                            app.install_log_scroll = app.install_log.len().saturating_sub(1);
+                        }
                     }
                     Ok(app::InstallUpdate::ServiceStatus { name, status }) => {
                         for svc in app.install_services.iter_mut() {
@@ -92,6 +100,57 @@ fn main() -> Result<()> {
             }
         }
 
+        // Drain manage action updates from background worker
+        {
+            let mut manage_completed = false;
+            let mut manage_success = false;
+            if let Some(rx) = app.manage_rx.take() {
+                use std::sync::mpsc::TryRecvError;
+                let mut put_back = true;
+                loop {
+                    match rx.try_recv() {
+                        Ok(app::ManageUpdate::Log(msg)) => {
+                            app.manage_log.push(msg);
+                            if app.manage_action_running {
+                                app.manage_log_scroll =
+                                    app.manage_log.len().saturating_sub(1);
+                            }
+                        }
+                        Ok(app::ManageUpdate::Complete { success }) => {
+                            app.manage_action_running = false;
+                            app.manage_action_complete = true;
+                            app.manage_log_scroll =
+                                app.manage_log.len().saturating_sub(1);
+                            put_back = false;
+                            manage_completed = true;
+                            manage_success = success;
+                            break;
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            app.manage_action_running = false;
+                            put_back = false;
+                            break;
+                        }
+                    }
+                }
+                if put_back {
+                    app.manage_rx = Some(rx);
+                }
+            }
+            if manage_completed {
+                if manage_success {
+                    app.set_message("Action completed", app::MessageKind::Success);
+                } else {
+                    app.set_message(
+                        "Action failed — press l to view logs",
+                        app::MessageKind::Error,
+                    );
+                }
+                screens::manage::load_service_status(&mut app);
+            }
+        }
+
         // Handle deferred resume install (so status message renders first)
         if app.pending_resume_install {
             app.pending_resume_install = false;
@@ -104,6 +163,19 @@ fn main() -> Result<()> {
                 if key.kind == KeyEventKind::Press {
                     handle_key(&mut app, key);
                 }
+            }
+        }
+
+        // Handle vault setup (needs TUI suspended for password prompts)
+        if app.pending_vault_setup {
+            app.pending_vault_setup = false;
+            tui::suspend()?;
+            handle_vault_setup(&mut app);
+            terminal = tui::resume()?;
+
+            // If vault setup succeeded (password is set), start the install worker
+            if app.vault_password.is_some() && app.screen == Screen::Install {
+                screens::install::spawn_install_worker_pub(&mut app);
             }
         }
 
@@ -218,16 +290,20 @@ fn render(app: &App, f: &mut ratatui::Frame) {
         Screen::Install => screens::install::render(f, app),
         Screen::Manage => screens::manage::render(f, app),
         Screen::ProfileSelect => screens::profile_select::render(f, app),
+        Screen::ProfileEdit => screens::profile_edit::render(f, app),
     }
 }
 
 fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
     use crossterm::event::KeyCode;
 
-    // Global quit: 'q' quits from any screen (unless user is typing or viewing install logs)
+    // Global quit: 'q' quits from any screen (unless user is typing or viewing logs)
     if key.code == KeyCode::Char('q')
         && app.input_mode != app::InputMode::Editing
         && !app.install_log_visible
+        && !app.manage_log_visible
+        && !app.profile_editing
+        && !app.profile_edit_tier_selecting
     {
         app.should_quit = true;
         return;
@@ -246,6 +322,7 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         Screen::Install => screens::install::handle_key(app, key),
         Screen::Manage => screens::manage::handle_key(app, key),
         Screen::ProfileSelect => screens::profile_select::handle_key(app, key),
+        Screen::ProfileEdit => screens::profile_edit::handle_key(app, key),
     }
 }
 
@@ -342,4 +419,394 @@ fn perform_resume_install(app: &mut App) {
     app.clear_message();
     app.screen = Screen::Install;
     app.menu_selected = 0;
+}
+
+/// Handle vault setup with interactive password prompts.
+/// Called with TUI suspended so rpassword can read from the terminal.
+fn handle_vault_setup(app: &mut App) {
+    use modules::vault;
+
+    let profile_id = match app.active_profile() {
+        Some((id, _)) => id.to_string(),
+        None => {
+            eprintln!("No active profile — cannot set up vault.");
+            eprintln!("Press Enter to continue...");
+            let _ = std::io::stdin().read_line(&mut String::new());
+            return;
+        }
+    };
+
+    // Derive vault prefix from environment (same logic as service-deploy.sh get_container_prefix)
+    let vault_prefix = crate::screens::install::env_to_prefix(
+        &app.active_profile()
+            .map(|(_, p)| p.environment.clone())
+            .unwrap_or_else(|| "development".into()),
+    );
+
+    eprintln!("\n╔══════════════════════════════════════════════════════╗");
+    eprintln!("║             Vault Password Setup                     ║");
+    eprintln!("╚══════════════════════════════════════════════════════╝\n");
+
+    // Check if we already have an encrypted vault key
+    if vault::has_vault_key(&profile_id) {
+        eprintln!("Encrypted vault key found for profile '{profile_id}'.");
+        eprintln!("Enter your master password to unlock.\n");
+
+        for attempt in 1..=3 {
+            match vault::prompt_password("Master password: ") {
+                Ok(pw) if pw.is_empty() => {
+                    eprintln!("Password cannot be empty.\n");
+                    continue;
+                }
+                Ok(pw) => {
+                    let key_path = match vault::vault_key_path(&profile_id) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            break;
+                        }
+                    };
+                    match vault::load_encrypted_vault(&key_path) {
+                        Ok(enc) => match vault::decrypt_vault_password(&enc, &pw) {
+                            Ok(vault_pw) => {
+                                eprintln!("✓ Vault unlocked\n");
+                                app.vault_password = Some(vault_pw);
+                                return;
+                            }
+                            Err(_) => {
+                                eprintln!(
+                                    "Incorrect master password (attempt {attempt}/3)\n"
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Error reading vault key: {e}");
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    break;
+                }
+            }
+        }
+        eprintln!("Failed to unlock vault. Install will proceed without vault secrets.");
+        eprintln!("Press Enter to continue...");
+        let _ = std::io::stdin().read_line(&mut String::new());
+        return;
+    }
+
+    // Check for legacy plaintext password file — offer migration
+    if let Some(legacy_path) = vault::find_legacy_vault_pass(&vault_prefix) {
+        eprintln!(
+            "Found existing plaintext vault password: {}",
+            legacy_path.display()
+        );
+        eprintln!("Migrating to encrypted vault key...\n");
+
+        match std::fs::read_to_string(&legacy_path) {
+            Ok(vault_pw) => {
+                let vault_pw = vault_pw.trim().to_string();
+                if vault_pw.is_empty() {
+                    eprintln!("Warning: plaintext password file is empty. Skipping migration.");
+                } else {
+                    // Encrypt with admin master password
+                    eprintln!("Set a master password to protect this vault key.");
+                    eprintln!("You'll need this password each time you deploy.\n");
+                    match vault::prompt_new_password("New master password: ") {
+                        Ok(master_pw) => {
+                            match vault::encrypt_vault_password(&vault_pw, &master_pw) {
+                                Ok(enc) => {
+                                    let key_path =
+                                        match vault::vault_key_path(&profile_id) {
+                                            Ok(p) => p,
+                                            Err(e) => {
+                                                eprintln!("Error: {e}");
+                                                app.vault_password = Some(vault_pw);
+                                                return;
+                                            }
+                                        };
+                                    if let Err(e) = vault::save_encrypted_vault(&key_path, &enc) {
+                                        eprintln!("Warning: could not save encrypted vault key: {e}");
+                                    } else {
+                                        eprintln!(
+                                            "✓ Vault key saved: {}\n",
+                                            key_path.display()
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("Warning: encryption failed: {e}");
+                                }
+                            }
+
+                            // Offer to set up remote user password
+                            setup_remote_vault_key(app, &profile_id, &vault_pw);
+
+                            // Remove plaintext file now that it's encrypted
+                            eprint!(
+                                "Delete plaintext password file {}? (Y/n) ",
+                                legacy_path.display()
+                            );
+                            let mut answer = String::new();
+                            let _ = std::io::stdin().read_line(&mut answer);
+                            if !answer.trim().eq_ignore_ascii_case("n") {
+                                if let Err(e) = std::fs::remove_file(&legacy_path) {
+                                    eprintln!("Warning: could not delete {}: {e}", legacy_path.display());
+                                } else {
+                                    eprintln!("✓ Plaintext file removed\n");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                        }
+                    }
+
+                    app.vault_password = Some(vault_pw);
+                    return;
+                }
+            }
+            Err(e) => {
+                eprintln!("Warning: could not read {}: {e}", legacy_path.display());
+            }
+        }
+    }
+
+    // First-time setup: generate a new vault password
+    eprintln!("No vault configured for profile '{profile_id}'.");
+    eprintln!("Setting up a new encrypted vault...\n");
+
+    let vault_pw = vault::generate_vault_password();
+
+    // Encrypt with admin master password
+    eprintln!("Choose a master password for this profile.");
+    eprintln!("You'll need this password each time you deploy.\n");
+
+    match vault::prompt_new_password("Master password: ") {
+        Ok(master_pw) => {
+            match vault::encrypt_vault_password(&vault_pw, &master_pw) {
+                Ok(enc) => {
+                    let key_path = match vault::vault_key_path(&profile_id) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            app.vault_password = Some(vault_pw);
+                            return;
+                        }
+                    };
+                    if let Err(e) = vault::save_encrypted_vault(&key_path, &enc) {
+                        eprintln!("Warning: could not save vault key: {e}");
+                    } else {
+                        eprintln!("✓ Admin vault key saved: {}\n", key_path.display());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: encryption failed: {e}");
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            app.vault_password = Some(vault_pw);
+            return;
+        }
+    }
+
+    // Set up remote user vault key
+    setup_remote_vault_key(app, &profile_id, &vault_pw);
+
+    // Create the Ansible vault file on the target
+    create_ansible_vault(app, &vault_pw, &vault_prefix);
+
+    app.vault_password = Some(vault_pw);
+    eprintln!("\n✓ Vault setup complete. Starting installation...\n");
+    std::thread::sleep(std::time::Duration::from_secs(1));
+}
+
+/// Offer to set up a separate master password for the remote user.
+fn setup_remote_vault_key(app: &App, profile_id: &str, vault_pw: &str) {
+    use modules::vault;
+
+    let is_remote = app.setup_target == app::SetupTarget::Remote;
+    if !is_remote {
+        return;
+    }
+
+    eprintln!("Set a master password for the remote user.");
+    eprintln!("They'll use this to run local updates.\n");
+
+    match vault::prompt_new_password("Remote user password: ") {
+        Ok(remote_pw) => {
+            match vault::encrypt_vault_password(vault_pw, &remote_pw) {
+                Ok(enc) => {
+                    let json = match serde_json::to_string_pretty(&enc) {
+                        Ok(j) => j,
+                        Err(e) => {
+                            eprintln!("Warning: could not serialize vault key: {e}");
+                            return;
+                        }
+                    };
+
+                    // Deploy to remote via SSH
+                    if let Some(ssh) = &app.ssh_connection {
+                        let escaped_json = json.replace('\'', "'\\''");
+                        let cmd = format!(
+                            "mkdir -p ~/.busibox/vault-keys && \
+                             printf '%s\\n' '{}' > ~/.busibox/vault-keys/{}.enc && \
+                             chmod 600 ~/.busibox/vault-keys/{}.enc",
+                            escaped_json, profile_id, profile_id
+                        );
+                        match ssh.run(&cmd) {
+                            Ok(_) => {
+                                eprintln!("✓ Remote vault key deployed\n");
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "Warning: could not deploy remote vault key: {e}"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: encryption failed: {e}");
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: could not set remote password: {e}");
+        }
+    }
+}
+
+/// Create the Ansible vault file on the target (remote or local).
+/// Copies vault.example.yml → vault.{prefix}.yml and encrypts it.
+fn create_ansible_vault(app: &App, vault_pw: &str, vault_prefix: &str) {
+    let is_remote = app.setup_target == app::SetupTarget::Remote;
+
+    let vault_dir = "provision/ansible/roles/secrets/vars";
+    let example_file = format!("{vault_dir}/vault.example.yml");
+    let target_file = format!("{vault_dir}/vault.{vault_prefix}.yml");
+
+    eprintln!("Creating Ansible vault: {target_file}...");
+
+    if is_remote {
+        if let Some(ssh) = &app.ssh_connection {
+            let profile = app.active_profile().map(|(_, p)| p.clone());
+            let remote_path = profile
+                .as_ref()
+                .map(|p| p.effective_remote_path().to_string())
+                .unwrap_or_else(|| app.remote_path_input.clone());
+
+            // Check if vault already exists
+            let check_cmd = format!(
+                "[ -f {remote_path}/{target_file} ] && echo EXISTS || echo MISSING"
+            );
+            let exists = ssh
+                .run(&check_cmd)
+                .map(|o| o.trim() == "EXISTS")
+                .unwrap_or(false);
+
+            if exists {
+                eprintln!("  Vault file already exists on remote, skipping creation.");
+                return;
+            }
+
+            // Copy example to target
+            let copy_cmd = format!(
+                "cp {remote_path}/{example_file} {remote_path}/{target_file}"
+            );
+            if let Err(e) = ssh.run(&copy_cmd) {
+                eprintln!("  Warning: could not copy vault example: {e}");
+                return;
+            }
+
+            // Encrypt using ansible-vault via stdin for the password
+            // We use a temp pass file approach since ansible-vault encrypt needs it
+            let encrypt_cmd = format!(
+                "cd {remote_path} && \
+                 TMPF=$(mktemp) && \
+                 printf '%s' '{}' > \"$TMPF\" && \
+                 chmod 600 \"$TMPF\" && \
+                 ansible-vault encrypt {target_file} --vault-password-file=\"$TMPF\" && \
+                 rm -f \"$TMPF\"",
+                vault_pw.replace('\'', "'\\''")
+            );
+
+            // Need ansible to be available on the remote
+            let path_setup = "for d in \"$HOME/.local/bin\" \"$HOME/Library/Python\"/*/bin /usr/local/bin; do [ -d \"$d\" ] && export PATH=\"$d:$PATH\"; done";
+            let full_cmd = format!("{path_setup}; {encrypt_cmd}");
+
+            match ssh.run(&full_cmd) {
+                Ok(_) => {
+                    eprintln!("  ✓ Ansible vault created and encrypted on remote");
+                }
+                Err(e) => {
+                    eprintln!("  Warning: could not encrypt vault on remote: {e}");
+                    eprintln!("  You may need to run 'ansible-vault encrypt {target_file}' manually.");
+                }
+            }
+        }
+    } else {
+        let vault_base = app.repo_root.join(vault_dir);
+        let example_path = vault_base.join("vault.example.yml");
+        let target_path = vault_base.join(format!("vault.{vault_prefix}.yml"));
+
+        if target_path.exists() {
+            eprintln!("  Vault file already exists locally, skipping creation.");
+            return;
+        }
+
+        if !example_path.exists() {
+            eprintln!("  Warning: vault.example.yml not found at {}", example_path.display());
+            return;
+        }
+
+        if let Err(e) = std::fs::copy(&example_path, &target_path) {
+            eprintln!("  Warning: could not copy vault example: {e}");
+            return;
+        }
+
+        // Encrypt locally
+        let mut tmpfile = std::env::temp_dir();
+        tmpfile.push(format!("busibox-vault-{}", std::process::id()));
+        if std::fs::write(&tmpfile, vault_pw).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(
+                    &tmpfile,
+                    std::fs::Permissions::from_mode(0o600),
+                );
+            }
+
+            let status = std::process::Command::new("ansible-vault")
+                .args([
+                    "encrypt",
+                    &target_path.to_string_lossy(),
+                    "--vault-password-file",
+                    &tmpfile.to_string_lossy(),
+                ])
+                .status();
+
+            let _ = std::fs::remove_file(&tmpfile);
+
+            match status {
+                Ok(s) if s.success() => {
+                    eprintln!("  ✓ Ansible vault created and encrypted locally");
+                }
+                Ok(s) => {
+                    eprintln!(
+                        "  Warning: ansible-vault encrypt failed (exit {})",
+                        s.code().unwrap_or(-1)
+                    );
+                }
+                Err(e) => {
+                    eprintln!("  Warning: could not run ansible-vault: {e}");
+                }
+            }
+        }
+    }
 }

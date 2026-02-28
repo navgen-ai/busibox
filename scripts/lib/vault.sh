@@ -117,6 +117,7 @@ get_vault_pass_file_for_env() {
 # Verify vault can be decrypted with the given password file
 # Usage: verify_vault_decryption [vault_file] [pass_file]
 # Returns 0 if successful, 1 if failed
+# Also supports ANSIBLE_VAULT_PASSWORD env var (skips pass_file check)
 verify_vault_decryption() {
     local vault_file="${1:-$VAULT_FILE}"
     local pass_file="${2:-$VAULT_PASS_FILE}"
@@ -124,6 +125,19 @@ verify_vault_decryption() {
     if [[ ! -f "$vault_file" ]]; then
         _vault_error "Vault file not found: $vault_file"
         return 1
+    fi
+    
+    # If ANSIBLE_VAULT_PASSWORD is set, use the env-var script
+    if [[ -n "${ANSIBLE_VAULT_PASSWORD:-}" ]]; then
+        local env_script="${_REPO_ROOT}/scripts/lib/vault-pass-from-env.sh"
+        if [[ -x "$env_script" ]]; then
+            if ansible-vault view "$vault_file" --vault-password-file="$env_script" &>/dev/null; then
+                return 0
+            else
+                _vault_error "Failed to decrypt vault with environment password!"
+                return 1
+            fi
+        fi
     fi
     
     if [[ ! -f "$pass_file" ]]; then
@@ -323,6 +337,11 @@ encrypt_vault() {
 # Ensure vault password is accessible
 # Sets ANSIBLE_VAULT_PASSWORD_FILE environment variable
 # 
+# Supports three modes:
+#   1. ANSIBLE_VAULT_PASSWORD env var set → use vault-pass-from-env.sh script
+#   2. Password file on disk → use directly
+#   3. Interactive prompt → ask user, optionally save
+#
 # IMPORTANT: Call set_vault_environment() first to set the correct vault context!
 ensure_vault_access() {
     # Determine which password file to use
@@ -331,6 +350,25 @@ ensure_vault_access() {
     # Check ansible-vault is available
     if ! check_ansible_vault; then
         return 1
+    fi
+    
+    # If ANSIBLE_VAULT_PASSWORD_FILE is already set and valid, use it as-is
+    if [[ -n "${ANSIBLE_VAULT_PASSWORD_FILE:-}" && -f "${ANSIBLE_VAULT_PASSWORD_FILE}" ]]; then
+        _vault_info "Using pre-configured vault password file: ${ANSIBLE_VAULT_PASSWORD_FILE}"
+        return 0
+    fi
+    
+    # If ANSIBLE_VAULT_PASSWORD is set, use the env-var helper script
+    if [[ -n "${ANSIBLE_VAULT_PASSWORD:-}" ]]; then
+        local env_script="${_REPO_ROOT}/scripts/lib/vault-pass-from-env.sh"
+        if [[ -f "$env_script" ]]; then
+            [[ -x "$env_script" ]] || chmod +x "$env_script"
+            export ANSIBLE_VAULT_PASSWORD_FILE="$env_script"
+            _vault_info "Using vault password from environment variable"
+            return 0
+        else
+            _vault_warn "vault-pass-from-env.sh not found at $env_script, falling back to file"
+        fi
     fi
     
     # Check if vault file exists

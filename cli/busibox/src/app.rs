@@ -6,6 +6,7 @@ use crate::modules::tailscale::TailscaleStatus;
 use std::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum Screen {
     Welcome,
     SetupMode,
@@ -17,6 +18,7 @@ pub enum Screen {
     Install,
     Manage,
     ProfileSelect,
+    ProfileEdit,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +28,7 @@ pub enum SetupTarget {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum TailscaleAuthChoice {
     Cloud,
     Headscale,
@@ -43,6 +46,7 @@ pub struct App {
     pub remote_host_input: String,
     pub remote_user_input: String,
     pub remote_path_input: String,
+    pub admin_email_input: String,
     pub remote_backend_choice: usize,
     pub remote_env_choice: usize,
 
@@ -78,10 +82,34 @@ pub struct App {
     // Manage state
     pub manage_services: Vec<ServiceStatus>,
     pub manage_selected: usize,
+    pub manage_log: Vec<String>,
+    pub manage_log_visible: bool,
+    pub manage_log_scroll: usize,
+    pub manage_action_running: bool,
+    pub manage_action_complete: bool,
+    pub manage_tick: usize,
+    pub manage_rx: Option<mpsc::Receiver<ManageUpdate>>,
+
+    // Scroll state (model download, hardware report, ssh setup)
+    pub model_download_scroll: usize,
+    pub hardware_report_scroll: usize,
+    pub ssh_setup_scroll: usize,
+
+    // Model tier selection (index into MemoryTier::all())
+    pub model_tier_selected: usize,
+    pub model_config_email_focused: bool,
 
     // Profile state
     pub profiles: Option<ProfilesFile>,
     pub profile_selected: usize,
+
+    // Profile edit state
+    pub profile_edit_field: usize,
+    pub profile_edit_buffer: String,
+    pub profile_editing: bool,
+    pub profile_edit_id: Option<String>,
+    pub profile_edit_tier_selecting: bool,
+    pub profile_edit_tier_cursor: usize,
 
     // UI state
     pub menu_selected: usize,
@@ -100,6 +128,15 @@ pub struct App {
 
     // Run `make login` after successful bootstrap install
     pub pending_login: bool,
+
+    // Vault password decrypted in memory for the current install session
+    pub vault_password: Option<String>,
+
+    // Pending vault setup (needs TUI suspended for password prompts)
+    pub pending_vault_setup: bool,
+
+    // Clean install: tear down all existing containers and volumes before installing
+    pub clean_install: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,6 +154,7 @@ pub enum MessageKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum SshSetupStatus {
     NotStarted,
     CheckingKeys,
@@ -158,6 +196,7 @@ pub enum DownloadStatus {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ServiceInstallState {
     pub name: String,
     pub group: String,
@@ -177,6 +216,12 @@ pub enum InstallUpdate {
     Log(String),
     ServiceStatus { name: String, status: InstallStatus },
     Complete { portal_url: Option<String> },
+}
+
+#[derive(Debug)]
+pub enum ManageUpdate {
+    Log(String),
+    Complete { success: bool },
 }
 
 impl std::fmt::Display for InstallStatus {
@@ -207,6 +252,7 @@ impl App {
             remote_host_input: String::new(),
             remote_user_input: "root".into(),
             remote_path_input: "~/busibox".into(),
+            admin_email_input: String::new(),
             remote_backend_choice: 0,
             remote_env_choice: 0,
             ssh_status: SshSetupStatus::NotStarted,
@@ -230,8 +276,26 @@ impl App {
             install_rx: None,
             manage_services: Vec::new(),
             manage_selected: 0,
+            manage_log: Vec::new(),
+            manage_log_visible: false,
+            manage_log_scroll: 0,
+            manage_action_running: false,
+            manage_action_complete: false,
+            manage_tick: 0,
+            manage_rx: None,
+            model_download_scroll: 0,
+            hardware_report_scroll: 0,
+            ssh_setup_scroll: 0,
+            model_tier_selected: 0,
+            model_config_email_focused: false,
             profiles: None,
             profile_selected: 0,
+            profile_edit_field: 0,
+            profile_edit_buffer: String::new(),
+            profile_editing: false,
+            profile_edit_id: None,
+            profile_edit_tier_selecting: false,
+            profile_edit_tier_cursor: 0,
             menu_selected: 0,
             input_mode: InputMode::Normal,
             status_message: None,
@@ -240,6 +304,9 @@ impl App {
             pending_ssh_copy: None,
             pending_resume_install: false,
             pending_login: false,
+            vault_password: None,
+            pending_vault_setup: false,
+            clean_install: false,
         }
     }
 
@@ -295,6 +362,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_target_apple_silicon(&self) -> bool {
         let hw = if self.setup_target == SetupTarget::Remote {
             self.remote_hardware.as_ref()
@@ -306,7 +374,12 @@ impl App {
 
     pub fn welcome_menu_items(&self) -> Vec<&str> {
         if self.has_profiles() {
-            vec!["Setup New", "Resume Install", "Profiles", "Manage", "Quit"]
+            let install_label = if self.is_installed() {
+                "Update / Re-install"
+            } else {
+                "Resume Install"
+            };
+            vec!["Setup New", install_label, "Clean Install", "Profiles", "Manage", "Quit"]
         } else {
             vec!["Setup New", "Quit"]
         }

@@ -81,6 +81,43 @@ impl MemoryTier {
         }
     }
 
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "test" => Some(MemoryTier::Test),
+            "minimal" => Some(MemoryTier::Minimal),
+            "standard" => Some(MemoryTier::Standard),
+            "enhanced" => Some(MemoryTier::Enhanced),
+            "professional" => Some(MemoryTier::Professional),
+            "enterprise" => Some(MemoryTier::Enterprise),
+            "ultra" => Some(MemoryTier::Ultra),
+            _ => None,
+        }
+    }
+
+    pub fn all() -> &'static [MemoryTier] {
+        &[
+            MemoryTier::Test,
+            MemoryTier::Minimal,
+            MemoryTier::Standard,
+            MemoryTier::Enhanced,
+            MemoryTier::Professional,
+            MemoryTier::Enterprise,
+            MemoryTier::Ultra,
+        ]
+    }
+
+    pub fn index(&self) -> usize {
+        match self {
+            MemoryTier::Test => 0,
+            MemoryTier::Minimal => 1,
+            MemoryTier::Standard => 2,
+            MemoryTier::Enhanced => 3,
+            MemoryTier::Professional => 4,
+            MemoryTier::Enterprise => 5,
+            MemoryTier::Ultra => 6,
+        }
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             MemoryTier::Test => "test",
@@ -90,6 +127,18 @@ impl MemoryTier {
             MemoryTier::Professional => "professional",
             MemoryTier::Enterprise => "enterprise",
             MemoryTier::Ultra => "ultra",
+        }
+    }
+
+    pub fn ram_range(&self) -> &'static str {
+        match self {
+            MemoryTier::Test => "< 16 GB",
+            MemoryTier::Minimal => "16-23 GB",
+            MemoryTier::Standard => "24-47 GB",
+            MemoryTier::Enhanced => "48-95 GB",
+            MemoryTier::Professional => "96-127 GB",
+            MemoryTier::Enterprise => "128-255 GB",
+            MemoryTier::Ultra => "256+ GB",
         }
     }
 

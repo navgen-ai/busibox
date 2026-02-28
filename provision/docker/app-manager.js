@@ -78,6 +78,7 @@ function getEnabledAppDefs() {
 const apps = new Map();
 let appLibProc = null;
 let shuttingDown = false;
+let reinstalling = false;
 
 function log(prefix, color, msg) {
   const c = COLORS[color] || '';
@@ -333,6 +334,7 @@ function cleanNextCache(def, full = false) {
 async function buildApp(def) {
   const env = {
     ...process.env,
+    NODE_ENV: 'production',
     NEXT_PUBLIC_BASE_PATH: def.basePath,
     ...def.extraEnv,
   };
@@ -454,6 +456,7 @@ async function handleRequest(req, res) {
   try {
     if (req.method === 'GET' && pathname === '/status') {
       const status = await getStatusWithHealth();
+      status.reinstalling = reinstalling;
       sendJson(res, 200, { success: true, data: status });
       return;
     }
@@ -612,6 +615,105 @@ async function handleRequest(req, res) {
 
       const built = await buildApp(def);
       sendJson(res, built ? 200 : 500, { success: built });
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/reinstall') {
+      if (reinstalling) {
+        sendJson(res, 409, { success: false, error: 'Reinstall already in progress', reinstalling: true });
+        return;
+      }
+      reinstalling = true;
+      managerLog('=== REINSTALL START: stopping all apps, cleaning caches, reinstalling deps ===');
+
+      // Respond immediately so the caller knows the operation started
+      sendJson(res, 202, { success: true, reinstalling: true, message: 'Reinstall started' });
+
+      // Run the heavy work async after responding
+      (async () => {
+        try {
+          const enabledDefs = getEnabledAppDefs();
+
+          // 1. Stop all running apps
+          for (const def of enabledDefs) {
+            const state = apps.get(def.name);
+            if (state && state.proc) {
+              managerLog(`Stopping ${def.name}...`);
+              await stopApp(def.name);
+            }
+          }
+
+          // 2. Clean all .next caches
+          for (const def of enabledDefs) {
+            cleanNextCache(def, true);
+          }
+
+          // 3. Clean node_modules caches and reinstall
+          managerLog('Cleaning node_modules caches...');
+          try {
+            execSync('rm -rf node_modules/.cache', { cwd: ROOT_DIR, stdio: 'pipe' });
+            for (const def of enabledDefs) {
+              const appNm = path.join(ROOT_DIR, 'apps', def.name, 'node_modules', '.cache');
+              try { execSync(`rm -rf "${appNm}"`, { stdio: 'pipe' }); } catch { /* ok */ }
+            }
+          } catch { /* ok */ }
+
+          managerLog('Running pnpm install...');
+          try {
+            execSync('pnpm install --no-frozen-lockfile', {
+              cwd: ROOT_DIR,
+              stdio: 'pipe',
+              timeout: 300000,
+            });
+            managerLog('pnpm install completed');
+          } catch (e) {
+            managerLog(`WARNING: pnpm install failed: ${e.message}`);
+          }
+
+          // 4. Rebuild shared package
+          managerLog('Building shared package...');
+          try {
+            execSync('pnpm --filter @jazzmind/busibox-app build', {
+              cwd: ROOT_DIR,
+              stdio: 'pipe',
+              timeout: 120000,
+            });
+            managerLog('Shared package built');
+          } catch (e) {
+            managerLog(`WARNING: Shared package build failed: ${e.message}`);
+          }
+
+          // 5. Rebuild and restart all apps
+          for (const def of enabledDefs) {
+            const state = apps.get(def.name);
+            if (!state) continue;
+            if (state.mode === 'prod') {
+              managerLog(`Building ${def.name} for production...`);
+              const built = await buildApp(def);
+              if (!built) {
+                managerLog(`WARNING: Build failed for ${def.name}, will start in dev`);
+                state.mode = 'dev';
+              }
+            }
+            const proc = startApp(def, state.mode);
+            if (proc) {
+              state.proc = proc;
+              state.pid = proc.pid;
+            }
+          }
+          saveModes();
+          managerLog('=== REINSTALL COMPLETE ===');
+        } catch (e) {
+          managerLog(`REINSTALL ERROR: ${e.message}`);
+        } finally {
+          reinstalling = false;
+        }
+      })();
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/reinstall') {
+      sendJson(res, 200, { success: true, reinstalling });
       return;
     }
 

@@ -1,16 +1,19 @@
-use crate::app::{App, MessageKind, Screen, SetupTarget};
+use crate::app::{App, InputMode, MessageKind, Screen, SetupTarget};
+use crate::modules::hardware::MemoryTier;
 use crate::modules::models::ModelRecommendation;
 use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
 use ratatui::widgets::*;
+use std::collections::HashMap;
 
 pub fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
-            Constraint::Min(12),
+            Constraint::Min(10),
+            Constraint::Length(3),
             Constraint::Length(3),
         ])
         .margin(2)
@@ -21,28 +24,167 @@ pub fn render(f: &mut Frame, app: &App) {
         .alignment(Alignment::Center);
     f.render_widget(title, chunks[0]);
 
-    if let Some(rec) = &app.model_recommendation {
-        let mut rows = Vec::new();
+    let hw = if app.setup_target == SetupTarget::Remote {
+        app.remote_hardware.as_ref()
+    } else {
+        app.local_hardware.as_ref()
+    };
+    let recommended_tier = hw.map(|h| h.memory_tier);
+    let backend = hw.map(|h| &h.llm_backend);
+
+    let content_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Percentage(60),
+        ])
+        .split(chunks[1]);
+
+    render_tier_list(f, app, content_chunks[0], recommended_tier);
+    render_tier_details(f, app, content_chunks[1], backend);
+
+    render_admin_email_input(f, app, chunks[2]);
+
+    let help = if app.model_config_email_focused {
+        Paragraph::new(Line::from(vec![
+            Span::styled("Type email  ", theme::normal()),
+            Span::styled("Tab ", theme::highlight()),
+            Span::styled("Back to tiers  ", theme::normal()),
+            Span::styled("Esc ", theme::muted()),
+            Span::styled("Back", theme::muted()),
+        ]))
+    } else {
+        Paragraph::new(Line::from(vec![
+            Span::styled(" ↑/↓ ", theme::highlight()),
+            Span::styled("Select tier  ", theme::normal()),
+            Span::styled("Enter ", theme::highlight()),
+            Span::styled("Confirm & Install  ", theme::normal()),
+            Span::styled(" Tab ", theme::highlight()),
+            Span::styled("Admin Email  ", theme::normal()),
+            Span::styled("Esc ", theme::muted()),
+            Span::styled("Back", theme::muted()),
+        ]))
+    };
+    f.render_widget(help, chunks[3]);
+}
+
+fn render_admin_email_input(f: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.model_config_email_focused;
+    let border_style = if is_focused {
+        theme::highlight()
+    } else {
+        theme::dim()
+    };
+
+    let content = if is_focused {
+        let display = if app.admin_email_input.is_empty() {
+            "▎".to_string()
+        } else {
+            format!("{}{}", app.admin_email_input, "▎")
+        };
+        Line::from(Span::styled(display, theme::normal()))
+    } else {
+        let display = if app.admin_email_input.is_empty() {
+            "admin@example.com"
+        } else {
+            &app.admin_email_input
+        };
+        Line::from(Span::styled(display, theme::muted()))
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(" Admin Email ")
+        .title_style(theme::heading());
+
+    let paragraph = Paragraph::new(content).block(block);
+    f.render_widget(paragraph, area);
+}
+
+fn render_tier_list(f: &mut Frame, app: &App, area: Rect, recommended: Option<MemoryTier>) {
+    let tiers = MemoryTier::all();
+
+    let items: Vec<ListItem> = tiers
+        .iter()
+        .enumerate()
+        .map(|(i, tier)| {
+            let is_recommended = recommended.map(|r| r == *tier).unwrap_or(false);
+            let marker = if is_recommended { "★ " } else { "  " };
+            let name = format!("{}{}", marker, capitalize(tier.name()));
+
+            let style = if i == app.model_tier_selected {
+                theme::selected()
+            } else if is_recommended {
+                theme::highlight()
+            } else {
+                theme::normal()
+            };
+
+            let ram = tier.ram_range();
+            ListItem::new(vec![
+                Line::from(Span::styled(name, style)),
+                Line::from(Span::styled(format!("    {ram}"), theme::muted())),
+                Line::from(""),
+            ])
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::dim())
+            .title(" Select Tier ")
+            .title_style(theme::heading()),
+    );
+    f.render_widget(list, area);
+}
+
+fn render_tier_details(f: &mut Frame, app: &App, area: Rect, backend: Option<&crate::modules::hardware::LlmBackend>) {
+    let tiers = MemoryTier::all();
+    let selected_tier = tiers.get(app.model_tier_selected).copied().unwrap_or(MemoryTier::Standard);
+
+    let config_path = app.repo_root.join("config").join("demo-models.yaml");
+    let recommendation = if config_path.exists() {
+        let backend_val = backend.cloned().unwrap_or(crate::modules::hardware::LlmBackend::Mlx);
+        ModelRecommendation::from_config(&config_path, selected_tier, &backend_val).ok()
+    } else {
+        None
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    lines.push(Line::from(vec![
+        Span::styled(format!(" {} ", capitalize(selected_tier.name())), theme::heading()),
+        Span::styled(format!("— {}", selected_tier.description()), theme::muted()),
+    ]));
+    lines.push(Line::from(""));
+
+    if let Some(rec) = &recommendation {
+        let mut unique_sizes: HashMap<&str, f64> = HashMap::new();
+
         for model in rec.models() {
             let size_str = if model.estimated_size_gb < 1.0 {
                 format!("{:.0} MB", model.estimated_size_gb * 1024.0)
             } else {
                 format!("{:.1} GB", model.estimated_size_gb)
             };
-            rows.push(Row::new(vec![
-                Cell::from(model.role.clone()).style(theme::heading()),
-                Cell::from(model.name.clone()).style(theme::normal()),
-                Cell::from(size_str).style(theme::info()),
-            ]));
-        }
 
-        // Deduplicate: if models are the same, only count once
-        let mut unique_sizes: std::collections::HashMap<&str, f64> = std::collections::HashMap::new();
-        for model in rec.models() {
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {:12}", model.role), theme::heading()),
+                Span::styled(model.name.clone(), theme::normal()),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("             ", theme::normal()),
+                Span::styled(size_str, theme::info()),
+            ]));
+            lines.push(Line::from(""));
+
             if !model.name.is_empty() {
                 unique_sizes.entry(&model.name).or_insert(model.estimated_size_gb);
             }
         }
+
         let total: f64 = unique_sizes.values().sum();
         let total_str = if total < 1.0 {
             format!("{:.0} MB", total * 1024.0)
@@ -53,96 +195,99 @@ pub fn render(f: &mut Frame, app: &App) {
         let unique_count = unique_sizes.len();
         let model_count = rec.models().len();
         let dedup_note = if unique_count < model_count {
-            format!(
-                " ({} unique model{})",
-                unique_count,
-                if unique_count == 1 { "" } else { "s" }
-            )
+            format!(" ({unique_count} unique)")
         } else {
             String::new()
         };
 
-        rows.push(Row::new(vec![
-            Cell::from("").style(theme::dim()),
-            Cell::from("").style(theme::dim()),
-            Cell::from("").style(theme::dim()),
+        lines.push(Line::from(vec![
+            Span::styled(" TOTAL       ", theme::heading()),
+            Span::styled(total_str, theme::highlight()),
+            Span::styled(dedup_note, theme::muted()),
         ]));
-        rows.push(Row::new(vec![
-            Cell::from("TOTAL").style(theme::heading()),
-            Cell::from(dedup_note).style(theme::muted()),
-            Cell::from(total_str).style(theme::highlight()),
-        ]));
+    } else {
+        lines.push(Line::from(Span::styled(
+            " No model configuration available",
+            theme::muted(),
+        )));
+    }
 
-        let table = Table::new(
-            rows,
-            [
-                Constraint::Length(12),
-                Constraint::Min(40),
-                Constraint::Length(12),
-            ],
-        )
-        .header(
-            Row::new(vec![
-                Cell::from("Role").style(theme::muted()),
-                Cell::from("Model").style(theme::muted()),
-                Cell::from("Size").style(theme::muted()),
-            ])
-            .bottom_margin(1),
-        )
+    let paragraph = Paragraph::new(lines)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(theme::dim())
-                .title(format!(
-                    " {} Tier — {} ",
-                    rec.tier, rec.tier_description
-                ))
+                .title(format!(" {} Models ", capitalize(selected_tier.name())))
                 .title_style(theme::heading()),
-        );
-        f.render_widget(table, chunks[1]);
-    } else {
-        let loading = Paragraph::new("Loading model recommendations...")
-            .style(theme::info())
-            .alignment(Alignment::Center)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(theme::dim()),
-            );
-        f.render_widget(loading, chunks[1]);
-    }
+        )
+        .wrap(Wrap { trim: false });
 
-    let help = if app.model_recommendation.is_some() {
-        Paragraph::new(Line::from(vec![
-            Span::styled(" Enter ", theme::highlight()),
-            Span::styled("Confirm & Install  ", theme::normal()),
-            Span::styled("Esc ", theme::muted()),
-            Span::styled("Back", theme::muted()),
-        ]))
-    } else {
-        Paragraph::new(Line::from(Span::styled(
-            " ⠋ Loading model recommendations...",
-            theme::info(),
-        )))
-    };
-    f.render_widget(help, chunks[2]);
+    f.render_widget(paragraph, area);
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
+    let tier_count = MemoryTier::all().len();
+
+    if app.model_config_email_focused {
+        match key.code {
+            KeyCode::Tab | KeyCode::Enter => {
+                app.model_config_email_focused = false;
+                app.input_mode = InputMode::Normal;
+            }
+            KeyCode::Esc => {
+                app.model_config_email_focused = false;
+                app.input_mode = InputMode::Normal;
+                app.screen = Screen::HardwareReport;
+            }
+            KeyCode::Backspace => {
+                app.admin_email_input.pop();
+            }
+            KeyCode::Char(c) => {
+                app.admin_email_input.push(c);
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match key.code {
+        KeyCode::Tab => {
+            app.model_config_email_focused = true;
+            app.input_mode = InputMode::Editing;
+        }
         KeyCode::Esc => {
             app.screen = Screen::HardwareReport;
         }
-        KeyCode::Enter => {
-            if app.model_recommendation.is_some() {
-                save_profile_and_continue(app);
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.model_tier_selected > 0 {
+                app.model_tier_selected -= 1;
             }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.model_tier_selected < tier_count.saturating_sub(1) {
+                app.model_tier_selected += 1;
+            }
+        }
+        KeyCode::Enter => {
+            save_profile_and_continue(app);
         }
         _ => {}
     }
 }
 
 pub fn load_recommendations(app: &mut App) {
+    let hw = if app.setup_target == SetupTarget::Remote {
+        app.remote_hardware.as_ref()
+    } else {
+        app.local_hardware.as_ref()
+    };
+
+    if let Some(hw) = hw {
+        if app.model_recommendation.is_none() {
+            app.model_tier_selected = hw.memory_tier.index();
+        }
+    }
+
     if app.model_recommendation.is_some() {
         return;
     }
@@ -203,11 +348,24 @@ fn save_profile_and_continue(app: &mut App) {
         format!("{} {} (local)", environment, backend)
     };
 
-    let profile_id = format!("{}-{}", environment, backend);
+    let backend_lower = backend.to_lowercase();
+    let profile_id = format!("{}-{}", environment, backend_lower);
+
+    let selected_tier = MemoryTier::all()
+        .get(app.model_tier_selected)
+        .copied()
+        .unwrap_or(MemoryTier::Standard);
+
+    let hardware_tier = hw.as_ref().map(|h| h.memory_tier);
+    let model_tier = if hardware_tier == Some(selected_tier) {
+        None
+    } else {
+        Some(selected_tier.name().to_string())
+    };
 
     let profile = Profile {
         environment: environment.to_string(),
-        backend: backend.to_string(),
+        backend: backend_lower.clone(),
         label,
         created: Some(chrono_now()),
         vault_prefix: Some(if *environment == "production" {
@@ -238,6 +396,12 @@ fn save_profile_and_continue(app: &mut App) {
             .and_then(|s| s.ip.clone()),
         hardware: hw,
         kubeconfig: None,
+        model_tier,
+        admin_email: if app.admin_email_input.trim().is_empty() {
+            None
+        } else {
+            Some(app.admin_email_input.trim().to_string())
+        },
     };
 
     match profile::upsert_profile(&app.repo_root, &profile_id, profile, true) {
@@ -264,4 +428,12 @@ fn chrono_now() -> String {
         .unwrap()
         .as_secs();
     format!("{now}")
+}
+
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+    }
 }

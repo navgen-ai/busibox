@@ -1,11 +1,29 @@
-use crate::app::{App, InstallStatus, Screen, ServiceInstallState, SetupTarget};
+use crate::app::{App, InstallStatus, MessageKind, Screen, ServiceInstallState, SetupTarget};
 use crate::modules::remote;
 use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::Margin;
 use ratatui::prelude::*;
-use ratatui::widgets::*;
+use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState, *};
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Map environment name to container/vault prefix.
+/// Must match scripts/make/service-deploy.sh get_container_prefix().
+/// Map environment name to container/vault prefix.
+/// Must match scripts/make/service-deploy.sh get_container_prefix().
+/// Docker can be: development, staging, production, demo
+/// Proxmox can be: staging, production
+pub fn env_to_prefix(environment: &str) -> String {
+    match environment {
+        "demo" => "demo",
+        "development" => "dev",
+        "staging" => "staging",
+        "production" => "prod",
+        _ => "dev", // default same as service-deploy.sh
+    }
+    .to_string()
+}
 
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -14,6 +32,7 @@ fn shell_escape(s: &str) -> String {
 fn get_bootstrap_stages(_app: &App) -> Vec<(&'static str, &'static str, Vec<String>)> {
     vec![
         ("Prerequisites", "Ansible & Dependencies", vec!["_prerequisites".into()]),
+        ("Docker Cleanup", "Stop conflicting containers", vec!["_docker_cleanup".into()]),
         ("Database", "PostgreSQL", vec!["postgres".into()]),
         ("Authentication", "AuthZ API", vec!["authz".into()]),
         ("Deployment", "Deploy API", vec!["deploy".into()]),
@@ -232,8 +251,21 @@ fn render_log_viewer(f: &mut Frame, app: &App) {
     );
     f.render_widget(log_panel, chunks[1]);
 
+    if app.install_log.len() > log_height {
+        let mut scrollbar_state = ScrollbarState::new(app.install_log.len())
+            .position(scroll);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        f.render_stateful_widget(
+            scrollbar,
+            chunks[1].inner(Margin { vertical: 1, horizontal: 0 }),
+            &mut scrollbar_state,
+        );
+    }
+
     let help = Paragraph::new(Line::from(Span::styled(
-        " ↑/↓ Scroll  l/Esc Close log viewer",
+        " ↑/↓ Scroll  c Copy  l/Esc Close log viewer",
         theme::muted(),
     )));
     f.render_widget(help, chunks[2]);
@@ -341,12 +373,64 @@ fn handle_log_viewer_key(app: &mut App, key: KeyEvent) {
         KeyCode::End => {
             app.install_log_scroll = app.install_log.len().saturating_sub(1);
         }
+        KeyCode::Char('c') => {
+            // Copy log to clipboard
+            let log_text = app.install_log.join("\n");
+            let _ = copy_to_clipboard(&log_text);
+            app.set_message("Log copied to clipboard", MessageKind::Info);
+        }
         _ => {}
     }
 }
 
+fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    // Use pbcopy on macOS, xclip on Linux
+    #[cfg(target_os = "macos")]
+    let mut child = Command::new("pbcopy")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    #[cfg(target_os = "linux")]
+    let mut child = Command::new("xclip")
+        .args(["-selection", "clipboard"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    return Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "clipboard not supported",
+    ));
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes())?;
+    }
+    child.wait()?;
+    Ok(())
+}
+
 pub fn auto_start(app: &mut App) {
     init_install(app);
+
+    // If we already have a vault password (from a completed vault setup), proceed
+    if app.vault_password.is_some() {
+        spawn_install_worker(app);
+        return;
+    }
+
+    // Otherwise trigger vault setup before installing
+    app.pending_vault_setup = true;
+}
+
+/// Public entry point to start the install worker after vault setup completes.
+pub fn spawn_install_worker_pub(app: &mut App) {
     spawn_install_worker(app);
 }
 
@@ -378,6 +462,13 @@ fn spawn_install_worker(app: &mut App) {
     let is_remote = app.setup_target == SetupTarget::Remote;
     let repo_root = app.repo_root.clone();
     let remote_path_input = app.remote_path_input.clone();
+    let vault_password: Option<String> = app.vault_password.clone();
+    let clean_install = app.clean_install;
+    // Derive vault prefix from environment (same logic as service-deploy.sh get_container_prefix)
+    let vault_prefix: String = app
+        .active_profile()
+        .map(|(_, p)| env_to_prefix(&p.environment))
+        .unwrap_or_else(|| "dev".into());
 
     let ssh_details: Option<(String, String, String)> = app.ssh_connection.as_ref().map(|ssh| {
         (ssh.host.clone(), ssh.user.clone(), ssh.key_path.clone())
@@ -390,6 +481,19 @@ fn spawn_install_worker(app: &mut App) {
     let profile_host: Option<String> = app
         .active_profile()
         .and_then(|(_, p)| p.effective_host().map(|s| s.to_string()));
+    let admin_email: Option<String> = app
+        .active_profile()
+        .and_then(|(_, p)| p.admin_email.clone());
+    let profile_model_tier: Option<String> = app
+        .active_profile()
+        .and_then(|(_, p)| p.effective_model_tier().map(|t| t.name().to_string()));
+    let profile_llm_backend: Option<String> = app
+        .active_profile()
+        .and_then(|(_, p)| p.hardware.as_ref().map(|h| match h.llm_backend {
+            crate::modules::hardware::LlmBackend::Mlx => "mlx".to_string(),
+            crate::modules::hardware::LlmBackend::Vllm => "vllm".to_string(),
+            crate::modules::hardware::LlmBackend::Cloud => "cloud".to_string(),
+        }));
 
     let stages: Vec<(String, String, Vec<String>)> = get_bootstrap_stages(app)
         .into_iter()
@@ -452,9 +556,535 @@ fn spawn_install_worker(app: &mut App) {
             }
         }
 
+        // For clean installs, delete existing vault so it gets recreated fresh from example
+        if clean_install {
+            if let Some(ref _vp) = vault_password {
+                let vault_rel = format!(
+                    "provision/ansible/roles/secrets/vars/vault.{vault_prefix}.yml"
+                );
+
+                if is_remote {
+                    if let Some((ref host, ref user, ref key)) = ssh_details {
+                        let ssh = crate::modules::ssh::SshConnection::new(
+                            profile_host.as_deref().unwrap_or(host),
+                            user,
+                            key,
+                        );
+                        let remote_path = profile_remote_path
+                            .as_deref()
+                            .unwrap_or(&remote_path_input);
+                        let del_cmd = format!(
+                            "cd {} && rm -f {}",
+                            remote_path, vault_rel
+                        );
+                        let _ = ssh.run(&del_cmd);
+                        let _ = tx.send(InstallUpdate::Log(
+                            "  Clean install: removed existing vault file".into(),
+                        ));
+                    }
+                } else {
+                    let vault_path = repo_root.join(&vault_rel);
+                    if vault_path.exists() {
+                        let _ = std::fs::remove_file(&vault_path);
+                        let _ = tx.send(InstallUpdate::Log(
+                            "  Clean install: removed existing vault file".into(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Verify vault password matches the vault file on the remote (or local)
+        if let Some(ref vp) = vault_password {
+            let _ = tx.send(InstallUpdate::Log("Verifying vault password...".into()));
+
+            let vault_rel = format!(
+                "provision/ansible/roles/secrets/vars/vault.{vault_prefix}.yml"
+            );
+            let example_rel = format!(
+                "provision/ansible/roles/secrets/vars/vault.example.yml"
+            );
+            let _ = tx.send(InstallUpdate::Log(format!(
+                "  vault_prefix={vault_prefix}, vault_rel={vault_rel}"
+            )));
+            let _ = tx.send(InstallUpdate::Log(format!(
+                "  password first 10 chars: {}...", &vp[..vp.len().min(10)]
+            )));
+
+            if is_remote {
+                if let Some((ref host, ref user, ref key)) = ssh_details {
+                    let ssh = crate::modules::ssh::SshConnection::new(
+                        profile_host.as_deref().unwrap_or(host),
+                        user,
+                        key,
+                    );
+
+                    // Check if vault file exists
+                    let check_exists = format!(
+                        "cd {} && [ -f {} ] && echo EXISTS || echo MISSING",
+                        remote_path, vault_rel
+                    );
+                    let vault_exists = ssh
+                        .run(&check_exists)
+                        .map(|o| o.trim() == "EXISTS")
+                        .unwrap_or(false);
+
+                    let _ = tx.send(InstallUpdate::Log(format!(
+                        "  vault exists on remote: {vault_exists}"
+                    )));
+
+                    if vault_exists {
+                        // Test decryption AND output content to prove it works
+                        let test_cmd = format!(
+                            "for d in \"$HOME/.local/bin\" \"$HOME/Library/Python\"/*/bin /usr/local/bin; do [ -d \"$d\" ] && export PATH=\"$d:$PATH\"; done; \
+                             cd {} && \
+                             TMPF=$(mktemp) && printf '%s' '{}' > \"$TMPF\" && chmod 600 \"$TMPF\" && \
+                             PWLEN=$(wc -c < \"$TMPF\" | tr -d ' ') && \
+                             echo \"PWFILE_LEN=$PWLEN\" && \
+                             echo \"PWFILE_FIRST10=$(head -c 10 \"$TMPF\")\" && \
+                             echo \"VAULT_REALPATH=$(realpath {} 2>/dev/null || echo {})\" && \
+                             echo \"VAULT_HEADER=$(head -1 {})\" && \
+                             DECRYPTED=$(ansible-vault view {} --vault-password-file=\"$TMPF\" 2>&1) && \
+                             echo \"DECRYPT_OK=YES\" && \
+                             echo \"CONTENT_LINE2=$(echo \"$DECRYPTED\" | sed -n '2p')\" || \
+                             echo \"DECRYPT_OK=NO: $DECRYPTED\"; \
+                             rm -f \"$TMPF\"",
+                            remote_path,
+                            vp.replace('\'', "'\\''"),
+                            vault_rel, vault_rel, vault_rel,
+                            vault_rel
+                        );
+
+                        match ssh.run(&test_cmd) {
+                            Ok(output) => {
+                                // Log the full diagnostic output
+                                for line in output.lines() {
+                                    let _ = tx.send(InstallUpdate::Log(format!("  [vault-cli] {}", line)));
+                                }
+
+                                let decrypt_ok = output.contains("DECRYPT_OK=YES");
+
+                                if decrypt_ok {
+                                    let _ = tx.send(InstallUpdate::Log(
+                                        "✓ Vault password verified (decryption test passed)".into(),
+                                    ));
+                                } else {
+                                    let _ = tx.send(InstallUpdate::Log(
+                                        "⚠ Vault password mismatch — recreating vault file...".into(),
+                                    ));
+
+                                    // Delete and recreate from example
+                                    let recreate_cmd = format!(
+                                        "for d in \"$HOME/.local/bin\" \"$HOME/Library/Python\"/*/bin /usr/local/bin; do [ -d \"$d\" ] && export PATH=\"$d:$PATH\"; done; \
+                                         cd {} && \
+                                         rm -f {} && \
+                                         cp {} {} && \
+                                         TMPF=$(mktemp) && printf '%s' '{}' > \"$TMPF\" && chmod 600 \"$TMPF\" && \
+                                         ansible-vault encrypt {} --vault-password-file=\"$TMPF\" && \
+                                         rm -f \"$TMPF\"",
+                                        remote_path,
+                                        vault_rel,
+                                        example_rel,
+                                        vault_rel,
+                                        vp.replace('\'', "'\\''"),
+                                        vault_rel
+                                    );
+
+                                    match ssh.run(&recreate_cmd) {
+                                        Ok(_) => {
+                                            let _ = tx.send(InstallUpdate::Log(
+                                                "✓ Vault file recreated with correct password".into(),
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            let _ = tx.send(InstallUpdate::Log(format!(
+                                                "ERROR: Failed to recreate vault: {e}"
+                                            )));
+                                            let _ = tx.send(InstallUpdate::Complete {
+                                                portal_url: None,
+                                            });
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                // ssh.run() returned Err - the command itself failed
+                                let _ = tx.send(InstallUpdate::Log(format!(
+                                    "  [vault-cli] SSH command error: {e}"
+                                )));
+                                let _ = tx.send(InstallUpdate::Log(
+                                    "⚠ Vault password mismatch — recreating vault file...".into(),
+                                ));
+
+                                // Delete and recreate from example
+                                let recreate_cmd = format!(
+                                    "for d in \"$HOME/.local/bin\" \"$HOME/Library/Python\"/*/bin /usr/local/bin; do [ -d \"$d\" ] && export PATH=\"$d:$PATH\"; done; \
+                                     cd {} && \
+                                     rm -f {} && \
+                                     cp {} {} && \
+                                     TMPF=$(mktemp) && printf '%s' '{}' > \"$TMPF\" && chmod 600 \"$TMPF\" && \
+                                     ansible-vault encrypt {} --vault-password-file=\"$TMPF\" && \
+                                     rm -f \"$TMPF\"",
+                                    remote_path,
+                                    vault_rel,
+                                    example_rel,
+                                    vault_rel,
+                                    vp.replace('\'', "'\\''"),
+                                    vault_rel
+                                );
+
+                                match ssh.run(&recreate_cmd) {
+                                    Ok(_) => {
+                                        let _ = tx.send(InstallUpdate::Log(
+                                            "✓ Vault file recreated with correct password".into(),
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(InstallUpdate::Log(format!(
+                                            "ERROR: Failed to recreate vault: {e}"
+                                        )));
+                                        let _ = tx.send(InstallUpdate::Complete {
+                                            portal_url: None,
+                                        });
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Vault doesn't exist - create it from example
+                        let _ = tx.send(InstallUpdate::Log(
+                            "Creating vault file from example...".into(),
+                        ));
+                        let create_cmd = format!(
+                            "for d in \"$HOME/.local/bin\" \"$HOME/Library/Python\"/*/bin /usr/local/bin; do [ -d \"$d\" ] && export PATH=\"$d:$PATH\"; done; \
+                             cd {} && \
+                             cp {} {} && \
+                             TMPF=$(mktemp) && printf '%s' '{}' > \"$TMPF\" && chmod 600 \"$TMPF\" && \
+                             ansible-vault encrypt {} --vault-password-file=\"$TMPF\" && \
+                             rm -f \"$TMPF\"",
+                            remote_path,
+                            example_rel,
+                            vault_rel,
+                            vp.replace('\'', "'\\''"),
+                            vault_rel
+                        );
+                        match ssh.run(&create_cmd) {
+                            Ok(_) => {
+                                let _ = tx.send(InstallUpdate::Log(
+                                    "✓ Vault file created and encrypted".into(),
+                                ));
+                            }
+                            Err(e) => {
+                                let _ = tx.send(InstallUpdate::Log(format!(
+                                    "ERROR: Failed to create vault: {e}"
+                                )));
+                                let _ = tx.send(InstallUpdate::Complete {
+                                    portal_url: None,
+                                });
+                                return;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Local: similar logic but with local commands
+                let vault_path = repo_root.join(format!(
+                    "provision/ansible/roles/secrets/vars/vault.{vault_prefix}.yml"
+                ));
+                let example_path =
+                    repo_root.join("provision/ansible/roles/secrets/vars/vault.example.yml");
+
+                if vault_path.exists() {
+                    // Test decryption locally
+                    let mut tmpfile = std::env::temp_dir();
+                    tmpfile.push(format!("busibox-vtest-{}", std::process::id()));
+                    let _ = std::fs::write(&tmpfile, vp.as_bytes());
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(&tmpfile, std::fs::Permissions::from_mode(0o600));
+                    }
+
+                    let test_result = std::process::Command::new("ansible-vault")
+                        .args([
+                            "view",
+                            &vault_path.to_string_lossy(),
+                            "--vault-password-file",
+                            &tmpfile.to_string_lossy(),
+                        ])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+
+                    let _ = std::fs::remove_file(&tmpfile);
+
+                    let can_decrypt = test_result.map(|s| s.success()).unwrap_or(false);
+
+                    if !can_decrypt {
+                        let _ = tx.send(InstallUpdate::Log(
+                            "⚠ Vault password mismatch — recreating vault file...".into(),
+                        ));
+                        let _ = std::fs::remove_file(&vault_path);
+                        if let Err(e) = std::fs::copy(&example_path, &vault_path) {
+                            let _ = tx.send(InstallUpdate::Log(format!("ERROR: {e}")));
+                            let _ = tx.send(InstallUpdate::Complete {
+                                portal_url: None,
+                            });
+                            return;
+                        }
+
+                        let mut tmpfile = std::env::temp_dir();
+                        tmpfile.push(format!("busibox-venc-{}", std::process::id()));
+                        let _ = std::fs::write(&tmpfile, vp.as_bytes());
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(&tmpfile, std::fs::Permissions::from_mode(0o600));
+                        }
+                        let enc_result = std::process::Command::new("ansible-vault")
+                            .args([
+                                "encrypt",
+                                &vault_path.to_string_lossy(),
+                                "--vault-password-file",
+                                &tmpfile.to_string_lossy(),
+                            ])
+                            .status();
+                        let _ = std::fs::remove_file(&tmpfile);
+
+                        match enc_result {
+                            Ok(s) if s.success() => {
+                                let _ = tx.send(InstallUpdate::Log(
+                                    "✓ Vault file recreated".into(),
+                                ));
+                            }
+                            _ => {
+                                let _ = tx.send(InstallUpdate::Log(
+                                    "ERROR: Failed to encrypt vault".into(),
+                                ));
+                                let _ = tx.send(InstallUpdate::Complete {
+                                    portal_url: None,
+                                });
+                                return;
+                            }
+                        }
+                    } else {
+                        let _ = tx.send(InstallUpdate::Log(
+                            "✓ Vault password verified".into(),
+                        ));
+                    }
+                } else if example_path.exists() {
+                    let _ = tx.send(InstallUpdate::Log(
+                        "Creating vault file from example...".into(),
+                    ));
+                    if let Err(e) = std::fs::copy(&example_path, &vault_path) {
+                        let _ = tx.send(InstallUpdate::Log(format!("ERROR: {e}")));
+                        let _ = tx.send(InstallUpdate::Complete {
+                            portal_url: None,
+                        });
+                        return;
+                    }
+                    let mut tmpfile = std::env::temp_dir();
+                    tmpfile.push(format!("busibox-venc-{}", std::process::id()));
+                    let _ = std::fs::write(&tmpfile, vp.as_bytes());
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(&tmpfile, std::fs::Permissions::from_mode(0o600));
+                    }
+                    let enc_result = std::process::Command::new("ansible-vault")
+                        .args([
+                            "encrypt",
+                            &vault_path.to_string_lossy(),
+                            "--vault-password-file",
+                            &tmpfile.to_string_lossy(),
+                        ])
+                        .status();
+                    let _ = std::fs::remove_file(&tmpfile);
+                    match enc_result {
+                        Ok(s) if s.success() => {
+                            let _ = tx.send(InstallUpdate::Log(
+                                "✓ Vault file created".into(),
+                            ));
+                        }
+                        _ => {
+                            let _ = tx.send(InstallUpdate::Log(
+                                "ERROR: Failed to encrypt vault".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // === Generate secrets for CHANGE_ME placeholders ===
+        if let Some(ref vp) = vault_password {
+            let _ = tx.send(InstallUpdate::Log("Generating vault secrets...".into()));
+
+            let vault_rel = format!(
+                "provision/ansible/roles/secrets/vars/vault.{vault_prefix}.yml"
+            );
+
+            let admin_email_sed = admin_email
+                .as_deref()
+                .filter(|e| !e.is_empty())
+                .map(|email| format!(r#"    -e "s/CHANGE_ME_ADMIN_EMAILS/{email}/g" \"#))
+                .unwrap_or_default();
+
+            // Script: decrypt vault, replace CHANGE_ME placeholders with random values, re-encrypt
+            let secrets_script = format!(
+                r#"set -e
+VAULT_FILE="{vault_rel}"
+PW_FILE=$(mktemp)
+printf '%s' '{pw}' > "$PW_FILE"
+chmod 600 "$PW_FILE"
+trap 'rm -f "$PW_FILE"' EXIT
+
+# Check if vault has any CHANGE_ME placeholders
+CONTENT=$(ansible-vault view "$VAULT_FILE" --vault-password-file="$PW_FILE" 2>/dev/null)
+if ! echo "$CONTENT" | grep -q 'CHANGE_ME'; then
+    echo "✓ All secrets already configured"
+    exit 0
+fi
+
+# Decrypt in-place
+ansible-vault decrypt "$VAULT_FILE" --vault-password-file="$PW_FILE"
+
+# Helper: generate a random alphanumeric string
+gen() {{ openssl rand -base64 "$1" | tr -d '/+=' | head -c "$1"; }}
+
+# Generate secrets matching vault.sh setup_vault_secrets patterns
+PG_PASS=$(gen 24)
+MINIO_PASS=$(gen 24)
+JWT=$(gen 32)
+AUTHZ_KEY=$(gen 32)
+LITELLM_API=$(gen 16)
+LITELLM_MASTER=$(openssl rand -hex 16)
+LITELLM_SALT=$(gen 32)
+
+# sed -i.bak works on both macOS and Linux
+sed -i.bak \
+    -e "s/CHANGE_ME_POSTGRES_PASSWORD/$PG_PASS/g" \
+    -e "s/CHANGE_ME_MINIO_ROOT_USER/minioadmin/g" \
+    -e "s/CHANGE_ME_MINIO_ROOT_PASSWORD/$MINIO_PASS/g" \
+    -e "s/CHANGE_ME_JWT_SECRET_32_BYTES/$JWT/g" \
+    -e "s/CHANGE_ME_SESSION_SECRET_32_BYTES/$JWT/g" \
+    -e "s/CHANGE_ME_AUTHZ_MASTER_KEY_32_BYTES/$AUTHZ_KEY/g" \
+    -e "s/CHANGE_ME_LITELLM_API_KEY/$LITELLM_API/g" \
+    -e "s/CHANGE_ME_LITELLM_MASTER_KEY/$LITELLM_MASTER/g" \
+    -e "s/CHANGE_ME_LITELLM_SALT_KEY/$LITELLM_SALT/g" \
+{admin_email_sed}    "$VAULT_FILE"
+rm -f "${{VAULT_FILE}}.bak"
+
+# Count how many CHANGE_ME remain (optional/non-critical ones like SMTP, GitHub)
+REMAINING=$(grep -c 'CHANGE_ME' "$VAULT_FILE" 2>/dev/null || echo 0)
+
+# Re-encrypt
+ansible-vault encrypt "$VAULT_FILE" --vault-password-file="$PW_FILE"
+
+echo "✓ Generated 9 bootstrap secrets ($REMAINING optional placeholders remain)"
+"#,
+                vault_rel = vault_rel,
+                pw = vp.replace('\'', "'\\''"),
+                admin_email_sed = admin_email_sed,
+            );
+
+            let gen_result: color_eyre::Result<(i32, String)> = if is_remote {
+                if let Some((ref host, ref user, ref key)) = ssh_details {
+                    let ssh = crate::modules::ssh::SshConnection::new(
+                        profile_host.as_deref().unwrap_or(host),
+                        user,
+                        key,
+                    );
+                    let full_cmd = format!(
+                        "for d in \"$HOME/.local/bin\" \"$HOME/Library/Python\"/*/bin /usr/local/bin; do [ -d \"$d\" ] && export PATH=\"$d:$PATH\"; done; \
+                         cd {} && bash -c {}",
+                        remote_path,
+                        shell_escape(&secrets_script)
+                    );
+                    let mut args: Vec<String> = vec![
+                        "-o".into(), "BatchMode=yes".into(),
+                        "-o".into(), "StrictHostKeyChecking=accept-new".into(),
+                        "-o".into(), "ConnectTimeout=10".into(),
+                    ];
+                    let key_expanded = crate::modules::ssh::shellexpand_path(key);
+                    if !key_expanded.is_empty()
+                        && std::path::Path::new(&key_expanded).exists()
+                    {
+                        args.push("-i".into());
+                        args.push(key_expanded);
+                    }
+                    args.push(ssh.ssh_target());
+                    args.push(full_cmd);
+                    match std::process::Command::new("ssh").args(&args).output() {
+                        Ok(output) => {
+                            let exit_code = output.status.code().unwrap_or(1);
+                            let combined = format!(
+                                "{}{}",
+                                String::from_utf8_lossy(&output.stdout),
+                                String::from_utf8_lossy(&output.stderr)
+                            );
+                            Ok((exit_code, remote::strip_ansi(&combined)))
+                        }
+                        Err(e) => Err(color_eyre::eyre::eyre!("{e}")),
+                    }
+                } else {
+                    Err(color_eyre::eyre::eyre!("No SSH connection"))
+                }
+            } else {
+                match std::process::Command::new("bash")
+                    .arg("-c")
+                    .arg(&secrets_script)
+                    .current_dir(&repo_root)
+                    .output()
+                {
+                    Ok(output) => {
+                        let exit_code = output.status.code().unwrap_or(1);
+                        let combined = format!(
+                            "{}{}",
+                            String::from_utf8_lossy(&output.stdout),
+                            String::from_utf8_lossy(&output.stderr)
+                        );
+                        Ok((exit_code, remote::strip_ansi(&combined)))
+                    }
+                    Err(e) => Err(color_eyre::eyre::eyre!("{e}")),
+                }
+            };
+
+            match gen_result {
+                Ok((0, output)) => {
+                    for line in output.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            let _ = tx.send(InstallUpdate::Log(format!("  {trimmed}")));
+                        }
+                    }
+                }
+                Ok((code, output)) => {
+                    for line in output.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            let _ = tx.send(InstallUpdate::Log(format!("  {trimmed}")));
+                        }
+                    }
+                    let _ = tx.send(InstallUpdate::Log(format!(
+                        "WARNING: Secret generation had issues (exit code {code}) — continuing anyway"
+                    )));
+                }
+                Err(e) => {
+                    let _ = tx.send(InstallUpdate::Log(format!(
+                        "WARNING: Secret generation failed: {e} — continuing anyway"
+                    )));
+                }
+            }
+        }
+
         let _ = tx.send(InstallUpdate::Log(
             "Starting model download in background...".into(),
         ));
+        let dl_tier = profile_model_tier.clone();
+        let dl_backend = profile_llm_backend.clone();
         let model_download_handle: Option<std::thread::JoinHandle<i32>> = if is_remote {
             if let Some((ref host, ref user, ref key)) = ssh_details {
                 let host = host.clone();
@@ -464,8 +1094,16 @@ fn spawn_install_worker(app: &mut App) {
                 Some(std::thread::spawn(move || -> i32 {
                     let ssh_conn =
                         crate::modules::ssh::SshConnection::new(&host, &user, &key);
-                    let cmd =
-                        format!("cd {} && bash scripts/llm/download-models.sh 2>&1", rp);
+                    let mut env_prefix = String::new();
+                    if let Some(ref tier) = dl_tier {
+                        env_prefix.push_str(&format!("LLM_TIER={tier} "));
+                    }
+                    if let Some(ref backend) = dl_backend {
+                        env_prefix.push_str(&format!("LLM_BACKEND={backend} "));
+                    }
+                    let cmd = format!(
+                        "cd {} && {env_prefix}bash scripts/llm/download-models.sh 2>&1", rp
+                    );
                     ssh_conn.run(&cmd).map(|_| 0).unwrap_or(1)
                 }))
             } else {
@@ -478,12 +1116,18 @@ fn spawn_install_worker(app: &mut App) {
                 if !script.exists() {
                     return 1;
                 }
-                std::process::Command::new("bash")
-                    .arg(script)
+                let mut cmd = std::process::Command::new("bash");
+                cmd.arg(&script)
                     .current_dir(&repo)
                     .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
+                    .stderr(std::process::Stdio::null());
+                if let Some(ref tier) = dl_tier {
+                    cmd.env("LLM_TIER", tier);
+                }
+                if let Some(ref backend) = dl_backend {
+                    cmd.env("LLM_BACKEND", backend);
+                }
+                cmd.status()
                     .map(|s| if s.success() { 0 } else { 1 })
                     .unwrap_or(1)
             }))
@@ -552,7 +1196,7 @@ fn spawn_install_worker(app: &mut App) {
                             [ -d "$pydir" ] && export PATH="$pydir:$PATH"
                         done
                     fi
-                    # Verify
+                    # Verify Ansible
                     if command -v ansible-playbook &>/dev/null; then
                         echo "✓ ansible-playbook: $(ansible-playbook --version | head -1)"
                     else
@@ -560,6 +1204,73 @@ fn spawn_install_worker(app: &mut App) {
                         echo "Searched PATH: $PATH"
                         exit 1
                     fi
+
+                    # === Docker checks ===
+                    # Check if docker is installed
+                    if ! command -v docker &>/dev/null; then
+                        echo "ERROR: Docker is not installed."
+                        echo "Please install Docker Desktop or Docker Engine on this machine."
+                        echo "  macOS: https://docs.docker.com/desktop/install/mac-install/"
+                        echo "  Linux: https://docs.docker.com/engine/install/"
+                        exit 1
+                    fi
+                    echo "✓ docker: $(docker --version)"
+
+                    # Check if Docker daemon is running
+                    if ! docker info &>/dev/null; then
+                        echo "Docker daemon not running — attempting to start..."
+                        # macOS: try open Docker Desktop
+                        if [ "$(uname)" = "Darwin" ]; then
+                            if [ -d "/Applications/Docker.app" ]; then
+                                open -a Docker 2>/dev/null || true
+                                echo "  Waiting for Docker Desktop to start..."
+                            elif [ -d "$HOME/Applications/Docker.app" ]; then
+                                open -a "$HOME/Applications/Docker.app" 2>/dev/null || true
+                                echo "  Waiting for Docker Desktop to start..."
+                            else
+                                echo "ERROR: Docker Desktop not found in Applications"
+                                exit 1
+                            fi
+                        else
+                            # Linux: try systemctl
+                            if command -v systemctl &>/dev/null; then
+                                sudo systemctl start docker 2>/dev/null || true
+                                echo "  Starting docker service..."
+                            elif command -v service &>/dev/null; then
+                                sudo service docker start 2>/dev/null || true
+                                echo "  Starting docker service..."
+                            fi
+                        fi
+                        # Wait for Docker to be ready (up to 60 seconds)
+                        WAITED=0
+                        while ! docker info &>/dev/null; do
+                            sleep 2
+                            WAITED=$((WAITED + 2))
+                            if [ $WAITED -ge 60 ]; then
+                                echo "ERROR: Docker daemon did not start within 60 seconds"
+                                echo "Please start Docker manually and retry."
+                                exit 1
+                            fi
+                            if [ $((WAITED % 10)) -eq 0 ]; then
+                                echo "  Still waiting... (${WAITED}s)"
+                            fi
+                        done
+                        echo "✓ Docker daemon started (took ${WAITED}s)"
+                    else
+                        echo "✓ Docker daemon running"
+                    fi
+
+                    # Check docker compose
+                    if docker compose version &>/dev/null; then
+                        echo "✓ docker compose: $(docker compose version --short 2>/dev/null || docker compose version)"
+                    elif command -v docker-compose &>/dev/null; then
+                        echo "✓ docker-compose: $(docker-compose --version)"
+                    else
+                        echo "ERROR: docker compose is not available"
+                        echo "Please install Docker Compose v2 or update Docker Desktop."
+                        exit 1
+                    fi
+
                     echo "✓ Prerequisites installed"
                 "#;
 
@@ -678,6 +1389,298 @@ fn spawn_install_worker(app: &mut App) {
                     break;
                 }
                 continue;
+            } else if stage_services_to_deploy.len() == 1
+                && stage_services_to_deploy.first().map(|s| s.as_str()) == Some("_docker_cleanup")
+            {
+                let _ = tx.send(InstallUpdate::Log(
+                    "Checking for existing Docker containers...".into(),
+                ));
+                for svc in services {
+                    let _ = tx.send(InstallUpdate::ServiceStatus {
+                        name: svc.clone(),
+                        status: InstallStatus::Deploying,
+                    });
+                }
+
+                // Build cleanup script
+                // 1. Always: stop any *-busibox compose projects that conflict
+                // 2. If clean_install: also remove containers, volumes, networks
+                let cleanup_script = if clean_install {
+                    format!(r#"
+                        set -e
+                        echo "Clean install: removing all busibox Docker resources..."
+                        # Find and stop ALL busibox compose projects
+                        for project in $(docker compose ls --format '{{{{.Name}}}}' 2>/dev/null | grep -i busibox || true); do
+                            echo "  Stopping project: $project"
+                            docker compose -p "$project" down --remove-orphans 2>&1 || true
+                        done
+                        # Also clean up any orphaned busibox containers
+                        ORPHANS=$(docker ps -a --filter "name=.*busibox.*\|.*-postgres\|.*-redis\|.*-minio\|.*-milvus\|.*-authz\|.*-agent\|.*-litellm" --format '{{{{.Names}}}}' 2>/dev/null | grep -E "(dev|staging|prod|demo)-" || true)
+                        if [ -n "$ORPHANS" ]; then
+                            echo "  Removing orphaned containers: $ORPHANS"
+                            echo "$ORPHANS" | xargs docker rm -f 2>/dev/null || true
+                        fi
+                        # Remove busibox volumes (preserve model caches for faster reinstall)
+                        VOLS=$(docker volume ls --format '{{{{.Name}}}}' 2>/dev/null | grep -E "(dev|staging|prod|demo)-busibox" | grep -v -E "model_cache|fastembed_cache|vllm_cache|ollama" || true)
+                        if [ -n "$VOLS" ]; then
+                            echo "  Removing volumes: $VOLS"
+                            echo "$VOLS" | xargs docker volume rm -f 2>/dev/null || true
+                        fi
+                        PRESERVED=$(docker volume ls --format '{{{{.Name}}}}' 2>/dev/null | grep -E "(dev|staging|prod|demo)-busibox" | grep -E "model_cache|fastembed_cache|vllm_cache|ollama" || true)
+                        if [ -n "$PRESERVED" ]; then
+                            echo "  ✓ Preserved model cache volumes: $PRESERVED"
+                        fi
+                        # Remove busibox networks
+                        NETS=$(docker network ls --format '{{{{.Name}}}}' 2>/dev/null | grep -E "(dev|staging|prod|demo)-busibox" || true)
+                        if [ -n "$NETS" ]; then
+                            echo "  Removing networks: $NETS"
+                            echo "$NETS" | xargs docker network rm 2>/dev/null || true
+                        fi
+                        # Check for non-Docker processes on ports we need
+                        BLOCKED_PORTS=""
+                        for port in 5432 6379 9000 19530 8010 4111 8002 8001 3000; do
+                            # Use lsof to find listeners (works on macOS and Linux)
+                            HOLDER=$(lsof -i ":$port" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)
+                            if [ -n "$HOLDER" ]; then
+                                PNAME=$(ps -p "$HOLDER" -o comm= 2>/dev/null || echo "unknown")
+                                # Skip if it's a docker process (those are expected)
+                                if ! echo "$PNAME" | grep -qi "docker\|com.docker\|vpnkit"; then
+                                    echo "  ⚠ Port $port in use by non-Docker process: $PNAME (PID $HOLDER)"
+                                    # Try to stop common services
+                                    case "$PNAME" in
+                                        postgres|postmaster)
+                                            echo "    → Stopping local PostgreSQL..."
+                                            if [ "$(uname)" = "Darwin" ]; then
+                                                brew services stop postgresql 2>/dev/null || true
+                                                brew services stop postgresql@14 2>/dev/null || true
+                                                brew services stop postgresql@15 2>/dev/null || true
+                                                brew services stop postgresql@16 2>/dev/null || true
+                                            else
+                                                sudo systemctl stop postgresql 2>/dev/null || true
+                                                sudo service postgresql stop 2>/dev/null || true
+                                            fi
+                                            sleep 1
+                                            # Verify it stopped
+                                            if lsof -i ":$port" -sTCP:LISTEN -t &>/dev/null; then
+                                                BLOCKED_PORTS="$BLOCKED_PORTS $port"
+                                            else
+                                                echo "    ✓ PostgreSQL stopped"
+                                            fi
+                                            ;;
+                                        redis-server|redis)
+                                            echo "    → Stopping local Redis..."
+                                            if [ "$(uname)" = "Darwin" ]; then
+                                                brew services stop redis 2>/dev/null || true
+                                            else
+                                                sudo systemctl stop redis 2>/dev/null || sudo systemctl stop redis-server 2>/dev/null || true
+                                            fi
+                                            sleep 1
+                                            if lsof -i ":$port" -sTCP:LISTEN -t &>/dev/null; then
+                                                BLOCKED_PORTS="$BLOCKED_PORTS $port"
+                                            else
+                                                echo "    ✓ Redis stopped"
+                                            fi
+                                            ;;
+                                        *)
+                                            BLOCKED_PORTS="$BLOCKED_PORTS $port"
+                                            ;;
+                                    esac
+                                fi
+                            fi
+                        done
+                        if [ -n "$BLOCKED_PORTS" ]; then
+                            echo "  ⚠ WARNING: Ports still in use:$BLOCKED_PORTS"
+                            echo "  Some services may fail to start. Stop the processes manually if needed."
+                        fi
+                        echo "✓ Clean install: all previous busibox resources removed"
+                    "#)
+                } else {
+                    format!(r#"
+                        set -e
+                        PREFIX="{vault_prefix}"
+                        # Check for running busibox compose projects and stop conflicting ones
+                        # Normal install: only stop containers, preserve volumes/images/caches for faster rebuilds
+                        PROJECTS=$(docker compose ls --format '{{{{.Name}}}}' 2>/dev/null | grep -i busibox || true)
+                        if [ -n "$PROJECTS" ]; then
+                            echo "  Found compose projects: $PROJECTS"
+                            for project in $PROJECTS; do
+                                if [ "$project" = "${{PREFIX}}-busibox" ]; then
+                                    echo "  Found current project: $project (will be updated)"
+                                else
+                                    echo "  Stopping conflicting project: $project"
+                                    docker compose -p "$project" stop 2>&1 || true
+                                fi
+                            done
+                        fi
+                        # Check for port conflicts from other Docker containers
+                        for port in 5432 6379 9000 19530 8010 4111 8002 8001 3000; do
+                            HOLDER=$(docker ps --filter "publish=$port" --format '{{{{.Names}}}}' 2>/dev/null || true)
+                            if [ -n "$HOLDER" ]; then
+                                if ! echo "$HOLDER" | grep -q "^${{PREFIX}}-"; then
+                                    echo "  ⚠ Port $port in use by: $HOLDER — stopping it"
+                                    docker stop "$HOLDER" 2>/dev/null || true
+                                fi
+                            fi
+                        done
+                        # Check for non-Docker processes on critical ports
+                        BLOCKED_PORTS=""
+                        for port in 5432 6379 9000 19530 8010 4111 8002 8001 3000; do
+                            HOLDER=$(lsof -i ":$port" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)
+                            if [ -n "$HOLDER" ]; then
+                                PNAME=$(ps -p "$HOLDER" -o comm= 2>/dev/null || echo "unknown")
+                                if ! echo "$PNAME" | grep -qi "docker\|com.docker\|vpnkit"; then
+                                    echo "  ⚠ Port $port in use by non-Docker process: $PNAME (PID $HOLDER)"
+                                    case "$PNAME" in
+                                        postgres|postmaster)
+                                            echo "    → Stopping local PostgreSQL..."
+                                            if [ "$(uname)" = "Darwin" ]; then
+                                                brew services stop postgresql 2>/dev/null || true
+                                                brew services stop postgresql@14 2>/dev/null || true
+                                                brew services stop postgresql@15 2>/dev/null || true
+                                                brew services stop postgresql@16 2>/dev/null || true
+                                            else
+                                                sudo systemctl stop postgresql 2>/dev/null || true
+                                                sudo service postgresql stop 2>/dev/null || true
+                                            fi
+                                            sleep 1
+                                            if lsof -i ":$port" -sTCP:LISTEN -t &>/dev/null; then
+                                                BLOCKED_PORTS="$BLOCKED_PORTS $port"
+                                            else
+                                                echo "    ✓ PostgreSQL stopped"
+                                            fi
+                                            ;;
+                                        redis-server|redis)
+                                            echo "    → Stopping local Redis..."
+                                            if [ "$(uname)" = "Darwin" ]; then
+                                                brew services stop redis 2>/dev/null || true
+                                            else
+                                                sudo systemctl stop redis 2>/dev/null || sudo systemctl stop redis-server 2>/dev/null || true
+                                            fi
+                                            sleep 1
+                                            if lsof -i ":$port" -sTCP:LISTEN -t &>/dev/null; then
+                                                BLOCKED_PORTS="$BLOCKED_PORTS $port"
+                                            else
+                                                echo "    ✓ Redis stopped"
+                                            fi
+                                            ;;
+                                        *)
+                                            BLOCKED_PORTS="$BLOCKED_PORTS $port"
+                                            ;;
+                                    esac
+                                fi
+                            fi
+                        done
+                        if [ -n "$BLOCKED_PORTS" ]; then
+                            echo "  ⚠ WARNING: Ports still in use:$BLOCKED_PORTS"
+                            echo "  Some services may fail to start. Stop the processes manually if needed."
+                        fi
+                        echo "✓ Docker environment ready"
+                    "#)
+                };
+
+                let result: color_eyre::Result<(i32, String)> = if is_remote {
+                    if let Some((ref host, ref user, ref key)) = ssh_details {
+                        let ssh = crate::modules::ssh::SshConnection::new(
+                            profile_host.as_deref().unwrap_or(host),
+                            user,
+                            key,
+                        );
+                        let full_cmd = format!(
+                            "bash -c {}",
+                            shell_escape(&cleanup_script)
+                        );
+                        let mut args: Vec<String> = vec![
+                            "-o".into(), "BatchMode=yes".into(),
+                            "-o".into(), "StrictHostKeyChecking=accept-new".into(),
+                            "-o".into(), "ConnectTimeout=10".into(),
+                        ];
+                        let key_expanded = crate::modules::ssh::shellexpand_path(key);
+                        if !key_expanded.is_empty()
+                            && std::path::Path::new(&key_expanded).exists()
+                        {
+                            args.push("-i".into());
+                            args.push(key_expanded);
+                        }
+                        args.push(ssh.ssh_target());
+                        args.push(full_cmd);
+                        match std::process::Command::new("ssh").args(&args).output() {
+                            Ok(output) => {
+                                let exit_code = output.status.code().unwrap_or(1);
+                                let combined = format!(
+                                    "{}{}",
+                                    String::from_utf8_lossy(&output.stdout),
+                                    String::from_utf8_lossy(&output.stderr)
+                                );
+                                Ok((exit_code, remote::strip_ansi(&combined)))
+                            }
+                            Err(e) => Err(color_eyre::eyre::eyre!("{e}")),
+                        }
+                    } else {
+                        Err(color_eyre::eyre::eyre!("No SSH details"))
+                    }
+                } else {
+                    match std::process::Command::new("bash")
+                        .arg("-c")
+                        .arg(&cleanup_script)
+                        .output()
+                    {
+                        Ok(output) => {
+                            let exit_code = output.status.code().unwrap_or(1);
+                            let combined = format!(
+                                "{}{}",
+                                String::from_utf8_lossy(&output.stdout),
+                                String::from_utf8_lossy(&output.stderr)
+                            );
+                            Ok((exit_code, remote::strip_ansi(&combined)))
+                        }
+                        Err(e) => Err(color_eyre::eyre::eyre!("{e}")),
+                    }
+                };
+
+                match result {
+                    Ok((code, output)) => {
+                        for line in output.lines() {
+                            let trimmed = line.trim();
+                            if !trimmed.is_empty() {
+                                let _ = tx.send(InstallUpdate::Log(format!("  {trimmed}")));
+                            }
+                        }
+                        if code == 0 {
+                            for svc in services {
+                                let _ = tx.send(InstallUpdate::ServiceStatus {
+                                    name: svc.clone(),
+                                    status: InstallStatus::Healthy,
+                                });
+                            }
+                            let _ = tx.send(InstallUpdate::Log(
+                                "✓ Docker cleanup complete".into(),
+                            ));
+                        } else {
+                            for svc in services {
+                                let _ = tx.send(InstallUpdate::ServiceStatus {
+                                    name: svc.clone(),
+                                    status: InstallStatus::Failed(format!("exit code {code}")),
+                                });
+                            }
+                            let _ = tx.send(InstallUpdate::Log(format!(
+                                "WARNING: Docker cleanup had issues (exit code {code})"
+                            )));
+                            // Don't abort — cleanup failures are non-fatal
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(InstallUpdate::Log(format!(
+                            "WARNING: Docker cleanup skipped: {e}"
+                        )));
+                        for svc in services {
+                            let _ = tx.send(InstallUpdate::ServiceStatus {
+                                name: svc.clone(),
+                                status: InstallStatus::Healthy, // Non-fatal, continue
+                            });
+                        }
+                    }
+                }
+                continue;
             }
 
             let service_list = stage_services_to_deploy.join(",");
@@ -692,33 +1695,54 @@ fn spawn_install_worker(app: &mut App) {
                 });
             }
 
-            let result: color_eyre::Result<(i32, String)> = if is_remote {
+            let make_args = format!("install SERVICE={service_list}");
+
+            // Use streaming functions so each line appears in the log immediately
+            let tx_stream = tx.clone();
+            let on_line = |line: &str| {
+                let _ = tx_stream.send(InstallUpdate::Log(format!("  {line}")));
+            };
+
+            let result: color_eyre::Result<i32> = if is_remote {
                 if let Some((ref host, ref user, ref key)) = ssh_details {
                     let ssh =
                         crate::modules::ssh::SshConnection::new(host, user, key);
-                    remote::exec_make_quiet(
-                        &ssh,
-                        &remote_path,
-                        &format!("install SERVICE={service_list}"),
-                    )
+                    if let Some(ref vp) = vault_password {
+                        remote::exec_make_quiet_with_vault_streaming(
+                            &ssh,
+                            &remote_path,
+                            &make_args,
+                            vp,
+                            on_line,
+                        )
+                    } else {
+                        remote::exec_make_quiet_streaming(
+                            &ssh,
+                            &remote_path,
+                            &make_args,
+                            on_line,
+                        )
+                    }
                 } else {
                     Err(color_eyre::eyre::eyre!("No SSH connection"))
                 }
-            } else {
-                remote::run_local_make_quiet(
+            } else if let Some(ref vp) = vault_password {
+                remote::run_local_make_quiet_with_vault_streaming(
                     &repo_root,
-                    &format!("install SERVICE={service_list}"),
+                    &make_args,
+                    vp,
+                    on_line,
+                )
+            } else {
+                remote::run_local_make_quiet_streaming(
+                    &repo_root,
+                    &make_args,
+                    on_line,
                 )
             };
 
             match result {
-                Ok((0, output)) => {
-                    for line in output.lines() {
-                        let trimmed = line.trim();
-                        if !trimmed.is_empty() {
-                            let _ = tx.send(InstallUpdate::Log(format!("  {trimmed}")));
-                        }
-                    }
+                Ok(0) => {
                     for svc in services {
                         let _ = tx.send(InstallUpdate::ServiceStatus {
                             name: svc.clone(),
@@ -727,14 +1751,8 @@ fn spawn_install_worker(app: &mut App) {
                     }
                     let _ = tx.send(InstallUpdate::Log(format!("✓ {stage_name} installed")));
                 }
-                Ok((code, output)) => {
+                Ok(code) => {
                     any_failed = true;
-                    for line in output.lines() {
-                        let trimmed = line.trim();
-                        if !trimmed.is_empty() {
-                            let _ = tx.send(InstallUpdate::Log(format!("  {trimmed}")));
-                        }
-                    }
                     for svc in services {
                         let _ = tx.send(InstallUpdate::ServiceStatus {
                             name: svc.clone(),

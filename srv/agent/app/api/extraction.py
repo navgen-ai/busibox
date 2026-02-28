@@ -510,6 +510,18 @@ def _map_field_type_to_json_schema(field_def: Dict[str, Any]) -> Dict[str, Any]:
     return {"type": "string", "maxLength": 500}
 
 
+def _get_app_only_fields(schema_obj: Dict[str, Any]) -> List[str]:
+    """Return field names marked ``appOnly: true`` in the schema."""
+    fields = schema_obj.get("fields", {}) if isinstance(schema_obj, dict) else {}
+    if not isinstance(fields, dict):
+        return []
+    return [
+        name
+        for name, defn in fields.items()
+        if isinstance(defn, dict) and defn.get("appOnly")
+    ]
+
+
 def _build_records_response_schema(schema_obj: Dict[str, Any], max_records: int = 5) -> Dict[str, Any]:
     fields = schema_obj.get("fields", {}) if isinstance(schema_obj, dict) else {}
     record_properties: Dict[str, Any] = {}
@@ -517,6 +529,8 @@ def _build_records_response_schema(schema_obj: Dict[str, Any], max_records: int 
     if isinstance(fields, dict):
         for field_name, field_def in fields.items():
             if not isinstance(field_name, str) or not isinstance(field_def, dict):
+                continue
+            if field_def.get("appOnly"):
                 continue
             record_properties[field_name] = _map_field_type_to_json_schema(field_def)
 
@@ -2032,6 +2046,42 @@ async def _run_extraction_pipeline(
             file_id=payload.file_id,
             agent_id=str(agent_uuid),
         )
+
+        # Preserve appOnly fields from pre-existing records for this file
+        app_only_fields = _get_app_only_fields(
+            schema_obj if isinstance(schema_obj, dict) else {}
+        )
+        if app_only_fields and payload.store_results:
+            try:
+                existing = await client.request(
+                    "POST",
+                    f"/data/{payload.schema_document_id}/query",
+                    json={
+                        "filters": {"_sourceFileId": payload.file_id},
+                        "limit": 100,
+                    },
+                )
+                existing_records = existing.get("records", [])
+                if existing_records:
+                    saved_values: Dict[int, Dict[str, Any]] = {}
+                    for idx, rec in enumerate(existing_records):
+                        vals = {
+                            f: rec[f]
+                            for f in app_only_fields
+                            if f in rec and rec[f] is not None
+                        }
+                        if vals:
+                            saved_values[idx] = vals
+                    for idx, new_rec in enumerate(enriched_records):
+                        if idx in saved_values:
+                            for field_name, value in saved_values[idx].items():
+                                if field_name not in new_rec or new_rec[field_name] is None:
+                                    new_rec[field_name] = value
+            except Exception:
+                logger.debug(
+                    "Could not fetch existing records for appOnly merge (non-fatal)",
+                    extra={"file_id": payload.file_id},
+                )
 
         # -- Phase 1: store records immediately so the frontend can show them --
         _extraction_tasks[task_id]["step"] = "storing_records"

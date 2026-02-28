@@ -62,16 +62,16 @@ pub fn selected() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+#[allow(dead_code)]
 pub fn key_hint() -> Style {
     Style::default()
         .fg(BRAND_YELLOW)
         .add_modifier(Modifier::BOLD)
 }
 
-pub const LOGO: &str = r#"
- ____            _ ____
-| __ ) _   _ ___(_) __ )  _____  __
-|  _ \| | | / __| |  _ \ / _ \ \/ /
-| |_) | |_| \__ \ | |_) | (_) \  /
-|____/ \__,_|___/_|____/ \___/\/\_\
-"#;
+pub const LOGO: &str = "\
+_____             _  ____            
+| __ )  _   _ ___(_)| __ )  _____  __
+|  _ \\ | | | / __| ||  _ \\ / _ \\ \\/ /
+| |_) || |_| \\__ | || |_) | (_) >  <
+|____/  \\__,_|__/|_||____/ \\___/_/\\_\\";
