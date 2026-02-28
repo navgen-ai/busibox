@@ -5,7 +5,8 @@ use std::process::{Command, Stdio};
 
 const RSYNC_EXCLUDES: &[&str] = &[
     ".git/",
-    ".busibox/",
+    ".busibox/vault-keys/",
+    ".busibox/profiles/",
     ".busibox-state-*",
     ".env.*",
     "__pycache__/",
@@ -23,6 +24,10 @@ const RSYNC_EXCLUDES: &[&str] = &[
     ".DS_Store",
     "dev-apps/",
     "cli/busibox/target/",
+    "provision/ansible/roles/secrets/vars/vault.dev.yml",
+    "provision/ansible/roles/secrets/vars/vault.staging.yml",
+    "provision/ansible/roles/secrets/vars/vault.prod.yml",
+    "provision/ansible/roles/secrets/vars/vault.demo.yml",
 ];
 
 /// Sync the local busibox repo to a remote host using rsync.
@@ -182,6 +187,272 @@ pub fn exec_make_quiet(
         String::from_utf8_lossy(&output.stderr)
     );
     Ok((exit_code, strip_ansi(&combined)))
+}
+
+/// Like `run_local_make_quiet` but injects the vault password via
+/// the `ANSIBLE_VAULT_PASSWORD` environment variable so shell scripts
+/// can pick it up without a plaintext file on disk.
+pub fn run_local_make_quiet_with_vault(
+    repo_root: &Path,
+    args: &str,
+    vault_password: &str,
+) -> Result<(i32, String)> {
+    let output = Command::new("make")
+        .args(args.split_whitespace())
+        .env("USE_MANAGER", "0")
+        .env("ANSIBLE_VAULT_PASSWORD", vault_password)
+        .current_dir(repo_root)
+        .output()?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok((output.status.code().unwrap_or(1), strip_ansi(&combined)))
+}
+
+/// Like `exec_make_quiet` but securely delivers the vault password to the
+/// remote host. Creates a temporary password file, runs make with
+/// ANSIBLE_VAULT_PASSWORD_FILE pointing to it, then removes it.
+pub fn exec_make_quiet_with_vault(
+    ssh: &SshConnection,
+    remote_path: &str,
+    make_args: &str,
+    vault_password: &str,
+) -> Result<(i32, String)> {
+    // Escape single quotes in the password for use inside single-quoted string
+    let escaped_pw = vault_password.replace('\'', "'\\''");
+
+    let cmd = format!(
+        "for d in \"$HOME/.local/bin\" \"$HOME/Library/Python\"/*/bin /usr/local/bin; do [ -d \"$d\" ] && export PATH=\"$d:$PATH\"; done; \
+         [ -f \"$HOME/.profile\" ] && . \"$HOME/.profile\" 2>/dev/null || true; \
+         [ -f \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\" 2>/dev/null || true; \
+         _VPF=$(mktemp); \
+         printf '%s' '{escaped_pw}' > \"$_VPF\"; \
+         chmod 600 \"$_VPF\"; \
+         export ANSIBLE_VAULT_PASSWORD=\"{escaped_pw}\"; \
+         export ANSIBLE_VAULT_PASSWORD_FILE=\"$_VPF\"; \
+         cd {remote_path} && USE_MANAGER=0 make {make_args} 2>&1; \
+         _RC=$?; rm -f \"$_VPF\"; exit $_RC"
+    );
+    let mut args: Vec<String> = vec![
+        "-o".into(),
+        "BatchMode=yes".into(),
+        "-o".into(),
+        "StrictHostKeyChecking=accept-new".into(),
+        "-o".into(),
+        "ConnectTimeout=10".into(),
+    ];
+    let key = crate::modules::ssh::shellexpand_path(&ssh.key_path);
+    if !key.is_empty() && Path::new(&key).exists() {
+        args.push("-i".into());
+        args.push(key);
+    }
+    args.push(ssh.ssh_target());
+    args.push(cmd);
+
+    let output = Command::new("ssh").args(&args).output()?;
+    let exit_code = output.status.code().unwrap_or(1);
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok((exit_code, strip_ansi(&combined)))
+}
+
+/// Like `run_local_make_quiet` but streams output line-by-line via a callback
+/// instead of buffering until the process exits.
+pub fn run_local_make_quiet_streaming<F>(
+    repo_root: &Path,
+    args: &str,
+    mut on_line: F,
+) -> Result<i32>
+where
+    F: FnMut(&str),
+{
+    use std::io::BufRead;
+
+    let mut child = Command::new("make")
+        .args(args.split_whitespace())
+        .env("USE_MANAGER", "0")
+        .current_dir(repo_root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let stdout = child.stdout.take().ok_or_else(|| eyre!("no stdout"))?;
+    let reader = std::io::BufReader::new(stdout);
+    for line in reader.lines() {
+        if let Ok(l) = line {
+            let cleaned = strip_ansi(&l);
+            let trimmed = cleaned.trim();
+            if !trimmed.is_empty() {
+                on_line(trimmed);
+            }
+        }
+    }
+
+    let status = child.wait()?;
+    Ok(status.code().unwrap_or(1))
+}
+
+/// Like `run_local_make_quiet_with_vault` but streams output line-by-line.
+pub fn run_local_make_quiet_with_vault_streaming<F>(
+    repo_root: &Path,
+    args: &str,
+    vault_password: &str,
+    mut on_line: F,
+) -> Result<i32>
+where
+    F: FnMut(&str),
+{
+    use std::io::BufRead;
+
+    let mut child = Command::new("make")
+        .args(args.split_whitespace())
+        .env("USE_MANAGER", "0")
+        .env("ANSIBLE_VAULT_PASSWORD", vault_password)
+        .current_dir(repo_root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let stdout = child.stdout.take().ok_or_else(|| eyre!("no stdout"))?;
+    let reader = std::io::BufReader::new(stdout);
+    for line in reader.lines() {
+        if let Ok(l) = line {
+            let cleaned = strip_ansi(&l);
+            let trimmed = cleaned.trim();
+            if !trimmed.is_empty() {
+                on_line(trimmed);
+            }
+        }
+    }
+
+    let status = child.wait()?;
+    Ok(status.code().unwrap_or(1))
+}
+
+/// Like `exec_make_quiet` but streams output line-by-line via a callback.
+pub fn exec_make_quiet_streaming<F>(
+    ssh: &SshConnection,
+    remote_path: &str,
+    make_args: &str,
+    mut on_line: F,
+) -> Result<i32>
+where
+    F: FnMut(&str),
+{
+    use std::io::BufRead;
+
+    let cmd = format!(
+        "for d in \"$HOME/.local/bin\" \"$HOME/Library/Python\"/*/bin /usr/local/bin; do [ -d \"$d\" ] && export PATH=\"$d:$PATH\"; done; \
+         [ -f \"$HOME/.profile\" ] && . \"$HOME/.profile\" 2>/dev/null || true; \
+         [ -f \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\" 2>/dev/null || true; \
+         cd {remote_path} && USE_MANAGER=0 make {make_args} 2>&1"
+    );
+    let mut args: Vec<String> = vec![
+        "-o".into(),
+        "BatchMode=yes".into(),
+        "-o".into(),
+        "StrictHostKeyChecking=accept-new".into(),
+        "-o".into(),
+        "ConnectTimeout=10".into(),
+    ];
+    let key = crate::modules::ssh::shellexpand_path(&ssh.key_path);
+    if !key.is_empty() && Path::new(&key).exists() {
+        args.push("-i".into());
+        args.push(key);
+    }
+    args.push(ssh.ssh_target());
+    args.push(cmd);
+
+    let mut child = Command::new("ssh")
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let stdout = child.stdout.take().ok_or_else(|| eyre!("no stdout"))?;
+    let reader = std::io::BufReader::new(stdout);
+    for line in reader.lines() {
+        if let Ok(l) = line {
+            let cleaned = strip_ansi(&l);
+            let trimmed = cleaned.trim();
+            if !trimmed.is_empty() {
+                on_line(trimmed);
+            }
+        }
+    }
+
+    let status = child.wait()?;
+    Ok(status.code().unwrap_or(1))
+}
+
+/// Like `exec_make_quiet_with_vault` but streams output line-by-line.
+pub fn exec_make_quiet_with_vault_streaming<F>(
+    ssh: &SshConnection,
+    remote_path: &str,
+    make_args: &str,
+    vault_password: &str,
+    mut on_line: F,
+) -> Result<i32>
+where
+    F: FnMut(&str),
+{
+    use std::io::BufRead;
+
+    let escaped_pw = vault_password.replace('\'', "'\\''");
+
+    let cmd = format!(
+        "for d in \"$HOME/.local/bin\" \"$HOME/Library/Python\"/*/bin /usr/local/bin; do [ -d \"$d\" ] && export PATH=\"$d:$PATH\"; done; \
+         [ -f \"$HOME/.profile\" ] && . \"$HOME/.profile\" 2>/dev/null || true; \
+         [ -f \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\" 2>/dev/null || true; \
+         _VPF=$(mktemp); \
+         printf '%s' '{escaped_pw}' > \"$_VPF\"; \
+         chmod 600 \"$_VPF\"; \
+         export ANSIBLE_VAULT_PASSWORD=\"{escaped_pw}\"; \
+         export ANSIBLE_VAULT_PASSWORD_FILE=\"$_VPF\"; \
+         cd {remote_path} && USE_MANAGER=0 make {make_args} 2>&1; \
+         _RC=$?; rm -f \"$_VPF\"; exit $_RC"
+    );
+    let mut args: Vec<String> = vec![
+        "-o".into(),
+        "BatchMode=yes".into(),
+        "-o".into(),
+        "StrictHostKeyChecking=accept-new".into(),
+        "-o".into(),
+        "ConnectTimeout=10".into(),
+    ];
+    let key = crate::modules::ssh::shellexpand_path(&ssh.key_path);
+    if !key.is_empty() && Path::new(&key).exists() {
+        args.push("-i".into());
+        args.push(key);
+    }
+    args.push(ssh.ssh_target());
+    args.push(cmd);
+
+    let mut child = Command::new("ssh")
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let stdout = child.stdout.take().ok_or_else(|| eyre!("no stdout"))?;
+    let reader = std::io::BufReader::new(stdout);
+    for line in reader.lines() {
+        if let Ok(l) = line {
+            let cleaned = strip_ansi(&l);
+            let trimmed = cleaned.trim();
+            if !trimmed.is_empty() {
+                on_line(trimmed);
+            }
+        }
+    }
+
+    let status = child.wait()?;
+    Ok(status.code().unwrap_or(1))
 }
 
 /// Ensure the remote busibox directory exists.

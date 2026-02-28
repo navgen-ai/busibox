@@ -3570,3 +3570,37 @@ async def restart_core_app(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to restart app: {e}")
+
+
+@router.post("/core-apps/redeploy")
+async def redeploy_core_apps(
+    _: dict = Depends(verify_admin_token),
+):
+    """Clean caches, reinstall deps, and rebuild all core apps.
+    
+    Triggers a full reinstall cycle: stops all apps, cleans node_modules
+    caches, runs pnpm install, rebuilds shared packages and all apps,
+    then restarts them. Returns 202 immediately; poll GET /core-apps/redeploy
+    for status.
+    """
+    try:
+        result = await _app_manager_request("POST", "/reinstall")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start redeploy: {e}")
+
+
+@router.get("/core-apps/redeploy")
+async def get_redeploy_status(
+    _: dict = Depends(verify_admin_token),
+):
+    """Check if a redeploy/reinstall is currently in progress."""
+    try:
+        result = await _app_manager_request("GET", "/reinstall")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to check redeploy status: {e}")

@@ -2,8 +2,9 @@ use crate::app::{App, MessageKind, Screen};
 use crate::modules::profile;
 use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::Margin;
 use ratatui::prelude::*;
-use ratatui::widgets::*;
+use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState, *};
 
 pub fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -70,7 +71,21 @@ pub fn render(f: &mut Frame, app: &App) {
             })
             .collect();
 
-        let list = List::new(items).block(
+        let items_total = items.len();
+        let list_height = chunks[1].height.saturating_sub(2) as usize; // borders
+        let items_per_page = list_height / 3; // each profile takes 3 lines
+        let scroll_offset = if app.profile_selected >= items_per_page {
+            app.profile_selected - items_per_page + 1
+        } else {
+            0
+        };
+        let visible_items: Vec<ListItem> = items
+            .into_iter()
+            .skip(scroll_offset)
+            .take(items_per_page)
+            .collect();
+
+        let list = List::new(visible_items).block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(theme::dim())
@@ -78,6 +93,19 @@ pub fn render(f: &mut Frame, app: &App) {
                 .title_style(theme::heading()),
         );
         f.render_widget(list, chunks[1]);
+
+        if items_total > items_per_page {
+            let mut scrollbar_state = ScrollbarState::new(items_total)
+                .position(scroll_offset);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("↑"))
+                .end_symbol(Some("↓"));
+            f.render_stateful_widget(
+                scrollbar,
+                chunks[1].inner(Margin { vertical: 1, horizontal: 0 }),
+                &mut scrollbar_state,
+            );
+        }
     } else {
         let msg = Paragraph::new("No profiles found. Run Setup to create one.")
             .style(theme::muted())
@@ -90,10 +118,16 @@ pub fn render(f: &mut Frame, app: &App) {
         f.render_widget(msg, chunks[1]);
     }
 
-    let help = Paragraph::new(Line::from(Span::styled(
-        " Enter Activate  ↑/↓ Navigate  Esc Back",
-        theme::muted(),
-    )));
+    let help = Paragraph::new(Line::from(vec![
+        Span::styled(" Enter ", theme::highlight()),
+        Span::styled("Activate  ", theme::normal()),
+        Span::styled("e ", theme::highlight()),
+        Span::styled("Edit  ", theme::normal()),
+        Span::styled("↑/↓ ", theme::highlight()),
+        Span::styled("Navigate  ", theme::normal()),
+        Span::styled("Esc ", theme::muted()),
+        Span::styled("Back", theme::muted()),
+    ]));
     f.render_widget(help, chunks[2]);
 }
 
@@ -142,6 +176,18 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                             app.menu_selected = 0;
                         }
                     }
+                }
+            }
+        }
+        KeyCode::Char('e') => {
+            if let Some(profiles) = &app.profiles {
+                let profile_ids: Vec<&String> = profiles.profiles.keys().collect();
+                if let Some(id) = profile_ids.get(app.profile_selected) {
+                    app.profile_edit_id = Some((*id).clone());
+                    app.profile_edit_field = 0;
+                    app.profile_editing = false;
+                    app.profile_edit_tier_selecting = false;
+                    app.screen = Screen::ProfileEdit;
                 }
             }
         }

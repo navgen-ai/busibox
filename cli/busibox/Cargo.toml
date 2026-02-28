@@ -21,6 +21,11 @@ dirs = "6"
 which = "7"
 sysinfo = "0.33"
 regex = "1"
+aes-gcm = "0.10"
+argon2 = "0.5"
+base64 = "0.22"
+rpassword = "7"
+rand = "0.8"
 
 [profile.release]
 strip = true

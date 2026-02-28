@@ -13,6 +13,11 @@ setup_npm_auth() {
 
 install_workspace_deps() {
   cd "${ROOT_DIR}"
+  # Clean stale caches to prevent duplicate React instances during build
+  rm -rf node_modules/.cache 2>/dev/null || true
+  for app_dir in apps/*/node_modules; do
+    rm -rf "$app_dir/.cache" 2>/dev/null || true
+  done
   pnpm install --no-frozen-lockfile
 }
 

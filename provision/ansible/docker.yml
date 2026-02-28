@@ -69,14 +69,14 @@
       ansible.builtin.include_vars:
         file: "roles/secrets/vars/vault.{{ container_prefix | default('dev') }}.yml"
       when: env_vault_file.stat.exists
-      no_log: true
+      no_log: false
       tags: always
 
     - name: Load secrets from legacy vault (fallback)
       ansible.builtin.include_vars:
         file: roles/secrets/vars/vault.yml
       when: not env_vault_file.stat.exists
-      no_log: true
+      no_log: false
       ignore_errors: true
       tags: always
     

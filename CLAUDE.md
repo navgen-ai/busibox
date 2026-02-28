@@ -283,7 +283,30 @@ Each service runs in an isolated LXC container:
 - **Authorization**: Role-based (RBAC)
 - **Data Security**: PostgreSQL Row-Level Security (RLS)
 - **Network**: Container isolation, ufw firewall
-- **Secrets**: Ansible vault
+- **Secrets**: Ansible Vault with encrypted vault key management (see below)
+
+### Vault Password Architecture
+
+Vault passwords are managed through the `busibox` CLI with a dual-key encrypted system:
+
+```
+~/.busibox/vault-keys/{profile}.enc   ← AES-256-GCM encrypted vault password
+```
+
+- **Vault password**: A random 32-char string generated during setup, never shown to anyone
+- **Admin master password (A)**: Encrypts the vault password on the admin workstation
+- **Remote user password (B)**: Encrypts the same vault password on the remote host
+- **Key derivation**: Argon2id(master_password, salt) → AES-256 key
+- **Remote delivery**: Vault password piped via SSH stdin; never written to disk on remote
+
+**Flow**:
+1. First setup: CLI generates vault password, encrypts vault file, saves encrypted vault keys
+2. Admin deploys: Types master password A → decrypts vault password → pipes via SSH
+3. Remote user updates: Types password B → decrypts locally → sets env var for Ansible
+
+**Backward compatibility**: Legacy plaintext files (`~/.busibox-vault-pass-{prefix}`) are auto-migrated on first use.
+
+**Shell integration**: `ANSIBLE_VAULT_PASSWORD` env var is supported by `vault.sh` and `service-deploy.sh` via `scripts/lib/vault-pass-from-env.sh`.
 
 ### Deployment Architecture
 
@@ -426,8 +449,9 @@ make manage SERVICE=authz ACTION=redeploy  # ✅
 
 3. **Configuration**:
    - Environment-specific configs in `inventory/{env}/group_vars/`
-   - Secrets in `provision/ansible/roles/secrets/vars/vault.yml`
-   - Never commit unencrypted secrets
+   - Secrets in `provision/ansible/roles/secrets/vars/vault.{prefix}.yml`
+   - Vault keys in `~/.busibox/vault-keys/{profile}.enc` (AES-256-GCM encrypted)
+   - Never commit unencrypted secrets or plaintext vault password files
 
 ### When Modifying Infrastructure
 

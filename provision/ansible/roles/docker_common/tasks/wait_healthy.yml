@@ -9,9 +9,16 @@
 #       docker_wait_service: "postgres"
 #       docker_wait_timeout: 60
 
+- name: Check if environment file exists
+  ansible.builtin.stat:
+    path: "{{ docker_env_file }}"
+  register: _env_file_stat
+
 - name: Set compose command arguments
   ansible.builtin.set_fact:
     docker_compose_file_args: "{{ docker_compose_files_list | map('regex_replace', '^(.*)$', '-f \\1') | join(' ') }}"
+    _env_file_arg: "{{ '--env-file ' ~ docker_env_file if _env_file_stat.stat.exists else '' }}"
+    _compose_cmd: "docker compose {{ docker_compose_files_list | map('regex_replace', '^(.*)$', '-f \\1') | join(' ') }} {{ '--env-file ' ~ docker_env_file if _env_file_stat.stat.exists else '' }}"
 
 - name: Wait for {{ docker_wait_service }} to be healthy
   ansible.builtin.shell: |
@@ -19,10 +26,7 @@
     timeout={{ docker_wait_timeout | default(60) }}
     elapsed=0
     while [ $elapsed -lt $timeout ]; do
-      # Docker compose ps --format json returns either an object (single) or array (multiple)
-      # Use jq to handle both: if array, get first element; if object, use directly
-      json_output=$(docker compose {{ docker_compose_file_args }} \
-        ps --format json {{ docker_wait_service }} 2>/dev/null)
+      json_output=$({{ _compose_cmd }} ps --format json {{ docker_wait_service }} 2>/dev/null)
       health=$(echo "$json_output" | jq -r 'if type == "array" then .[0].Health else .Health end // "none"')
       
       case "$health" in
@@ -33,8 +37,10 @@
         unhealthy)
           echo "Service {{ docker_wait_service }} is unhealthy (elapsed ${elapsed}s/${timeout}s), waiting for restart..."
           ;;
+        starting)
+          # During Docker's start_period, health status is "starting"
+          ;;
         none|null|"")
-          # No healthcheck defined, check if running
           state=$(echo "$json_output" | jq -r 'if type == "array" then .[0].State else .State end // "none"')
           if [ "$state" = "running" ]; then
             echo "Service {{ docker_wait_service }} is running (no healthcheck)"

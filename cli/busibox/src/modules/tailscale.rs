@@ -9,6 +9,7 @@ pub enum AuthMode {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct TailscaleStatus {
     pub installed: bool,
     pub running: bool,
@@ -120,6 +121,7 @@ pub fn authenticate_remote(ssh: &SshConnection, mode: &AuthMode) -> Result<()> {
 }
 
 /// Authenticate Tailscale locally.
+#[allow(dead_code)]
 pub fn authenticate_local(mode: &AuthMode) -> Result<()> {
     let mut args = vec!["up".to_string(), "--ssh".to_string()];
     match mode {

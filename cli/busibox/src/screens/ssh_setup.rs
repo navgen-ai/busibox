@@ -2,8 +2,9 @@ use crate::app::{App, Screen, SshSetupStatus};
 use crate::modules::ssh;
 use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::Margin;
 use ratatui::prelude::*;
-use ratatui::widgets::*;
+use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState, *};
 
 pub fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -122,14 +123,43 @@ pub fn render(f: &mut Frame, app: &App) {
         }
     }
 
-    let content = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::dim())
-            .title(" SSH Connection ")
-            .title_style(theme::heading()),
-    );
+    let total_lines = lines.len();
+    let content_height = chunks[1].height.saturating_sub(2) as usize;
+    let max_scroll = total_lines.saturating_sub(content_height);
+    let scroll_offset = app.ssh_setup_scroll.min(max_scroll);
+
+    let content = Paragraph::new(lines)
+        .scroll((scroll_offset as u16, 0))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::dim())
+                .title(if total_lines > content_height {
+                    format!(
+                        " SSH Connection ({}-{} of {}) ",
+                        scroll_offset + 1,
+                        (scroll_offset + content_height).min(total_lines),
+                        total_lines
+                    )
+                } else {
+                    " SSH Connection ".to_string()
+                })
+                .title_style(theme::heading()),
+        );
     f.render_widget(content, chunks[1]);
+
+    if total_lines > content_height {
+        let mut scrollbar_state = ScrollbarState::new(total_lines)
+            .position(scroll_offset);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        f.render_stateful_widget(
+            scrollbar,
+            chunks[1].inner(Margin { vertical: 1, horizontal: 0 }),
+            &mut scrollbar_state,
+        );
+    }
 
     let help = Paragraph::new(Line::from(Span::styled(
         " Enter Continue  r Retry  Esc Back",
@@ -140,6 +170,14 @@ pub fn render(f: &mut Frame, app: &App) {
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
     match key.code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.ssh_setup_scroll > 0 {
+                app.ssh_setup_scroll -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.ssh_setup_scroll = app.ssh_setup_scroll.saturating_add(1);
+        }
         KeyCode::Esc => {
             app.screen = Screen::SetupMode;
             app.ssh_status = SshSetupStatus::NotStarted;

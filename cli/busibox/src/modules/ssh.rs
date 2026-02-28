@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SshKey {
     pub private_path: PathBuf,
     pub public_path: PathBuf,

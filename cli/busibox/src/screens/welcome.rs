@@ -1,23 +1,24 @@
 use crate::app::{App, Screen};
 use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::Margin;
 use ratatui::prelude::*;
-use ratatui::widgets::*;
+use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState, *};
 
 pub fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7),
+            Constraint::Length(5),
             Constraint::Length(3),
-            Constraint::Min(8),
+            Constraint::Min(14),
             Constraint::Length(3),
         ])
         .margin(2)
         .split(f.area());
 
     // Logo
-    let logo = Paragraph::new(theme::LOGO.trim_start_matches('\n'))
+    let logo = Paragraph::new(theme::LOGO)
         .style(theme::title())
         .alignment(Alignment::Center);
     f.render_widget(logo, chunks[0]);
@@ -90,35 +91,54 @@ pub fn render(f: &mut Frame, app: &App) {
             Span::styled("  Env:   ", theme::muted()),
             Span::styled(&profile.environment, theme::normal()),
         ]));
-        info_lines.push(Line::from(vec![
-            Span::styled("  Back:  ", theme::muted()),
-            Span::styled(&profile.backend, theme::normal()),
-        ]));
         if profile.remote {
+            let host_display = profile.effective_host().unwrap_or("unknown");
             info_lines.push(Line::from(vec![
                 Span::styled("  Host:  ", theme::muted()),
                 Span::styled(
-                    profile.effective_host().unwrap_or("—"),
+                    format!("{} (remote)", host_display),
                     theme::info(),
                 ),
             ]));
+        } else {
+            info_lines.push(Line::from(vec![
+                Span::styled("  Host:  ", theme::muted()),
+                Span::styled("localhost", theme::normal()),
+            ]));
         }
-        // Show a hint about install status
-        info_lines.push(Line::from(""));
-        info_lines.push(Line::from(Span::styled(
-            "  ↳ Select 'Resume Install' to deploy",
-            theme::muted(),
-        )));
     }
 
-    let info_block = Paragraph::new(info_lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::dim())
-            .title(" System ")
-            .title_style(theme::heading()),
-    );
+    let info_height = content_chunks[0].height.saturating_sub(2) as usize; // borders
+    let info_lines_len = info_lines.len();
+    let scroll_y = if info_lines_len > info_height {
+        (info_lines_len - info_height) as u16
+    } else {
+        0
+    };
+
+    let info_block = Paragraph::new(info_lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::dim())
+                .title(" System ")
+                .title_style(theme::heading()),
+        )
+        .scroll((scroll_y, 0));
     f.render_widget(info_block, content_chunks[0]);
+
+    if scroll_y > 0 {
+        let mut scrollbar_state = ScrollbarState::new(info_lines_len)
+            .position(scroll_y as usize);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        f.render_stateful_widget(
+            scrollbar,
+            content_chunks[0].inner(Margin { vertical: 1, horizontal: 0 }),
+            &mut scrollbar_state,
+        );
+    }
 
     // Menu panel
     let menu_items = app.welcome_menu_items();
@@ -186,9 +206,17 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     app.screen = Screen::SetupMode;
                     app.menu_selected = 0;
                 }
-                "Resume Install" => {
+                "Resume Install" | "Update / Re-install" => {
                     app.set_message(
                         "⠋ Connecting to remote host...",
+                        crate::app::MessageKind::Info,
+                    );
+                    app.pending_resume_install = true;
+                }
+                "Clean Install" => {
+                    app.clean_install = true;
+                    app.set_message(
+                        "⠋ Preparing clean install...",
                         crate::app::MessageKind::Info,
                     );
                     app.pending_resume_install = true;

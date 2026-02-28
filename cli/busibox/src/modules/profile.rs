@@ -1,4 +1,4 @@
-use crate::modules::hardware::HardwareProfile;
+use crate::modules::hardware::{HardwareProfile, MemoryTier};
 use color_eyre::{eyre::eyre, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -35,6 +35,10 @@ pub struct Profile {
     pub hardware: Option<HardwareProfile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kubeconfig: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_email: Option<String>,
 }
 
 impl Profile {
@@ -44,10 +48,12 @@ impl Profile {
             .or(self.remote_host.as_deref())
     }
 
+    #[allow(dead_code)]
     pub fn effective_user(&self) -> &str {
         self.remote_user.as_deref().unwrap_or("root")
     }
 
+    #[allow(dead_code)]
     pub fn effective_ssh_key(&self) -> &str {
         self.remote_ssh_key.as_deref().unwrap_or("~/.ssh/id_ed25519")
     }
@@ -56,6 +62,13 @@ impl Profile {
         self.remote_busibox_path
             .as_deref()
             .unwrap_or("~/busibox")
+    }
+
+    pub fn effective_model_tier(&self) -> Option<MemoryTier> {
+        self.model_tier
+            .as_deref()
+            .and_then(MemoryTier::from_name)
+            .or_else(|| self.hardware.as_ref().map(|h| h.memory_tier))
     }
 }
 
@@ -101,6 +114,7 @@ pub fn get_active_profile(profiles: &ProfilesFile) -> Option<(&str, &Profile)> {
 }
 
 /// Create or update a profile.
+/// Also creates the state directory and writes profile state so bash make scripts can find it.
 pub fn upsert_profile(
     repo_root: &Path,
     id: &str,
@@ -108,11 +122,14 @@ pub fn upsert_profile(
     set_active: bool,
 ) -> Result<()> {
     let mut profiles = load_profiles(repo_root)?;
-    profiles.profiles.insert(id.to_string(), profile);
+    profiles.profiles.insert(id.to_string(), profile.clone());
     if set_active {
         profiles.active = id.to_string();
     }
-    save_profiles(repo_root, &profiles)
+    save_profiles(repo_root, &profiles)?;
+    ensure_profile_state_dir(repo_root, id)?;
+    let _ = write_profile_state(repo_root, id, &profile);
+    Ok(())
 }
 
 /// Find the busibox repo root by walking up from the current directory.
@@ -144,4 +161,41 @@ pub fn ensure_profile_state_dir(repo_root: &Path, profile_id: &str) -> Result<Pa
         std::fs::write(&state_file, "# Busibox State File\nINSTALL_STATUS=not_installed\n")?;
     }
     Ok(profile_dir)
+}
+
+/// Write profile-derived values (admin email, model tier) into the state file
+/// so that bash scripts (make, service-deploy) can read them.
+pub fn write_profile_state(repo_root: &Path, profile_id: &str, profile: &Profile) -> Result<()> {
+    let profile_dir = ensure_profile_state_dir(repo_root, profile_id)?;
+    let state_file = profile_dir.join("state");
+
+    let existing = std::fs::read_to_string(&state_file).unwrap_or_default();
+
+    let mut lines: Vec<String> = existing
+        .lines()
+        .filter(|l| {
+            !l.starts_with("ADMIN_EMAIL=")
+                && !l.starts_with("MODEL_TIER=")
+                && !l.starts_with("LLM_BACKEND=")
+        })
+        .map(|l| l.to_string())
+        .collect();
+
+    if let Some(ref email) = profile.admin_email {
+        lines.push(format!("ADMIN_EMAIL={email}"));
+    }
+    if let Some(tier) = profile.effective_model_tier() {
+        lines.push(format!("MODEL_TIER={}", tier.name()));
+    }
+    if let Some(ref hw) = profile.hardware {
+        lines.push(format!("LLM_BACKEND={}", match hw.llm_backend {
+            crate::modules::hardware::LlmBackend::Mlx => "mlx",
+            crate::modules::hardware::LlmBackend::Vllm => "vllm",
+            crate::modules::hardware::LlmBackend::Cloud => "cloud",
+        }));
+    }
+
+    let content = lines.join("\n") + "\n";
+    std::fs::write(&state_file, content)?;
+    Ok(())
 }

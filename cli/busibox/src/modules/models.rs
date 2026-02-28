@@ -100,6 +100,7 @@ impl ModelRecommendation {
         })
     }
 
+    #[allow(dead_code)]
     pub fn total_size_gb(&self) -> f64 {
         self.fast.estimated_size_gb
             + self.agent.estimated_size_gb

@@ -1,0 +1,696 @@
+use crate::app::{App, InputMode, MessageKind, Screen};
+use crate::modules::hardware::{LlmBackend, MemoryTier};
+use crate::modules::models::ModelRecommendation;
+use crate::modules::profile;
+use crate::theme;
+use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::prelude::*;
+use ratatui::widgets::*;
+use std::collections::HashMap;
+
+const FIELD_LABELS: &[&str] = &[
+    "Label",
+    "Environment",
+    "Backend",
+    "Remote Host",
+    "Remote User",
+    "Remote Path",
+    "Tailscale IP",
+    "Model Tier",
+    "Admin Email",
+];
+
+const FIELD_COUNT: usize = 9;
+
+const FIELD_LABEL: usize = 0;
+const FIELD_ENVIRONMENT: usize = 1;
+const FIELD_BACKEND: usize = 2;
+const FIELD_REMOTE_HOST: usize = 3;
+const FIELD_REMOTE_USER: usize = 4;
+const FIELD_REMOTE_PATH: usize = 5;
+const FIELD_TAILSCALE_IP: usize = 6;
+const FIELD_MODEL_TIER: usize = 7;
+const FIELD_ADMIN_EMAIL: usize = 8;
+
+pub fn render(f: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(10),
+            Constraint::Length(3),
+        ])
+        .margin(2)
+        .split(f.area());
+
+    let profile_id = app.profile_edit_id.as_deref().unwrap_or("unknown");
+    let title = Paragraph::new(format!("Edit Profile: {profile_id}"))
+        .style(theme::title())
+        .alignment(Alignment::Center);
+    f.render_widget(title, chunks[0]);
+
+    let profile = get_editing_profile(app);
+
+    let mut rows: Vec<Row> = Vec::new();
+    for (i, label) in FIELD_LABELS.iter().enumerate() {
+        let value = if app.profile_editing && i == app.profile_edit_field {
+            format!("{}▎", app.profile_edit_buffer)
+        } else {
+            field_value(&profile, i)
+        };
+
+        let label_style = if i == app.profile_edit_field {
+            theme::highlight()
+        } else {
+            theme::heading()
+        };
+
+        let value_style = if app.profile_editing && i == app.profile_edit_field {
+            Style::default().fg(Color::White).bg(Color::DarkGray)
+        } else if i == app.profile_edit_field {
+            theme::selected()
+        } else {
+            theme::normal()
+        };
+
+        let hint = field_hint(i, &profile);
+        let hint_cell = if !hint.is_empty() && i == app.profile_edit_field {
+            Cell::from(hint).style(theme::muted())
+        } else {
+            Cell::from("")
+        };
+
+        rows.push(Row::new(vec![
+            Cell::from(format!(" {label}")).style(label_style),
+            Cell::from(format!(" {value}")).style(value_style),
+            hint_cell,
+        ]));
+    }
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(16),
+            Constraint::Min(30),
+            Constraint::Min(25),
+        ],
+    )
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::dim())
+            .title(" Profile Fields ")
+            .title_style(theme::heading()),
+    )
+    .row_highlight_style(theme::selected());
+
+    f.render_widget(table, chunks[1]);
+
+    let help = if app.profile_edit_tier_selecting {
+        Paragraph::new(Line::from(vec![
+            Span::styled("↑/↓ ", theme::highlight()),
+            Span::styled("Select  ", theme::normal()),
+            Span::styled("Enter ", theme::highlight()),
+            Span::styled("Confirm  ", theme::normal()),
+            Span::styled("Esc ", theme::muted()),
+            Span::styled("Cancel", theme::muted()),
+        ]))
+    } else if app.profile_editing {
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Enter ", theme::highlight()),
+            Span::styled("Save  ", theme::normal()),
+            Span::styled("Esc ", theme::muted()),
+            Span::styled("Cancel  ", theme::muted()),
+            Span::styled("←/→ ", theme::muted()),
+            Span::styled("Cycle (dropdowns)", theme::muted()),
+        ]))
+    } else {
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Enter ", theme::highlight()),
+            Span::styled("Edit  ", theme::normal()),
+            Span::styled("↑/↓ ", theme::highlight()),
+            Span::styled("Navigate  ", theme::normal()),
+            Span::styled("s ", theme::highlight()),
+            Span::styled("Save  ", theme::normal()),
+            Span::styled("Esc ", theme::muted()),
+            Span::styled("Back", theme::muted()),
+        ]))
+    };
+    f.render_widget(help, chunks[2]);
+
+    if app.profile_edit_tier_selecting {
+        render_tier_overlay(f, app);
+    }
+}
+
+fn render_tier_overlay(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let overlay_area = Rect::new(
+        area.x + 4,
+        area.y + 4,
+        area.width.saturating_sub(8),
+        area.height.saturating_sub(8),
+    );
+
+    let clear = Clear;
+    f.render_widget(clear, overlay_area);
+
+    let inner = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::dim())
+        .title(" Select Model Tier ")
+        .title_style(theme::heading());
+
+    let inner_area = inner.inner(overlay_area);
+    f.render_widget(inner, overlay_area);
+
+    let content_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Percentage(60),
+        ])
+        .split(inner_area);
+
+    let profile = get_editing_profile(app);
+    let recommended_tier = profile.hardware.as_ref().map(|h| h.memory_tier);
+    let backend = profile
+        .hardware
+        .as_ref()
+        .map(|h| &h.llm_backend)
+        .unwrap_or(&LlmBackend::Mlx);
+
+    render_tier_list_overlay(f, app, content_chunks[0], recommended_tier);
+    render_tier_details_overlay(f, app, content_chunks[1], backend);
+}
+
+fn render_tier_list_overlay(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    recommended: Option<MemoryTier>,
+) {
+    let tiers = MemoryTier::all();
+
+    let items: Vec<ListItem> = tiers
+        .iter()
+        .enumerate()
+        .map(|(i, tier)| {
+            let is_recommended = recommended.map(|r| r == *tier).unwrap_or(false);
+            let marker = if is_recommended { "★ " } else { "  " };
+            let name = format!("{}{}", marker, capitalize(tier.name()));
+
+            let style = if i == app.profile_edit_tier_cursor {
+                theme::selected()
+            } else if is_recommended {
+                theme::highlight()
+            } else {
+                theme::normal()
+            };
+
+            let ram = tier.ram_range();
+            ListItem::new(vec![
+                Line::from(Span::styled(name, style)),
+                Line::from(Span::styled(format!("    {ram}"), theme::muted())),
+                Line::from(""),
+            ])
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::dim())
+            .title(" Tiers ")
+            .title_style(theme::heading()),
+    );
+    f.render_widget(list, area);
+}
+
+fn render_tier_details_overlay(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    backend: &LlmBackend,
+) {
+    let tiers = MemoryTier::all();
+    let selected_tier = tiers
+        .get(app.profile_edit_tier_cursor)
+        .copied()
+        .unwrap_or(MemoryTier::Standard);
+
+    let config_path = app.repo_root.join("config").join("demo-models.yaml");
+    let recommendation = config_path
+        .exists()
+        .then(|| ModelRecommendation::from_config(&config_path, selected_tier, backend).ok())
+        .flatten();
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!(" {} ", capitalize(selected_tier.name())),
+            theme::heading(),
+        ),
+        Span::styled(
+            format!("— {}", selected_tier.description()),
+            theme::muted(),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    if let Some(rec) = &recommendation {
+        let mut unique_sizes: HashMap<&str, f64> = HashMap::new();
+
+        for model in rec.models() {
+            let size_str = if model.estimated_size_gb < 1.0 {
+                format!("{:.0} MB", model.estimated_size_gb * 1024.0)
+            } else {
+                format!("{:.1} GB", model.estimated_size_gb)
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {:12}", model.role), theme::heading()),
+                Span::styled(model.name.clone(), theme::normal()),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("             ", theme::normal()),
+                Span::styled(size_str, theme::info()),
+            ]));
+            lines.push(Line::from(""));
+
+            if !model.name.is_empty() {
+                unique_sizes.entry(&model.name).or_insert(model.estimated_size_gb);
+            }
+        }
+
+        let total: f64 = unique_sizes.values().sum();
+        let total_str = if total < 1.0 {
+            format!("{:.0} MB", total * 1024.0)
+        } else {
+            format!("{:.1} GB", total)
+        };
+
+        let unique_count = unique_sizes.len();
+        let model_count = rec.models().len();
+        let dedup_note = if unique_count < model_count {
+            format!(" ({unique_count} unique)")
+        } else {
+            String::new()
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(" TOTAL       ", theme::heading()),
+            Span::styled(total_str, theme::highlight()),
+            Span::styled(dedup_note, theme::muted()),
+        ]));
+    } else {
+        lines.push(Line::from(Span::styled(
+            " No model configuration available",
+            theme::muted(),
+        )));
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::dim())
+                .title(format!(" {} Models ", capitalize(selected_tier.name())))
+                .title_style(theme::heading()),
+        )
+        .wrap(Wrap { trim: false });
+
+    f.render_widget(paragraph, area);
+}
+
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+    }
+}
+
+pub fn handle_key(app: &mut App, key: KeyEvent) {
+    if app.profile_editing {
+        handle_edit_mode(app, key);
+    } else {
+        handle_nav_mode(app, key);
+    }
+}
+
+fn handle_nav_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.screen = Screen::ProfileSelect;
+            app.profile_edit_id = None;
+            app.profile_editing = false;
+            app.profile_edit_tier_selecting = false;
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.profile_edit_field > 0 {
+                app.profile_edit_field -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.profile_edit_field < FIELD_COUNT - 1 {
+                app.profile_edit_field += 1;
+            }
+        }
+        KeyCode::Enter => {
+            if app.profile_edit_field == FIELD_MODEL_TIER {
+                let profile = get_editing_profile(app);
+                let tier = profile.effective_model_tier();
+                app.profile_edit_tier_cursor = tier
+                    .map(|t| t.index())
+                    .unwrap_or_else(|| MemoryTier::Standard.index());
+                app.profile_edit_buffer = MemoryTier::all()
+                    .get(app.profile_edit_tier_cursor)
+                    .map(|t| t.name().to_string())
+                    .unwrap_or_else(|| "(auto-detect)".into());
+                app.profile_edit_tier_selecting = true;
+                app.profile_editing = true;
+                app.input_mode = InputMode::Editing;
+            } else {
+                let profile = get_editing_profile(app);
+                app.profile_edit_buffer = field_value(&profile, app.profile_edit_field);
+                app.profile_editing = true;
+                app.input_mode = InputMode::Editing;
+            }
+        }
+        KeyCode::Char('s') => {
+            save_profile(app);
+        }
+        _ => {}
+    }
+}
+
+fn handle_edit_mode(app: &mut App, key: KeyEvent) {
+    if app.profile_edit_tier_selecting {
+        handle_tier_selector(app, key);
+        return;
+    }
+
+    let field = app.profile_edit_field;
+
+    match field {
+        FIELD_ENVIRONMENT | FIELD_BACKEND | FIELD_MODEL_TIER => {
+            handle_dropdown_edit(app, key);
+        }
+        _ => {
+            handle_text_edit(app, key);
+        }
+    }
+}
+
+fn handle_tier_selector(app: &mut App, key: KeyEvent) {
+    let tiers = MemoryTier::all();
+    let tier_count = tiers.len();
+
+    match key.code {
+        KeyCode::Esc => {
+            app.profile_edit_tier_selecting = false;
+            app.profile_editing = false;
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Enter => {
+            let selected_tier = tiers
+                .get(app.profile_edit_tier_cursor)
+                .copied()
+                .unwrap_or(MemoryTier::Standard);
+            apply_field(app, FIELD_MODEL_TIER, selected_tier.name());
+            app.profile_edit_tier_selecting = false;
+            app.profile_editing = false;
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.profile_edit_tier_cursor > 0 {
+                app.profile_edit_tier_cursor -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.profile_edit_tier_cursor < tier_count.saturating_sub(1) {
+                app.profile_edit_tier_cursor += 1;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_dropdown_edit(app: &mut App, key: KeyEvent) {
+    let field = app.profile_edit_field;
+
+    match key.code {
+        KeyCode::Esc => {
+            app.profile_editing = false;
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Enter => {
+            apply_field(app, field, &app.profile_edit_buffer.clone());
+            app.profile_editing = false;
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+            let options = dropdown_options(field);
+            if options.is_empty() {
+                return;
+            }
+            let current_idx = options
+                .iter()
+                .position(|o| *o == app.profile_edit_buffer)
+                .unwrap_or(0);
+
+            let next_idx = match key.code {
+                KeyCode::Right | KeyCode::Down => {
+                    if current_idx < options.len() - 1 {
+                        current_idx + 1
+                    } else {
+                        0
+                    }
+                }
+                _ => {
+                    if current_idx > 0 {
+                        current_idx - 1
+                    } else {
+                        options.len() - 1
+                    }
+                }
+            };
+            app.profile_edit_buffer = options[next_idx].to_string();
+        }
+        _ => {}
+    }
+}
+
+fn handle_text_edit(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.profile_editing = false;
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Enter => {
+            apply_field(app, app.profile_edit_field, &app.profile_edit_buffer.clone());
+            app.profile_editing = false;
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Backspace => {
+            app.profile_edit_buffer.pop();
+        }
+        KeyCode::Char(c) => {
+            app.profile_edit_buffer.push(c);
+        }
+        _ => {}
+    }
+}
+
+fn get_editing_profile(app: &App) -> profile::Profile {
+    let id = app.profile_edit_id.as_deref().unwrap_or("");
+    app.profiles
+        .as_ref()
+        .and_then(|pf| pf.profiles.get(id))
+        .cloned()
+        .unwrap_or_else(default_profile)
+}
+
+fn default_profile() -> profile::Profile {
+    profile::Profile {
+        environment: "staging".into(),
+        backend: "docker".into(),
+        label: String::new(),
+        created: None,
+        vault_prefix: None,
+        remote: false,
+        remote_host: None,
+        remote_user: None,
+        remote_ssh_key: None,
+        remote_busibox_path: None,
+        tailscale_ip: None,
+        hardware: None,
+        kubeconfig: None,
+        model_tier: None,
+        admin_email: None,
+    }
+}
+
+fn field_value(profile: &profile::Profile, field: usize) -> String {
+    match field {
+        FIELD_LABEL => profile.label.clone(),
+        FIELD_ENVIRONMENT => profile.environment.clone(),
+        FIELD_BACKEND => profile.backend.clone(),
+        FIELD_REMOTE_HOST => profile.remote_host.clone().unwrap_or_default(),
+        FIELD_REMOTE_USER => profile.remote_user.clone().unwrap_or_else(|| "root".into()),
+        FIELD_REMOTE_PATH => profile
+            .remote_busibox_path
+            .clone()
+            .unwrap_or_else(|| "~/busibox".into()),
+        FIELD_TAILSCALE_IP => profile.tailscale_ip.clone().unwrap_or_default(),
+        FIELD_MODEL_TIER => {
+            let tier = profile.effective_model_tier();
+            tier.map(|t| t.name().to_string())
+                .unwrap_or_else(|| "(auto-detect)".into())
+        }
+        FIELD_ADMIN_EMAIL => profile.admin_email.clone().unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+fn field_hint(field: usize, profile: &profile::Profile) -> String {
+    match field {
+        FIELD_ENVIRONMENT => "←/→ to cycle: staging, production".into(),
+        FIELD_BACKEND => "←/→ to cycle: docker, proxmox".into(),
+        FIELD_MODEL_TIER => {
+            let hw_tier = profile
+                .hardware
+                .as_ref()
+                .map(|h| format!("HW recommended: {}", h.memory_tier.name()));
+            hw_tier.unwrap_or_else(|| "←/→ to cycle tiers".into())
+        }
+        FIELD_ADMIN_EMAIL => "Used for initial login".into(),
+        FIELD_REMOTE_HOST => {
+            if profile.remote {
+                "SSH hostname or IP".into()
+            } else {
+                "(not applicable for local)".into()
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+fn dropdown_options(field: usize) -> Vec<&'static str> {
+    match field {
+        FIELD_ENVIRONMENT => vec!["staging", "production"],
+        FIELD_BACKEND => vec!["docker", "proxmox"],
+        FIELD_MODEL_TIER => {
+            let tiers = MemoryTier::all();
+            tiers.iter().map(|t| t.name()).collect()
+        }
+        _ => vec![],
+    }
+}
+
+fn apply_field(app: &mut App, field: usize, value: &str) {
+    let id = match &app.profile_edit_id {
+        Some(id) => id.clone(),
+        None => return,
+    };
+
+    let profiles = match &mut app.profiles {
+        Some(p) => p,
+        None => return,
+    };
+
+    let profile = match profiles.profiles.get_mut(&id) {
+        Some(p) => p,
+        None => return,
+    };
+
+    match field {
+        FIELD_LABEL => profile.label = value.to_string(),
+        FIELD_ENVIRONMENT => {
+            profile.environment = value.to_string();
+            profile.vault_prefix = Some(if value == "production" {
+                "prod".to_string()
+            } else {
+                "staging".to_string()
+            });
+        }
+        FIELD_BACKEND => profile.backend = value.to_string(),
+        FIELD_REMOTE_HOST => {
+            profile.remote_host = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
+            profile.remote = !value.is_empty() || profile.tailscale_ip.is_some();
+        }
+        FIELD_REMOTE_USER => {
+            profile.remote_user = if value.is_empty() || value == "root" {
+                Some("root".into())
+            } else {
+                Some(value.to_string())
+            };
+        }
+        FIELD_REMOTE_PATH => {
+            profile.remote_busibox_path = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
+        }
+        FIELD_TAILSCALE_IP => {
+            profile.tailscale_ip = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
+        }
+        FIELD_MODEL_TIER => {
+            if MemoryTier::from_name(value).is_some() {
+                let hw_tier = profile.hardware.as_ref().map(|h| h.memory_tier);
+                if hw_tier.map(|t| t.name()) == Some(value) {
+                    profile.model_tier = None;
+                } else {
+                    profile.model_tier = Some(value.to_string());
+                }
+            }
+        }
+        FIELD_ADMIN_EMAIL => {
+            profile.admin_email = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
+        }
+        _ => {}
+    }
+}
+
+fn save_profile(app: &mut App) {
+    let repo_root = app.repo_root.clone();
+    if let Some(profiles) = &app.profiles {
+        match profile::save_profiles(&repo_root, profiles) {
+            Ok(()) => {
+                if let Some(ref id) = app.profile_edit_id {
+                    if let Some(p) = profiles.profiles.get(id) {
+                        let _ = profile::write_profile_state(&repo_root, id, p);
+                    }
+                }
+                app.set_message("Profile saved", MessageKind::Success);
+                app.screen = Screen::ProfileSelect;
+                app.profile_edit_id = None;
+                app.profile_editing = false;
+                app.profile_edit_tier_selecting = false;
+                app.input_mode = InputMode::Normal;
+            }
+            Err(e) => {
+                app.set_message(
+                    &format!("Failed to save: {e}"),
+                    MessageKind::Error,
+                );
+            }
+        }
+    }
+}

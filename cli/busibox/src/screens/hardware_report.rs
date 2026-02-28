@@ -2,8 +2,9 @@ use crate::app::{App, MessageKind, Screen, SetupTarget};
 use crate::modules::hardware::HardwareProfile;
 use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::Margin;
 use ratatui::prelude::*;
-use ratatui::widgets::*;
+use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState, *};
 
 pub fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -31,8 +32,8 @@ pub fn render(f: &mut Frame, app: &App) {
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(chunks[1]);
 
-        render_hw_panel(f, "Local", app.local_hardware.as_ref().unwrap(), cols[0]);
-        render_hw_panel(f, "Remote", app.remote_hardware.as_ref().unwrap(), cols[1]);
+        render_hw_panel(f, "Local", app.local_hardware.as_ref().unwrap(), cols[0], app.hardware_report_scroll);
+        render_hw_panel(f, "Remote", app.remote_hardware.as_ref().unwrap(), cols[1], app.hardware_report_scroll);
     } else {
         let hw = if app.setup_target == SetupTarget::Remote {
             app.remote_hardware.as_ref()
@@ -41,7 +42,7 @@ pub fn render(f: &mut Frame, app: &App) {
         };
 
         if let Some(hw) = hw {
-            render_hw_panel(f, "Hardware", hw, chunks[1]);
+            render_hw_panel(f, "Hardware", hw, chunks[1], app.hardware_report_scroll);
         } else {
             let detecting = Paragraph::new("Detecting hardware...")
                 .style(theme::info())
@@ -77,7 +78,7 @@ pub fn render(f: &mut Frame, app: &App) {
     f.render_widget(help, chunks[2]);
 }
 
-fn render_hw_panel(f: &mut Frame, label: &str, hw: &HardwareProfile, area: Rect) {
+fn render_hw_panel(f: &mut Frame, label: &str, hw: &HardwareProfile, area: Rect, scroll_offset: usize) {
     let mut lines = vec![
         Line::from(vec![
             Span::styled("  OS:       ", theme::muted()),
@@ -148,18 +149,57 @@ fn render_hw_panel(f: &mut Frame, label: &str, hw: &HardwareProfile, area: Rect)
         ),
     ]));
 
-    let panel = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::dim())
-            .title(format!(" {label} "))
-            .title_style(theme::heading()),
-    );
+    let total_lines = lines.len();
+    let content_height = area.height.saturating_sub(2) as usize;
+    let max_scroll = total_lines.saturating_sub(content_height);
+    let scroll = scroll_offset.min(max_scroll);
+
+    let scroll_info = if total_lines > content_height {
+        format!(
+            " {label} ({}-{} of {}) ",
+            scroll + 1,
+            (scroll + content_height).min(total_lines),
+            total_lines
+        )
+    } else {
+        format!(" {label} ")
+    };
+
+    let panel = Paragraph::new(lines)
+        .scroll((scroll as u16, 0))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::dim())
+                .title(scroll_info)
+                .title_style(theme::heading()),
+        );
     f.render_widget(panel, area);
+
+    if total_lines > content_height {
+        let mut scrollbar_state = ScrollbarState::new(total_lines)
+            .position(scroll);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        f.render_stateful_widget(
+            scrollbar,
+            area.inner(Margin { vertical: 1, horizontal: 0 }),
+            &mut scrollbar_state,
+        );
+    }
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
     match key.code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.hardware_report_scroll > 0 {
+                app.hardware_report_scroll -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.hardware_report_scroll = app.hardware_report_scroll.saturating_add(1);
+        }
         KeyCode::Esc => {
             if app.setup_target == SetupTarget::Remote {
                 app.screen = Screen::SshSetup;

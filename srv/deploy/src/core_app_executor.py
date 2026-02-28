@@ -425,6 +425,9 @@ async def deploy_core_app(
         command = f"""
             set -e
             cd /srv/busibox-frontend
+            echo "=== Cleaning stale node_modules ==="
+            rm -rf node_modules/.cache 2>/dev/null || true
+            pnpm install --no-frozen-lockfile
             echo "=== Building shared package ==="
             pnpm --filter @jazzmind/busibox-app build
             echo "=== Building {app_id} ==="
@@ -529,6 +532,14 @@ NPMRC_EOF
             
             # Set GITHUB_AUTH_TOKEN for .npmrc interpolation
             export GITHUB_AUTH_TOKEN='{github_token}'
+            
+            # Clean stale node_modules to prevent duplicate React instances
+            # (known Next.js 16 build issue in monorepos with stale deps)
+            echo "=== CLEANING STALE DEPS ==="
+            rm -rf node_modules/.cache 2>/dev/null || true
+            for app_dir in apps/*/node_modules; do
+                rm -rf "$app_dir/.cache" 2>/dev/null || true
+            done
             
             # Install all workspace dependencies from root
             echo "=== PNPM INSTALL START ==="
