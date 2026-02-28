@@ -26,6 +26,7 @@ const RSYNC_EXCLUDES: &[&str] = &[
 ];
 
 /// Sync the local busibox repo to a remote host using rsync.
+/// Output is captured so it doesn't bleed into the TUI.
 pub fn sync(
     local_path: &Path,
     host: &str,
@@ -34,7 +35,7 @@ pub fn sync(
     remote_path: &str,
 ) -> Result<()> {
     let mut args: Vec<String> = vec![
-        "-azP".into(),
+        "-az".into(),
         "--delete".into(),
     ];
 
@@ -56,16 +57,15 @@ pub fn sync(
     args.push(src);
     args.push(dest);
 
-    let status = Command::new("rsync")
+    let output = Command::new("rsync")
         .args(&args)
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()?;
+        .output()?;
 
-    if status.success() {
+    if output.status.success() {
         Ok(())
     } else {
-        Err(eyre!("rsync failed with exit code {:?}", status.code()))
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(eyre!("rsync failed (exit {:?}): {}", output.status.code(), stderr.trim()))
     }
 }
 
@@ -87,7 +87,10 @@ pub fn exec_make_capture(
     remote_path: &str,
     make_args: &str,
 ) -> Result<String> {
-    let cmd = format!("cd {remote_path} && USE_MANAGER=0 make {make_args} 2>&1");
+    let cmd = format!(
+        "for d in \"$HOME/.local/bin\" \"$HOME/Library/Python\"/*/bin /usr/local/bin; do [ -d \"$d\" ] && export PATH=\"$d:$PATH\"; done; \
+         cd {remote_path} && USE_MANAGER=0 make {make_args} 2>&1"
+    );
     ssh.run(&cmd).map(|s| strip_ansi(&s))
 }
 
@@ -149,7 +152,12 @@ pub fn exec_make_quiet(
     remote_path: &str,
     make_args: &str,
 ) -> Result<(i32, String)> {
-    let cmd = format!("cd {remote_path} && USE_MANAGER=0 make {make_args} 2>&1");
+    let cmd = format!(
+        "for d in \"$HOME/.local/bin\" \"$HOME/Library/Python\"/*/bin /usr/local/bin; do [ -d \"$d\" ] && export PATH=\"$d:$PATH\"; done; \
+         [ -f \"$HOME/.profile\" ] && . \"$HOME/.profile\" 2>/dev/null || true; \
+         [ -f \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\" 2>/dev/null || true; \
+         cd {remote_path} && USE_MANAGER=0 make {make_args} 2>&1"
+    );
     let mut args: Vec<String> = vec![
         "-o".into(),
         "BatchMode=yes".into(),

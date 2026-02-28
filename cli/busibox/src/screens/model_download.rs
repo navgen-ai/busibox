@@ -145,7 +145,6 @@ fn start_downloads(app: &mut App) {
     let mut models: Vec<ModelDownloadState> = Vec::new();
     for m in rec.models() {
         if !m.name.is_empty() && seen.insert(m.name.clone()) {
-            // Collect all roles that use this model
             let roles: Vec<&str> = rec
                 .models()
                 .iter()
@@ -164,12 +163,11 @@ fn start_downloads(app: &mut App) {
 
     app.model_download_progress = models;
 
-    // Delegate to the download script. In the gradual migration, we call
-    // scripts/llm/download-models.sh for each model. For now, mark them as
-    // complete since the download script is called during make install.
     for dl in &mut app.model_download_progress {
         dl.status = DownloadStatus::Downloading;
         dl.progress = 0.5;
+
+        let is_embedding = dl.role == "embedding";
 
         let download_result = if app.setup_target == SetupTarget::Remote {
             if let Some(ssh) = &app.ssh_connection {
@@ -181,17 +179,20 @@ fn start_downloads(app: &mut App) {
                     .map(|p| p.effective_remote_path())
                     .unwrap_or(app.remote_path_input.as_str());
 
-                remote::exec_make(
-                    ssh,
-                    remote_path,
-                    &format!(
-                        "manage SERVICE=vllm ACTION=pull MODEL={}",
-                        dl.name
-                    ),
-                )
+                if is_embedding {
+                    remote::exec_make(ssh, remote_path, "warmup MODEL_TYPE=embedding")
+                } else {
+                    remote::exec_make(
+                        ssh,
+                        remote_path,
+                        &format!("manage SERVICE=vllm ACTION=pull MODEL={}", dl.name),
+                    )
+                }
             } else {
                 Err(color_eyre::eyre::eyre!("No SSH connection"))
             }
+        } else if is_embedding {
+            download_embedding_locally(&app.repo_root, &dl.name)
         } else {
             let script = app.repo_root.join("scripts/llm/download-models.sh");
             if script.exists() {
@@ -201,7 +202,6 @@ fn start_downloads(app: &mut App) {
                     .map(|s| if s.success() { 0 } else { 1 })
                     .map_err(|e| color_eyre::eyre::eyre!("{e}"))
             } else {
-                // Script doesn't exist, models will be downloaded during install
                 Ok(0)
             }
         };
@@ -220,6 +220,44 @@ fn start_downloads(app: &mut App) {
             }
         }
     }
+}
+
+fn download_embedding_locally(
+    _repo_root: &std::path::Path,
+    model_name: &str,
+) -> Result<i32, color_eyre::eyre::Error> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let cache_dir = format!("{home}/.cache/fastembed");
+    std::fs::create_dir_all(&cache_dir).ok();
+
+    let model_normalized = model_name.replace('/', "_");
+    let model_dir = format!("{cache_dir}/{model_normalized}");
+    if std::path::Path::new(&model_dir).join("model.onnx").exists()
+        || std::path::Path::new(&model_dir)
+            .join("model_optimized.onnx")
+            .exists()
+    {
+        return Ok(0);
+    }
+
+    let python_code = format!(
+        "from fastembed import TextEmbedding; \
+         e = TextEmbedding(model_name='{}', cache_dir='/root/.cache/fastembed'); \
+         list(e.embed(['warmup']))",
+        model_name
+    );
+
+    Command::new("docker")
+        .args([
+            "run", "--rm",
+            "-v", &format!("{cache_dir}:/root/.cache/fastembed"),
+            "python:3.11-slim",
+            "bash", "-c",
+            &format!("pip install -q fastembed && python -c \"{}\"", python_code),
+        ])
+        .status()
+        .map(|s| if s.success() { 0 } else { 1 })
+        .map_err(|e| color_eyre::eyre::eyre!("{e}"))
 }
 
 fn save_profile_and_continue(app: &mut App) {

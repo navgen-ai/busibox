@@ -704,7 +704,7 @@ wizard_k8s_ai_capabilities() {
     box_line "  routed through LiteLLM. GPU burst nodes can be added later." "single"
     box_line "" "single"
     box_line "  ${BOLD}In-cluster CPU services (always deployed):${NC}" "single"
-    box_line "    ${GREEN}✓${NC} FastEmbed (BAAI/bge-large-en-v1.5) - document embeddings" "single"
+    box_line "    ${GREEN}✓${NC} FastEmbed (nomic-embed-text-v1.5) - document embeddings" "single"
     box_line "    ${GREEN}✓${NC} Search API - semantic search via Milvus" "single"
     box_line "    ${GREEN}✓${NC} Data API - document processing pipeline" "single"
     box_line "" "single"
@@ -3555,6 +3555,7 @@ download_embedding_model() {
     # Show size estimate
     local size_info=""
     case "$embedding_model" in
+        *nomic*) size_info="(~520MB)" ;;
         *small*) size_info="(~134MB)" ;;
         *base*) size_info="(~438MB)" ;;
         *large*) size_info="(~1.3GB)" ;;

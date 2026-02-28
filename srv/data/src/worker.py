@@ -232,6 +232,15 @@ class IngestWorker(PipelineMixin, TriggerMixin):
         self.markdown_generator = MarkdownGenerator()
         self.image_extractor = ImageExtractor()
         
+        from processors.progressive_pipeline import ProgressivePipeline
+        self.progressive_pipeline = ProgressivePipeline(
+            text_extractor=self.text_extractor,
+            chunker=self.chunker,
+            llm_cleanup=self.llm_cleanup,
+            markdown_generator=self.markdown_generator,
+            config=self.config,
+        )
+        
         logger.info("All services connected")
     
     def _run_schema_migrations(self):
@@ -790,8 +799,46 @@ class IngestWorker(PipelineMixin, TriggerMixin):
             )
             logger.debug("File downloaded", file_id=file_id, temp_path=temp_file_path)
             
+            # Route PDFs through progressive pipeline (pymupdf -> OCR -> LLM+Marker)
+            if mime_type == "application/pdf" and start_stage == "parsing":
+                logger.info(
+                    "Using progressive pipeline for PDF",
+                    file_id=file_id,
+                    mime_type=mime_type,
+                )
+                self._process_pdf_progressive(
+                    file_id=file_id,
+                    user_id=user_id,
+                    temp_file_path=temp_file_path,
+                    storage_path=storage_path,
+                    mime_type=mime_type,
+                    original_filename=original_filename,
+                    content_hash=content_hash,
+                    visibility=visibility,
+                    role_ids=role_ids,
+                    processing_config=processing_config,
+                    delegation_token=delegation_token,
+                    start_time=start_time,
+                )
+                return
+            
             logger.info("Extracting text and images", file_id=file_id, mime_type=mime_type)
             
+            # Gate Marker on available RAM (requires 48GB+)
+            if processing_config and processing_config.get("marker_enabled"):
+                try:
+                    total_ram_gb = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / (1024 ** 3)
+                except (ValueError, OSError):
+                    total_ram_gb = 0
+                if total_ram_gb < 48:
+                    logger.warning(
+                        "Marker disabled: insufficient RAM",
+                        file_id=file_id,
+                        total_ram_gb=round(total_ram_gb, 1),
+                        min_required_gb=48,
+                    )
+                    processing_config["marker_enabled"] = False
+
             # Override marker_enabled from processing_config if provided
             original_marker_enabled = self.text_extractor.marker_enabled
             if processing_config and "marker_enabled" in processing_config:

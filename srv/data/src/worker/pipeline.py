@@ -228,8 +228,14 @@ class PipelineMixin:
         
         Runs 3 passes, making the document viewable after Pass 1 and
         progressively improving quality through Pass 2 (OCR) and Pass 3 (LLM+Marker).
+        
+        Supports processing_config["start_pass"] (1, 2, or 3) to skip earlier passes
+        during reprocessing.
         """
         from processors.pdf_splitter import PDFSplitter
+        
+        start_pass = int(processing_config.get("start_pass", 1)) if processing_config else 1
+        start_pass = max(1, min(3, start_pass))
         
         page_count = self.text_extractor.pdf_splitter.get_page_count(temp_file_path)
         
@@ -256,11 +262,20 @@ class PipelineMixin:
                 request=self._current_rls_context,
             )
         
+        if start_pass > 1:
+            logger.info(
+                "Progressive reprocess: skipping to pass",
+                file_id=file_id,
+                start_pass=start_pass,
+            )
+        
         # ── Pass 1: Fast Extract ──────────────────────────────────────────
+        # Always run Pass 1 text extraction to populate ctx.page_texts
+        # (needed by subsequent passes even when start_pass > 1)
         self.history.log_stage_start(
             file_id, "parsing",
-            "Progressive Pass 1: Fast text extraction (pymupdf4llm + layout)",
-            metadata={"pass": 1, "page_count": page_count},
+            f"Progressive Pass 1: Fast text extraction (pymupdf4llm + layout){' (text-only, skipping index)' if start_pass > 1 else ''}",
+            metadata={"pass": 1, "page_count": page_count, "start_pass": start_pass},
         )
         self.postgres_service.update_pass_info(
             file_id, processing_pass=1,
@@ -427,63 +442,64 @@ class PipelineMixin:
         self._check_pass_triggers(file_id, user_id, delegation_token, current_pass=1)
         
         # ── Pass 2: OCR Enhancement (Tesseract) ─────────────────────────
-        self.history.log_stage_start(
-            file_id, "available",
-            "Progressive Pass 2: Tesseract OCR enhancement",
-            metadata={"pass": 2},
-        )
-        self.postgres_service.update_pass_info(
-            file_id, processing_pass=2,
-            pass_metadata={
-                "current_pass": 2, "total_passes": 3, "pass_name": "OCR Enhancement",
-                **ctx.pass_metadata,
-            },
-            request=self._current_rls_context,
-        )
-        
-        pass2 = self.progressive_pipeline.run_pass2(ctx, progress_callback=_progress)
-        
-        if pass2.pages_changed > 0:
-            # Re-chunk, re-embed, re-index only if OCR improved text
-            chunks = self._progressive_chunk_embed_index(
-                ctx, pass2, file_id, user_id, content_hash,
-                visibility, role_ids, processing_pass=2,
+        if start_pass <= 2:
+            self.history.log_stage_start(
+                file_id, "available",
+                "Progressive Pass 2: Tesseract OCR enhancement",
+                metadata={"pass": 2},
             )
-            total_chunks = len(chunks)
-            
-            # Update markdown with images
-            markdown_content, _ = self.progressive_pipeline.generate_markdown(
-                pass2.combined_text, extraction_method="simple",
-                images=image_refs if image_refs else None,
-            )
-            markdown_path = self.progressive_pipeline.upload_markdown(
-                self.file_service, file_id, storage_path, user_id, markdown_content,
-            )
-            if markdown_path:
-                self._update_markdown_in_db(file_id, markdown_path, user_id)
-            
-            self.postgres_service.update_status(
-                file_id=file_id,
-                stage="available",
-                progress=50,
-                chunks_processed=total_chunks,
-                total_chunks=total_chunks,
-                status_message=f"OCR enhanced {pass2.pages_changed} pages",
+            self.postgres_service.update_pass_info(
+                file_id, processing_pass=2,
+                pass_metadata={
+                    "current_pass": 2, "total_passes": 3, "pass_name": "OCR Enhancement",
+                    **ctx.pass_metadata,
+                },
                 request=self._current_rls_context,
             )
-        else:
-            logger.info(
-                "Pass 2: No pages improved by OCR, skipping re-index",
-                file_id=file_id,
+            
+            pass2 = self.progressive_pipeline.run_pass2(ctx, progress_callback=_progress)
+            
+            if pass2.pages_changed > 0:
+                chunks = self._progressive_chunk_embed_index(
+                    ctx, pass2, file_id, user_id, content_hash,
+                    visibility, role_ids, processing_pass=2,
+                )
+                total_chunks = len(chunks)
+                
+                markdown_content, _ = self.progressive_pipeline.generate_markdown(
+                    pass2.combined_text, extraction_method="simple",
+                    images=image_refs if image_refs else None,
+                )
+                markdown_path = self.progressive_pipeline.upload_markdown(
+                    self.file_service, file_id, storage_path, user_id, markdown_content,
+                )
+                if markdown_path:
+                    self._update_markdown_in_db(file_id, markdown_path, user_id)
+                
+                self.postgres_service.update_status(
+                    file_id=file_id,
+                    stage="available",
+                    progress=50,
+                    chunks_processed=total_chunks,
+                    total_chunks=total_chunks,
+                    status_message=f"OCR enhanced {pass2.pages_changed} pages",
+                    request=self._current_rls_context,
+                )
+            else:
+                logger.info(
+                    "Pass 2: No pages improved by OCR, skipping re-index",
+                    file_id=file_id,
+                )
+            
+            self.history.log_stage_complete(
+                file_id, "parsing",
+                f"Pass 2 complete: {pass2.pages_changed} pages enhanced, {pass2.pages_skipped} unchanged",
+                metadata={"pass": 2, "changed": pass2.pages_changed, "skipped": pass2.pages_skipped},
             )
-        
-        self.history.log_stage_complete(
-            file_id, "parsing",
-            f"Pass 2 complete: {pass2.pages_changed} pages enhanced, {pass2.pages_skipped} unchanged",
-            metadata={"pass": 2, "changed": pass2.pages_changed, "skipped": pass2.pages_skipped},
-        )
-        
-        self._check_pass_triggers(file_id, user_id, delegation_token, current_pass=2)
+            
+            self._check_pass_triggers(file_id, user_id, delegation_token, current_pass=2)
+        else:
+            logger.info("Skipping Pass 2", start_pass=start_pass, file_id=file_id)
         
         # ── Pass 3: LLM Cleanup + Selective Marker ───────────────────────
         llm_cleanup_enabled = (

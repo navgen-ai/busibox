@@ -11,6 +11,7 @@ pub struct ModelRecommendation {
     pub fast: ModelInfo,
     pub agent: ModelInfo,
     pub frontier: ModelInfo,
+    pub embedding: ModelInfo,
 }
 
 #[derive(Debug, Clone)]
@@ -91,15 +92,23 @@ impl ModelRecommendation {
                 role: "frontier".into(),
                 estimated_size_gb: estimate_model_size(&frontier_name),
             },
+            embedding: ModelInfo {
+                name: "nomic-ai/nomic-embed-text-v1.5".into(),
+                role: "embedding".into(),
+                estimated_size_gb: 0.5,
+            },
         })
     }
 
     pub fn total_size_gb(&self) -> f64 {
-        self.fast.estimated_size_gb + self.agent.estimated_size_gb + self.frontier.estimated_size_gb
+        self.fast.estimated_size_gb
+            + self.agent.estimated_size_gb
+            + self.frontier.estimated_size_gb
+            + self.embedding.estimated_size_gb
     }
 
     pub fn models(&self) -> Vec<&ModelInfo> {
-        vec![&self.fast, &self.agent, &self.frontier]
+        vec![&self.fast, &self.agent, &self.frontier, &self.embedding]
     }
 }
 
