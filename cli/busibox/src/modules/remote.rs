@@ -80,6 +80,47 @@ pub fn sync(
     }
 }
 
+/// Pull a single file from remote host to local path using rsync.
+/// Creates local parent directories when needed.
+pub fn pull_file(
+    host: &str,
+    user: &str,
+    key_path: &str,
+    remote_file: &str,
+    local_file: &Path,
+) -> Result<()> {
+    if let Some(parent) = local_file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut args: Vec<String> = vec!["-az".into()];
+
+    let key_expanded = shellexpand(key_path);
+    if !key_expanded.is_empty() && Path::new(&key_expanded).exists() {
+        args.push("-e".into());
+        args.push(format!(
+            "ssh -i {key_expanded} -o StrictHostKeyChecking=accept-new"
+        ));
+    }
+
+    let src = format!("{user}@{host}:{remote_file}");
+    let dest = local_file.to_string_lossy().to_string();
+    args.push(src);
+    args.push(dest);
+
+    let output = Command::new("rsync").args(&args).output()?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(eyre!(
+            "rsync pull failed (exit {:?}): {}",
+            output.status.code(),
+            stderr.trim()
+        ))
+    }
+}
+
 /// Execute a make command on the remote host and stream output back.
 /// Uses USE_MANAGER=0 to avoid spinning up ephemeral manager containers.
 pub fn exec_make(
