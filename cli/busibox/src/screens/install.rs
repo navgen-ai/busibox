@@ -1092,6 +1092,10 @@ fn spawn_install_worker(app: &mut App) {
     let profile_model_tier: Option<String> = app
         .active_profile()
         .and_then(|(_, p)| p.effective_model_tier().map(|t| t.name().to_string()));
+    let profile_network_base_octets: Option<String> = app
+        .active_profile()
+        .and_then(|(_, p)| p.network_base_octets.clone())
+        .filter(|v| !v.trim().is_empty());
     let profile_llm_backend: Option<String> = app
         .active_profile()
         .and_then(|(_, p)| p.hardware.as_ref().map(|h| match h.llm_backend {
@@ -3137,6 +3141,114 @@ fi
                     }
                 }
                 continue;
+            }
+
+            // For remote Proxmox installs, generate model_config.yml on the remote host
+            // before deploying LiteLLM, then pull it back locally so Ansible can use it.
+            if is_remote && stage_services_to_deploy.iter().any(|s| s == "litellm") {
+                let _ = tx.send(InstallUpdate::Log(
+                    "Preparing LiteLLM model pipeline...".into(),
+                ));
+
+                let model_cfg_result: color_eyre::Result<()> = if let Some((ref host, ref user, ref key)) = ssh_details {
+                    let effective_host = profile_host.as_deref().unwrap_or(host);
+                    let ssh = crate::modules::ssh::SshConnection::new(effective_host, user, key);
+                    let tx_model = tx.clone();
+                    let on_model_line = |line: &str| {
+                        let _ = tx_model.send(InstallUpdate::Log(format!("  [model-pipeline] {line}")));
+                    };
+
+                    // Phase 3 path: try deploy-api endpoints first.
+                    // Falls back to script-based generation if token/service URL is unavailable.
+                    let api_pipeline_cmd = r#"
+                        set -e
+                        API_BASE="${DEPLOY_API_URL:-http://deploy-api:8011}"
+                        TOKEN="${DEPLOY_BOOTSTRAP_TOKEN:-${LITELLM_API_KEY:-}}"
+                        if [ -z "$TOKEN" ]; then
+                          echo "No DEPLOY_BOOTSTRAP_TOKEN/LITELLM_API_KEY found; skipping deploy-api pipeline"
+                          exit 99
+                        fi
+                        echo "Calling deploy-api auto assignment..."
+                        curl -fsS -X POST "${API_BASE}/api/v1/services/vllm/assignments/auto" \
+                          -H "Authorization: Bearer ${TOKEN}" >/tmp/busibox-vllm-auto.json
+                        echo "Calling deploy-api apply..."
+                        curl -fsS -X POST "${API_BASE}/api/v1/services/vllm/apply" \
+                          -H "Authorization: Bearer ${TOKEN}" >/tmp/busibox-vllm-apply.sse
+                        echo "Deploy-api model pipeline complete"
+                    "#;
+
+                    match remote::exec_remote_streaming(&ssh, &remote_path, api_pipeline_cmd, on_model_line) {
+                        Ok(0) => {
+                            let _ = tx.send(InstallUpdate::Log(
+                                "✓ Deploy API model pipeline completed".into(),
+                            ));
+                            Ok(())
+                        }
+                        Ok(99) | Ok(_) => {
+                            let _ = tx.send(InstallUpdate::Log(
+                                "Deploy API model pipeline unavailable; using script fallback".into(),
+                            ));
+
+                            let mut env_prefix = String::new();
+                            if let Some(ref tier) = profile_model_tier {
+                                env_prefix.push_str(&format!("LLM_TIER={} MODEL_TIER={} ", shell_escape(tier), shell_escape(tier)));
+                            }
+                            if let Some(ref backend) = profile_llm_backend {
+                                env_prefix.push_str(&format!("LLM_BACKEND={} ", shell_escape(backend)));
+                            }
+                            if let Some(ref octets) = profile_network_base_octets {
+                                env_prefix.push_str(&format!("NETWORK_BASE_OCTETS={} ", shell_escape(octets)));
+                            }
+                            let gen_cmd = format!("{env_prefix}bash scripts/llm/generate-model-config.sh");
+                            match remote::exec_remote_streaming(&ssh, &remote_path, &gen_cmd, on_model_line) {
+                                Ok(0) => {
+                                    let remote_model_cfg = format!(
+                                        "{}/provision/ansible/group_vars/all/model_config.yml",
+                                        remote_path.trim_end_matches('/')
+                                    );
+                                    let local_model_cfg = repo_root.join("provision/ansible/group_vars/all/model_config.yml");
+                                    match remote::pull_file(
+                                        effective_host,
+                                        user,
+                                        key,
+                                        &remote_model_cfg,
+                                        &local_model_cfg,
+                                    ) {
+                                        Ok(()) => {
+                                            let _ = tx.send(InstallUpdate::Log(format!(
+                                                "✓ Pulled model_config.yml to {}",
+                                                local_model_cfg.display()
+                                            )));
+                                            Ok(())
+                                        }
+                                        Err(e) => Err(color_eyre::eyre::eyre!(e.to_string())),
+                                    }
+                                }
+                                Ok(code) => Err(color_eyre::eyre::eyre!(
+                                    "generate-model-config.sh failed (exit code {code})"
+                                )),
+                                Err(e) => Err(e),
+                            }
+                        }
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    Err(color_eyre::eyre::eyre!("No SSH connection"))
+                };
+
+                if let Err(e) = model_cfg_result {
+                    any_failed = true;
+                    for svc in services {
+                        let _ = tx.send(InstallUpdate::ServiceStatus {
+                            name: svc.clone(),
+                            status: InstallStatus::Failed(e.to_string()),
+                        });
+                    }
+                    let _ = tx.send(InstallUpdate::Log(format!(
+                        "ERROR: Failed to generate model_config.yml: {e}"
+                    )));
+                    break;
+                }
             }
 
             let service_list = stage_services_to_deploy.join(",");

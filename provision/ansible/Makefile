@@ -47,8 +47,11 @@ else
 endif
 
 # Check if vault password file exists, fallback to legacy location
+# Priority: ANSIBLE_VAULT_PASSWORD env var > per-env file > legacy file
 VAULT_FLAGS=$(shell \
-  if [ -f $(VAULT_PASS_FILE) ]; then \
+  if [ -n "$$ANSIBLE_VAULT_PASSWORD" ]; then \
+    echo "--vault-password-file $(CURDIR)/../../scripts/lib/vault-pass-from-env.sh"; \
+  elif [ -f $(VAULT_PASS_FILE) ]; then \
     echo "--vault-password-file $(VAULT_PASS_FILE)"; \
   elif [ -f ~/.vault_pass ]; then \
     echo "--vault-password-file ~/.vault_pass"; \
@@ -1023,7 +1026,16 @@ migrate-embeddings-force:
 DOCKER_INV = inventory/docker
 
 # Docker-specific vault flags (use same vault as LXC)
-DOCKER_VAULT_FLAGS = $(shell [ -f $(VAULT_PASS_FILE) ] && echo "--vault-password-file $(VAULT_PASS_FILE)" || echo "")
+# Priority: ANSIBLE_VAULT_PASSWORD env var > per-env file
+DOCKER_VAULT_FLAGS = $(shell \
+  if [ -n "$$ANSIBLE_VAULT_PASSWORD" ]; then \
+    echo "--vault-password-file $(CURDIR)/../../scripts/lib/vault-pass-from-env.sh"; \
+  elif [ -f $(VAULT_PASS_FILE) ]; then \
+    echo "--vault-password-file $(VAULT_PASS_FILE)"; \
+  else \
+    echo ""; \
+  fi \
+)
 
 # Container prefix (default: dev)
 CONTAINER_PREFIX ?= dev

@@ -43,6 +43,22 @@ from .core_app_executor import (
     is_docker_environment, execute_ssh_command,
     execute_docker_command, execute_in_core_apps,
 )
+from .model_manager import (
+    load_registry_with_overrides,
+    load_model_config,
+    save_model_config,
+    detect_vllm_gpus,
+    list_cached_models,
+    auto_assign_models,
+    get_assignments,
+    update_assignment,
+    unassign_model,
+    list_active_models,
+    run_make_install_litellm,
+    remote_download_model,
+    restart_vllm_service,
+    vllm_host,
+)
 
 # Import token exchange for agent-api calls
 from busibox_common import exchange_token_zero_trust
@@ -3634,6 +3650,161 @@ async def vllm_status(_: dict = Depends(verify_admin_token)):
         "media": list(media_result),
         "gpus": list(gpus_result),
     }
+
+
+class VllmAssignmentRequest(BaseModel):
+    model_key: str
+    gpu_ids: list[int]
+    port: int | None = None
+    tensor_parallel: int | None = None
+
+
+class ModelDownloadRequest(BaseModel):
+    model_name: str
+
+
+class ModelLoadRequest(BaseModel):
+    port: int
+
+
+@router.get("/models/browse")
+async def models_browse(_: dict = Depends(verify_admin_token)):
+    registry = load_registry_with_overrides()
+    available = registry.get("available_models", {}) or {}
+    cached = set(await list_cached_models())
+    rows = []
+    for model_key, entry in available.items():
+        model_name = entry.get("model_name", model_key)
+        provider = (entry.get("provider", "") or "").lower()
+        rows.append(
+            {
+                "model_key": model_key,
+                "model_name": model_name,
+                "provider": provider,
+                "description": entry.get("description"),
+                "cached": model_name in cached,
+            }
+        )
+    rows.sort(key=lambda x: (0 if x["cached"] else 1, x["model_key"]))
+    return {"models": rows}
+
+
+@router.get("/models/active")
+async def models_active(_: dict = Depends(verify_admin_token)):
+    return {"vllm_host": vllm_host(), "models": await list_active_models(vllm_host())}
+
+
+@router.post("/models/analyze")
+async def models_analyze(_: dict = Depends(verify_admin_token)):
+    registry = load_registry_with_overrides()
+    gpus = await detect_vllm_gpus()
+    cached = await list_cached_models()
+    current = load_model_config()
+    proposed = auto_assign_models(registry, len(gpus), existing=current)
+    return {
+        "gpu_count": len(gpus),
+        "gpus": gpus,
+        "cached_models": cached,
+        "current_assignments": get_assignments(current),
+        "proposed_assignments": get_assignments(proposed),
+    }
+
+
+@router.get("/vllm/gpus")
+async def vllm_gpus(_: dict = Depends(verify_admin_token)):
+    return {"vllm_host": vllm_host(), "gpus": await detect_vllm_gpus()}
+
+
+@router.get("/vllm/assignments")
+async def vllm_assignments(_: dict = Depends(verify_admin_token)):
+    config_data = load_model_config()
+    return {"assignments": get_assignments(config_data), "model_config_path": str(config.busibox_host_path) + "/provision/ansible/group_vars/all/model_config.yml"}
+
+
+@router.post("/vllm/assignments")
+async def vllm_assign_model(req: VllmAssignmentRequest, _: dict = Depends(verify_admin_token)):
+    try:
+        registry = load_registry_with_overrides()
+        config_data = load_model_config()
+        updated = update_assignment(
+            config_data,
+            registry,
+            req.model_key,
+            req.gpu_ids,
+            req.port,
+            req.tensor_parallel,
+        )
+        save_model_config(updated)
+        return {"success": True, "assignments": get_assignments(updated)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/vllm/assignments/{model_key}")
+async def vllm_unassign_model(model_key: str, _: dict = Depends(verify_admin_token)):
+    try:
+        registry = load_registry_with_overrides()
+        config_data = load_model_config()
+        updated = unassign_model(config_data, registry, model_key)
+        save_model_config(updated)
+        return {"success": True, "assignments": get_assignments(updated)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/vllm/assignments/auto")
+async def vllm_auto_assign(_: dict = Depends(verify_admin_token)):
+    registry = load_registry_with_overrides()
+    gpus = await detect_vllm_gpus()
+    config_data = load_model_config()
+    updated = auto_assign_models(registry, len(gpus), existing=config_data)
+    save_model_config(updated)
+    return {"success": True, "gpu_count": len(gpus), "assignments": get_assignments(updated)}
+
+
+@router.post("/vllm/apply")
+async def vllm_apply(_: dict = Depends(verify_admin_token)):
+    async def event_stream():
+        yield "event: info\ndata: Starting LiteLLM apply\n\n"
+        code, output = await run_make_install_litellm()
+        for line in output.splitlines()[-300:]:
+            yield f"event: log\ndata: {line}\n\n"
+        if code == 0:
+            yield "event: done\ndata: apply complete\n\n"
+        else:
+            yield f"event: error\ndata: apply failed (exit {code})\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/models/download")
+async def models_download(req: ModelDownloadRequest, _: dict = Depends(verify_admin_token)):
+    async def event_stream():
+        yield f"event: info\ndata: downloading {req.model_name}\n\n"
+        code, output = await remote_download_model(req.model_name)
+        for line in output.splitlines()[-300:]:
+            yield f"event: log\ndata: {line}\n\n"
+        if code == 0:
+            yield "event: done\ndata: download complete\n\n"
+        else:
+            yield f"event: error\ndata: download failed (exit {code})\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/models/load")
+async def models_load(req: ModelLoadRequest, _: dict = Depends(verify_admin_token)):
+    async def event_stream():
+        yield f"event: info\ndata: restarting vllm-{req.port}\n\n"
+        code, output = await restart_vllm_service(req.port)
+        for line in output.splitlines()[-100:]:
+            yield f"event: log\ndata: {line}\n\n"
+        if code == 0:
+            yield "event: done\ndata: load complete\n\n"
+        else:
+            yield f"event: error\ndata: load failed (exit {code})\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.get("/system/memory")
