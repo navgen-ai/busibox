@@ -74,7 +74,7 @@ pub fn render(f: &mut Frame, app: &App) {
             Span::styled(msg.as_str(), style)
         } else {
             Span::styled(
-                " ↑/↓ Navigate  Enter Select  r Refresh  m Models  p Profiles  q Quit",
+                " ↑/↓ Navigate  Enter Select  s Sync  r Refresh  m Models  p Profiles  q Quit",
                 theme::muted(),
             )
         };
@@ -315,6 +315,120 @@ fn render_status_panel(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
+    // Deployed models / GPU allocation (hybrid: config + live status)
+    if let Some(ref deployed) = app.deployed_models {
+        use crate::modules::models::LiveStatus;
+
+        lines.push(Line::from(""));
+        let loading_indicator = if app.deployed_models_loading {
+            let tick = app.health_tick;
+            format!(" {}", SPINNER[tick % SPINNER.len()])
+        } else {
+            String::new()
+        };
+        lines.push(Line::from(Span::styled(
+            format!("Active Models ({}){loading_indicator}", deployed.loaded_from),
+            theme::heading(),
+        )));
+
+        for model in &deployed.models {
+            let short_name = model
+                .model_name
+                .rsplit('/')
+                .next()
+                .unwrap_or(&model.model_name);
+            let short_name = if short_name.len() > 26 {
+                format!("{}…", &short_name[..25])
+            } else {
+                short_name.to_string()
+            };
+
+            let gpu_str = if model.gpu.is_empty() {
+                " cpu".to_string()
+            } else {
+                format!(" GPU {}", model.gpu)
+            };
+
+            let port_str = if model.port > 0 {
+                format!(" :{}", model.port)
+            } else {
+                String::new()
+            };
+
+            let (status_str, status_style) = match &model.live_status {
+                LiveStatus::Running => (" [running]".to_string(), theme::success()),
+                LiveStatus::Down => (" [down]".to_string(), theme::error()),
+                LiveStatus::Checking => (" [checking...]".to_string(), theme::warning()),
+                LiveStatus::Error(e) => (format!(" [{e}]"), theme::error()),
+                LiveStatus::Unknown => (" [?]".to_string(), theme::dim()),
+            };
+
+            let role_str = if !model.model_key.is_empty() {
+                format!("  ({})", model.model_key)
+            } else {
+                String::new()
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled("  ▸ ", theme::info()),
+                Span::styled(short_name, theme::normal()),
+                Span::styled(gpu_str, theme::highlight()),
+                Span::styled(port_str, theme::dim()),
+                Span::styled(status_str, status_style),
+                Span::styled(role_str, theme::dim()),
+            ]));
+        }
+    } else if let Some(ref tier_set) = app.active_tier_models {
+        // Fallback: show registry-based models when model_config.yml is unavailable
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("Expected Models ({})", tier_set.tier),
+            theme::heading(),
+        )));
+
+        let gpu_models: Vec<&crate::modules::models::TierModel> =
+            tier_set.models.iter().filter(|m| m.needs_gpu).collect();
+        let cpu_models: Vec<&crate::modules::models::TierModel> =
+            tier_set.models.iter().filter(|m| !m.needs_gpu).collect();
+
+        for model in &gpu_models {
+            let short_name = if model.model_name.len() > 24 {
+                format!("{}…", &model.model_name[..23])
+            } else {
+                model.model_name.clone()
+            };
+            let gpu_str = model
+                .gpu
+                .as_deref()
+                .map(|g| format!(" GPU {g}"))
+                .unwrap_or_default();
+            let roles: String = model.roles.iter().take(2).cloned().collect::<Vec<_>>().join(",");
+            lines.push(Line::from(vec![
+                Span::styled("  ▸ ", theme::info()),
+                Span::styled(short_name, theme::normal()),
+                Span::styled(gpu_str, theme::highlight()),
+                Span::styled(format!("  ({roles})"), theme::dim()),
+            ]));
+        }
+
+        if !cpu_models.is_empty() {
+            let cpu_names: Vec<&str> = cpu_models
+                .iter()
+                .map(|m| {
+                    m.model_name
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&m.model_name)
+                })
+                .collect();
+            lines.push(Line::from(vec![
+                Span::styled("  · ", theme::dim()),
+                Span::styled(cpu_names.join(", "), theme::dim()),
+                Span::styled(" (cpu)", theme::dim()),
+            ]));
+        }
+    }
+
     let panel = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
@@ -505,6 +619,22 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 }
             }
         }
+        KeyCode::Char('s') => {
+            if let Some((_, profile)) = app.active_profile() {
+                if profile.remote {
+                    app.set_message(
+                        "⠋ Syncing code to remote host...",
+                        crate::app::MessageKind::Info,
+                    );
+                    app.pending_code_sync = true;
+                } else {
+                    app.set_message(
+                        "Sync is only for remote profiles",
+                        crate::app::MessageKind::Info,
+                    );
+                }
+            }
+        }
         KeyCode::Enter => {
             if action_count == 0 {
                 return;
@@ -553,6 +683,10 @@ fn handle_action_select(app: &mut App, action: &str) {
         "Manage Services" => {
             app.screen = Screen::Manage;
             app.menu_selected = 0;
+        }
+        "Benchmark Models" => {
+            crate::screens::model_benchmark::init_screen(app, None);
+            app.screen = Screen::ModelBenchmark;
         }
         _ => {}
     }
@@ -660,6 +794,45 @@ pub fn process_health_updates(app: &mut App) {
     }
 }
 
+/// Load the active tier's model list for display on the welcome screen.
+pub fn load_active_tier_models(app: &mut App) {
+    use crate::modules::models::TierModelSet;
+
+    let profile = match app.active_profile() {
+        Some((_, p)) => p.clone(),
+        None => {
+            app.active_tier_models = None;
+            return;
+        }
+    };
+
+    let hw = if profile.remote {
+        app.remote_hardware
+            .as_ref()
+            .or(profile.hardware.as_ref())
+    } else {
+        app.local_hardware.as_ref()
+    };
+    let hw = match hw {
+        Some(h) => h,
+        None => {
+            app.active_tier_models = None;
+            return;
+        }
+    };
+
+    let tier = profile.effective_model_tier().unwrap_or(hw.memory_tier);
+    let backend = &hw.llm_backend;
+    let config_path = app
+        .repo_root
+        .join("provision/ansible/group_vars/all/model_registry.yml");
+
+    app.active_tier_models = TierModelSet::from_config(&config_path, tier, backend).ok();
+
+    // Also trigger deployed model loading for hybrid dashboard
+    trigger_deployed_model_loading(app);
+}
+
 /// Check model cache status for the active profile.
 pub fn check_model_cache(app: &mut App) {
     use crate::modules::models;
@@ -752,4 +925,94 @@ pub fn check_model_cache(app: &mut App) {
     }
 
     app.model_cache_check_state = ModelCacheCheckState::Done;
+}
+
+/// Trigger loading of deployed models from model_config.yml + live vLLM status.
+pub fn trigger_deployed_model_loading(app: &mut App) {
+    use crate::modules::hardware::LlmBackend;
+    use crate::modules::models;
+
+    let profile = match app.active_profile() {
+        Some((_, p)) => p.clone(),
+        None => {
+            app.deployed_models = None;
+            return;
+        }
+    };
+
+    let is_remote = profile.remote;
+    let is_proxmox = profile.backend == "proxmox";
+    let is_mlx = profile
+        .hardware
+        .as_ref()
+        .map(|h| matches!(h.llm_backend, LlmBackend::Mlx))
+        .unwrap_or(false);
+
+    // MLX profiles don't use vLLM model_config.yml
+    if is_mlx {
+        app.deployed_models = None;
+        return;
+    }
+
+    let ssh_details = if is_remote {
+        let ssh_host = profile.effective_host().unwrap_or("localhost").to_string();
+        let ssh_user = profile.effective_user().to_string();
+        let ssh_key = profile.effective_ssh_key().to_string();
+        Some((ssh_host, ssh_user, ssh_key))
+    } else {
+        None
+    };
+
+    let vllm_network_base = profile.vllm_network_base().to_string();
+
+    app.deployed_models_loading = true;
+
+    let rx = models::start_deployed_model_loading(
+        app.repo_root.clone(),
+        is_remote,
+        is_proxmox,
+        ssh_details,
+        vllm_network_base,
+    );
+    app.deployed_models_rx = Some(rx);
+}
+
+/// Process deployed model updates from the background thread. Called from the main loop.
+pub fn process_deployed_model_updates(app: &mut App) {
+    use crate::modules::models::DeployedModelUpdate;
+
+    if let Some(rx) = app.deployed_models_rx.take() {
+        use std::sync::mpsc::TryRecvError;
+        let mut put_back = true;
+
+        loop {
+            match rx.try_recv() {
+                Ok(DeployedModelUpdate::ConfigLoaded(model_set)) => {
+                    app.deployed_models = Some(model_set);
+                }
+                Ok(DeployedModelUpdate::ModelStatus { port, status }) => {
+                    if let Some(ref mut ms) = app.deployed_models {
+                        if let Some(model) = ms.models.iter_mut().find(|m| m.port == port) {
+                            model.live_status = status;
+                        }
+                    }
+                }
+                Ok(DeployedModelUpdate::Complete) => {
+                    app.deployed_models_loading = false;
+                    put_back = false;
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    app.deployed_models_loading = false;
+                    put_back = false;
+                    break;
+                }
+            }
+        }
+
+        if put_back {
+            app.deployed_models_rx = Some(rx);
+        }
+    }
 }

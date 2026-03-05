@@ -1,0 +1,368 @@
+---
+# vLLM Common Installation Tasks
+# Runs once before port-specific roles to set up the shared venv,
+# system dependencies, GPU drivers, and Python packages.
+
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  tags: [vllm_install]
+
+- name: Install system dependencies
+  apt:
+    name:
+      - build-essential
+      - python3-pip
+      - python3-venv
+      - python3-dev
+      - git
+      - curl
+      - wget
+      - ca-certificates
+      - psmisc  # For fuser
+      - lsof    # For debugging open files
+    state: present
+  tags: [vllm_install]
+
+- name: Check if GPU devices are present in container
+  shell: "ls -la /dev/nvidia* 2>/dev/null || echo 'No NVIDIA devices'"
+  register: gpu_devices_check
+  changed_when: false
+  failed_when: false
+  tags: [vllm_install, vllm_gpu]
+
+- name: Display GPU device status
+  debug:
+    msg: "{{ gpu_devices_check.stdout_lines }}"
+  tags: [vllm_install, vllm_gpu]
+
+- name: Check if NVIDIA drivers are installed
+  shell: "nvidia-smi 2>&1 || echo 'NOT_INSTALLED'"
+  register: nvidia_drivers_check
+  changed_when: false
+  failed_when: false
+  tags: [vllm_install, vllm_gpu]
+
+- name: Install NVIDIA drivers using install-nvidia-drivers.sh (on Proxmox host)
+  shell: "bash /root/busibox/provision/pct/host/install-nvidia-drivers.sh {{ container_id }}"
+  delegate_to: localhost
+  become: false
+  when: 
+    - "'No NVIDIA devices' not in gpu_devices_check.stdout"
+    - (nvidia_drivers_check.stdout is defined and 'NOT_INSTALLED' in nvidia_drivers_check.stdout) or (nvidia_drivers_check.stderr is defined and 'Driver/library version mismatch' in nvidia_drivers_check.stderr)
+  register: driver_install_result
+  changed_when: driver_install_result.rc == 0
+  failed_when: driver_install_result.rc != 0
+  tags: [vllm_install, vllm_gpu]
+
+- name: Verify drivers after installation
+  shell: "nvidia-smi 2>&1"
+  register: nvidia_drivers_verify
+  changed_when: false
+  failed_when: "'Driver/library version mismatch' in nvidia_drivers_verify.stderr"
+  tags: [vllm_install, vllm_gpu]
+
+- name: Display nvidia-smi output
+  debug:
+    msg: "{{ nvidia_drivers_verify.stdout_lines }}"
+  when: "'Driver/library version mismatch' not in nvidia_drivers_verify.stderr"
+  tags: [vllm_install, vllm_gpu]
+
+- name: Create vLLM system group
+  group:
+    name: "{{ vllm_user }}"
+    system: yes
+    state: present
+  tags: [vllm_install]
+
+- name: Create vLLM system user
+  user:
+    name: "{{ vllm_user }}"
+    group: "{{ vllm_user }}"
+    system: yes
+    create_home: yes
+    home: "{{ vllm_home }}"
+    shell: /bin/false
+    state: present
+  tags: [vllm_install]
+
+- name: Create vLLM directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ vllm_user }}"
+    group: "{{ vllm_user }}"
+    mode: '0755'
+  loop:
+    - "{{ vllm_install_dir }}"
+    - "{{ vllm_home }}"
+    - "{{ vllm_home }}/.cache"
+    - "{{ vllm_home }}/.cache/vllm"
+    - "{{ vllm_home }}/.cache/vllm/modelinfos"
+    - "{{ vllm_cache_dir }}"
+    - "{{ vllm_cache_dir }}/hub"
+  tags: [vllm_install]
+
+- name: Check existing vLLM version
+  shell: "{{ vllm_venv_dir }}/bin/python -c 'import vllm; print(vllm.__version__)' 2>/dev/null || echo 'none'"
+  register: existing_vllm_version
+  changed_when: false
+  failed_when: false
+  tags: [vllm_install]
+
+# Detect CUDA version from driver.
+- name: Detect CUDA major version from nvidia-smi
+  shell: "nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \\K[0-9]+' || echo '12'"
+  register: cuda_major_version
+  changed_when: false
+  tags: [vllm_install, vllm_gpu]
+
+# Only Blackwell (compute 10.x+) GPUs need cu130 wheels.
+# Ampere (8.x) and Hopper (9.x) work fine with cu12x even with a CUDA 13 driver.
+- name: Detect GPU compute capability
+  shell: >
+    nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | cut -d. -f1 || echo '8'
+  register: gpu_compute_major
+  changed_when: false
+  tags: [vllm_install, vllm_gpu]
+
+# Check whether the venv has a working vllm + torch + CUDA stack.
+# Only nuke if something is fundamentally broken, NOT just because
+# cu130 is installed on an Ampere GPU (that works fine — CUDA is
+# backward compatible).  The only real mismatch is cu12 on Blackwell
+# (compute 10+), which would fail at runtime.
+- name: Check if installed venv needs rebuild
+  shell: |
+    COMPUTE="{{ gpu_compute_major.stdout | default('8') }}"
+    # 1. No venv at all? → rebuild
+    if [ ! -f "{{ vllm_venv_dir }}/bin/python" ]; then
+      echo "no_venv"
+      exit 0
+    fi
+    # 2. Can't import torch? → rebuild
+    TORCH_CUDA=$({{ vllm_venv_dir }}/bin/python -c "import torch; print(torch.version.cuda or '')" 2>/dev/null || echo "")
+    if [ -z "$TORCH_CUDA" ]; then
+      echo "no_torch"
+      exit 0
+    fi
+    TORCH_MAJOR=$(echo "$TORCH_CUDA" | cut -d. -f1)
+    # 3. Blackwell (compute 10+) needs at least cu13. cu12 won't work.
+    if [ "$COMPUTE" -ge 10 ] 2>/dev/null && [ "$TORCH_MAJOR" -lt 13 ] 2>/dev/null; then
+      echo "mismatch_blackwell_needs_cu13"
+      exit 0
+    fi
+    # 4. Can't import vllm? → rebuild
+    {{ vllm_venv_dir }}/bin/python -c "import vllm" 2>/dev/null
+    if [ $? -ne 0 ]; then
+      echo "no_vllm"
+      exit 0
+    fi
+    # Everything looks OK — don't touch it
+    echo "ok"
+  args:
+    executable: /bin/bash
+  register: venv_health_check
+  changed_when: false
+  failed_when: false
+  tags: [vllm_install]
+
+- name: Display venv health check
+  debug:
+    msg: "GPU compute={{ gpu_compute_major.stdout }}, venv health={{ venv_health_check.stdout }}"
+  tags: [vllm_install]
+
+# Only nuke the venv if it's genuinely broken or has a hard incompatibility.
+- name: Recreate venv if broken or incompatible
+  file:
+    path: "{{ vllm_venv_dir }}"
+    state: absent
+  when: venv_health_check.stdout != 'ok'
+  tags: [vllm_install]
+
+- name: Create Python virtual environment
+  command: python3 -m venv {{ vllm_venv_dir }}
+  args:
+    creates: "{{ vllm_venv_dir }}/bin/python"
+  tags: [vllm_install]
+
+- name: Upgrade pip in virtual environment
+  pip:
+    name: pip
+    state: latest
+    virtualenv: "{{ vllm_venv_dir }}"
+  tags: [vllm_install]
+
+- name: Install uv package manager
+  pip:
+    name: uv
+    state: latest
+    virtualenv: "{{ vllm_venv_dir }}"
+  tags: [vllm_install]
+
+- name: Check CUDA libraries and GPU device permissions
+  shell: |
+    echo "=== GPU devices ==="
+    ls -la /dev/nvidia* 2>/dev/null || echo "No /dev/nvidia* devices"
+    echo ""
+    echo "=== nvidia-smi ==="
+    nvidia-smi -L 2>/dev/null || echo "nvidia-smi failed"
+  register: cuda_libs_check
+  changed_when: false
+  tags: [vllm_install, vllm_gpu]
+
+- name: Display GPU status
+  debug:
+    msg: "{{ cuda_libs_check.stdout_lines }}"
+  tags: [vllm_install, vllm_gpu]
+
+- name: Set vLLM nightly wheel index based on GPU architecture
+  set_fact:
+    vllm_wheel_index: "{% if gpu_compute_major.stdout | default('8') | int >= 10 %}https://wheels.vllm.ai/nightly/cu130{% else %}https://wheels.vllm.ai/6e9f21e8a2ba1e53ee4f1cff4844e11ce600f7fa{% endif %}"
+  tags: [vllm_install]
+
+- name: Display selected vLLM wheel index
+  debug:
+    msg: "CUDA {{ cuda_major_version.stdout }}, GPU compute {{ gpu_compute_major.stdout }}, wheel index: {{ vllm_wheel_index }}"
+  tags: [vllm_install]
+
+# vLLM nightly is required for Qwen3.5 (qwen3_5 architecture) until stable 0.17.0.
+# The /nightly/ index sometimes only has aarch64 wheels (x86_64 CI failures upstream).
+# We pin to a known-good commit that has x86_64 wheels.  --index-strategy
+# unsafe-best-match lets uv consider vllm from both the commit index AND PyPI,
+# picking the highest version with a matching platform wheel.
+# See: https://docs.vllm.ai/projects/recipes/en/latest/Qwen/Qwen3.5.html
+- name: Install vLLM (nightly) with uv
+  shell: |
+    {{ vllm_venv_dir }}/bin/uv pip install -U vllm \
+      --torch-backend=auto \
+      --prerelease=allow \
+      --index-strategy unsafe-best-match \
+      --extra-index-url {{ vllm_wheel_index }}
+  args:
+    executable: /bin/bash
+  environment:
+    VIRTUAL_ENV: "{{ vllm_venv_dir }}"
+  tags: [vllm_install]
+
+# vllm._C is linked against libcudart.so.12 even in cu130 builds.
+# Install the cu12 runtime as a compat shim so the .so can be found.
+- name: Install nvidia-cuda-runtime-cu12 for libcudart.so.12 compat
+  shell: |
+    {{ vllm_venv_dir }}/bin/uv pip install nvidia-cuda-runtime-cu12
+  args:
+    executable: /bin/bash
+  environment:
+    VIRTUAL_ENV: "{{ vllm_venv_dir }}"
+  tags: [vllm_install]
+
+- name: Install additional Python packages
+  shell: |
+    {{ vllm_venv_dir }}/bin/uv pip install -U \
+      huggingface-hub \
+      transformers
+  args:
+    executable: /bin/bash
+  environment:
+    VIRTUAL_ENV: "{{ vllm_venv_dir }}"
+  tags: [vllm_install]
+
+# Qwen3.5 config passes ignore_keys_at_rope_validation as a list, but
+# transformers' convert_rope_params_to_dict tries list | set which fails.
+# Patch the installed file to coerce to set before the union.
+- name: Patch transformers rope_utils for list|set compatibility
+  shell: |
+    ROPE_FILE="{{ vllm_venv_dir }}/lib/python3.11/site-packages/transformers/modeling_rope_utils.py"
+    if [ -f "$ROPE_FILE" ] && grep -q 'ignore_keys_at_rope_validation | {' "$ROPE_FILE"; then
+      sed -i 's/ignore_keys_at_rope_validation | {/set(ignore_keys_at_rope_validation) | {/g' "$ROPE_FILE"
+      echo "Patched modeling_rope_utils.py"
+    else
+      echo "No patch needed or file not found"
+    fi
+  args:
+    executable: /bin/bash
+  changed_when: false
+  tags: [vllm_install]
+
+- name: Discover nvidia library paths in venv
+  shell: |
+    {{ vllm_venv_dir }}/bin/python -c "
+    import glob, os
+    site = os.path.join('{{ vllm_venv_dir }}', 'lib', 'python3.11', 'site-packages', 'nvidia')
+    dirs = sorted(glob.glob(os.path.join(site, '*/lib')))
+    print(':'.join(dirs))
+    "
+  register: nvidia_lib_dirs
+  changed_when: false
+  failed_when: false
+  tags: [vllm_install]
+
+- name: Set vllm_nvidia_lib_path fact
+  set_fact:
+    vllm_nvidia_lib_path: "{{ nvidia_lib_dirs.stdout | default('') }}"
+  tags: [vllm_install]
+
+- name: Display discovered nvidia lib paths
+  debug:
+    msg: "NVIDIA lib paths: {{ vllm_nvidia_lib_path }}"
+  tags: [vllm_install]
+
+- name: Test PyTorch CUDA availability
+  shell: |
+    unset CUDA_VISIBLE_DEVICES
+    {{ vllm_venv_dir }}/bin/python -c "
+    import torch
+    print('PyTorch version:', torch.__version__)
+    print('CUDA available:', torch.cuda.is_available())
+    print('CUDA version:', torch.version.cuda)
+    print('GPU count:', torch.cuda.device_count())
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            print(f'GPU {i}: {torch.cuda.get_device_name(i)}')
+    else:
+        print('CUDA not available')
+    "
+  args:
+    executable: /bin/bash
+  environment:
+    LD_LIBRARY_PATH: "/usr/local/cuda/targets/x86_64-linux/lib:/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu"
+  register: pytorch_cuda_test
+  changed_when: false
+  tags: [vllm_install, vllm_gpu]
+
+- name: Display PyTorch CUDA test results
+  debug:
+    msg: "{{ pytorch_cuda_test.stdout_lines }}"
+  tags: [vllm_install, vllm_gpu]
+
+- name: Verify PyTorch can detect CUDA
+  shell: |
+    {{ vllm_venv_dir }}/bin/python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
+  environment:
+    LD_LIBRARY_PATH: "/usr/local/cuda/targets/x86_64-linux/lib:/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu"
+  register: pytorch_cuda_verify
+  changed_when: false
+  failed_when: pytorch_cuda_verify.rc != 0
+  tags: [vllm_install, vllm_gpu]
+
+- name: Verify vLLM installation
+  command: "{{ vllm_venv_dir }}/bin/python -c 'import vllm; print(vllm.__version__)'"
+  register: vllm_version_check
+  changed_when: false
+  tags: [vllm_install]
+
+- name: Display vLLM version
+  debug:
+    msg: "vLLM version: {{ vllm_version_check.stdout }}"
+  tags: [vllm_install]
+
+- name: Set vLLM directory ownership
+  file:
+    path: "{{ item }}"
+    owner: "{{ vllm_user }}"
+    group: "{{ vllm_user }}"
+    recurse: yes
+  loop:
+    - "{{ vllm_install_dir }}"
+    - "{{ vllm_home }}"
+  tags: [vllm_install]

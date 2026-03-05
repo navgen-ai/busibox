@@ -18,6 +18,9 @@
     path: "{{ docker_env_file }}"
   register: _env_file_stat
 
+- name: Sanitize Docker config (macOS keychain workaround)
+  ansible.builtin.include_tasks: sanitize_docker_config.yml
+
 - name: Set compose command arguments
   ansible.builtin.set_fact:
     docker_compose_file_args: "{{ docker_compose_files_list | map('regex_replace', '^(.*)$', '-f \\1') | join(' ') }}"
@@ -32,6 +35,8 @@
   args:
     chdir: "{{ docker_compose_dir }}"
   environment: &docker_secrets_env
+    DOCKER_CONFIG: "{{ _docker_config_override }}"
+    DOCKER_HOST: "{{ lookup('env', 'DOCKER_HOST') | default('', true) }}"
     # Container naming
     CONTAINER_PREFIX: "{{ container_prefix | default('dev') }}"
     # Ensure deploy-api and compose sub-processes use the actual host repo path.
@@ -68,7 +73,23 @@
     msg: |
       Running: docker compose {{ docker_compose_file_args }} {{ _env_file_arg }} up -d --no-deps {{ _services_arg }}
       Compose dir: {{ docker_compose_dir }}
+      DOCKER_CONFIG: {{ _docker_config_override }}
       Note: Secrets are injected from vault at runtime (not shown)
+
+- name: Verify Docker config contents (debug)
+  ansible.builtin.shell: |
+    echo "=== DOCKER_CONFIG debug ==="
+    echo "DOCKER_CONFIG={{ _docker_config_override }}"
+    echo "--- config.json at DOCKER_CONFIG ---"
+    cat "{{ _docker_config_override }}/config.json" 2>&1 || echo "(file not found)"
+    echo "--- original ~/.docker/config.json ---"
+    cat "$HOME/.docker/config.json" 2>&1 || echo "(file not found)"
+    echo "--- docker context ls ---"
+    DOCKER_CONFIG="{{ _docker_config_override }}" docker context ls 2>&1 || echo "(context command failed)"
+    echo "--- credential helpers in PATH ---"
+    which docker-credential-desktop 2>&1 || echo "(not found)"
+    which docker-credential-osxkeychain 2>&1 || echo "(not found)"
+  changed_when: false
 
 - name: Start services with docker compose up
   ansible.builtin.shell: |

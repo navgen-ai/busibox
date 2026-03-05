@@ -253,11 +253,11 @@ try:
     allowed_providers = hardware_providers.get(hardware, {'vllm', 'litellm', 'local'})
     
     # Required models based on stage
-    # Development uses MLX qwen3-0.6b, staging/production use vLLM qwen3-0.6b-vllm
+    # Development uses MLX qwen3.5-0.8b-mlx, staging/production use vLLM qwen3.5-0.8b-vllm
     required_models = {
-        'development': {'qwen3-0.6b'},
-        'staging': {'qwen3-0.6b-vllm', 'qwen3-30b', 'qwen3-reranker', 'phi-4'},
-        'production': {'qwen3-0.6b-vllm', 'qwen3-30b', 'qwen3-reranker', 'phi-4'}
+        'development': {'qwen3.5-0.8b-mlx'},
+        'staging': {'qwen3.5-0.8b-vllm', 'qwen3.5-4b-vllm'},
+        'production': {'qwen3.5-0.8b-vllm', 'qwen3.5-4b-vllm'}
     }
     
     stage_models = required_models.get(stage, required_models['production'])

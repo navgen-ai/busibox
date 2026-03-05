@@ -10,6 +10,9 @@
 #       docker_build_no_cache: false
 #       docker_build_pull: true
 
+- name: Sanitize Docker config (macOS keychain workaround)
+  ansible.builtin.include_tasks: sanitize_docker_config.yml
+
 - name: Check if environment file exists
   ansible.builtin.stat:
     path: "{{ docker_env_file }}"
@@ -40,6 +43,8 @@
   args:
     chdir: "{{ docker_compose_dir }}"
   environment:
+    DOCKER_CONFIG: "{{ _docker_config_override }}"
+    DOCKER_HOST: "{{ lookup('env', 'DOCKER_HOST') | default('', true) }}"
     # Container naming
     CONTAINER_PREFIX: "{{ container_prefix | default('dev') }}"
     # Secrets injected from vault

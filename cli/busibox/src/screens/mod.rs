@@ -2,6 +2,7 @@ pub mod admin_login;
 pub mod hardware_report;
 pub mod install;
 pub mod manage;
+pub mod model_benchmark;
 pub mod model_config;
 pub mod model_download;
 pub mod models_manage;

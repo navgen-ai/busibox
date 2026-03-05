@@ -69,6 +69,10 @@ pub struct Profile {
     /// instead of this profile's network, since staging shares production GPUs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub use_production_vllm: Option<bool>,
+    /// Docker runtime preference: "auto", "docker-desktop", or "colima".
+    /// Only relevant when backend == "docker" on macOS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docker_runtime: Option<String>,
 }
 
 impl Profile {
@@ -114,6 +118,10 @@ impl Profile {
     pub fn effective_use_production_vllm(&self) -> bool {
         self.use_production_vllm
             .unwrap_or_else(|| self.environment == "staging")
+    }
+
+    pub fn effective_docker_runtime(&self) -> &str {
+        self.docker_runtime.as_deref().unwrap_or("auto")
     }
 
     /// Network base to use for vLLM health checks. When use_production_vllm is true,
@@ -262,6 +270,7 @@ pub fn write_profile_state(repo_root: &Path, profile_id: &str, profile: &Profile
                 && !l.starts_with("LLM_BACKEND=")
                 && !l.starts_with("SITE_DOMAIN=")
                 && !l.starts_with("SSL_CERT_NAME=")
+                && !l.starts_with("DOCKER_RUNTIME=")
         })
         .map(|l| l.to_string())
         .collect();
@@ -287,6 +296,9 @@ pub fn write_profile_state(repo_root: &Path, profile_id: &str, profile: &Profile
     }
     if let Some(ref cert_name) = profile.ssl_cert_name {
         lines.push(format!("SSL_CERT_NAME={cert_name}"));
+    }
+    if let Some(ref rt) = profile.docker_runtime {
+        lines.push(format!("DOCKER_RUNTIME={rt}"));
     }
 
     let content = lines.join("\n") + "\n";

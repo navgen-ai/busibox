@@ -251,6 +251,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                             app.action_menu_selected = 0;
                             app.screen = Screen::Welcome;
                             app.menu_selected = 0;
+                            crate::screens::welcome::load_active_tier_models(app);
                             crate::screens::welcome::trigger_health_checks(app);
                         }
                     }

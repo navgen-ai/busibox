@@ -5,7 +5,6 @@ mod theme;
 mod tui;
 
 use app::{App, Screen};
-use crate::modules::hardware::MemoryTier;
 use crate::modules::remote;
 use clap::Parser;
 use color_eyre::Result;
@@ -61,6 +60,7 @@ fn main() -> Result<()> {
                 screens::welcome::check_model_cache(&mut app);
             }
         }
+        screens::welcome::load_active_tier_models(&mut app);
         // Auto-detect deployment state on startup
         screens::welcome::trigger_health_checks(&mut app);
     }
@@ -91,12 +91,18 @@ fn main() -> Result<()> {
         if app.screen == Screen::ModelsManage && app.models_manage_action_running {
             app.models_manage_tick = app.models_manage_tick.wrapping_add(1);
         }
+        if app.screen == Screen::ModelBenchmark && app.benchmark_running {
+            app.benchmark_tick = app.benchmark_tick.wrapping_add(1);
+        }
         if app.screen == Screen::Welcome && app.health_check_running {
             app.health_tick = app.health_tick.wrapping_add(1);
         }
 
         // Drain health check updates
         screens::welcome::process_health_updates(&mut app);
+
+        // Drain deployed model status updates
+        screens::welcome::process_deployed_model_updates(&mut app);
 
         // Drain install updates from background worker
         if let Some(rx) = app.install_rx.take() {
@@ -239,16 +245,21 @@ fn main() -> Result<()> {
                             app.models_manage_log_scroll =
                                 app.models_manage_log.len().saturating_sub(1);
                             if success {
-                                let tier = MemoryTier::all()
-                                    .get(app.models_manage_tier_selected)
-                                    .map(|t| t.name().to_string());
-                                app.models_manage_current_tier = tier;
+                                // After apply, the deployed config IS the active config.
+                                // Mark as custom and point to the Custom tier slot.
+                                app.models_manage_is_custom = true;
+                                app.models_manage_current_tier = Some("custom".to_string());
+                                app.models_manage_tier_selected =
+                                    screens::models_manage::CUSTOM_TIER_INDEX;
                                 // Reload profiles to reflect updated tier
                                 if let Ok(profiles) =
                                     modules::profile::load_profiles(&app.repo_root)
                                 {
                                     app.profiles = Some(profiles);
                                 }
+                                // Force reload of the deployed config
+                                app.models_manage_loaded = false;
+                                screens::welcome::load_active_tier_models(&mut app);
                             }
                             put_back = false;
                             break;
@@ -267,6 +278,47 @@ fn main() -> Result<()> {
             }
         }
 
+        // Drain benchmark updates
+        {
+            if let Some(rx) = app.benchmark_rx.take() {
+                use std::sync::mpsc::TryRecvError;
+                let mut put_back = true;
+                loop {
+                    match rx.try_recv() {
+                        Ok(app::BenchmarkUpdate::Log(msg)) => {
+                            let was_at_bottom = app.benchmark_log_scroll
+                                >= app.benchmark_log.len().saturating_sub(1);
+                            app.benchmark_log.push(msg);
+                            if was_at_bottom {
+                                app.benchmark_log_scroll =
+                                    app.benchmark_log.len().saturating_sub(1);
+                            }
+                        }
+                        Ok(app::BenchmarkUpdate::Result(result)) => {
+                            app.benchmark_results.push(result);
+                        }
+                        Ok(app::BenchmarkUpdate::Complete) => {
+                            app.benchmark_running = false;
+                            app.benchmark_complete = true;
+                            app.benchmark_log_scroll =
+                                app.benchmark_log.len().saturating_sub(1);
+                            put_back = false;
+                            break;
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            app.benchmark_running = false;
+                            put_back = false;
+                            break;
+                        }
+                    }
+                }
+                if put_back {
+                    app.benchmark_rx = Some(rx);
+                }
+            }
+        }
+
         // Handle deferred resume install (so status message renders first)
         if app.pending_resume_install {
             app.pending_resume_install = false;
@@ -278,6 +330,12 @@ fn main() -> Result<()> {
         if app.pending_sync_admin_login {
             app.pending_sync_admin_login = false;
             perform_sync_then_admin_login(&mut app);
+        }
+
+        // Handle standalone code sync to remote host.
+        if app.pending_code_sync {
+            app.pending_code_sync = false;
+            perform_code_sync(&mut app);
         }
 
         if event::poll(Duration::from_millis(100))? {
@@ -450,6 +508,7 @@ fn render(app: &App, f: &mut ratatui::Frame) {
         Screen::Install => screens::install::render(f, app),
         Screen::Manage => screens::manage::render(f, app),
         Screen::ModelsManage => screens::models_manage::render(f, app),
+        Screen::ModelBenchmark => screens::model_benchmark::render(f, app),
         Screen::ProfileSelect => screens::profile_select::render(f, app),
         Screen::ProfileEdit => screens::profile_edit::render(f, app),
         Screen::AdminLogin => screens::admin_login::render(f, app),
@@ -490,6 +549,7 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         && !app.profile_editing
         && !app.profile_edit_tier_selecting
         && app.screen != Screen::AdminLogin
+        && app.screen != Screen::ModelBenchmark
     {
         app.should_quit = true;
         return;
@@ -508,6 +568,7 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         Screen::Install => screens::install::handle_key(app, key),
         Screen::Manage => screens::manage::handle_key(app, key),
         Screen::ModelsManage => screens::models_manage::handle_key(app, key),
+        Screen::ModelBenchmark => screens::model_benchmark::handle_key(app, key),
         Screen::ProfileSelect => screens::profile_select::handle_key(app, key),
         Screen::ProfileEdit => screens::profile_edit::handle_key(app, key),
         Screen::AdminLogin => screens::admin_login::handle_key(app, key),
@@ -683,6 +744,44 @@ fn perform_sync_then_admin_login(app: &mut App) {
     app.admin_login_error = None;
     app.pending_admin_login = true;
     app.screen = Screen::AdminLogin;
+}
+
+/// Sync local busibox repo to the remote host (standalone, no follow-up action).
+fn perform_code_sync(app: &mut App) {
+    use crate::app::MessageKind;
+
+    let profile = match app.active_profile() {
+        Some((_, p)) => p.clone(),
+        None => {
+            app.set_message("No active profile", MessageKind::Error);
+            return;
+        }
+    };
+
+    if !profile.remote {
+        app.set_message("Sync is only for remote profiles", MessageKind::Info);
+        return;
+    }
+
+    let host = match profile.effective_host() {
+        Some(h) => h,
+        None => {
+            app.set_message("No remote host configured", MessageKind::Error);
+            return;
+        }
+    };
+    let user = profile.effective_user();
+    let key = profile.effective_ssh_key();
+    let remote_path = profile.effective_remote_path();
+
+    match remote::sync(&app.repo_root, host, user, key, remote_path) {
+        Ok(()) => {
+            app.set_message("✓ Code synced to remote host", MessageKind::Success);
+        }
+        Err(e) => {
+            app.set_message(&format!("Sync failed: {e}"), MessageKind::Error);
+        }
+    }
 }
 
 /// Generate admin login credentials by running `make login --json` and parsing output.

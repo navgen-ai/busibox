@@ -1036,6 +1036,10 @@ fn spawn_install_worker(app: &mut App) {
         .active_profile()
         .map(|(_, p)| p.backend.clone())
         .unwrap_or_else(|| "docker".into());
+    let profile_docker_runtime: String = app
+        .active_profile()
+        .map(|(_, p)| p.effective_docker_runtime().to_string())
+        .unwrap_or_else(|| "auto".into());
 
     let ssh_details: Option<(String, String, String)> = app.ssh_connection.as_ref().map(|ssh| {
         (ssh.host.clone(), ssh.user.clone(), ssh.key_path.clone())
@@ -1891,30 +1895,63 @@ fi
                             echo "ERROR: docker CLI could not be installed"
                             exit 1
                         fi
-                        if ! docker info &>/dev/null; then
-                            # Try Docker Desktop first if installed
-                            if [ -d "/Applications/Docker.app" ] || [ -d "$HOME/Applications/Docker.app" ]; then
-                                echo "Docker daemon not running — starting Docker Desktop..."
-                                open -a Docker 2>/dev/null || open -a "$HOME/Applications/Docker.app" 2>/dev/null || true
-                                WAITED=0
-                                while ! docker info &>/dev/null; do
-                                    sleep 2
-                                    WAITED=$((WAITED + 2))
-                                    if [ $WAITED -ge 60 ]; then
-                                        echo "WARNING: Docker Desktop did not start within 60s, falling back to Colima..."
-                                        break
+                        DOCKER_RT="${BUSIBOX_DOCKER_RUNTIME:-auto}"
+
+                        # Helper: ensure Docker CLI can reach the running daemon.
+                        # After uninstalling Docker Desktop the CLI context may still
+                        # reference "desktop-linux" which no longer exists. This function
+                        # tries docker context use, then falls back to DOCKER_HOST.
+                        _ensure_docker_reachable() {
+                            if docker info &>/dev/null; then return 0; fi
+                            # Try switching to colima context
+                            if docker context use colima &>/dev/null 2>&1 && docker info &>/dev/null; then return 0; fi
+                            # Try switching to default context
+                            if docker context use default &>/dev/null 2>&1 && docker info &>/dev/null; then return 0; fi
+                            # Try Colima socket directly
+                            for sock in "$HOME/.colima/default/docker.sock" "$HOME/.colima/docker.sock"; do
+                                if [ -S "$sock" ]; then
+                                    export DOCKER_HOST="unix://$sock"
+                                    if docker info &>/dev/null; then return 0; fi
+                                fi
+                            done
+                            unset DOCKER_HOST
+                            return 1
+                        }
+
+                        if ! _ensure_docker_reachable; then
+                            # Try Docker Desktop if runtime allows it
+                            if [ "$DOCKER_RT" != "colima" ]; then
+                                if [ -d "/Applications/Docker.app" ] || [ -d "$HOME/Applications/Docker.app" ]; then
+                                    echo "Docker daemon not running — starting Docker Desktop..."
+                                    open -a Docker 2>/dev/null || open -a "$HOME/Applications/Docker.app" 2>/dev/null || true
+                                    WAITED=0
+                                    while ! _ensure_docker_reachable; do
+                                        sleep 2
+                                        WAITED=$((WAITED + 2))
+                                        if [ $WAITED -ge 60 ]; then
+                                            if [ "$DOCKER_RT" = "docker-desktop" ]; then
+                                                echo "ERROR: Docker Desktop did not start within 60s (docker_runtime=docker-desktop)"
+                                                exit 1
+                                            fi
+                                            echo "WARNING: Docker Desktop did not start within 60s, falling back to Colima..."
+                                            break
+                                        fi
+                                        if [ $((WAITED % 10)) -eq 0 ]; then
+                                            echo "  Still waiting... (${WAITED}s)"
+                                        fi
+                                    done
+                                    if _ensure_docker_reachable; then
+                                        echo "✓ Docker daemon started via Docker Desktop"
                                     fi
-                                    if [ $((WAITED % 10)) -eq 0 ]; then
-                                        echo "  Still waiting... (${WAITED}s)"
-                                    fi
-                                done
-                                if docker info &>/dev/null; then
-                                    echo "✓ Docker daemon started via Docker Desktop"
                                 fi
                             fi
                         fi
-                        # If no daemon, install and start Colima
-                        if ! docker info &>/dev/null; then
+                        # If no daemon, try Colima (unless runtime is docker-desktop only)
+                        if ! _ensure_docker_reachable; then
+                            if [ "$DOCKER_RT" = "docker-desktop" ]; then
+                                echo "ERROR: Docker Desktop not running and docker_runtime=docker-desktop"
+                                exit 1
+                            fi
                             if ! command -v colima &>/dev/null; then
                                 echo "Installing Colima (lightweight Docker runtime)..."
                                 brew install --quiet colima 2>&1 || true
@@ -1930,10 +1967,11 @@ fi
                                 [ "$COLIMA_MEM" -gt 16 ] && COLIMA_MEM=16
                                 echo "Starting Colima with ${COLIMA_CPUS} CPUs, ${COLIMA_MEM}GB RAM..."
                                 colima start --cpu "$COLIMA_CPUS" --memory "$COLIMA_MEM" 2>&1
-                                if docker info &>/dev/null; then
+                                if _ensure_docker_reachable; then
                                     echo "✓ Docker daemon started via Colima"
                                 else
                                     echo "ERROR: Colima started but Docker daemon is not reachable"
+                                    echo "  Try: docker context use colima"
                                     exit 1
                                 fi
                             else
@@ -1962,6 +2000,7 @@ fi
                                 echo "  Restarting Colima with more resources (containers will restart)..."
                                 colima stop 2>&1
                                 colima start --cpu "$COLIMA_CPUS" --memory "$COLIMA_MEM" 2>&1
+                                _ensure_docker_reachable
                                 echo "✓ Colima restarted with ${COLIMA_CPUS} CPUs, ${COLIMA_MEM}GB RAM"
                             else
                                 echo "✓ Colima: ${CURRENT_CPUS} CPUs, ${CURRENT_MEM}GB RAM"
@@ -2055,8 +2094,9 @@ fi
                                 key,
                             );
                             let full_cmd = format!(
-                                "export BUSIBOX_TARGET_BACKEND={}; {} bash -c {}",
+                                "export BUSIBOX_TARGET_BACKEND={}; export BUSIBOX_DOCKER_RUNTIME={}; {} bash -c {}",
                                 shell_escape(&profile_backend),
+                                shell_escape(&profile_docker_runtime),
                                 crate::modules::remote::SHELL_PATH_PREAMBLE,
                                 shell_escape(prereq_script)
                             );
@@ -2098,6 +2138,7 @@ fi
                             .arg("-c")
                             .arg(prereq_script)
                             .env("BUSIBOX_TARGET_BACKEND", &profile_backend)
+                            .env("BUSIBOX_DOCKER_RUNTIME", &profile_docker_runtime)
                             .output()
                         {
                             Ok(output) => {

@@ -10,6 +10,9 @@
 #       docker_exec_command: "pg_isready -U postgres"
 #       docker_exec_user: "root"  # optional
 
+- name: Sanitize Docker config (macOS keychain workaround)
+  ansible.builtin.include_tasks: sanitize_docker_config.yml
+
 - name: Set compose command arguments
   ansible.builtin.set_fact:
     docker_compose_file_args: "{{ docker_compose_files_list | map('regex_replace', '^(.*)$', '-f \\1') | join(' ') }}"
@@ -23,6 +26,8 @@
   args:
     chdir: "{{ docker_compose_dir }}"
   environment:
+    DOCKER_CONFIG: "{{ _docker_config_override }}"
+    DOCKER_HOST: "{{ lookup('env', 'DOCKER_HOST') | default('', true) }}"
     # Container naming
     CONTAINER_PREFIX: "{{ container_prefix | default('dev') }}"
     # Secrets injected from encrypted Ansible vault at runtime

@@ -460,7 +460,7 @@ class MilvusSearchService:
         query: str,
         results: List[Dict],
         top_k: Optional[int] = None,
-        reranker_model: str = "qwen3-gpu",
+        reranker_model: str = "baai-cpu",
     ) -> List[Dict]:
         """
         Rerank search results using specified reranker model.
@@ -514,7 +514,7 @@ class MilvusSearchService:
             # Map reranker_model to actual model names and URLs
             model_config = {
                 "qwen3-gpu": {
-                    "model_name": "Qwen/Qwen3-Reranker-0.6B",
+                    "model_name": "qwen3-reranker-vllm",
                     "url": "http://10.96.200.208:8002/v1",
                     "use_template": True,  # Qwen3 needs special template
                 },

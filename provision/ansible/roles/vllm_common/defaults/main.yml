@@ -1,0 +1,21 @@
+---
+# vLLM Common Role - Shared Default Variables
+# Runs once to install vLLM venv, drivers, and dependencies.
+# Port-specific roles (vllm_800x) handle per-model service configuration.
+
+# vLLM Installation
+vllm_version: "nightly"
+vllm_install_method: "uv"
+vllm_install_dir: /opt/vllm
+vllm_venv_dir: "{{ vllm_install_dir }}/venv"
+vllm_python_version: "3.11"
+
+# System user/group (shared across all vLLM services)
+vllm_user: vllm
+vllm_group: vllm
+vllm_home: /var/lib/vllm
+vllm_cache_dir: /var/lib/llm-models/huggingface
+vllm_download_dir: "{{ vllm_cache_dir }}/hub"
+
+# HuggingFace token
+vllm_hf_token: "{{ huggingface_token | default('') }}"

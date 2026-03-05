@@ -216,14 +216,6 @@
       Port: {{ vllm_port }}
   when: vllm_assigned_model != ""
 
-- name: Include installation tasks
-  include_tasks:
-    file: install.yml
-    apply:
-      tags: [vllm, vllm_install, "vllm_{{ vllm_port }}"]
-  when: vllm_assigned_model != ""
-  tags: [vllm, vllm_install, "vllm_{{ vllm_port }}"]
-
 - name: Include configuration tasks
   include_tasks:
     file: configure.yml

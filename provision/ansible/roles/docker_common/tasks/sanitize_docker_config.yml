@@ -1,0 +1,36 @@
+---
+# Sanitize Docker config on macOS
+#
+# On macOS with Docker Desktop installed, ~/.docker/config.json may contain
+# "credsStore": "desktop" and "currentContext": "desktop-linux". These cause
+# failures in non-interactive sessions (SSH) because the Docker credential
+# helper requires macOS Keychain access. This task creates a temporary copy
+# with those entries stripped and sets _docker_config_override for use in
+# environment blocks.
+#
+# Usage:
+#   - include_tasks: sanitize_docker_config.yml
+#   Then add to environment blocks:
+#     DOCKER_CONFIG: "{{ _docker_config_override }}"
+
+- name: Strip credsStore/currentContext from Docker config on macOS
+  ansible.builtin.shell: |
+    if [ "$(uname -s)" = "Darwin" ] && [ -f "$HOME/.docker/config.json" ] && \
+       grep -qE '"credsStore"|"currentContext"' "$HOME/.docker/config.json" 2>/dev/null; then
+      tmpdir=$(mktemp -d)
+      python3 -c "import json,sys; c=json.load(open(sys.argv[1])); c.pop('credsStore',None); c.pop('currentContext',None); json.dump(c,open(sys.argv[2],'w'),indent=2)" \
+        "$HOME/.docker/config.json" "$tmpdir/config.json"
+      # Symlink cli-plugins and other subdirs so Docker finds compose, buildx, etc.
+      for subdir in cli-plugins contexts; do
+        [ -d "$HOME/.docker/$subdir" ] && ln -s "$HOME/.docker/$subdir" "$tmpdir/$subdir"
+      done
+      echo "$tmpdir"
+    else
+      echo "${DOCKER_CONFIG:-$HOME/.docker}"
+    fi
+  register: _docker_config_sanitized
+  changed_when: false
+
+- name: Set DOCKER_CONFIG override
+  ansible.builtin.set_fact:
+    _docker_config_override: "{{ _docker_config_sanitized.stdout | trim }}"

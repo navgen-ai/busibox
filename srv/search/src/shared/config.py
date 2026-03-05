@@ -44,8 +44,8 @@ class Config(BaseSettings):
     # Embedding API (dedicated embedding service - no auth required)
     embedding_api_url: str = os.getenv("EMBEDDING_API_URL", "http://embedding-api:8005")
     # Note: This is for logging only - actual model is determined by embedding-api service
-    embedding_model: str = os.getenv("FASTEMBED_MODEL", "BAAI/bge-large-en-v1.5").split("/")[-1]
-    embedding_dim: int = int(os.getenv("EMBEDDING_DIMENSION", "768"))
+    embedding_model: str = os.getenv("FASTEMBED_MODEL", "nomic-embed-cpu").split("/")[-1]
+    embedding_dim: int = int(os.getenv("EMBEDDING_DIMENSION", "256"))
     
     # LiteLLM (for LLM calls)
     litellm_base_url: str = os.getenv("LITELLM_BASE_URL", "http://litellm:4000")
@@ -60,12 +60,12 @@ class Config(BaseSettings):
     enable_reranking: bool = os.getenv("ENABLE_RERANKING", "true").lower() == "true"
     
     # Reranking (local model for RerankingService)
-    reranker_model: str = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+    reranker_model: str = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3-cpu")
     reranker_device: str = "cpu"  # or "cuda"
     
     # vLLM Reranker (for hybrid search via MilvusSearchService)
     vllm_reranker_url: str = os.getenv("VLLM_RERANKER_URL", "http://vllm-reranker:8002/v1")
-    vllm_reranker_model: str = os.getenv("VLLM_RERANKER_MODEL", "Qwen/Qwen3-Reranker-0.6B")
+    vllm_reranker_model: str = os.getenv("VLLM_RERANKER_MODEL", "qwen3-reranker-vllm")
     
     # AuthZ JWT Validation
     authz_jwks_url: str = os.getenv("AUTHZ_JWKS_URL", "http://authz-api:8010/.well-known/jwks.json")
