@@ -14,6 +14,7 @@ const FIELD_LABELS: &[&str] = &[
     "Label",
     "Environment",
     "Backend",
+    "Docker Runtime",
     "Network Base",
     "Use Prod vLLM",
     "Remote Host",
@@ -28,28 +29,32 @@ const FIELD_LABELS: &[&str] = &[
     "SSL Certificate",
 ];
 
-const FIELD_COUNT: usize = 15;
+const FIELD_COUNT: usize = 16;
 
 const FIELD_LABEL: usize = 0;
 const FIELD_ENVIRONMENT: usize = 1;
 const FIELD_BACKEND: usize = 2;
-const FIELD_NETWORK_BASE: usize = 3;
-const FIELD_USE_PROD_VLLM: usize = 4;
-const FIELD_REMOTE_HOST: usize = 5;
-const FIELD_REMOTE_USER: usize = 6;
-const FIELD_REMOTE_PATH: usize = 7;
-const FIELD_TAILSCALE_IP: usize = 8;
-const FIELD_MODEL_TIER: usize = 9;
-const FIELD_ADMIN_EMAIL: usize = 10;
-const FIELD_ALLOWED_DOMAINS: usize = 11;
-const FIELD_FRONTEND_REF: usize = 12;
-const FIELD_SITE_DOMAIN: usize = 13;
-const FIELD_SSL_CERT_NAME: usize = 14;
+const FIELD_DOCKER_RUNTIME: usize = 3;
+const FIELD_NETWORK_BASE: usize = 4;
+const FIELD_USE_PROD_VLLM: usize = 5;
+const FIELD_REMOTE_HOST: usize = 6;
+const FIELD_REMOTE_USER: usize = 7;
+const FIELD_REMOTE_PATH: usize = 8;
+const FIELD_TAILSCALE_IP: usize = 9;
+const FIELD_MODEL_TIER: usize = 10;
+const FIELD_ADMIN_EMAIL: usize = 11;
+const FIELD_ALLOWED_DOMAINS: usize = 12;
+const FIELD_FRONTEND_REF: usize = 13;
+const FIELD_SITE_DOMAIN: usize = 14;
+const FIELD_SSL_CERT_NAME: usize = 15;
 
 fn visible_fields(profile: &profile::Profile) -> Vec<usize> {
     let mut fields: Vec<usize> = (0..FIELD_COUNT).collect();
     if profile.environment == "production" {
         fields.retain(|&f| f != FIELD_USE_PROD_VLLM);
+    }
+    if profile.backend != "docker" {
+        fields.retain(|&f| f != FIELD_DOCKER_RUNTIME);
     }
     fields
 }
@@ -525,7 +530,7 @@ fn handle_edit_mode(app: &mut App, key: KeyEvent) {
     let field = app.profile_edit_field;
 
     match field {
-        FIELD_ENVIRONMENT | FIELD_BACKEND | FIELD_MODEL_TIER | FIELD_SSL_CERT_NAME | FIELD_USE_PROD_VLLM => {
+        FIELD_ENVIRONMENT | FIELD_BACKEND | FIELD_DOCKER_RUNTIME | FIELD_MODEL_TIER | FIELD_SSL_CERT_NAME | FIELD_USE_PROD_VLLM => {
             handle_dropdown_edit(app, key);
         }
         _ => {
@@ -671,6 +676,7 @@ fn default_profile() -> profile::Profile {
         ssl_cert_name: None,
         network_base_octets: None,
         use_production_vllm: None,
+        docker_runtime: None,
     }
 }
 
@@ -679,6 +685,7 @@ fn field_value(profile: &profile::Profile, field: usize) -> String {
         FIELD_LABEL => profile.label.clone(),
         FIELD_ENVIRONMENT => profile.environment.clone(),
         FIELD_BACKEND => profile.backend.clone(),
+        FIELD_DOCKER_RUNTIME => profile.effective_docker_runtime().to_string(),
         FIELD_NETWORK_BASE => profile.effective_network_base().to_string(),
         FIELD_USE_PROD_VLLM => match profile.use_production_vllm {
             Some(true) => "yes".into(),
@@ -719,6 +726,7 @@ fn field_hint(field: usize, profile: &profile::Profile) -> String {
     match field {
         FIELD_ENVIRONMENT => "←/→ to cycle: staging, production".into(),
         FIELD_BACKEND => "←/→ to cycle: docker, proxmox".into(),
+        FIELD_DOCKER_RUNTIME => "auto = Docker Desktop first, then Colima".into(),
         FIELD_NETWORK_BASE => "First 3 octets of container network (e.g. 10.96.200)".into(),
         FIELD_USE_PROD_VLLM => "auto = yes for staging, no for production".into(),
         FIELD_MODEL_TIER => {
@@ -748,6 +756,7 @@ fn dropdown_options(app: &App, field: usize, _profile: &profile::Profile) -> Vec
     match field {
         FIELD_ENVIRONMENT => vec!["staging".into(), "production".into()],
         FIELD_BACKEND => vec!["docker".into(), "proxmox".into()],
+        FIELD_DOCKER_RUNTIME => vec!["auto".into(), "docker-desktop".into(), "colima".into()],
         FIELD_USE_PROD_VLLM => vec!["auto".into(), "yes".into(), "no".into()],
         FIELD_MODEL_TIER => {
             let tiers = MemoryTier::all();
@@ -818,6 +827,13 @@ fn apply_field(app: &mut App, field: usize, value: &str) {
             });
         }
         FIELD_BACKEND => profile.backend = value.to_string(),
+        FIELD_DOCKER_RUNTIME => {
+            profile.docker_runtime = if value.is_empty() || value == "auto" {
+                None
+            } else {
+                Some(value.to_string())
+            };
+        }
         FIELD_NETWORK_BASE => {
             profile.network_base_octets = if value.is_empty() {
                 None

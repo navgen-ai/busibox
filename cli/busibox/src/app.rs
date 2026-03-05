@@ -1,6 +1,7 @@
+use crate::modules::benchmark::{BenchmarkConfig, BenchmarkResult};
 use crate::modules::hardware::HardwareProfile;
 use crate::modules::health::{GroupHealth, HealthUpdate, ServiceHealthResult};
-use crate::modules::models::{ModelRecommendation, TierModelSet};
+use crate::modules::models::{DeployedModel, DeployedModelSet, DeployedModelUpdate, ModelRecommendation, TierModel, TierModelSet};
 use crate::modules::profile::{Profile, ProfilesFile};
 use crate::modules::ssh::SshConnection;
 use crate::modules::tailscale::TailscaleStatus;
@@ -19,6 +20,7 @@ pub enum Screen {
     Install,
     Manage,
     ModelsManage,
+    ModelBenchmark,
     ProfileSelect,
     ProfileEdit,
     AdminLogin,
@@ -73,11 +75,20 @@ pub struct App {
     pub model_download_progress: Vec<ModelDownloadState>,
     pub model_cache_status: Vec<ModelCacheEntry>,
     pub model_cache_check_state: ModelCacheCheckState,
+    pub active_tier_models: Option<TierModelSet>,
+
+    // Deployed models state (hybrid dashboard)
+    pub deployed_models: Option<DeployedModelSet>,
+    pub deployed_models_rx: Option<mpsc::Receiver<DeployedModelUpdate>>,
+    pub deployed_models_loading: bool,
 
     // Models manage screen state
     pub models_manage_tier_selected: usize,
     pub models_manage_loaded: bool,
     pub models_manage_current_tier: Option<String>,
+    /// When true, the active config was loaded from model_config.yml (custom/deployed)
+    /// rather than a standard tier preset from model_registry.yml.
+    pub models_manage_is_custom: bool,
     pub models_manage_model_selected: usize,
     pub models_manage_focus: ModelsFocus,
     pub models_manage_gpu_assignments: std::collections::HashMap<String, GpuAssignment>,
@@ -86,10 +97,34 @@ pub struct App {
     pub models_manage_log: Vec<String>,
     pub models_manage_log_visible: bool,
     pub models_manage_log_scroll: usize,
+    pub models_manage_log_autoscroll: bool,
     pub models_manage_action_running: bool,
     pub models_manage_action_complete: bool,
     pub models_manage_tick: usize,
     pub models_manage_rx: Option<mpsc::Receiver<ModelsManageUpdate>>,
+
+    // Add-model picker state
+    pub models_manage_add_mode: bool,
+    pub models_manage_add_candidates: Vec<TierModel>,
+    pub models_manage_add_selected: usize,
+
+    // Role/purpose editor state
+    pub models_manage_role_edit_mode: bool,
+    pub models_manage_role_edit_selected: usize,
+    pub models_manage_available_roles: Vec<String>,
+
+    // Benchmark screen state
+    pub benchmark_models: Vec<DeployedModel>,
+    pub benchmark_selected: usize,
+    pub benchmark_toggled: Vec<bool>,
+    pub benchmark_results: Vec<BenchmarkResult>,
+    pub benchmark_log: Vec<String>,
+    pub benchmark_log_scroll: usize,
+    pub benchmark_running: bool,
+    pub benchmark_complete: bool,
+    pub benchmark_tick: usize,
+    pub benchmark_rx: Option<mpsc::Receiver<BenchmarkUpdate>>,
+    pub benchmark_config: BenchmarkConfig,
 
     // Install state
     pub install_services: Vec<ServiceInstallState>,
@@ -219,6 +254,8 @@ pub struct App {
     pub pending_admin_login: bool,
     // Pending "Continue Install (Web)" flow: sync remote repo first, then run admin login.
     pub pending_sync_admin_login: bool,
+    // Pending standalone code sync to remote host.
+    pub pending_code_sync: bool,
 
     pub ssh_tunnel_process: Option<std::process::Child>,
 }
@@ -415,6 +452,12 @@ pub enum ModelsManageUpdate {
     Complete { success: bool },
 }
 
+pub enum BenchmarkUpdate {
+    Log(String),
+    Result(BenchmarkResult),
+    Complete,
+}
+
 impl std::fmt::Display for InstallStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -459,9 +502,14 @@ impl App {
             model_download_progress: Vec::new(),
             model_cache_status: Vec::new(),
             model_cache_check_state: ModelCacheCheckState::NotChecked,
+            active_tier_models: None,
+            deployed_models: None,
+            deployed_models_rx: None,
+            deployed_models_loading: false,
             models_manage_tier_selected: 0,
             models_manage_loaded: false,
             models_manage_current_tier: None,
+            models_manage_is_custom: false,
             models_manage_model_selected: 0,
             models_manage_focus: ModelsFocus::Tiers,
             models_manage_gpu_assignments: std::collections::HashMap::new(),
@@ -470,10 +518,28 @@ impl App {
             models_manage_log: Vec::new(),
             models_manage_log_visible: false,
             models_manage_log_scroll: 0,
+            models_manage_log_autoscroll: true,
             models_manage_action_running: false,
             models_manage_action_complete: false,
             models_manage_tick: 0,
             models_manage_rx: None,
+            models_manage_add_mode: false,
+            models_manage_add_candidates: Vec::new(),
+            models_manage_add_selected: 0,
+            models_manage_role_edit_mode: false,
+            models_manage_role_edit_selected: 0,
+            models_manage_available_roles: Vec::new(),
+            benchmark_models: Vec::new(),
+            benchmark_selected: 0,
+            benchmark_toggled: Vec::new(),
+            benchmark_results: Vec::new(),
+            benchmark_log: Vec::new(),
+            benchmark_log_scroll: 0,
+            benchmark_running: false,
+            benchmark_complete: false,
+            benchmark_tick: 0,
+            benchmark_rx: None,
+            benchmark_config: BenchmarkConfig::default(),
             install_services: Vec::new(),
             install_log: Vec::new(),
             install_log_visible: false,
@@ -552,6 +618,7 @@ impl App {
             admin_login_loading: false,
             pending_admin_login: false,
             pending_sync_admin_login: false,
+            pending_code_sync: false,
             ssh_tunnel_process: None,
         }
     }
@@ -621,7 +688,7 @@ impl App {
                 vec!["Continue Install (Web)", "Admin Login", "Manage Services", "Clean Install"]
             }
             DeploymentState::Complete => {
-                vec!["Admin Login", "Manage Services", "Update", "Clean Install"]
+                vec!["Admin Login", "Manage Services", "Benchmark Models", "Update", "Clean Install"]
             }
         }
     }

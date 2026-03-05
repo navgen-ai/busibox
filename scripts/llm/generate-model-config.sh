@@ -111,6 +111,15 @@ available_models: Dict[str, Any] = registry.get("available_models", {}) or {}
 model_purposes: Dict[str, str] = registry.get("model_purposes", {}) or {}
 existing_models: Dict[str, Any] = (existing.get("models", {}) or {})
 
+# Apply PURPOSE_<ROLE>=<model_key> overrides from environment
+# e.g. PURPOSE_FAST=qwen3.5-0.8b-vllm -> fast: qwen3.5-0.8b-vllm
+# e.g. PURPOSE_TOOL_CALLING=model-key -> tool_calling: model-key
+for key, val in os.environ.items():
+    if key.startswith("PURPOSE_"):
+        role = key[len("PURPOSE_"):].lower()
+        model_purposes[role] = val.strip("'\"")
+        print(f"[INFO] Purpose override: {role} -> {val.strip(chr(39)+chr(34))}", file=sys.stderr)
+
 def estimate_params_billions(model_key: str, model_name: str) -> float:
     joined = f"{model_key} {model_name}".lower()
     m = re.search(r"(\d+(?:\.\d+)?)\s*b", joined)
@@ -244,9 +253,23 @@ routing = assign_models(vllm_entries, gpu_count)
 
 output_models: Dict[str, Any] = {}
 
-# Start with existing config and then overlay authoritative routing/provider data
+# Collect model_names that are part of the CURRENT registry purpose set
+current_model_names = set()
+for mk in vllm_model_keys:
+    mn = (available_models.get(mk, {}) or {}).get("model_name", "")
+    if mn:
+        current_model_names.add(mn)
+
+# Only preserve existing entries that don't conflict with current assignments.
+# Stale vLLM entries (not in current purpose set) are dropped to avoid
+# port collisions where old models shadow new ones.
 for model_name, cfg in existing_models.items():
-    output_models[model_name] = dict(cfg or {})
+    cfg = dict(cfg or {})
+    is_vllm = cfg.get("provider", "").lower() == "vllm"
+    if is_vllm and model_name not in current_model_names:
+        print(f"[INFO] Removing stale vLLM entry: {model_name}", file=sys.stderr)
+        continue
+    output_models[model_name] = cfg
 
 for model_key in vllm_model_keys:
     entry = available_models.get(model_key, {}) or {}

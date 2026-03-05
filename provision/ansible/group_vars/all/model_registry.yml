@@ -56,9 +56,9 @@ available_models:
     provider: "vllm"
     model: "qwen3.5-35b-a3b-awq-4bit-multi"
     model_name: "cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit"
-    description: "Multi-user chat, parsing, vision, cleanup (GPU 2, same weights, different tuning)"
-    gpu_memory_utilization: 0.65  # Share GPU 2 with classify + reranker
-    max_model_len: 16384  # Shorter context for parallel users
+    description: "Multi-user chat, parsing, vision, cleanup (dedicated GPU, same weights, different tuning)"
+    gpu_memory_utilization: 0.9  # AWQ 4-bit weights ~22GB, needs most of 24GB GPU
+    max_model_len: 8192  # Shorter context for parallel users; leaves room for KV cache
     max_num_seqs: 8  # MoE advantage: 3B active params = high concurrency
     cpu_offload_gb: 0
     tool_calling: true
@@ -67,7 +67,25 @@ available_models:
     limit_mm_per_prompt:
       image: 4
 
-  "qwen3.5-27b-vllm-cpu":
+  "qwen3.5-35b-tp2-vllm":
+    provider: "vllm"
+    model: "qwen3.5-35b-a3b-awq-4bit-tp2"
+    model_name: "cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit"
+    description: "Primary model — agents, chat, tool calling, vision (GPU 0+1, TP=2)"
+    gpu_memory_utilization: 0.9
+    tensor_parallel_size: 2
+    max_model_len: 32768        # Good balance of context and concurrency
+    max_num_seqs: 16            # MoE handles concurrency well
+    max_num_batched_tokens: 4096  # Balanced latency for chat
+    cpu_offload_gb: 0
+    enable_prefix_caching: true  # Shared system prompts across users
+    tool_calling: true
+    tool_call_parser: "qwen3_coder"
+    multimodal: true
+    limit_mm_per_prompt:
+      image: 4
+    
+  "qwen3.5-27b-vllm":
     provider: "vllm"
     model: "qwen3.5-27b"
     model_name: "Qwen/Qwen3.5-27B"
@@ -94,6 +112,20 @@ available_models:
     tool_calling: true
     tool_call_parser: "qwen3_coder"
     multimodal: true
+
+  "qwen3.5-4b-vllm":
+    provider: "vllm"
+    model: "qwen3.5-4b"
+    model_name: "Qwen/Qwen3.5-4B"
+    description: "Compact agent model (4B, multimodal, 262K ctx, vision+tools)"
+    gpu_memory_utilization: 0.4
+    max_model_len: 16384
+    max_num_seqs: 16
+    cpu_offload_gb: 0
+    tool_calling: true
+    tool_call_parser: "qwen3_coder"
+    multimodal: true
+    memory_estimate_gb: 3.0
 
   "qwen3-reranker-vllm":
     provider: "vllm"
@@ -351,7 +383,25 @@ default_purposes:
 # - GPU 0: qwen3.5-0.8b (classify/fast) + qwen3-reranker + on-demand media (whisper/kokoro/flux)
 # - GPU 1: qwen3.5-35b — deep research, agents, tool calling (single-user focus)
 # - GPU 2: qwen3.5-35b-multi — multi-user chat, parsing, vision, cleanup (high concurrency)
-model_purposes: {}  # production uses defaults as-is
+# Production overrides: default_purposes points to MLX keys, but production
+# runs vLLM. Override LLM roles here so generate_model_config.py resolves to
+# vLLM provider models that appear in model_config.yml.
+model_purposes:
+  fast: "qwen3.5-0.8b-vllm"
+  test: "fast"
+  classify: "fast"
+  default: "qwen3.5-35b-vllm"
+  agent: "qwen3.5-35b-vllm"
+  chat: "qwen3.5-35b-multi-vllm"
+  research: "agent"
+  tool_calling: "agent"
+  vision: "agent"
+  parsing: "chat"
+  cleanup: "chat"
+  reranking: "bge-reranker-v2-m3-cpu"
+  image: "flux2-klein-4b-gpu"
+  transcribe: "whisper-large-v3-gpu"
+  voice: "kokoro-82m-gpu"
 
 # =============================================================================
 # Model Purposes - Development (MLX on Apple Silicon)

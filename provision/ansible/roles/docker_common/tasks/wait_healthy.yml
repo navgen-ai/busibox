@@ -9,6 +9,9 @@
 #       docker_wait_service: "postgres"
 #       docker_wait_timeout: 60
 
+- name: Sanitize Docker config (macOS keychain workaround)
+  ansible.builtin.include_tasks: sanitize_docker_config.yml
+
 - name: Check if environment file exists
   ansible.builtin.stat:
     path: "{{ docker_env_file }}"
@@ -70,6 +73,8 @@
     chdir: "{{ docker_compose_dir }}"
     executable: /bin/bash
   environment:
+    DOCKER_CONFIG: "{{ _docker_config_override }}"
+    DOCKER_HOST: "{{ lookup('env', 'DOCKER_HOST') | default('', true) }}"
     COMPOSE_CMD: "{{ _compose_cmd }}"
     WAIT_SERVICE: "{{ docker_wait_service }}"
     WAIT_TIMEOUT: "{{ docker_wait_timeout | default(60) }}"

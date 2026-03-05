@@ -225,6 +225,10 @@
       when: gpu_memory_check.stdout_lines is defined
       tags: [llm, llm_vllm, vllm]
   roles:
+    # Shared vLLM installation (venv, drivers, packages) - runs once
+    - role: vllm_common
+      when: "'vllm' in group_names"
+      tags: [llm, llm_vllm, vllm, vllm_install]
     # Port-based vLLM roles - each checks model_config.yml for assigned models
     - role: vllm_8000
       when: "'vllm' in group_names"

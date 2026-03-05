@@ -70,6 +70,19 @@ def main():
         model_name = model_entry.get('model_name', '')
         provider = model_entry.get('provider', '').lower()
         config = model_configs.get(model_name, {})
+        
+        # Fallback: if model_name not found, search by model_key field
+        # This handles cases where model_config.yml was generated with different
+        # model names (e.g. old Qwen3 vs new Qwen3.5) but the model_key matches
+        if not config:
+            for cfg_model_name, cfg_entry in model_configs.items():
+                if cfg_entry.get('model_key') == model_key:
+                    config = cfg_entry
+                    model_name = cfg_model_name
+                    print("DEBUG: Matched purpose '{}' to config entry '{}' via model_key '{}'".format(
+                        purpose, cfg_model_name, model_key), file=sys.stderr)
+                    break
+        
         config_provider = config.get('provider', '').lower()
         
         # Debug logging for chat purposes

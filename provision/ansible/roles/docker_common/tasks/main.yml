@@ -4,17 +4,26 @@
 # This role provides wrapper tasks for Docker Compose operations.
 # Include this role to set up Docker prerequisites before service deployment.
 
+- name: Sanitize Docker config (macOS keychain workaround)
+  ansible.builtin.include_tasks: sanitize_docker_config.yml
+
 - name: Verify Docker is installed
   ansible.builtin.command: docker --version
   register: docker_version
   changed_when: false
   failed_when: docker_version.rc != 0
+  environment:
+    DOCKER_CONFIG: "{{ _docker_config_override }}"
+    DOCKER_HOST: "{{ lookup('env', 'DOCKER_HOST') | default('', true) }}"
 
 - name: Verify Docker Compose is available
   ansible.builtin.command: docker compose version
   register: docker_compose_version
   changed_when: false
   failed_when: docker_compose_version.rc != 0
+  environment:
+    DOCKER_CONFIG: "{{ _docker_config_override }}"
+    DOCKER_HOST: "{{ lookup('env', 'DOCKER_HOST') | default('', true) }}"
 
 - name: Display Docker versions
   ansible.builtin.debug:

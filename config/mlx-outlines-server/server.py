@@ -315,7 +315,7 @@ def main():
     parser.add_argument("--model", required=True, help="HuggingFace model path")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--trust-remote-code", action="store_true", default=True)
+    parser.add_argument("--trust-remote-code", action="store_true", default=False)
     args = parser.parse_args()
 
     global _holder
