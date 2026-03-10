@@ -192,6 +192,7 @@ TOOL_SCOPES: Dict[str, List[str]] = {
     "document_search": ["search.read"],
     "web_search": [],  # No auth needed
     "web_scraper": [],  # No auth needed
+    "playwright_browser": [],  # No auth needed
     "data_document": ["data.write"],
     "list_data_documents": ["data.read"],
     "query_data": ["data.read"],
@@ -311,6 +312,13 @@ def _register_builtin_tools():
     ToolRegistry.register("document_search", search_documents, DocumentSearchOutput)
     ToolRegistry.register("web_search", search_web, WebSearchOutput)
     ToolRegistry.register("web_scraper", scrape_webpage, WebScraperOutput)
+    
+    try:
+        from app.tools.playwright_tool import browse_webpage as playwright_browse, PlaywrightBrowserOutput
+        ToolRegistry.register("playwright_browser", playwright_browse, PlaywrightBrowserOutput)
+    except ImportError as e:
+        logger.warning(f"Could not register playwright_browser tool: {e}")
+    
     ToolRegistry.register("get_weather", get_weather, WeatherOutput)
     ToolRegistry.register("generate_image", generate_image, ImageOutput)
     ToolRegistry.register("transcribe_audio", transcribe_audio, TranscriptionOutput)
