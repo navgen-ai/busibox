@@ -45,6 +45,7 @@ _common_env: &common_env
   SSO_TOKEN_EXPIRY: "900"
   DATA_API_HOST: "{{ data_ip }}"
   DATA_API_PORT: "8002"
+  CONFIG_API_URL: "http://{{ authz_ip }}:{{ config_api_port | default(8012) }}"
 
 # Common secrets shared by most apps
 _common_secrets: &common_secrets

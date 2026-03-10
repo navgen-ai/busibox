@@ -56,6 +56,8 @@ INFRASTRUCTURE_ANSIBLE_MAP = {
     'authz': ('authz', ['authz'], 'AuthZ API'),  # alias
     'deploy-api': ('authz', ['deploy_api'], 'Deploy API'),
     'deploy': ('authz', ['deploy_api'], 'Deploy API'),  # alias
+    'config-api': ('authz', ['config_api'], 'Config API'),
+    'config': ('authz', ['config_api'], 'Config API'),  # alias
     'docs-api': ('agent', ['docs_api'], 'Docs API'),
     'docs': ('agent', ['docs_api'], 'Docs API'),  # alias
     
@@ -97,7 +99,7 @@ INSTALLATION_ORDER = [
     ['embedding-api'],  # Embedding first (data-api depends on it)
     ['data-api'],       # Data API (depends on redis, minio, postgres, embedding)
     ['search-api'],     # Search API (depends on milvus)
-    ['authz-api', 'deploy-api'],  # Auth services
+    ['authz-api', 'deploy-api', 'config-api'],  # Auth + config services
     ['agent-api', 'docs-api', 'bridge'],  # Agent services + Bridge
     
     # Group 6: Apps (need all APIs)

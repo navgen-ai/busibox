@@ -1,0 +1,21 @@
+[Unit]
+Description=Busibox Config API
+After=network.target authz-api.service
+
+[Service]
+User=root
+Group=root
+WorkingDirectory={{ config_api_app_dir }}
+EnvironmentFile={{ config_api_base_dir }}/.env
+Environment="PYTHONPATH={{ config_api_app_dir }}/src"
+ExecStart={{ config_api_venv_dir }}/bin/uvicorn src.main:app --host 0.0.0.0 --port {{ config_api_service_port }}
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{ config_api_base_dir }}
+
+[Install]
+WantedBy=multi-user.target

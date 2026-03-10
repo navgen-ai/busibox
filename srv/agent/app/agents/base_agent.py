@@ -46,6 +46,108 @@ logger = logging.getLogger(__name__)
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
+# ---------------------------------------------------------------------------
+# Model capabilities cache – queried from LiteLLM /model/info once per model
+# ---------------------------------------------------------------------------
+_model_capabilities_cache: Dict[str, Dict[str, Any]] = {}
+_model_capabilities_lock = asyncio.Lock()
+_MODEL_CAPS_DEFAULT_MAX_OUTPUT = 16384  # generous fallback
+
+
+async def _get_model_max_output_tokens(model_name: str) -> int:
+    """Return the max output token budget for *model_name*.
+
+    Queries LiteLLM ``/model/info`` on the first call per model name and
+    caches the result for the process lifetime.  Falls back to
+    ``_MODEL_CAPS_DEFAULT_MAX_OUTPUT`` if the proxy is unreachable or the
+    model entry doesn't advertise output limits.
+    """
+    if model_name in _model_capabilities_cache:
+        return _model_capabilities_cache[model_name].get(
+            "max_output_tokens", _MODEL_CAPS_DEFAULT_MAX_OUTPUT
+        )
+
+    async with _model_capabilities_lock:
+        # Double-check after acquiring lock
+        if model_name in _model_capabilities_cache:
+            return _model_capabilities_cache[model_name].get(
+                "max_output_tokens", _MODEL_CAPS_DEFAULT_MAX_OUTPUT
+            )
+
+        caps: Dict[str, Any] = {}
+        try:
+            import httpx
+
+            settings = get_settings()
+            base_url = str(settings.litellm_base_url).rstrip("/")
+            # Strip /v1 suffix – /model/info lives on the proxy root
+            if base_url.endswith("/v1"):
+                base_url = base_url[:-3]
+            headers: Dict[str, str] = {"Content-Type": "application/json"}
+            if settings.litellm_api_key:
+                headers["Authorization"] = f"Bearer {settings.litellm_api_key}"
+
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(f"{base_url}/model/info", headers=headers)
+                if resp.status_code == 200:
+                    for entry in resp.json().get("data", []):
+                        entry_name = entry.get("model_name", "")
+                        info = entry.get("model_info", {}) or {}
+                        litellm_params = entry.get("litellm_params", {}) or {}
+                        entry_caps: Dict[str, Any] = {}
+
+                        # max_output_tokens: check model_info first, then
+                        # litellm_params, then derive from max_model_len
+                        max_out = (
+                            info.get("max_output_tokens")
+                            or info.get("max_tokens")
+                            or litellm_params.get("max_tokens")
+                        )
+                        if max_out:
+                            entry_caps["max_output_tokens"] = int(max_out)
+
+                        ctx_window = info.get("max_model_len") or info.get("max_input_tokens")
+                        if ctx_window:
+                            entry_caps["context_window"] = int(ctx_window)
+                            if "max_output_tokens" not in entry_caps:
+                                # Heuristic: allow up to half the context window
+                                # for output, capped at 32k
+                                entry_caps["max_output_tokens"] = min(
+                                    int(ctx_window) // 2, 32768
+                                )
+
+                        if not entry_caps.get("max_output_tokens"):
+                            entry_caps["max_output_tokens"] = _MODEL_CAPS_DEFAULT_MAX_OUTPUT
+
+                        _model_capabilities_cache[entry_name] = entry_caps
+
+                    logger.info(
+                        "Model capabilities cache populated",
+                        extra={
+                            "model_count": len(_model_capabilities_cache),
+                            "models": list(_model_capabilities_cache.keys()),
+                        },
+                    )
+                else:
+                    logger.warning(
+                        "LiteLLM /model/info returned non-200",
+                        extra={"status": resp.status_code},
+                    )
+        except Exception as exc:
+            logger.warning(
+                "Failed to query LiteLLM /model/info for model capabilities",
+                extra={"error": str(exc)},
+            )
+
+        if model_name not in _model_capabilities_cache:
+            _model_capabilities_cache[model_name] = {
+                "max_output_tokens": _MODEL_CAPS_DEFAULT_MAX_OUTPUT,
+            }
+
+        return _model_capabilities_cache[model_name].get(
+            "max_output_tokens", _MODEL_CAPS_DEFAULT_MAX_OUTPUT
+        )
+
 
 def _ensure_openai_env():
     """
@@ -1573,7 +1675,7 @@ class BaseStreamingAgent(StreamingAgent):
         json_schema = response_schema.get("schema", response_schema)
 
         if max_tokens is None:
-            max_tokens = 32768
+            max_tokens = await _get_model_max_output_tokens(model_name)
 
         effective_prompt = "/no_think\n" + prompt
 

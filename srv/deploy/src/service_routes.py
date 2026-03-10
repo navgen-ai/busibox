@@ -1226,6 +1226,8 @@ async def start_service_sse(
                         'embedding': ('embedding-api', 'embedding'),  # alias
                         'deploy-api': ('deploy-api', 'deploy-api'),  # authz-lxc
                         'deploy': ('deploy-api', 'deploy-api'),  # alias
+                        'config-api': ('authz-api', 'config-api'),  # authz-lxc (co-located)
+                        'config': ('authz-api', 'config-api'),  # alias
                         'docs-api': ('docs-api', 'docs-api'),  # milvus-lxc
                         'docs': ('docs-api', 'docs-api'),  # alias
                         'bridge-api': ('bridge-api', 'bridge'),  # bridge-lxc
