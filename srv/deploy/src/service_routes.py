@@ -764,6 +764,40 @@ async def check_service_health(
         }
         
         if service not in health_config:
+            # Unknown service but endpoint looks like a routable path — try via nginx
+            # (handles deployed external apps that are proxied through nginx)
+            if endpoint and endpoint.startswith('/'):
+                nginx_host = os.getenv('NGINX_HOST', 'nginx')
+                nginx_public_url = os.getenv('NGINX_PUBLIC_URL', '')
+                headers = {}
+                if nginx_public_url:
+                    from urllib.parse import urlparse
+                    parsed = urlparse(nginx_public_url)
+                    if parsed.netloc:
+                        headers['Host'] = parsed.netloc
+                url = f"https://{nginx_host}{endpoint}"
+                logger.info(f"Unknown service {service}, trying nginx fallback: {url}")
+                try:
+                    async with httpx.AsyncClient(verify=False) as client:
+                        response = await client.get(url, headers=headers or None, timeout=5.0)
+                        healthy = response.status_code == 200
+                        return {
+                            "healthy": healthy,
+                            "service": service,
+                            "url": url,
+                            "status_code": response.status_code,
+                            "reason": "nginx_fallback",
+                        }
+                except Exception as e:
+                    logger.warning(f"Nginx fallback health check failed for {service}: {e}")
+                    return {
+                        "healthy": False,
+                        "service": service,
+                        "url": url,
+                        "error": str(e),
+                        "reason": "nginx_fallback_error",
+                    }
+
             logger.warning(f"Unknown service {service}, no health check configured")
             return {
                 "healthy": False,
