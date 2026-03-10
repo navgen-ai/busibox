@@ -54,6 +54,8 @@ PROXMOX_SERVICE_MAP = {
     'embedding': ('embedding-api', 'embedding'),  # alias
     'deploy-api': ('deploy-api', 'deploy-api'),  # authz-lxc
     'deploy': ('deploy-api', 'deploy-api'),  # alias
+    'config-api': ('authz-api', 'config-api'),  # authz-lxc (co-located with authz)
+    'config': ('authz-api', 'config-api'),  # alias
     'docs-api': ('docs-api', 'docs-api'),  # milvus-lxc
     'docs': ('docs-api', 'docs-api'),  # alias
     'nginx': ('nginx', 'nginx'),  # proxy-lxc

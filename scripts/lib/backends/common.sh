@@ -64,7 +64,7 @@ backend_get_services_for_group() {
             fi
             ;;
         "APIs")
-            echo "deploy authz agent data embedding search bridge docs"
+            echo "deploy authz agent data embedding search bridge docs config"
             ;;
         "LLM")
             if [[ "$backend" == "k8s" ]]; then
@@ -130,6 +130,7 @@ get_container_for_service() {
         data-worker) echo "data-worker" ;;
         search|search-api) echo "search-api" ;;
         deploy|deploy-api) echo "deploy-api" ;;
+        config|config-api) echo "config-api" ;;
         bridge|bridge-api) echo "bridge-api" ;;
         docs|docs-api) echo "docs-api" ;;
         embedding|embedding-api) echo "embedding-api" ;;
@@ -175,6 +176,7 @@ get_k8s_image_name() {
         ingest|data|data-api) echo "data-api" ;;
         search|search-api) echo "search-api" ;;
         deploy|deploy-api) echo "deploy-api" ;;
+        config|config-api) echo "config-api" ;;
         bridge|bridge-api) echo "bridge-api" ;;
         docs|docs-api) echo "docs-api" ;;
         embedding|embedding-api) echo "embedding-api" ;;
@@ -201,6 +203,7 @@ get_ansible_tag() {
         agent*) echo "agent" ;;
         ingest*|data*) echo "data" ;;
         search*) echo "search" ;;
+        config|config-api) echo "config" ;;
         deploy*) echo "deploy" ;;
         docs*) echo "docs" ;;
         embedding*) echo "embedding" ;;
@@ -230,6 +233,7 @@ get_proxmox_make_target() {
         data-worker) echo "data" ;;
         search|search-api) echo "search-api" ;;
         deploy|deploy-api) echo "deploy-api" ;;
+        config|config-api) echo "config-api" ;;
         bridge|bridge-api) echo "bridge" ;;
         docs|docs-api) echo "docs" ;;
         embedding|embedding-api) echo "embedding-api" ;;

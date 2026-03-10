@@ -65,6 +65,7 @@ get_ansible_tag() {
             data|ingest|data-api|data-worker) echo "data" ;;
             search|search-api) echo "apis_search" ;;
             deploy|deploy-api) echo "deploy_api" ;;
+            config|config-api) echo "config_api" ;;
             bridge|bridge-api) echo "bridge" ;;
             docs|docs-api) echo "docs_api" ;;
             embedding|embedding-api) echo "embedding" ;;
@@ -99,6 +100,7 @@ get_ansible_tag() {
             data|ingest|data-api|data-worker) echo "data" ;;
             search|search-api) echo "search" ;;
             deploy|deploy-api) echo "deploy" ;;
+            config|config-api) echo "config" ;;
             bridge|bridge-api) echo "bridge" ;;
             docs|docs-api) echo "docs" ;;
             embedding|embedding-api) echo "embedding" ;;
@@ -147,7 +149,7 @@ expand_services() {
                 expanded="${expanded} postgres redis minio milvus neo4j"
                 ;;
             apis)
-                expanded="${expanded} authz embedding data search agent deploy bridge docs"
+                expanded="${expanded} authz embedding data search agent deploy config bridge docs"
                 ;;
             llm)
                 expanded="${expanded} litellm"
@@ -156,7 +158,7 @@ expand_services() {
                 expanded="${expanded} core-apps nginx"
                 ;;
             all)
-                expanded="${expanded} postgres redis minio milvus neo4j authz embedding data search agent deploy bridge docs litellm core-apps nginx"
+                expanded="${expanded} postgres redis minio milvus neo4j authz embedding data search agent deploy config bridge docs litellm core-apps nginx"
                 ;;
             *)
                 expanded="${expanded} ${svc}"
