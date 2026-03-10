@@ -440,7 +440,7 @@ services:
       AUTHZ_RSA_KEY_SIZE: 2048
       AUTHZ_MASTER_KEY: ${AUTHZ_MASTER_KEY:-local-master-key-change-in-production}
       # Bootstrap client (busibox-portal)
-      AUTHZ_BOOTSTRAP_ALLOWED_AUDIENCES: data-api,search-api,agent-api,authz-api
+      AUTHZ_BOOTSTRAP_ALLOWED_AUDIENCES: data-api,search-api,agent-api,authz-api,config-api
       AUTHZ_BOOTSTRAP_ALLOWED_SCOPES: read,write,search.read,data.write,data.read,agent.execute
       # Admin users to bootstrap on startup (comma-separated)
       ADMIN_EMAILS: ${ADMIN_EMAILS:-${ADMIN_EMAIL:-}}
@@ -1079,6 +1079,51 @@ services:
     restart: unless-stopped
     networks:
       - busibox-net
+
+  # Config API - Centralised Configuration Service
+  # Provides tiered config access: public (branding), authenticated (app registry),
+  # app-scoped (secrets), and admin (full CRUD). Replaces config in deploy-api and data-api.
+  config-api:
+    build:
+      context: ./srv
+      dockerfile: config/Dockerfile
+      labels:
+        - "version=${GIT_COMMIT:-unknown}"
+    container_name: ${CONTAINER_PREFIX:-dev}-config-api
+    hostname: config-api
+    labels:
+      - "version=${GIT_COMMIT:-unknown}"
+    volumes:
+      - ./srv/config/src:/app/src:ro
+    command: ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8012", "--reload", "--reload-dir", "/app/src"]
+    environment:
+      CONFIG_PORT: 8012
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: config
+      POSTGRES_USER: ${POSTGRES_USER:-busibox_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      AUTHZ_BASE_URL: http://authz-api:8010
+      CONFIG_ENCRYPTION_KEY: ${CONFIG_ENCRYPTION_KEY:-dev-encryption-key}
+    ports:
+      - "8012:8012"
+    depends_on:
+      authz-api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8012/health/live')"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      busibox-net:
+        aliases:
+          - config-api
+          - config
 
 # ===========================================================================
   # USER APPS CONTAINER
