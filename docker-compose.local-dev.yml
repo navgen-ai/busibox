@@ -97,6 +97,8 @@ services:
       # Deployment Service - internal container URL for server-side deployment
       DEPLOYMENT_SERVICE_URL: http://deploy-api:8011/api/v1/deployment
       DEPLOY_API_URL: http://deploy-api:8011
+      # Config API - centralised configuration service
+      CONFIG_API_URL: http://config-api:8012
       # Bridge API - email sending and multi-channel communication
       BRIDGE_API_URL: http://bridge-api:8081
       # Host Agent (for MLX control on Apple Silicon)

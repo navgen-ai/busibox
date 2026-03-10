@@ -7,7 +7,7 @@
 --
 -- Architecture:
 --   Production/Staging User: busibox_user
---     - Connects to: agent, authz, data, busibox, ai_portal
+--     - Connects to: agent, authz, config, data, busibox, ai_portal
 --   
 --   Pytest Test User: busibox_test_user
 --     - Connects to: agent, authz, data (SAME names, different owner)
@@ -66,6 +66,10 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'authz')\gexec
 SELECT 'CREATE DATABASE data OWNER busibox_user'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'data')\gexec
 
+-- Create config database (for config-api service)
+SELECT 'CREATE DATABASE config OWNER busibox_user'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'config')\gexec
+
 -- Create litellm database (for LiteLLM proxy caching and usage tracking)
 SELECT 'CREATE DATABASE litellm OWNER busibox_user'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'litellm')\gexec
@@ -96,6 +100,7 @@ GRANT ALL PRIVILEGES ON DATABASE busibox TO busibox_user;
 GRANT ALL PRIVILEGES ON DATABASE ai_portal TO busibox_user;
 GRANT ALL PRIVILEGES ON DATABASE agent TO busibox_user;
 GRANT ALL PRIVILEGES ON DATABASE authz TO busibox_user;
+GRANT ALL PRIVILEGES ON DATABASE config TO busibox_user;
 GRANT ALL PRIVILEGES ON DATABASE data TO busibox_user;
 
 -- Test databases
@@ -132,6 +137,19 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO busibox_
 -- AUTHZ DATABASE SETUP (production)
 -- =============================================================================
 \c authz
+
+GRANT ALL ON SCHEMA public TO busibox_user;
+GRANT CREATE ON SCHEMA public TO busibox_user;
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO busibox_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO busibox_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO busibox_user;
+
+-- =============================================================================
+-- CONFIG DATABASE SETUP (production)
+-- =============================================================================
+\c config
 
 GRANT ALL ON SCHEMA public TO busibox_user;
 GRANT CREATE ON SCHEMA public TO busibox_user;

@@ -785,6 +785,7 @@ class CreateTriggerRequest(BaseModel):
     )
     delegation_token: Optional[str] = Field(None, alias="delegationToken", description="Pre-authorized token for agent execution")
     delegation_scopes: Optional[List[str]] = Field(None, alias="delegationScopes", description="Scopes for delegation token")
+    run_at_pass: Optional[List[int]] = Field(None, alias="runAtPass", description="Pipeline pass numbers at which to fire (default [3])")
     
     class Config:
         populate_by_name = True
@@ -936,6 +937,7 @@ async def create_library_trigger(
             description=body.description,
             delegation_token=body.delegation_token,
             delegation_scopes=body.delegation_scopes,
+            run_at_pass=body.run_at_pass,
         )
         return JSONResponse(
             status_code=http_status.HTTP_201_CREATED,

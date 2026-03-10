@@ -762,6 +762,7 @@ class PostgresService:
         description: Optional[str] = None,
         delegation_token: Optional[str] = None,
         delegation_scopes: Optional[List] = None,
+        run_at_pass: Optional[List[int]] = None,
     ) -> Dict:
         """Create a library trigger that fires when docs complete in a library."""
         trigger_id = uuid.uuid4()
@@ -771,8 +772,8 @@ class PostgresService:
                 INSERT INTO library_triggers (
                     id, library_id, name, description, trigger_type, agent_id, prompt,
                     schema_document_id, notification_config, is_active, created_by,
-                    delegation_token, delegation_scopes
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, $10, $11, $12)
+                    delegation_token, delegation_scopes, run_at_pass
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, $10, $11, $12, $13)
             """,
                 trigger_id,
                 uuid.UUID(library_id),
@@ -786,6 +787,7 @@ class PostgresService:
                 uuid.UUID(created_by),
                 delegation_token,
                 json.dumps(delegation_scopes or []),
+                json.dumps(run_at_pass) if run_at_pass is not None else None,
             )
             
             row = await conn.fetchrow(
