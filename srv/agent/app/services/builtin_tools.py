@@ -206,6 +206,60 @@ BUILTIN_TOOL_METADATA = {
             }
         }
     },
+    "playwright_tool": {
+        "name": "playwright_browser",
+        "description": "Browse a web page using a full headless browser with JavaScript support. Handles JS-rendered pages, SPAs, and interactive sites.",
+        "entrypoint": "app.tools.playwright_tool:browse_webpage",
+        "scopes": [],
+        "version": 1,
+        "schema": {
+            "input": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL of the web page to browse"
+                    },
+                    "wait_for_selector": {
+                        "type": "string",
+                        "description": "CSS selector to wait for before extracting content"
+                    },
+                    "actions": {
+                        "type": "array",
+                        "description": "List of actions: click(selector), type(selector, text), scroll, wait(ms)"
+                    },
+                    "extract_links": {
+                        "type": "boolean",
+                        "description": "Whether to extract links from the page",
+                        "default": False
+                    },
+                    "screenshot": {
+                        "type": "boolean",
+                        "description": "Whether to take a screenshot",
+                        "default": False
+                    },
+                    "max_content_length": {
+                        "type": "integer",
+                        "description": "Maximum characters to return (default: 15000)",
+                        "default": 15000
+                    }
+                },
+                "required": ["url"]
+            },
+            "output": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean", "description": "Whether the page was successfully loaded"},
+                    "url": {"type": "string", "description": "The URL that was browsed"},
+                    "title": {"type": "string", "description": "Page title"},
+                    "content": {"type": "string", "description": "Extracted text content"},
+                    "links": {"type": "array", "description": "Extracted links (if requested)"},
+                    "screenshot_path": {"type": "string", "description": "Path to screenshot (if taken)"},
+                    "error": {"type": "string", "description": "Error message if browsing failed"}
+                }
+            }
+        }
+    },
     # Data management tools for structured data documents
     "data_tool_create": {
         "name": "create_data_document",
@@ -844,6 +898,7 @@ def get_tool_executor(tool_name: str) -> Optional[Callable]:
         "get_weather": ("app.tools.weather_tool", "get_weather"),
         "data_document": ("app.tools.data_tool", "data_document"),
         "web_scraper": ("app.tools.web_scraper_tool", "scrape_webpage"),
+        "playwright_browser": ("app.tools.playwright_tool", "browse_webpage"),
         # Data management tools
         "create_data_document": ("app.tools.data_tool", "create_data_document"),
         "query_data": ("app.tools.data_tool", "query_data"),
@@ -903,6 +958,7 @@ def get_tool_object(tool_name: str) -> Optional[Any]:
         "get_weather": ("app.tools.weather_tool", "weather_tool"),
         "data_document": ("app.tools.ingestion_tool", "data_tool"),
         "web_scraper": ("app.tools.web_scraper_tool", "web_scraper_tool"),
+        "playwright_browser": ("app.tools.playwright_tool", "playwright_browser_tool"),
         # Data management tools
         "create_data_document": ("app.tools.data_tool", "create_data_document_tool"),
         "query_data": ("app.tools.data_tool", "query_data_tool"),
