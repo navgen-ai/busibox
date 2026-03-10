@@ -1,0 +1,6 @@
+---
+- name: Restart config-api service
+  systemd:
+    name: "{{ config_api_service_name }}"
+    state: restarted
+    daemon_reload: true

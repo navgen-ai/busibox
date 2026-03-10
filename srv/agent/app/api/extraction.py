@@ -522,7 +522,23 @@ def _get_app_only_fields(schema_obj: Dict[str, Any]) -> List[str]:
     ]
 
 
-def _build_records_response_schema(schema_obj: Dict[str, Any], max_records: int = 5) -> Dict[str, Any]:
+def _build_records_response_schema(
+    schema_obj: Dict[str, Any],
+    max_records: Optional[int] = None,
+    field_names: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Build the JSON Schema that constrains the LLM's structured output.
+
+    Args:
+        schema_obj: The full extraction schema (with ``fields``, etc.).
+        max_records: Override for the maximum number of records.  When *None*
+            the value is read from ``schema_obj.get("maxRecords", 5)``.
+        field_names: If given, only include these fields in the per-record
+            schema (used by grouped / retry extraction).
+    """
+    if max_records is None:
+        max_records = int(schema_obj.get("maxRecords", 5)) if isinstance(schema_obj, dict) else 5
+
     fields = schema_obj.get("fields", {}) if isinstance(schema_obj, dict) else {}
     record_properties: Dict[str, Any] = {}
 
@@ -532,16 +548,10 @@ def _build_records_response_schema(schema_obj: Dict[str, Any], max_records: int 
                 continue
             if field_def.get("appOnly"):
                 continue
+            if field_names is not None and field_name not in field_names:
+                continue
             record_properties[field_name] = _map_field_type_to_json_schema(field_def)
 
-    # Never mark individual record fields as required in the response schema.
-    # With strict structured output, a required field the LLM can't populate
-    # forces it to return an empty records array instead of a partial record.
-    # Required-field validation is handled server-side in
-    # _validate_and_enrich_records where it can be lenient.
-    #
-    # Use additionalProperties: False to prevent local LLMs (vLLM/Outlines)
-    # from encoding records as stringified JSON inside the array.
     record_schema: Dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
@@ -566,50 +576,80 @@ def _build_records_response_schema(schema_obj: Dict[str, Any], max_records: int 
     }
 
 
-def _estimate_max_tokens_for_response_schema(response_schema: Dict[str, Any]) -> int:
-    """
-    Estimate max_tokens budget from structured response schema complexity.
-    Goal: avoid truncation while keeping costs bounded.
-    """
-    try:
-        schema = response_schema.get("schema", {}) if isinstance(response_schema, dict) else {}
-        records_def = ((schema.get("properties") or {}).get("records") or {})
-        record_max_items = int(records_def.get("maxItems", 1) or 1)
-        record_items = records_def.get("items", {}) if isinstance(records_def, dict) else {}
-        record_props = record_items.get("properties", {}) if isinstance(record_items, dict) else {}
+def _get_max_records(schema_obj: Dict[str, Any]) -> int:
+    """Read the expected record cardinality from the schema."""
+    if isinstance(schema_obj, dict):
+        return int(schema_obj.get("maxRecords", 5))
+    return 5
 
-        # Estimate chars for one record from field definitions
-        per_record_chars = 64  # JSON overhead per object
-        for _, prop in record_props.items():
-            if not isinstance(prop, dict):
-                continue
-            ptype = prop.get("type")
-            if ptype == "string":
-                per_record_chars += min(int(prop.get("maxLength", 120) or 120), 120) + 8
-            elif ptype in ("integer", "number", "boolean"):
-                per_record_chars += 16
-            elif ptype == "array":
-                items = prop.get("items", {}) if isinstance(prop.get("items"), dict) else {}
-                item_type = items.get("type", "string")
-                max_items = min(int(prop.get("maxItems", 10) or 10), 30)
-                if item_type == "string":
-                    max_len = min(int(items.get("maxLength", 60) or 60), 120)
-                    per_record_chars += max_items * (max_len + 4)
-                elif item_type == "object":
-                    per_record_chars += max_items * 120
-                else:
-                    per_record_chars += max_items * 12
-            else:
-                per_record_chars += 40
 
-        total_chars = 64 + (record_max_items * per_record_chars)
-        # ~3.5 chars/token + safety buffer for formatting/completions
-        estimated_tokens = int(math.ceil(total_chars / 3.5) + 300)
-        # Keep within practical boundaries — 4096 is sufficient for extraction
-        # without provenance, even for schemas with many fields.
-        return max(1200, min(4096, estimated_tokens))
-    except Exception:
-        return 2400
+# ---------------------------------------------------------------------------
+# Field grouping for tier-2 grouped extraction
+# ---------------------------------------------------------------------------
+MAX_SCALAR_GROUP_SIZE = 5  # max simple fields per extraction group
+
+
+def _group_fields_for_extraction(
+    schema_obj: Dict[str, Any],
+) -> List[List[str]]:
+    """Group non-appOnly fields into extraction batches.
+
+    Heuristic:
+    * Array-of-object fields get their own group (they are large/complex).
+    * Remaining fields are batched by ``display_order`` proximity, with up
+      to ``MAX_SCALAR_GROUP_SIZE`` simple fields per group.
+    """
+    fields = schema_obj.get("fields", {}) if isinstance(schema_obj, dict) else {}
+    if not isinstance(fields, dict):
+        return []
+
+    complex_groups: List[List[str]] = []
+    simple_fields: List[Tuple[int, str]] = []
+
+    for name, fdef in fields.items():
+        if not isinstance(fdef, dict) or fdef.get("appOnly"):
+            continue
+        ftype = fdef.get("type", "string")
+        items_def = fdef.get("items", {}) if isinstance(fdef.get("items"), dict) else {}
+        is_complex_array = ftype == "array" and items_def.get("type") == "object"
+
+        if is_complex_array:
+            complex_groups.append([name])
+        else:
+            order = int(fdef.get("display_order", 999))
+            simple_fields.append((order, name))
+
+    simple_fields.sort()
+
+    groups: List[List[str]] = []
+    current_group: List[str] = []
+    for _, name in simple_fields:
+        current_group.append(name)
+        if len(current_group) >= MAX_SCALAR_GROUP_SIZE:
+            groups.append(current_group)
+            current_group = []
+    if current_group:
+        groups.append(current_group)
+
+    return groups + complex_groups
+
+
+def _identify_missing_fields(
+    record: Dict[str, Any],
+    schema_obj: Dict[str, Any],
+) -> List[str]:
+    """Return field names that are null / absent in *record* but defined in the schema."""
+    fields = schema_obj.get("fields", {}) if isinstance(schema_obj, dict) else {}
+    missing: List[str] = []
+    for name, fdef in fields.items():
+        if not isinstance(fdef, dict) or fdef.get("appOnly"):
+            continue
+        val = record.get(name)
+        if val is None:
+            missing.append(name)
+        elif isinstance(val, (list, dict)) and not val:
+            missing.append(name)
+    return missing
 
 
 def _clean_markdown_for_extraction(markdown: str) -> str:
@@ -1049,9 +1089,18 @@ def _build_extraction_prompt(
     markdown: str,
     instructions: str,
     compact_mode: bool,
+    max_records: int = 5,
 ) -> str:
+    cardinality_hint = ""
+    if max_records == 1:
+        cardinality_hint = (
+            "This document describes exactly ONE entity. "
+            "Return exactly one record in the records array. "
+        )
+
     mode_instructions = (
         "Return ONLY valid JSON with shape {\"records\":[...]} and no markdown/prose. "
+        f"{cardinality_hint}"
         "If a field is not present in the document, omit it or set null — do NOT return an empty records array just because some fields are missing. "
         "Always extract at least one record if the document contains ANY relevant data. "
         "Ignore the 'required' flags in the schema; extract whatever you can find. "
@@ -1062,6 +1111,7 @@ def _build_extraction_prompt(
         if compact_mode
         else (
             "Return strict JSON with shape {\"records\":[...]} and no markdown/prose. "
+            f"{cardinality_hint}"
             "If a field is not present in the document, omit it or set null — do NOT return an empty records array just because some fields are missing. "
             "Always extract at least one record if the document contains ANY relevant data. "
             "Ignore the 'required' flags in the schema; extract whatever you can find. "
@@ -1577,7 +1627,6 @@ async def _run_tier2_rag_extraction(
     context_tokens = _estimate_markdown_tokens(assembled_context)
 
     relaxed_schema, relaxed_response = _relax_schema_for_chunked(schema_obj, response_schema)
-    estimated_max = _estimate_max_tokens_for_response_schema(relaxed_response)
 
     if context_tokens <= RAG_CONTEXT_MAX_TOKENS:
         _extraction_tasks[task_id]["step"] = "tier2_rag_extraction"
@@ -1597,7 +1646,6 @@ async def _run_tier2_rag_extraction(
                 payload={
                     "prompt": prompt,
                     "response_schema": relaxed_response,
-                    "max_tokens": estimated_max,
                 },
                 scopes=["agent.execute", "data.read", "data.write", "search.read", "graph.read", "graph.write"],
                 purpose="structured-extraction-rag",
@@ -1649,7 +1697,6 @@ async def _run_tier2_rag_extraction(
                     payload={
                         "prompt": prompt,
                         "response_schema": relaxed_response,
-                        "max_tokens": estimated_max,
                     },
                     scopes=["agent.execute", "data.read", "data.write", "search.read", "graph.read", "graph.write"],
                     purpose=f"structured-extraction-rag-window-{window_idx}",
@@ -1670,6 +1717,165 @@ async def _run_tier2_rag_extraction(
 
     logger.info("Tier 2 RAG multi-window extraction complete", extra={"window_count": len(windows), "total_records": len(all_records)})
     return all_records
+
+
+async def _run_tier2_grouped_extraction(
+    *,
+    task_id: str,
+    payload: ExtractRequest,
+    principal: Principal,
+    client: BusiboxClient,
+    schema_obj: Dict[str, Any],
+    schema_doc: Dict[str, Any],
+    agent_uuid: uuid.UUID,
+    instructions: str,
+    response_schema: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Tier 2 grouped extraction for long documents.
+
+    Groups related fields, retrieves relevant chunks per group via search,
+    runs one LLM call per group in parallel, then merges all results into a
+    single record.
+    """
+    _extraction_tasks[task_id]["step"] = "tier2_grouped_retrieval"
+
+    try:
+        search_api_token = await get_service_token(
+            user_token=principal.token,
+            user_id=principal.sub,
+            target_audience="search-api",
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to get search-api token: {exc}") from exc
+
+    search_client = BusiboxClient(search_api_token)
+    effective_schema = schema_obj if isinstance(schema_obj, dict) else {}
+    fields = effective_schema.get("fields", {}) or {}
+    schema_name = schema_doc.get("name")
+    max_records = _get_max_records(effective_schema)
+
+    groups = _group_fields_for_extraction(effective_schema)
+    if not groups:
+        return []
+
+    logger.info(
+        "Tier 2 grouped extraction: field groups",
+        extra={"group_count": len(groups), "groups": [g for g in groups]},
+    )
+
+    semaphore = asyncio.Semaphore(MAX_PARALLEL_CHUNK_RUNS)
+
+    async def _extract_group(group_idx: int, field_names: List[str]) -> Dict[str, Any]:
+        _extraction_tasks[task_id]["step"] = f"tier2_group_{group_idx + 1}_of_{len(groups)}"
+
+        # Search for relevant context for every field in this group
+        search_tasks = []
+        for fname in field_names:
+            fdef = fields.get(fname)
+            if isinstance(fdef, dict):
+                search_tasks.append(
+                    _search_context_for_field(
+                        search_client=search_client,
+                        file_id=payload.file_id,
+                        field_name=fname,
+                        field_def=fdef,
+                        schema_name=schema_name,
+                    )
+                )
+            else:
+                search_tasks.append(asyncio.sleep(0, result=""))
+
+        field_contexts = await asyncio.gather(*search_tasks)
+
+        # Deduplicate and assemble context
+        seen: Dict[str, int] = {}
+        ordered: List[Tuple[int, str]] = []
+        for ctx_text in field_contexts:
+            if not ctx_text:
+                continue
+            for para in ctx_text.split("\n\n"):
+                para = para.strip()
+                if not para or para in seen:
+                    continue
+                order_key = len(seen)
+                chunk_match = re.search(r"chunk\s+(\d+)", para)
+                if chunk_match:
+                    order_key = int(chunk_match.group(1))
+                seen[para] = order_key
+                ordered.append((order_key, para))
+
+        ordered.sort(key=lambda x: x[0])
+        assembled = "\n\n".join(c[1] for c in ordered)
+
+        if not assembled.strip():
+            return {}
+
+        group_response_schema = _build_records_response_schema(
+            effective_schema, max_records=max_records, field_names=field_names,
+        )
+
+        prompt = _build_extraction_prompt(
+            schema_document_id=payload.schema_document_id,
+            file_id=payload.file_id,
+            schema_obj=effective_schema,
+            markdown=assembled,
+            instructions=(
+                f"{instructions}\n"
+                f"Extract ONLY these fields: {', '.join(field_names)}. "
+                "This is a subset of the document (most relevant sections for these fields). "
+                "Ignore all other fields."
+            ),
+            compact_mode=False,
+            max_records=max_records,
+        )
+
+        async with semaphore:
+            async with SessionLocal() as session:
+                run = await create_run(
+                    session=session,
+                    principal=principal,
+                    agent_id=agent_uuid,
+                    payload={
+                        "prompt": prompt,
+                        "response_schema": group_response_schema,
+                    },
+                    scopes=["agent.execute", "data.read", "data.write", "search.read", "graph.read", "graph.write"],
+                    purpose=f"structured-extraction-group-{group_idx}",
+                    agent_tier="complex",
+                )
+
+        if run.status == "succeeded":
+            out = run.output or {}
+            if not isinstance(out, dict):
+                out = {"result": str(out)}
+            recs = _extract_records(out)
+            if recs:
+                return recs[0]
+        return {}
+
+    group_results = await asyncio.gather(
+        *[_extract_group(i, g) for i, g in enumerate(groups)]
+    )
+
+    # Merge all group results into a single record
+    merged: Dict[str, Any] = {}
+    for partial in group_results:
+        for k, v in partial.items():
+            if v is not None and v != "" and v != []:
+                merged[k] = v
+
+    if not merged:
+        return []
+
+    logger.info(
+        "Tier 2 grouped extraction complete",
+        extra={
+            "group_count": len(groups),
+            "merged_field_count": len(merged),
+            "merged_fields": list(merged.keys()),
+        },
+    )
+    return [merged]
 
 
 async def _run_tier3_chunk_sweep(
@@ -1762,7 +1968,6 @@ async def _run_tier3_chunk_sweep(
     )
 
     relaxed_schema, relaxed_response = _relax_schema_for_chunked(schema_obj, response_schema)
-    estimated_max = _estimate_max_tokens_for_response_schema(relaxed_response)
     semaphore = asyncio.Semaphore(MAX_PARALLEL_CHUNK_RUNS)
     all_records: List[Dict[str, Any]] = []
 
@@ -1789,7 +1994,6 @@ async def _run_tier3_chunk_sweep(
                     payload={
                         "prompt": prompt,
                         "response_schema": relaxed_response,
-                        "max_tokens": estimated_max,
                     },
                     scopes=["agent.execute", "data.read", "data.write", "search.read", "graph.read", "graph.write"],
                     purpose=f"structured-extraction-chunk-{window_idx}",
@@ -1834,7 +2038,6 @@ async def _run_extraction_pipeline(
     instructions: str,
     extraction_tier: str,
     response_schema: Dict[str, Any],
-    estimated_max_tokens: int,
 ) -> None:
     """
     Background coroutine that performs LLM extraction, stores records, creates
@@ -1872,8 +2075,9 @@ async def _run_extraction_pipeline(
         )
 
         if extraction_tier == "rag":
+            # Try grouped extraction first (parallel per-group with RAG context)
             try:
-                records = await _run_tier2_rag_extraction(
+                records = await _run_tier2_grouped_extraction(
                     task_id=task_id,
                     payload=payload,
                     principal=principal,
@@ -1885,17 +2089,40 @@ async def _run_extraction_pipeline(
                     response_schema=response_schema,
                 )
                 if records:
-                    records = await _merge_multi_record_results(
-                        records, schema_obj if isinstance(schema_obj, dict) else {},
-                        principal, agent_uuid,
-                    )
-                    output = {"result": "tier2-rag", "tier": "rag"}
-            except Exception as tier2_exc:
+                    output = {"result": "tier2-grouped", "tier": "grouped"}
+            except Exception as grouped_exc:
                 logger.warning(
-                    "Tier 2 RAG extraction failed, falling back to direct",
-                    extra={"error": str(tier2_exc)},
+                    "Tier 2 grouped extraction failed, falling back to RAG",
+                    extra={"error": str(grouped_exc)},
                 )
                 records = []
+
+            # Fall back to original RAG approach if grouped produced nothing
+            if not records:
+                try:
+                    records = await _run_tier2_rag_extraction(
+                        task_id=task_id,
+                        payload=payload,
+                        principal=principal,
+                        client=client,
+                        schema_obj=schema_obj if isinstance(schema_obj, dict) else {},
+                        schema_doc=schema_doc,
+                        agent_uuid=agent_uuid,
+                        instructions=instructions,
+                        response_schema=response_schema,
+                    )
+                    if records:
+                        records = await _merge_multi_record_results(
+                            records, schema_obj if isinstance(schema_obj, dict) else {},
+                            principal, agent_uuid,
+                        )
+                        output = {"result": "tier2-rag", "tier": "rag"}
+                except Exception as tier2_exc:
+                    logger.warning(
+                        "Tier 2 RAG extraction failed, falling back to direct",
+                        extra={"error": str(tier2_exc)},
+                    )
+                    records = []
 
         elif extraction_tier == "chunk_sweep":
             try:
@@ -1924,6 +2151,7 @@ async def _run_extraction_pipeline(
                 markdown = markdown[: TIER1_TOKEN_THRESHOLD * 4]
 
         # Tier 1 (direct) or fallback from failed higher tiers
+        max_records = _get_max_records(schema_obj if isinstance(schema_obj, dict) else {})
         if not records:
             _extraction_tasks[task_id]["step"] = "tier1_direct_extraction"
             prompt = _build_extraction_prompt(
@@ -1933,6 +2161,7 @@ async def _run_extraction_pipeline(
                 markdown=markdown,
                 instructions=instructions,
                 compact_mode=False,
+                max_records=max_records,
             )
             async with SessionLocal() as bg_session:
                 run = await create_run(
@@ -1942,7 +2171,6 @@ async def _run_extraction_pipeline(
                     payload={
                         "prompt": prompt,
                         "response_schema": response_schema,
-                        "max_tokens": estimated_max_tokens,
                     },
                     scopes=["agent.execute", "data.read", "data.write", "search.read", "graph.read", "graph.write"],
                     purpose="structured-extraction-direct",
@@ -1971,6 +2199,71 @@ async def _run_extraction_pipeline(
                 extra={"run_id": str(run.id), "record_count": len(records)},
             )
 
+            # ---- Tier 1 missing-field retry ----
+            # If we got records but some fields are still null, do a
+            # targeted follow-up extracting only the missing fields.
+            if records:
+                effective_schema = schema_obj if isinstance(schema_obj, dict) else {}
+                for rec_idx, rec in enumerate(records):
+                    missing = _identify_missing_fields(rec, effective_schema)
+                    if not missing:
+                        continue
+                    logger.info(
+                        "Tier 1 missing-field retry",
+                        extra={"record_idx": rec_idx, "missing_fields": missing},
+                    )
+                    _extraction_tasks[task_id]["step"] = f"tier1_missing_field_retry_{rec_idx}"
+                    retry_schema = _build_records_response_schema(
+                        effective_schema, max_records=1, field_names=missing,
+                    )
+                    retry_prompt = _build_extraction_prompt(
+                        schema_document_id=payload.schema_document_id,
+                        file_id=payload.file_id,
+                        schema_obj=effective_schema,
+                        markdown=markdown,
+                        instructions=(
+                            f"{instructions}\n"
+                            "Some fields were not extracted in the first pass. "
+                            f"Extract ONLY these fields: {', '.join(missing)}. "
+                            "Return exactly one record with only these fields populated."
+                        ),
+                        compact_mode=False,
+                        max_records=1,
+                    )
+                    async with SessionLocal() as retry_session:
+                        retry_run = await create_run(
+                            session=retry_session,
+                            principal=principal,
+                            agent_id=agent_uuid,
+                            payload={
+                                "prompt": retry_prompt,
+                                "response_schema": retry_schema,
+                            },
+                            scopes=["agent.execute", "data.read", "data.write", "search.read", "graph.read", "graph.write"],
+                            purpose=f"structured-extraction-missing-fields-{rec_idx}",
+                            agent_tier="complex",
+                        )
+                    if retry_run.status == "succeeded":
+                        retry_output = retry_run.output or {}
+                        if not isinstance(retry_output, dict):
+                            retry_output = {"result": str(retry_output)}
+                        retry_recs = _extract_records(retry_output)
+                        if retry_recs:
+                            for field_name in missing:
+                                val = retry_recs[0].get(field_name)
+                                if val is not None and val != "" and val != []:
+                                    rec[field_name] = val
+                            logger.info(
+                                "Tier 1 missing-field retry merged",
+                                extra={
+                                    "record_idx": rec_idx,
+                                    "filled_fields": [
+                                        f for f in missing
+                                        if rec.get(f) is not None and rec.get(f) != "" and rec.get(f) != []
+                                    ],
+                                },
+                            )
+
             if not records:
                 _extraction_tasks[task_id]["step"] = "tier1_retry"
                 retry_prompt = _build_extraction_prompt(
@@ -1984,6 +2277,7 @@ async def _run_extraction_pipeline(
                         "Retry with compact output."
                     ),
                     compact_mode=True,
+                    max_records=max_records,
                 )
                 async with SessionLocal() as retry_session:
                     retry_run = await create_run(
@@ -1993,7 +2287,6 @@ async def _run_extraction_pipeline(
                         payload={
                             "prompt": retry_prompt,
                             "response_schema": response_schema,
-                            "max_tokens": estimated_max_tokens,
                         },
                         scopes=["agent.execute", "data.read", "data.write", "search.read", "graph.read", "graph.write"],
                         purpose="structured-extraction-retry",
@@ -2444,7 +2737,6 @@ async def extract_document(
         )
 
     response_schema = _build_records_response_schema(schema_obj if isinstance(schema_obj, dict) else {})
-    estimated_max_tokens = _estimate_max_tokens_for_response_schema(response_schema)
 
     _extraction_tasks[task_id] = {
         "status": "accepted",
@@ -2469,7 +2761,6 @@ async def extract_document(
             instructions=instructions,
             extraction_tier=extraction_tier,
             response_schema=response_schema,
-            estimated_max_tokens=estimated_max_tokens,
         )
     )
 

@@ -1,0 +1,225 @@
+---
+# Config API Service - runs alongside authz and deploy-api in the authz container
+#
+# The service auto-creates its database on startup, so no manual DB provisioning
+# is required. Secrets are loaded from the vault.
+
+- name: Load secrets for config_api
+  include_vars:
+    file: "{{ playbook_dir }}/roles/secrets/vars/vault.{{ deployment_environment | default('dev') }}.yml"
+  no_log: true
+  tags: [config_api, config, apis]
+
+- name: Install system dependencies for config-api
+  apt:
+    name:
+      - python3-venv
+      - python3-pip
+      - rsync
+    state: present
+  tags: [config_api]
+
+- name: Create config-api directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ config_api_base_dir }}"
+    - "{{ config_api_app_dir }}"
+    - "{{ config_api_app_dir }}/src"
+  tags: [config_api]
+
+# =============================================================================
+# Source Code Deployment
+# =============================================================================
+
+- name: Clean Python cache before source sync
+  shell: find {{ config_api_app_dir }}/src -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+  changed_when: false
+  tags: [config_api]
+
+- name: Sync config-api source (removes stale files)
+  synchronize:
+    src: "{{ config_api_src_dir }}/src/"
+    dest: "{{ config_api_app_dir }}/src/"
+    delete: yes
+    owner: no
+    group: no
+    rsync_opts:
+      - "--exclude=__pycache__"
+      - "--exclude=*.pyc"
+      - "--exclude=busibox_common"
+  register: config_api_source_sync
+  notify: Restart config-api service
+  tags: [config_api]
+
+# =============================================================================
+# Shared Library (busibox_common) - MUST be after source sync
+# =============================================================================
+
+- name: Copy shared busibox_common library
+  synchronize:
+    src: "{{ playbook_dir }}/../../srv/shared/busibox_common/"
+    dest: "{{ config_api_app_dir }}/src/busibox_common/"
+    delete: yes
+    owner: no
+    group: no
+    rsync_opts:
+      - "--exclude=__pycache__"
+      - "--exclude=*.pyc"
+      - "--exclude=.pytest_cache"
+  register: config_api_shared_lib_sync
+  notify: Restart config-api service
+  tags: [config_api]
+
+- name: Copy requirements.txt
+  copy:
+    src: "{{ config_api_src_dir }}/requirements.txt"
+    dest: "{{ config_api_app_dir }}/requirements.txt"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart config-api service
+  tags: [config_api]
+
+- name: Create virtualenv
+  command: python3 -m venv "{{ config_api_venv_dir }}"
+  args:
+    creates: "{{ config_api_venv_dir }}/bin/activate"
+  tags: [config_api]
+
+- name: Install config-api dependencies
+  pip:
+    requirements: "{{ config_api_app_dir }}/requirements.txt"
+    virtualenv: "{{ config_api_venv_dir }}"
+  register: config_api_deps_install
+  notify: Restart config-api service
+  tags: [config_api]
+
+# =============================================================================
+# Service Configuration
+# =============================================================================
+
+- name: Render env file
+  template:
+    src: config-api.env.j2
+    dest: "{{ config_api_base_dir }}/.env"
+    owner: root
+    group: root
+    mode: "0600"
+  register: config_api_env_file
+  notify: Restart config-api service
+  tags: [config_api]
+
+- name: Install systemd service
+  template:
+    src: config-api.service.j2
+    dest: /etc/systemd/system/{{ config_api_service_name }}.service
+    mode: "0644"
+  notify: Restart config-api service
+  tags: [config_api]
+
+- name: Reload systemd
+  systemd:
+    daemon_reload: true
+  tags: [config_api]
+
+- name: Enable config-api service
+  systemd:
+    name: "{{ config_api_service_name }}"
+    enabled: true
+  tags: [config_api]
+
+# Flush handlers to ensure service restarts with new .env
+- name: Flush handlers (restart config-api if .env changed)
+  meta: flush_handlers
+  tags: [config_api]
+
+# Force restart if requested (used by Full Install to ensure fresh service state)
+- name: Force restart config-api if requested
+  systemd:
+    name: "{{ config_api_service_name }}"
+    state: restarted
+    daemon_reload: true
+  when: force_service_restart | default(false) | bool
+  tags: [config_api]
+
+# =============================================================================
+# Start Service
+# =============================================================================
+
+- name: Start config-api service
+  systemd:
+    name: "{{ config_api_service_name }}"
+    state: started
+  tags: [config_api]
+
+- name: Wait for config-api service to start
+  wait_for:
+    port: "{{ config_api_service_port }}"
+    host: localhost
+    timeout: 60
+  tags: [config_api]
+  register: config_api_wait
+  ignore_errors: true
+
+- name: Check config-api service status if wait failed
+  shell: |
+    echo "=== Service Status ==="
+    systemctl status {{ config_api_service_name }} || true
+    echo ""
+    echo "=== Recent Logs ==="
+    journalctl -u {{ config_api_service_name }} -n 30 --no-pager || true
+  register: config_api_debug_output
+  when: config_api_wait is failed
+  tags: [config_api]
+
+- name: Display config-api debug info
+  debug:
+    msg: "{{ config_api_debug_output.stdout_lines | default([]) }}"
+  when: config_api_wait is failed
+  tags: [config_api]
+
+- name: Fail if config-api did not start
+  fail:
+    msg: "Config API failed to start within 60 seconds. Check the debug output above."
+  when: config_api_wait is failed
+  tags: [config_api]
+
+- name: Check config-api service health
+  uri:
+    url: "http://localhost:{{ config_api_service_port }}/health/live"
+    method: GET
+    status_code: 200
+    timeout: 5
+  register: config_api_health_check
+  until: config_api_health_check.status == 200
+  retries: 5
+  delay: 2
+  failed_when: false
+  tags: [config_api]
+
+- name: Warn if config-api service is not healthy
+  debug:
+    msg: "Warning: Config API service may not be responding correctly. Check logs with: journalctl -u {{ config_api_service_name }} -n 50"
+  when: config_api_health_check.status != 200
+  tags: [config_api]
+
+- name: Write deployment version file
+  copy:
+    content: |
+      {
+        "commit": "{{ lookup('pipe', 'cd ' + playbook_dir + '/../.. && git rev-parse --short HEAD 2>/dev/null || echo unknown') }}",
+        "branch": "{{ lookup('pipe', 'cd ' + playbook_dir + '/../.. && git branch --show-current 2>/dev/null || echo unknown') }}",
+        "timestamp": "{{ now(utc=true).isoformat() }}",
+        "deployed_by": "ansible"
+      }
+    dest: "{{ config_api_base_dir }}/.deploy_version"
+    owner: root
+    group: root
+    mode: "0644"
+  ignore_errors: true
+  tags: [config_api]

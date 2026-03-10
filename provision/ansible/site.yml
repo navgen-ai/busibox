@@ -291,6 +291,14 @@
     - role: deploy_api
       tags: [apis, deploy, deploy_api]
 
+# 3.1c Config API - runs in authz container for centralised configuration management
+# Auto-creates its own database on startup; no postgres role dependency
+- hosts: authz
+  tags: [apis, config, config_api]
+  roles:
+    - role: config_api
+      tags: [apis, config, config_api]
+
 # 3.2a Redis (runs on data-lxc but as a separate lightweight play)
 # Separated from main data play so --tags redis doesn't trigger the entire data role
 - hosts: data

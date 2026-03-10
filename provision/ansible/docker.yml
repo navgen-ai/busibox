@@ -277,6 +277,20 @@
         - apis
         - deploy
 
+    - name: Deploy Config API
+      ansible.builtin.include_role:
+        name: config_api
+        tasks_from: docker
+        apply:
+          tags:
+            - apis
+            - config
+            - config_api
+      tags:
+        - apis
+        - config
+        - config_api
+
     - name: Deploy Bridge API
       ansible.builtin.include_role:
         name: bridge

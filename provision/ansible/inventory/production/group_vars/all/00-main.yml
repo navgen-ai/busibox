@@ -165,6 +165,8 @@ use_deploy_api: true
 # Deploy API connection settings
 deploy_host: "{{ authz_ip }}"  # Deploy API runs on authz container
 deploy_port: 8011
+config_host: "{{ authz_ip }}"  # Config API runs on authz container
+config_api_port: 8012
 # Bootstrap token for Deploy API - uses same formula as deploy_api role
 # This is auto-generated if not defined, so we comment this out to let get_bootstrap_token.yml handle it
 # deploy_api_admin_token: "{{ secrets.deploy_api.bootstrap_token | default('') }}"

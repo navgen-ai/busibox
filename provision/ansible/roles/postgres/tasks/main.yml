@@ -124,6 +124,7 @@
     - data      # Data API database (files/documents/chunks)
     - agent     # Agent API database
     - authz     # AuthZ API database
+    - config    # Config API database (centralised configuration)
   tags: [postgres]
 
 # =============================================================================
@@ -136,8 +137,8 @@
 # table names so test code doesn't need to change.
 #
 # Architecture:
-#   busibox_user     -> data, agent, authz (production/staging)
-#   busibox_test_user -> test_data, test_agent, test_authz (pytest)
+#   busibox_user     -> data, agent, authz, config (production/staging)
+#   busibox_test_user -> test_data, test_agent, test_authz, test_config (pytest)
 
 - name: Create pytest test user
   become_user: postgres
@@ -163,6 +164,7 @@
     - test_data      # Test database for data API
     - test_agent     # Test database for agent API
     - test_authz     # Test database for authz API
+    - test_config    # Test database for config API
   when: enable_pytest_databases | default(false)
   tags: [postgres, pytest_databases]
 
@@ -179,6 +181,7 @@
     - test_data
     - test_agent
     - test_authz
+    - test_config
   when: enable_pytest_databases | default(false)
   failed_when: false
   tags: [postgres, pytest_databases]
@@ -194,6 +197,7 @@
     - test_agent
     - test_authz
     - test_data
+    - test_config
   when: enable_pytest_databases | default(false)
   failed_when: false
   tags: [postgres, pytest_databases]

@@ -1,0 +1,49 @@
+---
+# Config API Docker Deployment Tasks
+#
+# Deploys Config API via Docker Compose
+# Used when deploy_target == 'docker'
+
+- name: Build Config API container
+  include_role:
+    name: docker_common
+    tasks_from: compose_build
+  vars:
+    docker_services_to_build:
+      - config-api
+    docker_build_no_cache: "{{ docker_force_rebuild | default(false) }}"
+
+- name: Start Config API container
+  include_role:
+    name: docker_common
+    tasks_from: compose_up
+  vars:
+    docker_services_to_start:
+      - config-api
+    docker_wait_for_health: true
+
+- name: Wait for Config API to be ready
+  include_role:
+    name: docker_common
+    tasks_from: wait_healthy
+  vars:
+    docker_wait_service: config-api
+    docker_wait_timeout: 120
+
+- name: Verify Config API health endpoint
+  ansible.builtin.uri:
+    url: "http://localhost:{{ config_port }}/health/live"
+    method: GET
+    status_code: [200]
+  register: config_health
+  retries: 10
+  delay: 5
+  until: config_health.status == 200
+  failed_when: false
+
+- name: Display Config API status
+  ansible.builtin.debug:
+    msg: |
+      Config API is running and ready
+      Health: http://localhost:{{ config_port }}/health/live
+      API: http://localhost:{{ config_port }}

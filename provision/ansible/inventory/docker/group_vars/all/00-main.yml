@@ -84,6 +84,7 @@ embedding_port: 8005
 litellm_port: 4000
 docs_port: 8004
 deploy_port: 8011
+config_port: 8012
 
 # Frontend ports
 ai_portal_port: 3000
@@ -199,6 +200,7 @@ docker_services:
     - agent-api
     - docs-api
     - deploy-api
+    - config-api
   llm:
     - litellm
   frontend:
@@ -214,5 +216,6 @@ docker_health_endpoints:
   data-api: "http://localhost:{{ data_port }}/health"
   search-api: "http://localhost:{{ search_port }}/health"
   agent-api: "http://localhost:{{ agent_port }}/health"
+  config-api: "http://localhost:{{ config_port }}/health/live"
   busibox-portal: "http://localhost:{{ ai_portal_port }}/portal/api/health"
   busibox-admin: "http://localhost:{{ admin_port }}/admin/api/health"
