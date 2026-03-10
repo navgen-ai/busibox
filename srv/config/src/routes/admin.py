@@ -87,6 +87,7 @@ class AppCreateRequest(BaseModel):
     devMode: bool = False
     primaryColor: Optional[str] = None
     secondaryColor: Optional[str] = None
+    lastDeploymentStatus: Optional[str] = None
 
 
 class AppUpdateRequest(BaseModel):
@@ -108,6 +109,7 @@ class AppUpdateRequest(BaseModel):
     devMode: Optional[bool] = None
     primaryColor: Optional[str] = None
     secondaryColor: Optional[str] = None
+    lastDeploymentStatus: Optional[str] = None
 
 
 class ReorderItem(BaseModel):
