@@ -21,11 +21,12 @@ import re
 from typing import List, Optional
 from uuid import UUID
 
+import jwt as pyjwt
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from config import Config
-from oauth.jwt_auth import authenticate_self_service, require_auth, AuthContext
+from oauth.jwt_auth import require_auth, AuthContext
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,75 @@ def _get_pg(request: Request):
         if request.headers.get(TEST_MODE_HEADER, "").lower() == "true":
             return pg_test
     return pg
+
+
+async def _authenticate_any_session(request: Request, db) -> AuthContext:
+    """
+    Authenticate using any authz-signed session JWT regardless of audience.
+
+    Apps hold SSO tokens scoped to their own audience (e.g. ``busibox-recruiter``).
+    The standard ``authenticate_self_service`` only accepts ``audience=busibox-portal``.
+    For self-service role management we accept any audience because authz signed
+    the token itself, so the user identity is proven.
+    """
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing session token")
+
+    token = auth_header[7:]
+
+    from routes.oauth import _get_signing_key_objects
+    try:
+        kid, alg, _, public_key = await _get_signing_key_objects(db)
+    except RuntimeError:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="no_signing_key_configured")
+
+    try:
+        token_kid = pyjwt.get_unverified_header(token).get("kid")
+        if token_kid != kid:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_token_key")
+
+        # Accept any audience -- we only need signature + issuer + expiry
+        claims = pyjwt.decode(
+            token,
+            public_key,
+            algorithms=[alg],
+            issuer=config.issuer,
+            options={"verify_aud": False, "require": ["exp", "iat", "sub"]},
+        )
+
+        token_type = claims.get("typ")
+        if token_type != "session":
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_token_type")
+
+        # Check revocation if jti present
+        jti = claims.get("jti")
+        if jti:
+            session = await db.get_session_by_id(jti)
+            if session is None:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="session_revoked")
+
+        user_id = claims["sub"]
+        email = claims.get("email", "")
+        roles = claims.get("roles", [])
+
+        return AuthContext(
+            auth_type="session",
+            actor_id=user_id,
+            scopes=set(),
+            email=email,
+            roles=roles,
+        )
+    except HTTPException:
+        raise
+    except pyjwt.ExpiredSignatureError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="token_expired")
+    except pyjwt.InvalidIssuerError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_issuer")
+    except pyjwt.DecodeError as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"invalid_token: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid session token: {e}")
 
 
 def _validate_name(name: str) -> str:
@@ -140,7 +210,7 @@ async def create_role(request: Request):
     Name must follow ``app:{appName}:{roleName}`` pattern.
     """
     db = _get_pg(request)
-    auth: AuthContext = await authenticate_self_service(request, db)
+    auth: AuthContext = await _authenticate_any_session(request, db)
 
     body = await request.json()
     try:
@@ -188,7 +258,7 @@ async def list_roles(request: Request, app: Optional[str] = None):
     except HTTPException:
         pass
 
-    auth: AuthContext = await authenticate_self_service(request, db)
+    auth: AuthContext = await _authenticate_any_session(request, db)
     roles = await db.get_user_accessible_roles(auth.actor_id, source_app=app)
     return [_role_response(r) for r in roles]
 
@@ -202,7 +272,7 @@ async def get_role(request: Request, role_id: str):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role ID format") from e
 
     db = _get_pg(request)
-    auth: AuthContext = await authenticate_self_service(request, db)
+    auth: AuthContext = await _authenticate_any_session(request, db)
 
     role = await db.get_role(role_id)
     if not role:
@@ -224,7 +294,7 @@ async def update_role(request: Request, role_id: str):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role ID format") from e
 
     db = _get_pg(request)
-    auth: AuthContext = await authenticate_self_service(request, db)
+    auth: AuthContext = await _authenticate_any_session(request, db)
     await _require_owner(db, role_id, auth.actor_id)
 
     body = await request.json()
@@ -257,7 +327,7 @@ async def delete_role(request: Request, role_id: str):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role ID format") from e
 
     db = _get_pg(request)
-    auth: AuthContext = await authenticate_self_service(request, db)
+    auth: AuthContext = await _authenticate_any_session(request, db)
     await _require_owner(db, role_id, auth.actor_id)
 
     deleted = await db.delete_role(role_id)
@@ -277,7 +347,7 @@ async def add_member(request: Request, role_id: str):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role ID format") from e
 
     db = _get_pg(request)
-    auth: AuthContext = await authenticate_self_service(request, db)
+    auth: AuthContext = await _authenticate_any_session(request, db)
     await _require_owner(db, role_id, auth.actor_id)
 
     body = await request.json()
@@ -309,7 +379,7 @@ async def remove_member(request: Request, role_id: str, user_id: str):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid UUID format") from e
 
     db = _get_pg(request)
-    auth: AuthContext = await authenticate_self_service(request, db)
+    auth: AuthContext = await _authenticate_any_session(request, db)
     await _require_owner(db, role_id, auth.actor_id)
 
     deleted = await db.remove_user_role(user_id=user_id, role_id=role_id)
