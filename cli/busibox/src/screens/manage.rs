@@ -44,6 +44,7 @@ fn get_all_services(app: &App) -> Vec<(&'static str, String)> {
         ("APIs", "docs".to_string()),
         ("APIs", "embedding".to_string()),
         ("APIs", "bridge".to_string()),
+        ("APIs", "config".to_string()),
     ];
 
     // LLM services based on hardware backend

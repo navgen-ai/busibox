@@ -190,6 +190,16 @@ const API_SERVICES: &[ServiceHealthDef] = &[
         proxmox_container_id: Some(211),
         proxmox_health: None,
     },
+    ServiceHealthDef {
+        name: "config",
+        group: "APIs",
+        check: CheckMethod::Http {
+            path: "/health/live",
+            port: 8012,
+        },
+        proxmox_container_id: Some(210),
+        proxmox_health: None,
+    },
 ];
 
 const LLM_VLLM: ServiceHealthDef = ServiceHealthDef {
