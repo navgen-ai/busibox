@@ -81,7 +81,6 @@ load_token_from_env()
 _healthcheck_task: Optional[asyncio.Task] = None
 
 
-@asynccontextmanager
 def _cleanup_stale_pid_files():
     """Remove PID files whose processes are no longer running."""
     all_pid_files = [
@@ -99,6 +98,7 @@ def _cleanup_stale_pid_files():
             pid_file.unlink(missing_ok=True)
 
 
+@asynccontextmanager
 async def lifespan(application: FastAPI):
     global _healthcheck_task
     _cleanup_stale_pid_files()

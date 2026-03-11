@@ -96,12 +96,24 @@ try:
     with open('${MODEL_REGISTRY}') as f:
         config = yaml.safe_load(f)
 
-    # Use model_purposes_dev for development environments
-    purposes = config.get('model_purposes_dev', config.get('model_purposes', {}))
+    # Merge default_purposes with environment-specific overrides
+    defaults = config.get('default_purposes', {})
+    overrides = config.get('model_purposes_dev', config.get('model_purposes', {}))
+    purposes = {**defaults, **overrides}
+
     model_key = purposes.get('${purpose}')
     if not model_key:
         print(f'ERROR: Purpose ${purpose} not configured', file=sys.stderr)
         sys.exit(1)
+
+    # Resolve aliases: if model_key matches another purpose, follow the chain
+    seen = set()
+    while model_key in purposes and model_key not in config.get('available_models', {}):
+        if model_key in seen:
+            print(f'ERROR: Circular alias for purpose ${purpose}', file=sys.stderr)
+            sys.exit(1)
+        seen.add(model_key)
+        model_key = purposes[model_key]
 
     # Get the model_name from available_models
     available = config.get('available_models', {})
