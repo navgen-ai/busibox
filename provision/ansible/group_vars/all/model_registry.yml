@@ -410,10 +410,13 @@ model_purposes:
 # Qwen3.5 dense models are all natively multimodal — no separate VL models.
 model_purposes_dev:
   fast: "qwen3.5-0.8b-mlx"          # MLX micro model
+  test: "qwen3.5-0.8b-mlx"          # Same as fast
+  default: "qwen3.5-4b-mlx"         # Same as agent
   agent: "qwen3.5-4b-mlx"         # Beats Qwen3-30B on GPQA, 262K ctx, vision+tools
   image: "flux2-klein-4b-mlx"       # MLX local FLUX
   transcribe: "whisper-tiny-mlx"     # Whisper Tiny ~150 MB for dev
   voice: "kokoro-82m-mlx"           # Kokoro MLX
+  embedding: "nomic-embed-cpu"       # CPU-based embedding
   reranking: "bge-reranker-v2-m3-cpu"
 
 # =============================================================================
@@ -470,7 +473,7 @@ tiers:
       test: "qwen3.5-0.8b-vllm"
       fast: "qwen3.5-0.8b-vllm"
       agent: "qwen3.5-35b-vllm"
-      embed: "nomic-embed"
+      embed: "nomic-embed-cpu"
       transcribe: "whisper-large-v3-gpu"
       voice: "kokoro-82m-gpu"
       image: "flux2-klein-4b-gpu"
@@ -486,7 +489,7 @@ tiers:
       fast: "qwen3.5-35b-mlx"
       agent: "qwen3.5-35b-mlx"
       research: "qwen3.5-27b-mlx"
-      embed: "nomic-embed"
+      embed: "nomic-embed-cpu"
       transcribe: "whisper-large-v3-mlx"
       voice: "kokoro-82m-mlx"
       image: "flux2-klein-4b-mlx"
@@ -496,7 +499,7 @@ tiers:
       chat: "qwen3.5-35b-multi-vllm"
       agent: "qwen3.5-35b-vllm"
       research: "qwen3.5-27b-vllm"
-      embed: "nomic-embed"
+      embed: "nomic-embed-cpu"
       transcribe: "whisper-large-v3-gpu"
       voice: "kokoro-82m-gpu"
       image: "flux2-klein-4b-gpu"
