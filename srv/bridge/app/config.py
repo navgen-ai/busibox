@@ -218,12 +218,14 @@ class Settings(BaseSettings):
     # Email Channel
     # -------------------------------------------------------------------------
     email_enabled: bool = Field(False, description="Enable email channel")
+    smtp_enabled: bool = Field(True, description="Enable SMTP provider when SMTP creds are configured")
     smtp_host: Optional[str] = Field(None, description="SMTP server host")
     smtp_port: Optional[int] = Field(None, description="SMTP server port")
     smtp_user: Optional[str] = Field(None, description="SMTP username")
     smtp_password: Optional[str] = Field(None, description="SMTP password")
     smtp_secure: bool = Field(False, description="Use SSL/TLS for SMTP")
     email_from: Optional[str] = Field(None, description="From address for emails")
+    resend_enabled: bool = Field(True, description="Enable Resend provider when API key is configured")
     resend_api_key: Optional[str] = Field(None, description="Resend API key (alternative to SMTP)")
 
     # Inbound email (IMAP polling)
