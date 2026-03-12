@@ -1217,7 +1217,7 @@ def _build_purpose_map(model_entries: List[Dict]) -> Dict[str, str]:
     purpose_map = {}
     for entry in model_entries:
         name = entry.get("model_name", "")
-        params = entry.get("litellm_params", {})
+        params = entry.get("litellm_params") or {}
         model_id = params.get("model", "")
         purpose_map[name] = _strip_provider_prefix(model_id)
     return purpose_map
@@ -1279,45 +1279,52 @@ async def list_models(
     Uses /model/info first (richest data), falls back to /config/yaml,
     then /v1/models as last resort.
     """
-    model_infos = await _get_model_info()
-    config = await _get_litellm_config()
-    config_entries = config.get("model_list", []) if config else []
-    merged_entries = _merge_model_entries(model_infos, config_entries)
+    try:
+        model_infos = await _get_model_info()
+        config = await _get_litellm_config()
+        config_entries = config.get("model_list", []) if config else []
+        merged_entries = _merge_model_entries(model_infos, config_entries)
 
-    if merged_entries:
-        models = []
-        for entry in merged_entries:
-            mname = entry.get("model_name", "")
-            params = entry.get("litellm_params", {})
-            info = entry.get("model_info", {})
-            provider = _detect_provider(mname, params)
-            is_db = bool(info.get("db_model", False))
-            models.append(ModelInfo(
-                id=mname,
-                provider=provider,
-                description=info.get("description", ""),
-                db_model=is_db,
-                model_id=info.get("id", "") if is_db else None,
-                actual_model=params.get("model", ""),
-            ))
-        purpose_map = _build_purpose_map(merged_entries)
-        return ModelsResponse(models=models, purposes=purpose_map)
+        if merged_entries:
+            models = []
+            for entry in merged_entries:
+                mname = entry.get("model_name", "")
+                params = entry.get("litellm_params") or {}
+                info = entry.get("model_info") or {}
+                provider = _detect_provider(mname, params)
+                is_db = bool(info.get("db_model", False))
+                models.append(ModelInfo(
+                    id=mname,
+                    provider=provider,
+                    description=info.get("description", ""),
+                    db_model=is_db,
+                    model_id=info.get("id", "") if is_db else None,
+                    actual_model=params.get("model", ""),
+                ))
+            purpose_map = _build_purpose_map(merged_entries)
+            return ModelsResponse(models=models, purposes=purpose_map)
 
-    # Fallback: /v1/models (minimal info)
-    v1_models = await _get_v1_models()
-    if v1_models:
-        models = []
-        for m in v1_models:
-            mid = m.get("id", "unknown")
-            models.append(ModelInfo(
-                id=mid,
-                provider=m.get("owned_by"),
-            ))
-        return ModelsResponse(models=models, purposes={})
-    
-    # Nothing available
-    logger.error("Could not fetch models from any LiteLLM endpoint")
-    return ModelsResponse(models=[], purposes={})
+        # Fallback: /v1/models (minimal info)
+        v1_models = await _get_v1_models()
+        if v1_models:
+            models = []
+            for m in v1_models:
+                mid = m.get("id", "unknown")
+                models.append(ModelInfo(
+                    id=mid,
+                    provider=m.get("owned_by"),
+                ))
+            return ModelsResponse(models=models, purposes={})
+        
+        # Nothing available
+        logger.error("Could not fetch models from any LiteLLM endpoint")
+        return ModelsResponse(models=[], purposes={})
+    except Exception as exc:
+        logger.exception("Unhandled error in /llm/models: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list models: {exc}",
+        ) from exc
 
 
 @router.post("/completions", response_model=CompletionResponse)
@@ -2604,51 +2611,58 @@ async def get_purpose_mappings(
     
     Uses /model/info first, falls back to /config/yaml, then /v1/models.
     """
-    model_infos = await _get_model_info()
-    config = await _get_litellm_config()
-    config_entries = config.get("model_list", []) if config else []
-    merged_entries = _merge_model_entries(model_infos, config_entries)
+    try:
+        model_infos = await _get_model_info()
+        config = await _get_litellm_config()
+        config_entries = config.get("model_list", []) if config else []
+        merged_entries = _merge_model_entries(model_infos, config_entries)
 
-    if merged_entries:
-        purpose_map_all = _build_purpose_map(merged_entries)
-        purpose_map = {p: purpose_map_all.get(p, "") for p in CONFIGURABLE_PURPOSES if p in purpose_map_all}
-        available_models = []
-        for entry in merged_entries:
-            mname = entry.get("model_name", "")
-            params = entry.get("litellm_params", {})
-            actual_model = params.get("model", "")
-            info = entry.get("model_info", {})
-            available_models.append({
-                "model_name": mname,
-                "actual_model": actual_model,
-                "description": info.get("description", ""),
-            })
-        return {
-            "purposes": purpose_map,
-            "configurable_purposes": CONFIGURABLE_PURPOSES,
-            "available_models": available_models,
-        }
+        if merged_entries:
+            purpose_map_all = _build_purpose_map(merged_entries)
+            purpose_map = {p: purpose_map_all.get(p, "") for p in CONFIGURABLE_PURPOSES if p in purpose_map_all}
+            available_models = []
+            for entry in merged_entries:
+                mname = entry.get("model_name", "")
+                params = entry.get("litellm_params") or {}
+                actual_model = params.get("model", "")
+                info = entry.get("model_info") or {}
+                available_models.append({
+                    "model_name": mname,
+                    "actual_model": actual_model,
+                    "description": info.get("description", ""),
+                })
+            return {
+                "purposes": purpose_map,
+                "configurable_purposes": CONFIGURABLE_PURPOSES,
+                "available_models": available_models,
+            }
 
-    # Fallback: /v1/models (minimal - no purpose mapping possible)
-    v1_models = await _get_v1_models()
-    if v1_models:
-        available_models = [
-            {"model_name": m.get("id", ""), "actual_model": "", "description": ""}
-            for m in v1_models
-        ]
+        # Fallback: /v1/models (minimal - no purpose mapping possible)
+        v1_models = await _get_v1_models()
+        if v1_models:
+            available_models = [
+                {"model_name": m.get("id", ""), "actual_model": "", "description": ""}
+                for m in v1_models
+            ]
+            return {
+                "purposes": {},
+                "configurable_purposes": CONFIGURABLE_PURPOSES,
+                "available_models": available_models,
+            }
+        
+        # Nothing available
+        logger.error("Could not fetch model info from any LiteLLM endpoint")
         return {
             "purposes": {},
             "configurable_purposes": CONFIGURABLE_PURPOSES,
-            "available_models": available_models,
+            "available_models": [],
         }
-    
-    # Nothing available
-    logger.error("Could not fetch model info from any LiteLLM endpoint")
-    return {
-        "purposes": {},
-        "configurable_purposes": CONFIGURABLE_PURPOSES,
-        "available_models": [],
-    }
+    except Exception as exc:
+        logger.exception("Unhandled error in /llm/purposes: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get purpose mappings: {exc}",
+        ) from exc
 
 
 @router.post("/purposes")

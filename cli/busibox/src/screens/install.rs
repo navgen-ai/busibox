@@ -3306,7 +3306,7 @@ fi
             if let Some(ref token) = github_token {
                 ref_exports.push_str(&format!("GITHUB_AUTH_TOKEN={token} "));
             }
-            if is_update && service_list.contains("core-apps") {
+            if service_list.contains("core-apps") {
                 ref_exports.push_str("ENABLED_APPS=all ");
             }
             let make_args = format!("{ref_exports}install SERVICE={service_list}");

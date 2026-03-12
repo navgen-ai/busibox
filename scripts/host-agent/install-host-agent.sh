@@ -259,25 +259,42 @@ EOF
         plutil -lint "$PLIST_PATH" || true
         exit 1
     else
-        error "Failed to load service (error code: $load_result)"
+        warn "launchctl load failed (error code: $load_result) — falling back to direct start"
         if [[ -n "$load_output" ]]; then
-            echo "Output: $load_output"
+            warn "Output: $load_output"
         fi
-        echo "Try checking: launchctl list | grep busibox"
-        echo "Or run manually: ${PYTHON_PATH} ${SCRIPT_DIR}/host-agent.py"
-        exit 1
+        # Kill any existing host-agent before starting fresh
+        pkill -f "host-agent.py" 2>/dev/null || true
+        sleep 1
+        : > "${LOG_DIR}/host-agent.log"
+        : > "${LOG_DIR}/host-agent.error.log"
+        HOST_AGENT_TOKEN="$HOST_AGENT_TOKEN" \
+        HOST_AGENT_PORT="$HOST_AGENT_PORT" \
+        HOST_AGENT_HOST="127.0.0.1" \
+        nohup "$PYTHON_PATH" "${SCRIPT_DIR}/host-agent.py" \
+            > "${LOG_DIR}/host-agent.log" 2> "${LOG_DIR}/host-agent.error.log" &
+        local agent_pid=$!
+        disown "$agent_pid" 2>/dev/null || true
+        info "Host agent started directly with PID: ${agent_pid}"
     fi
     
     # Wait for it to start
     sleep 2
     
-    # Verify it's running
-    if launchctl list | grep -q "$SERVICE_NAME"; then
+    # Verify it's running via health check
+    if curl -sf http://localhost:${HOST_AGENT_PORT}/health >/dev/null 2>&1; then
         success "Host agent is running"
+        info "Logs: ${LOG_DIR}/host-agent.log"
+        info "Port: ${HOST_AGENT_PORT}"
+    elif launchctl list 2>/dev/null | grep -q "$SERVICE_NAME"; then
+        success "Host agent is running (via launchd)"
         info "Logs: ${LOG_DIR}/host-agent.log"
         info "Port: ${HOST_AGENT_PORT}"
     else
         warn "Service may not be running - check logs: ${LOG_DIR}/host-agent.error.log"
+        if [[ -s "${LOG_DIR}/host-agent.error.log" ]]; then
+            tail -10 "${LOG_DIR}/host-agent.error.log" 2>/dev/null || true
+        fi
     fi
     
     success "Installation complete!"
