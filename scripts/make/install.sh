@@ -3796,7 +3796,7 @@ setup_host_agent() {
     
     # Install host-agent dependencies into the MLX venv
     info "Installing host-agent dependencies into virtual environment..."
-    "$mlx_pip" install -q fastapi uvicorn httpx pyyaml || {
+    "$mlx_pip" install -q fastapi uvicorn httpx pyyaml psutil || {
         error "Failed to install host-agent dependencies"
         return 1
     }
@@ -3856,6 +3856,9 @@ setup_host_agent() {
         # Start as background process with nohup, passing required env vars
         local log_dir="${HOME}/Library/Logs/Busibox"
         mkdir -p "$log_dir"
+        # Truncate previous logs for clean diagnostics
+        : > "${log_dir}/host-agent.log"
+        : > "${log_dir}/host-agent.error.log"
         HOST_AGENT_TOKEN="$host_agent_token" \
         HOST_AGENT_PORT="8089" \
         HOST_AGENT_HOST="127.0.0.1" \
@@ -3864,6 +3867,21 @@ setup_host_agent() {
         local agent_pid=$!
         disown "$agent_pid" 2>/dev/null || true
         info "Host agent started with PID: ${agent_pid}"
+
+        # Give it a moment then verify it's still alive
+        sleep 2
+        if ! kill -0 "$agent_pid" 2>/dev/null; then
+            error "Host agent process died immediately (PID ${agent_pid})"
+            if [[ -s "${log_dir}/host-agent.error.log" ]]; then
+                error "Error log:"
+                tail -20 "${log_dir}/host-agent.error.log" 2>/dev/null || true
+            fi
+            if [[ -s "${log_dir}/host-agent.log" ]]; then
+                error "Output log:"
+                tail -10 "${log_dir}/host-agent.log" 2>/dev/null || true
+            fi
+            return 1
+        fi
     fi
     
     # Wait for host-agent to be ready
@@ -3883,11 +3901,17 @@ setup_host_agent() {
 
     if [[ "$agent_ready" != true ]]; then
         local error_log="${HOME}/Library/Logs/Busibox/host-agent.error.log"
+        local out_log="${HOME}/Library/Logs/Busibox/host-agent.log"
         if [[ -f "$error_log" ]] && [[ -s "$error_log" ]]; then
-            warn "Host agent failed to start. Error log:"
+            error "Host agent failed to start. Error log:"
             tail -20 "$error_log" 2>/dev/null || true
         fi
-        warn "Host agent health check timeout — MLX server start may fail"
+        if [[ -f "$out_log" ]] && [[ -s "$out_log" ]]; then
+            error "Host agent stdout log:"
+            tail -10 "$out_log" 2>/dev/null || true
+        fi
+        error "Host agent health check timed out after ${max_attempts}s"
+        return 1
     fi
 
     # Recreate deploy-api so it picks up the new HOST_AGENT_TOKEN

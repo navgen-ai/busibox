@@ -166,7 +166,7 @@ async def check_litellm() -> Dict[str, any]:
         
         start = time.time()
         async with httpx.AsyncClient(timeout=2.0) as client:
-            response = await client.get(f"{litellm_url}/health")
+            response = await client.get(f"{litellm_url}/health/liveliness")
             response.raise_for_status()
         
         response_time = round((time.time() - start) * 1000, 2)
