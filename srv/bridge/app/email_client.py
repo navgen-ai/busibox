@@ -51,18 +51,18 @@ class EmailClient:
     def provider(self) -> str:
         """Detect the active provider from static settings (for health check)."""
         s = self.settings
-        if s.smtp_host and s.smtp_port and s.smtp_user:
+        if s.smtp_enabled and s.smtp_host and s.smtp_port and s.smtp_user:
             return "smtp"
-        if s.resend_api_key:
+        if s.resend_enabled and s.resend_api_key:
             return "resend"
         return "none"
 
     def _get_provider(self, s: Union[EmailSettings, Settings]) -> str:
         if isinstance(s, EmailSettings):
             return s.provider
-        if s.smtp_host and s.smtp_port and s.smtp_user:
+        if s.smtp_enabled and s.smtp_host and s.smtp_port and s.smtp_user:
             return "smtp"
-        if s.resend_api_key:
+        if s.resend_enabled and s.resend_api_key:
             return "resend"
         return "none"
 

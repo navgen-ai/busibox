@@ -29,20 +29,22 @@ _cached_at: float = 0
 @dataclass
 class EmailSettings:
     """Email provider settings fetched from config-api."""
+    smtp_enabled: bool = False
     smtp_host: Optional[str] = None
     smtp_port: Optional[int] = None
     smtp_user: Optional[str] = None
     smtp_password: Optional[str] = None
     smtp_secure: bool = False
+    resend_enabled: bool = False
     email_from: Optional[str] = None
     resend_api_key: Optional[str] = None
     email_enabled: bool = False
 
     @property
     def provider(self) -> str:
-        if self.smtp_host and self.smtp_port and self.smtp_user:
+        if self.smtp_enabled and self.smtp_host and self.smtp_port and self.smtp_user:
             return "smtp"
-        if self.resend_api_key:
+        if self.resend_enabled and self.resend_api_key:
             return "resend"
         return "none"
 
@@ -96,18 +98,24 @@ def _parse_email_settings(raw: dict) -> EmailSettings:
     smtp_host = raw.get("SMTP_HOST") or None
     smtp_user = raw.get("SMTP_USER") or None
     resend_key = raw.get("RESEND_API_KEY") or None
+    smtp_enabled_raw = raw.get("SMTP_ENABLED")
+    resend_enabled_raw = raw.get("RESEND_ENABLED")
     has_smtp = bool(smtp_host and port and smtp_user)
     has_resend = bool(resend_key)
+    smtp_enabled = (str(smtp_enabled_raw).lower() == "true") if smtp_enabled_raw is not None else has_smtp
+    resend_enabled = (str(resend_enabled_raw).lower() == "true") if resend_enabled_raw is not None else has_resend
 
     return EmailSettings(
+        smtp_enabled=smtp_enabled,
         smtp_host=smtp_host,
         smtp_port=port,
         smtp_user=smtp_user,
         smtp_password=raw.get("SMTP_PASSWORD") or None,
         smtp_secure=raw.get("SMTP_SECURE", "").lower() == "true",
+        resend_enabled=resend_enabled,
         email_from=raw.get("EMAIL_FROM") or None,
         resend_api_key=resend_key,
-        email_enabled=has_smtp or has_resend,
+        email_enabled=(smtp_enabled and has_smtp) or (resend_enabled and has_resend),
     )
 
 
