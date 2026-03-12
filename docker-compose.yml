@@ -715,7 +715,9 @@ services:
       AUTHZ_BASE_URL: http://authz-api:8010
       AUTH_TOKEN_URL: http://authz-api:8010/oauth/token
       DELEGATION_TOKEN: ""
-      # Email channel (disabled by default, configured via admin UI)
+      # Config API (email settings read on demand)
+      CONFIG_API_URL: http://config-api:8012
+      # Email channel (env var fallback, overridden by config-api settings)
       EMAIL_ENABLED: "${BRIDGE_EMAIL_ENABLED:-false}"
       SMTP_HOST: "${BRIDGE_SMTP_HOST:-}"
       SMTP_PORT: "${BRIDGE_SMTP_PORT:-}"

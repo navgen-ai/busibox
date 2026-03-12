@@ -39,6 +39,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from config import Config
+from oauth.claims import AccessTokenClaims
 from oauth.keys import load_private_key
 from oauth.jwt_auth import require_auth, require_auth_or_self_service, authenticate_self_service, verify_session_token, AuthContext
 
@@ -532,10 +533,34 @@ class LoginInitiateResponse(BaseModel):
     expires_in: int  # seconds until expiry
 
 
+async def _mint_config_email_token(user_id: str) -> str:
+    """Mint a short-lived config-api token with config.email.read scope.
+
+    This allows bridge-api to read SMTP/Resend settings from config-api
+    without requiring Admin role. The scope restricts access to the smtp
+    config category only.
+    """
+    from routes.oauth import _sign_access_token
+
+    now = int(time.time())
+    claims = AccessTokenClaims(
+        iss=config.issuer,
+        sub=user_id,
+        aud="config-api",
+        iat=now,
+        nbf=now,
+        exp=now + 120,
+        jti=str(uuid_module.uuid4()),
+        scope="config.email.read",
+    ).model_dump()
+    return await _sign_access_token(claims)
+
+
 async def _send_magic_link_email(
     to: str,
     magic_link_url: str,
     totp_code: str,
+    user_id: str,
 ) -> None:
     """
     Send the magic-link email via Bridge API.
@@ -544,6 +569,9 @@ async def _send_magic_link_email(
     code never leave the backend.  If Bridge API is unavailable the error
     is logged but *not* propagated — we never leak information about
     whether an email was actually sent.
+
+    A short-lived config-api token (with config.email.read scope) is
+    passed to bridge so it can fetch SMTP/Resend settings from config-api.
     """
     if not config.bridge_api_url:
         logger.warning("[LOGIN] BRIDGE_API_URL not configured — cannot send email")
@@ -556,9 +584,16 @@ async def _send_magic_link_email(
         "totp_code": totp_code,
     }
 
+    headers = {}
+    try:
+        config_token = await _mint_config_email_token(user_id)
+        headers["Authorization"] = f"Bearer {config_token}"
+    except Exception as exc:
+        logger.warning("[LOGIN] Failed to mint config-api token for bridge: %s", exc)
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(url, json=payload)
+            resp = await client.post(url, json=payload, headers=headers)
             if resp.status_code >= 400:
                 logger.error(
                     "[LOGIN] Bridge API returned %s: %s",
@@ -675,7 +710,7 @@ async def initiate_login(request: Request):
     
     # Send the email via Bridge API (fire-and-forget style — errors are logged
     # but never returned to the caller).
-    await _send_magic_link_email(email, magic_link_url, totp_code)
+    await _send_magic_link_email(email, magic_link_url, totp_code, user_id=user_id)
     
     # Test mode: return tokens in response so automated tests can complete
     # the login flow without email delivery. Only enabled when:

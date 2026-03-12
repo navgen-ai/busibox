@@ -93,6 +93,26 @@ async def require_admin(
     return user
 
 
+def require_admin_or_scope(required_scope: str):
+    """
+    Factory that returns a dependency allowing access if the caller has
+    the Admin role OR the specified OAuth scope in their JWT.
+
+    Non-admin callers with the scope are marked via user["_scope_only"] = True
+    so route handlers can restrict what data they return.
+    """
+
+    async def _dep(user: dict = Depends(require_authenticated)) -> dict:
+        if "Admin" in user.get("role_names", []):
+            return user
+        if required_scope in user.get("scopes", []):
+            user["_scope_only"] = True
+            return user
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    return _dep
+
+
 def require_app_access(app_id_param: str = "app_id"):
     """
     Factory that returns a dependency checking the caller has access to a specific app.

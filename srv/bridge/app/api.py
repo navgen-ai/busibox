@@ -30,6 +30,14 @@ from .email_client import EmailClient
 logger = logging.getLogger(__name__)
 
 
+def _extract_session_jwt(request: Request) -> Optional[str]:
+    """Extract session JWT from Authorization header if present."""
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
@@ -302,15 +310,14 @@ def create_app(
     # ------------------------------------------------------------------
 
     @app.post("/api/v1/email/send-magic-link", response_model=EmailResponse)
-    async def send_magic_link(req: SendMagicLinkRequest):
+    async def send_magic_link(req: SendMagicLinkRequest, request: Request):
         """
         Send a magic-link authentication email with TOTP code.
         Called by Busibox Portal during the login flow.
         """
-        if not settings.email_enabled:
-            raise HTTPException(status_code=503, detail="Email channel is not enabled on bridge")
+        jwt = _extract_session_jwt(request)
         try:
-            result = await email_client.send_magic_link(req.to, req.magic_link_url, req.totp_code)
+            result = await email_client.send_magic_link(req.to, req.magic_link_url, req.totp_code, session_jwt=jwt)
             return EmailResponse(
                 success=result.get("success", True),
                 provider=result.get("provider", "unknown"),
@@ -321,15 +328,14 @@ def create_app(
             raise HTTPException(status_code=500, detail=str(exc))
 
     @app.post("/api/v1/email/send-magic-link-simple", response_model=EmailResponse)
-    async def send_magic_link_simple(req: SendMagicLinkSimpleRequest):
+    async def send_magic_link_simple(req: SendMagicLinkSimpleRequest, request: Request):
         """
         Send a simple magic-link email (no TOTP code).
         Used for activation links sent to new users.
         """
-        if not settings.email_enabled:
-            raise HTTPException(status_code=503, detail="Email channel is not enabled on bridge")
+        jwt = _extract_session_jwt(request)
         try:
-            result = await email_client.send_magic_link_simple(req.to, req.magic_link_url)
+            result = await email_client.send_magic_link_simple(req.to, req.magic_link_url, session_jwt=jwt)
             return EmailResponse(
                 success=result.get("success", True),
                 provider=result.get("provider", "unknown"),
@@ -340,14 +346,13 @@ def create_app(
             raise HTTPException(status_code=500, detail=str(exc))
 
     @app.post("/api/v1/email/send", response_model=EmailResponse)
-    async def send_email(req: SendEmailRequest):
+    async def send_email(req: SendEmailRequest, request: Request):
         """
         Send a generic email with custom subject/body.
         """
-        if not settings.email_enabled:
-            raise HTTPException(status_code=503, detail="Email channel is not enabled on bridge")
+        jwt = _extract_session_jwt(request)
         try:
-            result = await email_client.send(req.to, req.subject, req.html, req.text)
+            result = await email_client.send(req.to, req.subject, req.html, req.text, session_jwt=jwt)
             return EmailResponse(
                 success=result.get("success", True),
                 provider=result.get("provider", "unknown"),
@@ -358,12 +363,11 @@ def create_app(
             raise HTTPException(status_code=500, detail=str(exc))
 
     @app.post("/api/v1/email/send-welcome", response_model=EmailResponse)
-    async def send_welcome(req: SendWelcomeRequest):
+    async def send_welcome(req: SendWelcomeRequest, request: Request):
         """Send a welcome email to a new user."""
-        if not settings.email_enabled:
-            raise HTTPException(status_code=503, detail="Email channel is not enabled on bridge")
+        jwt = _extract_session_jwt(request)
         try:
-            result = await email_client.send_welcome(req.to, req.user_name, req.portal_url)
+            result = await email_client.send_welcome(req.to, req.user_name, req.portal_url, session_jwt=jwt)
             return EmailResponse(
                 success=result.get("success", True),
                 provider=result.get("provider", "unknown"),
@@ -374,12 +378,11 @@ def create_app(
             raise HTTPException(status_code=500, detail=str(exc))
 
     @app.post("/api/v1/email/send-account-deactivated", response_model=EmailResponse)
-    async def send_account_deactivated(req: SendAccountNotificationRequest):
+    async def send_account_deactivated(req: SendAccountNotificationRequest, request: Request):
         """Send account deactivation notification."""
-        if not settings.email_enabled:
-            raise HTTPException(status_code=503, detail="Email channel is not enabled on bridge")
+        jwt = _extract_session_jwt(request)
         try:
-            result = await email_client.send_account_deactivated(req.to)
+            result = await email_client.send_account_deactivated(req.to, session_jwt=jwt)
             return EmailResponse(
                 success=result.get("success", True),
                 provider=result.get("provider", "unknown"),
@@ -390,12 +393,11 @@ def create_app(
             raise HTTPException(status_code=500, detail=str(exc))
 
     @app.post("/api/v1/email/send-account-reactivated", response_model=EmailResponse)
-    async def send_account_reactivated(req: SendAccountNotificationRequest):
+    async def send_account_reactivated(req: SendAccountNotificationRequest, request: Request):
         """Send account reactivation notification."""
-        if not settings.email_enabled:
-            raise HTTPException(status_code=503, detail="Email channel is not enabled on bridge")
+        jwt = _extract_session_jwt(request)
         try:
-            result = await email_client.send_account_reactivated(req.to, req.portal_url)
+            result = await email_client.send_account_reactivated(req.to, req.portal_url, session_jwt=jwt)
             return EmailResponse(
                 success=result.get("success", True),
                 provider=result.get("provider", "unknown"),
@@ -406,12 +408,11 @@ def create_app(
             raise HTTPException(status_code=500, detail=str(exc))
 
     @app.post("/api/v1/email/test", response_model=EmailResponse)
-    async def send_test_email(req: SendTestRequest):
+    async def send_test_email(req: SendTestRequest, request: Request):
         """Send a test email to verify SMTP / Resend configuration."""
-        if not settings.email_enabled:
-            raise HTTPException(status_code=503, detail="Email channel is not enabled on bridge")
+        jwt = _extract_session_jwt(request)
         try:
-            result = await email_client.send_test(req.to)
+            result = await email_client.send_test(req.to, session_jwt=jwt)
             return EmailResponse(
                 success=result.get("success", True),
                 provider=result.get("provider", "unknown"),
