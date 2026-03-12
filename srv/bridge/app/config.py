@@ -90,6 +90,9 @@ class Settings(BaseSettings):
         description="Pre-issued delegation token for signal-bot service account",
     )
 
+    # Config API (centralised config store — email config read on demand)
+    config_api_url: str = Field("http://config-api:8012", description="Config API URL for dynamic email settings")
+
     # Bot behavior (Signal-specific)
     enable_web_search: bool = Field(True, description="Enable web search for queries")
     enable_doc_search: bool = Field(True, description="Enable document search")

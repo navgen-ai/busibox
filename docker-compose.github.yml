@@ -83,8 +83,15 @@ services:
       # Deployment Service
       DEPLOY_API_URL: http://deploy-api:8011
       DEPLOYMENT_SERVICE_URL: http://deploy-api:8011/api/v1/deployment
+      # Config API - centralised configuration service
+      CONFIG_API_URL: http://config-api:8012
       # Bridge API
       BRIDGE_API_URL: http://bridge-api:8081
+      # Host Agent (for MLX control on Apple Silicon)
+      HOST_AGENT_URL: http://host.docker.internal:8089
+      HOST_AGENT_TOKEN: ${HOST_AGENT_TOKEN:-}
+      # LLM Backend - tells frontend what hardware is available
+      LLM_BACKEND: ${LLM_BACKEND:-}
       # =========================================================================
       # Agent Manager Environment (PORT 3001)
       # =========================================================================

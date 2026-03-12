@@ -9,7 +9,9 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from auth import require_admin
+from auth import require_admin, require_admin_or_scope
+
+_config_read = require_admin_or_scope("config.email.read")
 from config import config as svc_config
 from services import app_registry, config_store
 from services.encryption import decrypt_value, encrypt_value
@@ -130,9 +132,11 @@ async def list_configs(
     category: Optional[str] = Query(None),
     scope: Optional[str] = Query(None),
     app_id: Optional[str] = Query(None),
-    _user: dict = Depends(require_admin),
+    _user: dict = Depends(_config_read),
 ):
-    """List all config entries (admin sees all tiers)."""
+    """List config entries. Scope-only callers are restricted to category=smtp."""
+    if _user.get("_scope_only"):
+        category = "smtp"
     entries = await config_store.list_entries(
         category=category, scope=scope, app_id=app_id
     )
@@ -204,11 +208,13 @@ async def bulk_set(
 async def get_config(
     key: str,
     app_id: Optional[str] = Query(None),
-    _user: dict = Depends(require_admin),
+    _user: dict = Depends(_config_read),
 ):
     entry = await config_store.get_entry(key, app_id=app_id)
     if not entry:
         raise HTTPException(status_code=404, detail=f"Config key not found: {key}")
+    if _user.get("_scope_only") and entry.get("category") != "smtp":
+        raise HTTPException(status_code=403, detail="Scope restricted to smtp config")
     value = "********" if entry["encrypted"] else entry["value"]
     return {
         "key": entry["key"],
@@ -226,12 +232,14 @@ async def get_config(
 async def get_config_raw(
     key: str,
     app_id: Optional[str] = Query(None),
-    _user: dict = Depends(require_admin),
+    _user: dict = Depends(_config_read),
 ):
     """Get raw (unmasked/decrypted) value."""
     entry = await config_store.get_entry(key, app_id=app_id)
     if not entry:
         raise HTTPException(status_code=404, detail=f"Config key not found: {key}")
+    if _user.get("_scope_only") and entry.get("category") != "smtp":
+        raise HTTPException(status_code=403, detail="Scope restricted to smtp config")
     value = entry["value"]
     if entry["encrypted"] and svc_config.encryption_key:
         value = decrypt_value(value, svc_config.encryption_key)

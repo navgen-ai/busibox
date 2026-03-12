@@ -5,17 +5,22 @@ Handles sending emails via SMTP (primary) or Resend (fallback).
 Provides magic-link, welcome, deactivation, reactivation, and generic email templates.
 
 All email sending logic that previously lived in Busibox Portal's email.ts is now here.
+
+Configuration priority:
+  1. Config-api (dynamic, fetched on demand via session JWT)
+  2. Environment variables (static fallback from Settings)
 """
 
 import logging
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
 
 import aiosmtplib
 
 from .config import Settings
+from .config_api_client import EmailSettings, get_email_settings
 
 logger = logging.getLogger(__name__)
 
@@ -28,15 +33,23 @@ class EmailClient:
       1. SMTP (if smtp_host, smtp_port, smtp_user are set)
       2. Resend (if resend_api_key is set)
       3. None — logs a warning, does not crash
+
+    Config can come from config-api (dynamic) or env vars (static fallback).
     """
 
     def __init__(self, settings: Settings):
         self.settings = settings
         self._provider: Optional[str] = None
 
+    def _effective_settings(self, dynamic: Optional[EmailSettings] = None) -> Union[EmailSettings, Settings]:
+        """Return dynamic config if available and has a provider, else static."""
+        if dynamic and dynamic.provider != "none":
+            return dynamic
+        return self.settings
+
     @property
     def provider(self) -> str:
-        """Detect the active provider from current settings."""
+        """Detect the active provider from static settings (for health check)."""
         s = self.settings
         if s.smtp_host and s.smtp_port and s.smtp_user:
             return "smtp"
@@ -44,19 +57,47 @@ class EmailClient:
             return "resend"
         return "none"
 
-    @property
-    def from_email(self) -> str:
-        return self.settings.email_from or "Portal <noreply@email.com>"
+    def _get_provider(self, s: Union[EmailSettings, Settings]) -> str:
+        if isinstance(s, EmailSettings):
+            return s.provider
+        if s.smtp_host and s.smtp_port and s.smtp_user:
+            return "smtp"
+        if s.resend_api_key:
+            return "resend"
+        return "none"
+
+    def _get_from_email(self, s: Union[EmailSettings, Settings]) -> str:
+        return s.email_from or "Portal <noreply@email.com>"
+
+    async def _resolve_settings(self, session_jwt: Optional[str] = None) -> Union[EmailSettings, Settings]:
+        """Resolve email settings: try config-api first, fall back to env vars.
+
+        The session_jwt here is actually a config-api scoped token (minted by
+        authz with scope=config.email.read). It's passed directly to config-api
+        without any token exchange.
+        """
+        if session_jwt:
+            try:
+                dynamic = await get_email_settings(
+                    config_token=session_jwt,
+                    config_api_url=self.settings.config_api_url or "http://config-api:8012",
+                )
+                if dynamic and dynamic.provider != "none":
+                    logger.debug(f"[EMAIL] Using config-api settings (provider={dynamic.provider})")
+                    return dynamic
+            except Exception as exc:
+                logger.warning(f"[EMAIL] Config-api lookup failed, using env vars: {exc}")
+        return self.settings
 
     # ------------------------------------------------------------------
     # Low-level send
     # ------------------------------------------------------------------
 
-    async def _send_smtp(self, to: str, subject: str, html: str, text: str) -> dict:
+    async def _send_smtp(self, s: Union[EmailSettings, Settings], to: str, subject: str, html: str, text: str) -> dict:
         """Send an email via SMTP using aiosmtplib."""
-        s = self.settings
+        from_email = self._get_from_email(s)
         msg = MIMEMultipart("alternative")
-        msg["From"] = self.from_email
+        msg["From"] = from_email
         msg["To"] = to
         msg["Subject"] = subject
         msg.attach(MIMEText(text, "plain"))
@@ -81,14 +122,15 @@ class EmailClient:
             logger.error(f"[EMAIL] SMTP send failed: {exc}")
             raise
 
-    async def _send_resend(self, to: str, subject: str, html: str, text: str) -> dict:
+    async def _send_resend(self, s: Union[EmailSettings, Settings], to: str, subject: str, html: str, text: str) -> dict:
         """Send an email via Resend HTTP API."""
         import httpx
 
-        api_key = self.settings.resend_api_key
+        api_key = s.resend_api_key
         if not api_key:
             raise RuntimeError("Resend API key not configured")
 
+        from_email = self._get_from_email(s)
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 "https://api.resend.com/emails",
@@ -97,7 +139,7 @@ class EmailClient:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "from": self.from_email,
+                    "from": from_email,
                     "to": [to],
                     "subject": subject,
                     "html": html,
@@ -109,13 +151,14 @@ class EmailClient:
             logger.info(f"[EMAIL] Sent via Resend to {to}: {subject} (id={data.get('id')})")
             return {"provider": "resend", "success": True, "id": data.get("id")}
 
-    async def send(self, to: str, subject: str, html: str, text: str) -> dict:
+    async def send(self, to: str, subject: str, html: str, text: str, session_jwt: Optional[str] = None) -> dict:
         """Send an email using the best available provider."""
-        provider = self.provider
+        s = await self._resolve_settings(session_jwt)
+        provider = self._get_provider(s)
         if provider == "smtp":
-            return await self._send_smtp(to, subject, html, text)
+            return await self._send_smtp(s, to, subject, html, text)
         elif provider == "resend":
-            return await self._send_resend(to, subject, html, text)
+            return await self._send_resend(s, to, subject, html, text)
         else:
             logger.warning(f"[EMAIL] No provider configured — email NOT sent to {to}: {subject}")
             return {"provider": "none", "success": False, "reason": "No email provider configured"}
@@ -124,28 +167,28 @@ class EmailClient:
     # High-level email methods
     # ------------------------------------------------------------------
 
-    async def send_magic_link(self, to: str, magic_link_url: str, totp_code: str) -> dict:
+    async def send_magic_link(self, to: str, magic_link_url: str, totp_code: str, session_jwt: Optional[str] = None) -> dict:
         """Send a magic-link + TOTP code authentication email."""
         subject = f"Sign in to Busibox Portal - Your code: {totp_code}"
         html = _magic_link_with_code_html(magic_link_url, totp_code)
         text = _magic_link_with_code_text(magic_link_url, totp_code)
-        return await self.send(to, subject, html, text)
+        return await self.send(to, subject, html, text, session_jwt=session_jwt)
 
-    async def send_magic_link_simple(self, to: str, magic_link_url: str) -> dict:
+    async def send_magic_link_simple(self, to: str, magic_link_url: str, session_jwt: Optional[str] = None) -> dict:
         """Send a simple magic-link email (no TOTP code)."""
         subject = "Sign in to Busibox Portal"
         html = _magic_link_html(magic_link_url)
         text = _magic_link_text(magic_link_url)
-        return await self.send(to, subject, html, text)
+        return await self.send(to, subject, html, text, session_jwt=session_jwt)
 
-    async def send_welcome(self, to: str, user_name: Optional[str] = None, portal_url: str = "") -> dict:
+    async def send_welcome(self, to: str, user_name: Optional[str] = None, portal_url: str = "", session_jwt: Optional[str] = None) -> dict:
         """Send a welcome email."""
         subject = "Welcome to Busibox Portal"
         html = _welcome_html(user_name, portal_url)
         text = _welcome_text(user_name, portal_url)
-        return await self.send(to, subject, html, text)
+        return await self.send(to, subject, html, text, session_jwt=session_jwt)
 
-    async def send_account_deactivated(self, to: str) -> dict:
+    async def send_account_deactivated(self, to: str, session_jwt: Optional[str] = None) -> dict:
         """Send an account deactivation notification."""
         return await self.send(
             to,
@@ -154,9 +197,10 @@ class EmailClient:
             "<p>If you believe this is an error, please contact your system administrator.</p>",
             "Your Busibox Portal account has been deactivated.\n\n"
             "If you believe this is an error, please contact your system administrator.",
+            session_jwt=session_jwt,
         )
 
-    async def send_account_reactivated(self, to: str, portal_url: str = "") -> dict:
+    async def send_account_reactivated(self, to: str, portal_url: str = "", session_jwt: Optional[str] = None) -> dict:
         """Send an account reactivation notification."""
         return await self.send(
             to,
@@ -165,11 +209,13 @@ class EmailClient:
             f'<p><a href="{portal_url}">Sign in to the Portal</a></p>',
             f"Good news! Your Busibox Portal account has been reactivated.\n\n"
             f"Sign in to the Portal: {portal_url}",
+            session_jwt=session_jwt,
         )
 
-    async def send_test(self, to: str) -> dict:
+    async def send_test(self, to: str, session_jwt: Optional[str] = None) -> dict:
         """Send a test email to verify configuration."""
-        provider = self.provider
+        s = await self._resolve_settings(session_jwt)
+        provider = self._get_provider(s)
         if provider == "none":
             raise RuntimeError("No email provider configured. Configure SMTP or Resend first.")
         now = datetime.utcnow().isoformat() + "Z"
@@ -185,6 +231,7 @@ class EmailClient:
             f"Email Configuration Test\n\nThis is a test email from your Busibox Portal instance.\n"
             f"If you received this message, your email configuration is working correctly.\n\n"
             f"Provider: {provider}\nSent at: {now}",
+            session_jwt=session_jwt,
         )
 
 
