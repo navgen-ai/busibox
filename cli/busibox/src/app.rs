@@ -24,6 +24,8 @@ pub enum Screen {
     ProfileSelect,
     ProfileEdit,
     AdminLogin,
+    K8sSetup,
+    K8sManage,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -182,9 +184,39 @@ pub struct App {
 
     // Model tier selection (index into MemoryTier::all())
     pub model_tier_selected: usize,
-    pub model_config_input_cursor: usize, // 0=tier,1=email,2=domain,3=cert
+    pub model_config_input_cursor: usize,
     pub site_domain_input: String,
     pub ssl_cert_name_input: String,
+
+    // Cloud LLM configuration (ModelConfig screen)
+    pub llm_mode_choice: usize,          // 0=Local (auto-detected), 1=Cloud (API)
+    pub cloud_provider_choice: usize,    // 0=OpenAI, 1=Anthropic, 2=Bedrock
+    pub cloud_api_key_input: String,
+
+    // K8s setup state
+    pub k8s_kubeconfig_input: String,
+    pub k8s_overlay_input: String,
+    pub k8s_spot_token_input: String,
+    pub k8s_env_choice: usize,
+    pub k8s_input_cursor: usize,
+
+    // K8s manage state
+    #[allow(dead_code)]
+    pub k8s_manage_section: usize,
+    pub k8s_manage_selected: usize,
+    pub k8s_manage_log: Vec<String>,
+    pub k8s_manage_log_visible: bool,
+    pub k8s_manage_log_scroll: usize,
+    pub k8s_manage_log_autoscroll: bool,
+    pub k8s_manage_action_running: bool,
+    pub k8s_manage_action_complete: bool,
+    pub k8s_manage_tick: usize,
+    pub k8s_manage_rx: Option<mpsc::Receiver<K8sManageUpdate>>,
+    pub k8s_manage_input_mode: bool,
+    pub k8s_manage_input_buffer: String,
+    pub k8s_manage_input_label: String,
+    #[allow(dead_code)]
+    pub k8s_manage_input_tx: Option<std::sync::mpsc::Sender<String>>,
 
     // Profile state
     pub profiles: Option<ProfilesFile>,
@@ -481,6 +513,12 @@ pub enum BenchmarkUpdate {
     Complete,
 }
 
+#[derive(Debug)]
+pub enum K8sManageUpdate {
+    Log(String),
+    Complete { #[allow(dead_code)] success: bool },
+}
+
 impl std::fmt::Display for InstallStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -608,6 +646,28 @@ impl App {
             model_config_input_cursor: 0,
             site_domain_input: "localhost".into(),
             ssl_cert_name_input: String::new(),
+            llm_mode_choice: 0,
+            cloud_provider_choice: 0,
+            cloud_api_key_input: String::new(),
+            k8s_kubeconfig_input: String::new(),
+            k8s_overlay_input: "rackspace-spot".into(),
+            k8s_spot_token_input: String::new(),
+            k8s_env_choice: 0,
+            k8s_input_cursor: 0,
+            k8s_manage_section: 0,
+            k8s_manage_selected: 0,
+            k8s_manage_log: Vec::new(),
+            k8s_manage_log_visible: false,
+            k8s_manage_log_scroll: 0,
+            k8s_manage_log_autoscroll: true,
+            k8s_manage_action_running: false,
+            k8s_manage_action_complete: false,
+            k8s_manage_tick: 0,
+            k8s_manage_rx: None,
+            k8s_manage_input_mode: false,
+            k8s_manage_input_buffer: String::new(),
+            k8s_manage_input_label: String::new(),
+            k8s_manage_input_tx: None,
             profiles: None,
             profile_selected: 0,
             profile_delete_confirming: false,
@@ -761,11 +821,11 @@ impl App {
     }
 
     pub fn backend_choices(&self) -> &[&str] {
-        &["Docker", "Proxmox"]
+        &["Docker", "Proxmox", "K8s (Rackspace Spot)"]
     }
 
     pub fn env_choices(&self) -> &[&str] {
-        &["staging", "production"]
+        &["development", "staging", "production"]
     }
 
     #[allow(dead_code)]
@@ -783,6 +843,19 @@ impl App {
         if !self.has_profiles() {
             return vec![];
         }
+
+        let is_k8s = self.active_profile()
+            .map(|(_, p)| p.backend == "k8s")
+            .unwrap_or(false);
+
+        if is_k8s {
+            return match &self.deployment_state {
+                DeploymentState::Unknown | DeploymentState::Checking => vec![],
+                DeploymentState::None => vec!["Install", "K8s Manage"],
+                _ => vec!["K8s Manage", "Admin Login", "Update", "Clean Install"],
+            };
+        }
+
         match &self.deployment_state {
             DeploymentState::Unknown | DeploymentState::Checking => {
                 vec![]

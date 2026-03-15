@@ -1458,16 +1458,24 @@ async def start_service_sse(
                         deploy_stderr_task = asyncio.create_task(read_deploy_stream(deploy_process.stderr, "stderr"))
                         
                         deploy_done_count = 0
+                        deploy_last_event_time = asyncio.get_event_loop().time()
+                        heartbeat_interval = 15
                         while deploy_done_count < 2:
+                            now = asyncio.get_event_loop().time()
                             try:
-                                msg = await asyncio.wait_for(deploy_queue.get(), timeout=0.1)
+                                wait_time = max(0.1, heartbeat_interval - (now - deploy_last_event_time))
+                                msg = await asyncio.wait_for(deploy_queue.get(), timeout=wait_time)
                                 if msg is None:
                                     deploy_done_count += 1
                                 else:
                                     yield f"data: {json.dumps(msg)}\n\n"
+                                    deploy_last_event_time = asyncio.get_event_loop().time()
                             except asyncio.TimeoutError:
                                 if deploy_stdout_task.done() and deploy_stderr_task.done():
                                     break
+                                if asyncio.get_event_loop().time() - deploy_last_event_time >= heartbeat_interval:
+                                    yield f"data: {json.dumps({'type': 'info', 'message': f'Still deploying {service}...'})}\n\n"
+                                    deploy_last_event_time = asyncio.get_event_loop().time()
                                 continue
                         
                         deploy_returncode = await deploy_process.wait()
@@ -1517,18 +1525,25 @@ async def start_service_sse(
                     build_stdout_task = asyncio.create_task(read_build_stream(build_process.stdout, "stdout"))
                     build_stderr_task = asyncio.create_task(read_build_stream(build_process.stderr, "stderr"))
                     
-                    # Yield build messages
+                    # Yield build messages with heartbeat
                     build_done_count = 0
+                    build_last_event_time = asyncio.get_event_loop().time()
                     while build_done_count < 2:
+                        now = asyncio.get_event_loop().time()
                         try:
-                            msg = await asyncio.wait_for(build_queue.get(), timeout=0.1)
+                            wait_time = max(0.1, heartbeat_interval - (now - build_last_event_time))
+                            msg = await asyncio.wait_for(build_queue.get(), timeout=wait_time)
                             if msg is None:
                                 build_done_count += 1
                             else:
                                 yield f"data: {json.dumps(msg)}\n\n"
+                                build_last_event_time = asyncio.get_event_loop().time()
                         except asyncio.TimeoutError:
                             if build_stdout_task.done() and build_stderr_task.done():
                                 break
+                            if asyncio.get_event_loop().time() - build_last_event_time >= heartbeat_interval:
+                                yield f"data: {json.dumps({'type': 'info', 'message': f'Still building {service}...'})}\n\n"
+                                build_last_event_time = asyncio.get_event_loop().time()
                             continue
                     
                     # Wait for build to complete
@@ -1604,19 +1619,28 @@ async def start_service_sse(
                 stdout_task = asyncio.create_task(read_stream(process.stdout, "stdout"))
                 stderr_task = asyncio.create_task(read_stream(process.stderr, "stderr"))
                 
-                # Yield messages from queue
+                # Yield messages from queue with heartbeat to prevent proxy idle timeouts.
+                # Node.js fetch (undici) has a 30s default bodyTimeout between chunks;
+                # docker compose can be silent for longer (e.g. pulling images, health waits).
+                heartbeat_interval = 15
                 done_count = 0
+                last_event_time = asyncio.get_event_loop().time()
                 while done_count < 2:
+                    now = asyncio.get_event_loop().time()
                     try:
-                        msg = await asyncio.wait_for(queue.get(), timeout=0.1)
+                        wait_time = max(0.1, heartbeat_interval - (now - last_event_time))
+                        msg = await asyncio.wait_for(queue.get(), timeout=wait_time)
                         if msg is None:
                             done_count += 1
                         else:
                             yield f"data: {json.dumps(msg)}\n\n"
+                            last_event_time = asyncio.get_event_loop().time()
                     except asyncio.TimeoutError:
-                        # Check if tasks are done
                         if stdout_task.done() and stderr_task.done():
                             break
+                        if asyncio.get_event_loop().time() - last_event_time >= heartbeat_interval:
+                            yield f"data: {json.dumps({'type': 'info', 'message': f'Still starting {service}...'})}\n\n"
+                            last_event_time = asyncio.get_event_loop().time()
                         continue
                 
                 # Wait for process to complete
@@ -1717,16 +1741,23 @@ async def start_service_sse(
                         init_stderr_task = asyncio.create_task(read_init_stream(init_process.stderr, "stderr"))
                         
                         init_done_count = 0
+                        init_last_event_time = asyncio.get_event_loop().time()
                         while init_done_count < 2:
+                            now = asyncio.get_event_loop().time()
                             try:
-                                msg = await asyncio.wait_for(init_queue.get(), timeout=0.1)
+                                wait_time = max(0.1, heartbeat_interval - (now - init_last_event_time))
+                                msg = await asyncio.wait_for(init_queue.get(), timeout=wait_time)
                                 if msg is None:
                                     init_done_count += 1
                                 else:
                                     yield f"data: {json.dumps(msg)}\n\n"
+                                    init_last_event_time = asyncio.get_event_loop().time()
                             except asyncio.TimeoutError:
                                 if init_stdout_task.done() and init_stderr_task.done():
                                     break
+                                if asyncio.get_event_loop().time() - init_last_event_time >= heartbeat_interval:
+                                    yield f"data: {json.dumps({'type': 'info', 'message': f'Still initializing {init_service}...'})}\n\n"
+                                    init_last_event_time = asyncio.get_event_loop().time()
                                 continue
                         
                         init_returncode = await init_process.wait()

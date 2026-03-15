@@ -28,9 +28,15 @@ const FIELD_LABELS: &[&str] = &[
     "Site Domain",
     "SSL Certificate",
     "GitHub Token",
+    "LLM Backend",
+    "Cloud Provider",
+    "Cloud API Key",
+    "Kubeconfig",
+    "K8s Overlay",
+    "Spot Token",
 ];
 
-const FIELD_COUNT: usize = 17;
+const FIELD_COUNT: usize = 23;
 
 const FIELD_LABEL: usize = 0;
 const FIELD_ENVIRONMENT: usize = 1;
@@ -49,6 +55,12 @@ const FIELD_FRONTEND_REF: usize = 13;
 const FIELD_SITE_DOMAIN: usize = 14;
 const FIELD_SSL_CERT_NAME: usize = 15;
 const FIELD_GITHUB_TOKEN: usize = 16;
+const FIELD_LLM_BACKEND: usize = 17;
+const FIELD_CLOUD_PROVIDER: usize = 18;
+const FIELD_CLOUD_API_KEY: usize = 19;
+const FIELD_KUBECONFIG: usize = 20;
+const FIELD_K8S_OVERLAY: usize = 21;
+const FIELD_SPOT_TOKEN: usize = 22;
 
 fn visible_fields(profile: &profile::Profile) -> Vec<usize> {
     let mut fields: Vec<usize> = (0..FIELD_COUNT).collect();
@@ -57,6 +69,13 @@ fn visible_fields(profile: &profile::Profile) -> Vec<usize> {
     }
     if profile.backend != "docker" {
         fields.retain(|&f| f != FIELD_DOCKER_RUNTIME);
+    }
+    let is_cloud = profile.llm_backend_override.as_deref() == Some("cloud");
+    if !is_cloud {
+        fields.retain(|&f| f != FIELD_CLOUD_PROVIDER && f != FIELD_CLOUD_API_KEY);
+    }
+    if profile.backend != "k8s" {
+        fields.retain(|&f| f != FIELD_KUBECONFIG && f != FIELD_K8S_OVERLAY && f != FIELD_SPOT_TOKEN);
     }
     fields
 }
@@ -507,6 +526,16 @@ fn handle_nav_mode(app: &mut App, key: KeyEvent) {
                 app.profile_edit_buffer = profile.github_token.clone().unwrap_or_default();
                 app.profile_editing = true;
                 app.input_mode = InputMode::Editing;
+            } else if app.profile_edit_field == FIELD_CLOUD_API_KEY {
+                let profile = get_editing_profile(app);
+                app.profile_edit_buffer = profile.cloud_api_key.clone().unwrap_or_default();
+                app.profile_editing = true;
+                app.input_mode = InputMode::Editing;
+            } else if app.profile_edit_field == FIELD_SPOT_TOKEN {
+                let profile = get_editing_profile(app);
+                app.profile_edit_buffer = profile.spot_token.clone().unwrap_or_default();
+                app.profile_editing = true;
+                app.input_mode = InputMode::Editing;
             } else {
                 let profile = get_editing_profile(app);
                 app.profile_edit_buffer = field_value(&profile, app.profile_edit_field);
@@ -537,7 +566,8 @@ fn handle_edit_mode(app: &mut App, key: KeyEvent) {
     let field = app.profile_edit_field;
 
     match field {
-        FIELD_ENVIRONMENT | FIELD_BACKEND | FIELD_DOCKER_RUNTIME | FIELD_MODEL_TIER | FIELD_SSL_CERT_NAME | FIELD_USE_PROD_VLLM => {
+        FIELD_ENVIRONMENT | FIELD_BACKEND | FIELD_DOCKER_RUNTIME | FIELD_MODEL_TIER
+        | FIELD_SSL_CERT_NAME | FIELD_USE_PROD_VLLM | FIELD_LLM_BACKEND | FIELD_CLOUD_PROVIDER => {
             handle_dropdown_edit(app, key);
         }
         _ => {
@@ -685,6 +715,11 @@ fn default_profile() -> profile::Profile {
         use_production_vllm: None,
         docker_runtime: None,
         github_token: None,
+        cloud_provider: None,
+        cloud_api_key: None,
+        llm_backend_override: None,
+        k8s_overlay: None,
+        spot_token: None,
     }
 }
 
@@ -737,6 +772,38 @@ fn field_value(profile: &profile::Profile, field: usize) -> String {
                 }
             })
             .unwrap_or_default(),
+        FIELD_LLM_BACKEND => profile
+            .llm_backend_override
+            .clone()
+            .unwrap_or_else(|| "(auto-detect)".into()),
+        FIELD_CLOUD_PROVIDER => profile.cloud_provider.clone().unwrap_or_default(),
+        FIELD_CLOUD_API_KEY => profile
+            .cloud_api_key
+            .as_ref()
+            .map(|t| {
+                if t.len() > 8 {
+                    format!("{}...{}", &t[..4], &t[t.len() - 4..])
+                } else {
+                    t.clone()
+                }
+            })
+            .unwrap_or_default(),
+        FIELD_KUBECONFIG => profile.kubeconfig.clone().unwrap_or_default(),
+        FIELD_K8S_OVERLAY => profile
+            .k8s_overlay
+            .clone()
+            .unwrap_or_else(|| "rackspace-spot".into()),
+        FIELD_SPOT_TOKEN => profile
+            .spot_token
+            .as_ref()
+            .map(|t| {
+                if t.len() > 8 {
+                    format!("{}...{}", &t[..4], &t[t.len() - 4..])
+                } else {
+                    t.clone()
+                }
+            })
+            .unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -768,14 +835,20 @@ fn field_hint(field: usize, profile: &profile::Profile) -> String {
             }
         }
         FIELD_GITHUB_TOKEN => "Personal Access Token for private repo access".into(),
+        FIELD_LLM_BACKEND => "←/→ to cycle: (auto-detect), cloud".into(),
+        FIELD_CLOUD_PROVIDER => "←/→ to cycle: openai, anthropic, bedrock".into(),
+        FIELD_CLOUD_API_KEY => "API key for cloud LLM provider".into(),
+        FIELD_KUBECONFIG => "Path to kubeconfig file".into(),
+        FIELD_K8S_OVERLAY => "Kustomize overlay name".into(),
+        FIELD_SPOT_TOKEN => "Rackspace Spot API token for node management".into(),
         _ => String::new(),
     }
 }
 
 fn dropdown_options(app: &App, field: usize, _profile: &profile::Profile) -> Vec<String> {
     match field {
-        FIELD_ENVIRONMENT => vec!["staging".into(), "production".into()],
-        FIELD_BACKEND => vec!["docker".into(), "proxmox".into()],
+        FIELD_ENVIRONMENT => vec!["development".into(), "staging".into(), "production".into()],
+        FIELD_BACKEND => vec!["docker".into(), "proxmox".into(), "k8s".into()],
         FIELD_DOCKER_RUNTIME => vec!["auto".into(), "docker-desktop".into(), "colima".into()],
         FIELD_USE_PROD_VLLM => vec!["auto".into(), "yes".into(), "no".into()],
         FIELD_MODEL_TIER => {
@@ -788,6 +861,8 @@ fn dropdown_options(app: &App, field: usize, _profile: &profile::Profile) -> Vec
             options.append(&mut certs);
             options
         }
+        FIELD_LLM_BACKEND => vec!["(auto-detect)".into(), "cloud".into()],
+        FIELD_CLOUD_PROVIDER => vec!["openai".into(), "anthropic".into(), "bedrock".into()],
         _ => vec![],
     }
 }
@@ -840,10 +915,10 @@ fn apply_field(app: &mut App, field: usize, value: &str) {
         FIELD_LABEL => profile.label = value.to_string(),
         FIELD_ENVIRONMENT => {
             profile.environment = value.to_string();
-            profile.vault_prefix = Some(if value == "production" {
-                "prod".to_string()
-            } else {
-                "staging".to_string()
+            profile.vault_prefix = Some(match value {
+                "production" => "prod".to_string(),
+                "development" | "demo" => "dev".to_string(),
+                _ => "staging".to_string(),
             });
         }
         FIELD_BACKEND => profile.backend = value.to_string(),
@@ -945,6 +1020,52 @@ fn apply_field(app: &mut App, field: usize, value: &str) {
         FIELD_GITHUB_TOKEN => {
             if !value.contains("...") {
                 profile.github_token = if value.is_empty() {
+                    None
+                } else {
+                    Some(value.to_string())
+                };
+            }
+        }
+        FIELD_LLM_BACKEND => {
+            profile.llm_backend_override = if value.is_empty() || value == "(auto-detect)" {
+                None
+            } else {
+                Some(value.to_string())
+            };
+        }
+        FIELD_CLOUD_PROVIDER => {
+            profile.cloud_provider = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
+        }
+        FIELD_CLOUD_API_KEY => {
+            if !value.contains("...") {
+                profile.cloud_api_key = if value.is_empty() {
+                    None
+                } else {
+                    Some(value.to_string())
+                };
+            }
+        }
+        FIELD_KUBECONFIG => {
+            profile.kubeconfig = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
+        }
+        FIELD_K8S_OVERLAY => {
+            profile.k8s_overlay = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
+        }
+        FIELD_SPOT_TOKEN => {
+            if !value.contains("...") {
+                profile.spot_token = if value.is_empty() {
                     None
                 } else {
                     Some(value.to_string())

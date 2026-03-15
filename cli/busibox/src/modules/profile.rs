@@ -76,6 +76,21 @@ pub struct Profile {
     /// GitHub Personal Access Token for private repo access during deployment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_token: Option<String>,
+    /// Cloud LLM provider: "openai", "anthropic", "bedrock"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_provider: Option<String>,
+    /// API key for the cloud LLM provider
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_api_key: Option<String>,
+    /// Override auto-detected LLM backend (set to "cloud" to force cloud mode)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_backend_override: Option<String>,
+    /// K8s overlay name (default: "rackspace-spot")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub k8s_overlay: Option<String>,
+    /// Rackspace Spot API token for spot instance management
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spot_token: Option<String>,
 }
 
 impl Profile {
@@ -275,6 +290,13 @@ pub fn write_profile_state(repo_root: &Path, profile_id: &str, profile: &Profile
                 && !l.starts_with("SITE_DOMAIN=")
                 && !l.starts_with("SSL_CERT_NAME=")
                 && !l.starts_with("DOCKER_RUNTIME=")
+                && !l.starts_with("CLOUD_PROVIDER=")
+                && !l.starts_with("CLOUD_API_KEY=")
+                && !l.starts_with("OPENAI_API_KEY=")
+                && !l.starts_with("ANTHROPIC_API_KEY=")
+                && !l.starts_with("KUBECONFIG=")
+                && !l.starts_with("K8S_OVERLAY=")
+                && !l.starts_with("SPOT_TOKEN=")
         })
         .map(|l| l.to_string())
         .collect();
@@ -303,6 +325,30 @@ pub fn write_profile_state(repo_root: &Path, profile_id: &str, profile: &Profile
     }
     if let Some(ref rt) = profile.docker_runtime {
         lines.push(format!("DOCKER_RUNTIME={rt}"));
+    }
+    if let Some(ref provider) = profile.cloud_provider {
+        lines.push(format!("CLOUD_PROVIDER={provider}"));
+    }
+    if let Some(ref key) = profile.cloud_api_key {
+        match profile.cloud_provider.as_deref() {
+            Some("openai") => lines.push(format!("OPENAI_API_KEY={key}")),
+            Some("anthropic") => lines.push(format!("ANTHROPIC_API_KEY={key}")),
+            _ => lines.push(format!("CLOUD_API_KEY={key}")),
+        }
+    }
+    if profile.llm_backend_override.as_deref() == Some("cloud") {
+        if !lines.iter().any(|l| l.starts_with("LLM_BACKEND=")) {
+            lines.push("LLM_BACKEND=cloud".to_string());
+        }
+    }
+    if let Some(ref kc) = profile.kubeconfig {
+        lines.push(format!("KUBECONFIG={kc}"));
+    }
+    if let Some(ref overlay) = profile.k8s_overlay {
+        lines.push(format!("K8S_OVERLAY={overlay}"));
+    }
+    if let Some(ref token) = profile.spot_token {
+        lines.push(format!("SPOT_TOKEN={token}"));
     }
 
     let content = lines.join("\n") + "\n";

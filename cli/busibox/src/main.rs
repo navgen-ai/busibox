@@ -101,12 +101,18 @@ fn main() -> Result<()> {
         if app.screen == Screen::Welcome && app.health_check_running {
             app.health_tick = app.health_tick.wrapping_add(1);
         }
+        if app.screen == Screen::K8sManage && app.k8s_manage_action_running {
+            app.k8s_manage_tick = app.k8s_manage_tick.wrapping_add(1);
+        }
 
         // Drain health check updates
         screens::welcome::process_health_updates(&mut app);
 
         // Drain deployed model status updates
         screens::welcome::process_deployed_model_updates(&mut app);
+
+        // Drain K8s manage updates
+        screens::k8s_manage::process_k8s_updates(&mut app);
 
         // Drain install updates from background worker
         if let Some(rx) = app.install_rx.take() {
@@ -529,6 +535,8 @@ fn render(app: &App, f: &mut ratatui::Frame) {
         Screen::ProfileSelect => screens::profile_select::render(f, app),
         Screen::ProfileEdit => screens::profile_edit::render(f, app),
         Screen::AdminLogin => screens::admin_login::render(f, app),
+        Screen::K8sSetup => screens::k8s_setup::render(f, app),
+        Screen::K8sManage => screens::k8s_manage::render(f, app),
     }
 }
 
@@ -589,6 +597,8 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         Screen::ProfileSelect => screens::profile_select::handle_key(app, key),
         Screen::ProfileEdit => screens::profile_edit::handle_key(app, key),
         Screen::AdminLogin => screens::admin_login::handle_key(app, key),
+        Screen::K8sSetup => screens::k8s_setup::handle_key(app, key),
+        Screen::K8sManage => screens::k8s_manage::handle_key(app, key),
     }
 }
 

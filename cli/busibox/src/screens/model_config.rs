@@ -9,20 +9,30 @@ use std::collections::HashMap;
 use std::path::Path;
 
 const FIELD_TIER: usize = 0;
-const FIELD_ADMIN_EMAIL: usize = 1;
-const FIELD_SITE_DOMAIN: usize = 2;
-const FIELD_SSL_CERT: usize = 3;
+const FIELD_LLM_MODE: usize = 1;
+const FIELD_CLOUD_PROVIDER: usize = 2;
+const FIELD_CLOUD_API_KEY: usize = 3;
+const FIELD_ADMIN_EMAIL: usize = 4;
+const FIELD_SITE_DOMAIN: usize = 5;
+const FIELD_SSL_CERT: usize = 6;
+
+const LLM_MODES: &[&str] = &["Local (auto-detected)", "Cloud (API)"];
+const CLOUD_PROVIDERS: &[&str] = &["OpenAI", "Anthropic", "Bedrock"];
 
 pub fn render(f: &mut Frame, app: &App) {
+    let is_cloud = app.llm_mode_choice == 1;
+    let cloud_rows: u16 = if is_cloud { 6 } else { 3 };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
-            Constraint::Min(10),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
+            Constraint::Length(3),        // title
+            Constraint::Min(10),          // tier list + details
+            Constraint::Length(cloud_rows), // LLM mode + cloud fields
+            Constraint::Length(3),        // admin email
+            Constraint::Length(3),        // site domain
+            Constraint::Length(3),        // ssl cert
+            Constraint::Length(3),        // help
         ])
         .margin(2)
         .split(f.area());
@@ -51,9 +61,11 @@ pub fn render(f: &mut Frame, app: &App) {
     render_tier_list(f, app, content_chunks[0], recommended_tier);
     render_tier_details(f, app, content_chunks[1], backend);
 
+    render_llm_mode_section(f, app, chunks[2]);
+
     render_text_input(
         f,
-        chunks[2],
+        chunks[3],
         " Admin Email ",
         &app.admin_email_input,
         "admin@example.com",
@@ -61,7 +73,7 @@ pub fn render(f: &mut Frame, app: &App) {
     );
     render_text_input(
         f,
-        chunks[3],
+        chunks[4],
         " Site Domain ",
         &app.site_domain_input,
         "localhost",
@@ -74,7 +86,7 @@ pub fn render(f: &mut Frame, app: &App) {
     };
     render_picker_input(
         f,
-        chunks[4],
+        chunks[5],
         " SSL Certificate (from ssl/) ",
         &cert_display,
         app.model_config_input_cursor == FIELD_SSL_CERT,
@@ -91,11 +103,24 @@ pub fn render(f: &mut Frame, app: &App) {
             Span::styled("Esc ", theme::muted()),
             Span::styled("Back", theme::muted()),
         ]))
+    } else if app.model_config_input_cursor == FIELD_LLM_MODE
+        || app.model_config_input_cursor == FIELD_CLOUD_PROVIDER
+    {
+        Paragraph::new(Line::from(vec![
+            Span::styled("←/→ ", theme::highlight()),
+            Span::styled("Cycle  ", theme::normal()),
+            Span::styled("Tab ", theme::highlight()),
+            Span::styled("Next field  ", theme::normal()),
+            Span::styled("Enter ", theme::highlight()),
+            Span::styled("Back to tiers  ", theme::normal()),
+            Span::styled("Esc ", theme::muted()),
+            Span::styled("Back", theme::muted()),
+        ]))
     } else {
         Paragraph::new(Line::from(vec![
             Span::styled("Type/Edit  ", theme::normal()),
             Span::styled("←/→ ", theme::highlight()),
-            Span::styled("Cycle certs  ", theme::normal()),
+            Span::styled("Cycle  ", theme::normal()),
             Span::styled("Tab ", theme::highlight()),
             Span::styled("Next field  ", theme::normal()),
             Span::styled("Enter ", theme::highlight()),
@@ -104,7 +129,72 @@ pub fn render(f: &mut Frame, app: &App) {
             Span::styled("Back", theme::muted()),
         ]))
     };
-    f.render_widget(help, chunks[5]);
+    f.render_widget(help, chunks[6]);
+}
+
+fn render_llm_mode_section(f: &mut Frame, app: &App, area: Rect) {
+    let is_cloud = app.llm_mode_choice == 1;
+
+    if is_cloud {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // LLM mode picker
+                Constraint::Length(3), // cloud provider + api key
+            ])
+            .split(area);
+
+        render_picker_input(
+            f,
+            rows[0],
+            " LLM Mode ",
+            LLM_MODES[app.llm_mode_choice.min(1)],
+            app.model_config_input_cursor == FIELD_LLM_MODE,
+        );
+
+        let cloud_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(rows[1]);
+
+        render_picker_input(
+            f,
+            cloud_cols[0],
+            " Provider ",
+            CLOUD_PROVIDERS[app.cloud_provider_choice.min(2)],
+            app.model_config_input_cursor == FIELD_CLOUD_PROVIDER,
+        );
+
+        let masked_key = if app.cloud_api_key_input.is_empty() {
+            String::new()
+        } else if app.model_config_input_cursor == FIELD_CLOUD_API_KEY {
+            app.cloud_api_key_input.clone()
+        } else {
+            let len = app.cloud_api_key_input.len();
+            if len <= 8 {
+                "*".repeat(len)
+            } else {
+                format!("{}...{}", &app.cloud_api_key_input[..4], &app.cloud_api_key_input[len-4..])
+            }
+        };
+
+        render_text_input(
+            f,
+            cloud_cols[1],
+            " API Key ",
+            &masked_key,
+            "sk-... or access key",
+            app.model_config_input_cursor == FIELD_CLOUD_API_KEY,
+        );
+    } else {
+        render_picker_input(
+            f,
+            area,
+            " LLM Mode ",
+            LLM_MODES[app.llm_mode_choice.min(1)],
+            app.model_config_input_cursor == FIELD_LLM_MODE,
+        );
+    }
 }
 
 fn render_text_input(
@@ -310,14 +400,25 @@ fn render_tier_details(f: &mut Frame, app: &App, area: Rect, backend: Option<&cr
     f.render_widget(paragraph, area);
 }
 
+/// Advance to the next field, skipping cloud-only fields when in local mode.
+fn next_field(current: usize, is_cloud: bool) -> usize {
+    let next = current + 1;
+    if !is_cloud && (next == FIELD_CLOUD_PROVIDER || next == FIELD_CLOUD_API_KEY) {
+        FIELD_ADMIN_EMAIL
+    } else {
+        next.min(FIELD_SSL_CERT)
+    }
+}
+
 pub fn handle_key(app: &mut App, key: KeyEvent) {
     let tier_count = MemoryTier::all().len();
     let cert_options = ssl_cert_options(&app.repo_root);
+    let is_cloud = app.llm_mode_choice == 1;
 
     if app.model_config_input_cursor != FIELD_TIER {
         match key.code {
             KeyCode::Tab => {
-                app.model_config_input_cursor = (app.model_config_input_cursor + 1).min(FIELD_SSL_CERT);
+                app.model_config_input_cursor = next_field(app.model_config_input_cursor, is_cloud);
             }
             KeyCode::Esc => {
                 app.model_config_input_cursor = FIELD_TIER;
@@ -328,27 +429,51 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 app.input_mode = InputMode::Normal;
             }
             KeyCode::Left => {
-                if app.model_config_input_cursor == FIELD_SSL_CERT {
-                    cycle_ssl_cert(app, &cert_options, false);
+                match app.model_config_input_cursor {
+                    FIELD_SSL_CERT => cycle_ssl_cert(app, &cert_options, false),
+                    FIELD_LLM_MODE => {
+                        if app.llm_mode_choice > 0 {
+                            app.llm_mode_choice -= 1;
+                        }
+                    }
+                    FIELD_CLOUD_PROVIDER => {
+                        if app.cloud_provider_choice > 0 {
+                            app.cloud_provider_choice -= 1;
+                        }
+                    }
+                    _ => {}
                 }
             }
             KeyCode::Right => {
-                if app.model_config_input_cursor == FIELD_SSL_CERT {
-                    cycle_ssl_cert(app, &cert_options, true);
+                match app.model_config_input_cursor {
+                    FIELD_SSL_CERT => cycle_ssl_cert(app, &cert_options, true),
+                    FIELD_LLM_MODE => {
+                        if app.llm_mode_choice < LLM_MODES.len() - 1 {
+                            app.llm_mode_choice += 1;
+                        }
+                    }
+                    FIELD_CLOUD_PROVIDER => {
+                        if app.cloud_provider_choice < CLOUD_PROVIDERS.len() - 1 {
+                            app.cloud_provider_choice += 1;
+                        }
+                    }
+                    _ => {}
                 }
             }
             KeyCode::Backspace => {
-                if app.model_config_input_cursor == FIELD_ADMIN_EMAIL {
-                    app.admin_email_input.pop();
-                } else if app.model_config_input_cursor == FIELD_SITE_DOMAIN {
-                    app.site_domain_input.pop();
+                match app.model_config_input_cursor {
+                    FIELD_ADMIN_EMAIL => { app.admin_email_input.pop(); }
+                    FIELD_SITE_DOMAIN => { app.site_domain_input.pop(); }
+                    FIELD_CLOUD_API_KEY => { app.cloud_api_key_input.pop(); }
+                    _ => {}
                 }
             }
             KeyCode::Char(c) => {
-                if app.model_config_input_cursor == FIELD_ADMIN_EMAIL {
-                    app.admin_email_input.push(c);
-                } else if app.model_config_input_cursor == FIELD_SITE_DOMAIN {
-                    app.site_domain_input.push(c);
+                match app.model_config_input_cursor {
+                    FIELD_ADMIN_EMAIL => app.admin_email_input.push(c),
+                    FIELD_SITE_DOMAIN => app.site_domain_input.push(c),
+                    FIELD_CLOUD_API_KEY => app.cloud_api_key_input.push(c),
+                    _ => {}
                 }
             }
             _ => {}
@@ -358,7 +483,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 
     match key.code {
         KeyCode::Tab => {
-            app.model_config_input_cursor = FIELD_ADMIN_EMAIL;
+            app.model_config_input_cursor = FIELD_LLM_MODE;
             app.input_mode = InputMode::Editing;
         }
         KeyCode::Esc => {
@@ -517,8 +642,14 @@ fn save_profile_and_continue(app: &mut App) {
         format!("{} {} (local)", environment, backend)
     };
 
-    let backend_lower = backend.to_lowercase();
-    let host_prefix = if is_remote {
+    let backend_lower = if backend.contains("K8s") {
+        "k8s".to_string()
+    } else {
+        backend.to_lowercase()
+    };
+    let host_prefix = if backend_lower == "k8s" {
+        app.k8s_overlay_input.trim()
+    } else if is_remote {
         app.remote_host_input.as_str()
     } else {
         "local"
@@ -542,10 +673,10 @@ fn save_profile_and_continue(app: &mut App) {
         backend: backend_lower.clone(),
         label,
         created: Some(chrono_now()),
-        vault_prefix: Some(if *environment == "production" {
-            "prod".to_string()
-        } else {
-            "staging".to_string()
+        vault_prefix: Some(match *environment {
+            "production" => "prod".to_string(),
+            "development" | "demo" => "dev".to_string(),
+            _ => "staging".to_string(),
         }),
         remote: is_remote,
         remote_host: if is_remote {
@@ -569,7 +700,11 @@ fn save_profile_and_continue(app: &mut App) {
             .as_ref()
             .and_then(|s| s.ip.clone()),
         hardware: hw,
-        kubeconfig: None,
+        kubeconfig: if backend_lower == "k8s" && !app.k8s_kubeconfig_input.trim().is_empty() {
+            Some(app.k8s_kubeconfig_input.trim().to_string())
+        } else {
+            None
+        },
         model_tier,
         admin_email: if app.admin_email_input.trim().is_empty() {
             None
@@ -592,6 +727,32 @@ fn save_profile_and_continue(app: &mut App) {
         use_production_vllm: None,
         docker_runtime: None,
         github_token: None,
+        cloud_provider: if app.llm_mode_choice == 1 {
+            let providers = ["openai", "anthropic", "bedrock"];
+            Some(providers[app.cloud_provider_choice.min(2)].to_string())
+        } else {
+            None
+        },
+        cloud_api_key: if app.llm_mode_choice == 1 && !app.cloud_api_key_input.trim().is_empty() {
+            Some(app.cloud_api_key_input.trim().to_string())
+        } else {
+            None
+        },
+        llm_backend_override: if app.llm_mode_choice == 1 {
+            Some("cloud".to_string())
+        } else {
+            None
+        },
+        k8s_overlay: if backend_lower == "k8s" {
+            Some(app.k8s_overlay_input.clone())
+        } else {
+            None
+        },
+        spot_token: if backend_lower == "k8s" && !app.k8s_spot_token_input.trim().is_empty() {
+            Some(app.k8s_spot_token_input.trim().to_string())
+        } else {
+            None
+        },
     };
 
     match profile::upsert_profile(&app.repo_root, &profile_id, profile, true) {

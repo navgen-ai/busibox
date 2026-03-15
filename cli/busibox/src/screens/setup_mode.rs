@@ -218,12 +218,14 @@ fn handle_mode_selection(app: &mut App, key: KeyEvent) {
         KeyCode::Enter => match app.menu_selected {
             0 => {
                 app.setup_target = SetupTarget::Local;
+                app.remote_env_choice = 0; // default to "development" for local
                 app.screen = Screen::HardwareReport;
             }
             1 => {
                 app.setup_target = SetupTarget::Remote;
                 app.input_mode = InputMode::Editing;
                 app.input_cursor = 0;
+                app.remote_env_choice = 1; // default to "staging" for remote
             }
             _ => {}
         },
@@ -246,7 +248,12 @@ fn handle_remote_input(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Enter => {
-            if !app.remote_host_input.is_empty() {
+            let backends = app.backend_choices();
+            let selected_backend = backends.get(app.remote_backend_choice).unwrap_or(&"Docker");
+            if selected_backend.contains("K8s") {
+                app.screen = Screen::K8sSetup;
+                app.input_mode = InputMode::Normal;
+            } else if !app.remote_host_input.is_empty() {
                 app.screen = Screen::SshSetup;
                 app.input_mode = InputMode::Normal;
             }

@@ -382,6 +382,11 @@ fn save_profile_and_continue(app: &mut App) {
         use_production_vllm: None,
         docker_runtime: None,
         github_token: None,
+        cloud_provider: None,
+        cloud_api_key: None,
+        llm_backend_override: None,
+        k8s_overlay: None,
+        spot_token: None,
     };
 
     match profile::upsert_profile(&app.repo_root, &profile_id, profile, true) {

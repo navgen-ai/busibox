@@ -1024,7 +1024,7 @@ fn spawn_install_worker(app: &mut App) {
     let remote_path_input = app.remote_path_input.clone();
     let vault_password: Option<String> = app.vault_password.clone();
     let clean_install = app.clean_install;
-    let is_update = app.is_update;
+    let _is_update = app.is_update;
     // Derive vault prefix from environment (same logic as service-deploy.sh get_container_prefix)
     let vault_prefix: String = app
         .active_profile()
@@ -1081,11 +1081,30 @@ fn spawn_install_worker(app: &mut App) {
         .filter(|v| !v.trim().is_empty());
     let profile_llm_backend: Option<String> = app
         .active_profile()
-        .and_then(|(_, p)| p.hardware.as_ref().map(|h| match h.llm_backend {
-            crate::modules::hardware::LlmBackend::Mlx => "mlx".to_string(),
-            crate::modules::hardware::LlmBackend::Vllm => "vllm".to_string(),
-            crate::modules::hardware::LlmBackend::Cloud => "cloud".to_string(),
-        }));
+        .and_then(|(_, p)| {
+            if let Some(ref ovr) = p.llm_backend_override {
+                Some(ovr.clone())
+            } else {
+                p.hardware.as_ref().map(|h| match h.llm_backend {
+                    crate::modules::hardware::LlmBackend::Mlx => "mlx".to_string(),
+                    crate::modules::hardware::LlmBackend::Vllm => "vllm".to_string(),
+                    crate::modules::hardware::LlmBackend::Cloud => "cloud".to_string(),
+                })
+            }
+        });
+
+    let profile_cloud_provider: Option<String> = app
+        .active_profile()
+        .and_then(|(_, p)| p.cloud_provider.clone());
+    let profile_cloud_api_key: Option<String> = app
+        .active_profile()
+        .and_then(|(_, p)| p.cloud_api_key.clone());
+    let app_kubeconfig: Option<String> = app
+        .active_profile()
+        .and_then(|(_, p)| p.kubeconfig.clone());
+    let app_k8s_overlay: Option<String> = app
+        .active_profile()
+        .and_then(|(_, p)| p.k8s_overlay.clone());
 
     // Read GitHub token: profile first, then ~/.gittoken fallback
     let github_token: Option<String> = app
@@ -1174,6 +1193,88 @@ fn spawn_install_worker(app: &mut App) {
             let _ = tx.send(InstallUpdate::Log(format!(
                 "WARNING: SSL certificate preparation skipped: {e}"
             )));
+        }
+
+        // K8s backend: run make k8s-deploy and skip the entire Ansible/vault flow
+        if profile_backend == "k8s" {
+            let _ = tx.send(InstallUpdate::Log(
+                "K8s backend detected — running k8s-deploy...".into(),
+            ));
+
+            let mut env_prefix = String::new();
+            if let Some(ref kc) = app_kubeconfig {
+                env_prefix.push_str(&format!("KUBECONFIG={kc} "));
+            }
+            if let Some(ref ov) = app_k8s_overlay {
+                env_prefix.push_str(&format!("K8S_OVERLAY={ov} "));
+            }
+            env_prefix.push_str(&format!("BUSIBOX_ENV={profile_environment} CONTAINER_PREFIX={vault_prefix} "));
+            if let Some(ref backend) = profile_llm_backend {
+                env_prefix.push_str(&format!("LLM_BACKEND={backend} "));
+            }
+            if let Some(ref provider) = profile_cloud_provider {
+                env_prefix.push_str(&format!("CLOUD_PROVIDER={provider} "));
+            }
+            if let Some(ref api_key) = profile_cloud_api_key {
+                match profile_cloud_provider.as_deref() {
+                    Some("openai") => env_prefix.push_str(&format!("OPENAI_API_KEY={} ", shell_escape(api_key))),
+                    Some("anthropic") => env_prefix.push_str(&format!("ANTHROPIC_API_KEY={} ", shell_escape(api_key))),
+                    _ => env_prefix.push_str(&format!("CLOUD_API_KEY={} ", shell_escape(api_key))),
+                }
+            }
+
+            let cmd = format!("cd {} && {env_prefix}make k8s-deploy", repo_root.display());
+
+            for svc in &stages {
+                let _ = tx.send(InstallUpdate::ServiceStatus {
+                    name: svc.2.first().cloned().unwrap_or_default(),
+                    status: InstallStatus::Deploying,
+                });
+            }
+
+            let result = std::process::Command::new("bash")
+                .arg("-c")
+                .arg(&cmd)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn();
+
+            match result {
+                Ok(mut child) => {
+                    use std::io::BufRead;
+
+                    if let Some(stdout) = child.stdout.take() {
+                        let reader = std::io::BufReader::new(stdout);
+                        for line in reader.lines() {
+                            if let Ok(line) = line {
+                                let _ = tx.send(InstallUpdate::Log(format!("  {line}")));
+                            }
+                        }
+                    }
+                    if let Some(stderr) = child.stderr.take() {
+                        let reader = std::io::BufReader::new(stderr);
+                        for line in reader.lines() {
+                            if let Ok(line) = line {
+                                let _ = tx.send(InstallUpdate::Log(format!("  {line}")));
+                            }
+                        }
+                    }
+
+                    let status = child.wait();
+                    let success = status.map(|s| s.success()).unwrap_or(false);
+                    if success {
+                        let _ = tx.send(InstallUpdate::Log("✓ K8s deployment complete".into()));
+                    } else {
+                        let _ = tx.send(InstallUpdate::Log("✗ K8s deployment failed".into()));
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(InstallUpdate::Log(format!("ERROR: Failed to spawn: {e}")));
+                }
+            }
+
+            let _ = tx.send(InstallUpdate::Complete { portal_url: None });
+            return;
         }
 
         // If private repos were detected and we have no token, prompt for one
@@ -3335,6 +3436,17 @@ fi
             );
             if let Some(ref backend) = profile_llm_backend {
                 ref_exports.push_str(&format!("LLM_BACKEND={backend} "));
+            }
+            if let Some(ref provider) = profile_cloud_provider {
+                ref_exports.push_str(&format!("CLOUD_PROVIDER={provider} "));
+            }
+            if let Some(ref api_key) = profile_cloud_api_key {
+                match profile_cloud_provider.as_deref() {
+                    Some("openai") => ref_exports.push_str(&format!("OPENAI_API_KEY={} ", shell_escape(api_key))),
+                    Some("anthropic") => ref_exports.push_str(&format!("ANTHROPIC_API_KEY={} ", shell_escape(api_key))),
+                    Some("bedrock") => ref_exports.push_str(&format!("AWS_ACCESS_KEY_ID={} ", shell_escape(api_key))),
+                    _ => ref_exports.push_str(&format!("CLOUD_API_KEY={} ", shell_escape(api_key))),
+                }
             }
             if let Some(ref token) = github_token {
                 ref_exports.push_str(&format!("GITHUB_AUTH_TOKEN={token} "));
