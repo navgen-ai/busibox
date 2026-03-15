@@ -1500,6 +1500,8 @@ fn spawn_install_worker(app: &mut App) {
             let secrets_script = format!(
                 r#"set -euo pipefail
 VAULT_FILE="{vault_rel}"
+# Use ANSIBLE_VAULT_PASSWORD_FILE env var only (not also --vault-password-file)
+# to avoid "vault-ids default,default" duplicate error in ansible-vault
 # Capture then unset to avoid duplicate vault-ids (env var + CLI flag)
 VPF="$ANSIBLE_VAULT_PASSWORD_FILE"
 unset ANSIBLE_VAULT_PASSWORD_FILE
@@ -2373,6 +2375,8 @@ fi
                         let secrets_script = format!(
                             r#"set -euo pipefail
 VAULT_FILE="{vault_rel}"
+# Use ANSIBLE_VAULT_PASSWORD_FILE env var only (not also --vault-password-file)
+# to avoid "vault-ids default,default" duplicate error in ansible-vault
 # Capture then unset to avoid duplicate vault-ids (env var + CLI flag)
 VPF="$ANSIBLE_VAULT_PASSWORD_FILE"
 unset ANSIBLE_VAULT_PASSWORD_FILE
