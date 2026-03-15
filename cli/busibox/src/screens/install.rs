@@ -1500,7 +1500,10 @@ fn spawn_install_worker(app: &mut App) {
             let secrets_script = format!(
                 r#"set -euo pipefail
 VAULT_FILE="{vault_rel}"
+# Use ANSIBLE_VAULT_PASSWORD_FILE env var only (not also --vault-password-file)
+# to avoid "vault-ids default,default" duplicate error in ansible-vault
 VPF="$ANSIBLE_VAULT_PASSWORD_FILE"
+unset ANSIBLE_VAULT_PASSWORD_FILE
 
 if [ ! -f "$VAULT_FILE" ]; then
     echo "ERROR: Vault file not found: $VAULT_FILE"
@@ -1644,6 +1647,7 @@ echo "✓ Generated 9 bootstrap secrets ($REMAINING optional placeholders remain
                 r#"set -euo pipefail
 VAULT_FILE="{vault_rel}"
 VPF="$ANSIBLE_VAULT_PASSWORD_FILE"
+unset ANSIBLE_VAULT_PASSWORD_FILE
 if [ -f "$VAULT_FILE" ]; then
     FIRST_LINE=$(head -1 "$VAULT_FILE")
     if [[ "$FIRST_LINE" == *'$ANSIBLE_VAULT'* ]]; then
@@ -2370,7 +2374,10 @@ fi
                         let secrets_script = format!(
                             r#"set -euo pipefail
 VAULT_FILE="{vault_rel}"
+# Use ANSIBLE_VAULT_PASSWORD_FILE env var only (not also --vault-password-file)
+# to avoid "vault-ids default,default" duplicate error in ansible-vault
 VPF="$ANSIBLE_VAULT_PASSWORD_FILE"
+unset ANSIBLE_VAULT_PASSWORD_FILE
 
 if [ ! -f "$VAULT_FILE" ]; then
     echo "ERROR: Vault file not found: $VAULT_FILE"
@@ -2512,6 +2519,7 @@ echo "✓ Generated 9 bootstrap secrets ($REMAINING optional placeholders remain
                             r#"set -euo pipefail
 VAULT_FILE="{vault_rel}"
 VPF="$ANSIBLE_VAULT_PASSWORD_FILE"
+unset ANSIBLE_VAULT_PASSWORD_FILE
 if [ -f "$VAULT_FILE" ]; then
     FIRST_LINE=$(head -1 "$VAULT_FILE")
     if [[ "$FIRST_LINE" == *'$ANSIBLE_VAULT'* ]]; then
@@ -3005,20 +3013,36 @@ fi
                         Err(color_eyre::eyre::eyre!("No SSH details"))
                     }
                 } else {
+                    // Use streaming so output appears in real-time (not buffered)
+                    use std::io::BufRead;
+                    use std::process::Stdio;
                     match std::process::Command::new("bash")
                         .arg("-c")
                         .arg(setup_cmd)
                         .current_dir(&repo_root)
-                        .output()
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
                     {
-                        Ok(output) => {
-                            let exit_code = output.status.code().unwrap_or(1);
-                            let combined = format!(
-                                "{}{}",
-                                String::from_utf8_lossy(&output.stdout),
-                                String::from_utf8_lossy(&output.stderr)
-                            );
-                            Ok((exit_code, remote::strip_ansi(&combined)))
+                        Ok(mut child) => {
+                            let mut output_lines = Vec::new();
+                            if let Some(stdout) = child.stdout.take() {
+                                let reader = std::io::BufReader::new(stdout);
+                                for line in reader.lines() {
+                                    if let Ok(l) = line {
+                                        let cleaned = remote::strip_ansi(&l);
+                                        let trimmed = cleaned.trim().to_string();
+                                        if !trimmed.is_empty() {
+                                            let _ = tx.send(InstallUpdate::Log(format!("  {trimmed}")));
+                                            output_lines.push(trimmed);
+                                        }
+                                    }
+                                }
+                            }
+                            let exit_code = child.wait()
+                                .map(|s| s.code().unwrap_or(1))
+                                .unwrap_or(1);
+                            Ok((exit_code, output_lines.join("\n")))
                         }
                         Err(e) => Err(color_eyre::eyre::eyre!("{e}")),
                     }
@@ -3026,10 +3050,13 @@ fi
 
                 match result {
                     Ok((code, output)) => {
-                        for line in output.lines() {
-                            let trimmed = line.trim();
-                            if !trimmed.is_empty() {
-                                let _ = tx.send(InstallUpdate::Log(format!("  {trimmed}")));
+                        // For remote path, output wasn't streamed in real-time
+                        if is_remote {
+                            for line in output.lines() {
+                                let trimmed = line.trim();
+                                if !trimmed.is_empty() {
+                                    let _ = tx.send(InstallUpdate::Log(format!("  {trimmed}")));
+                                }
                             }
                         }
                         if code == 0 {
@@ -3293,12 +3320,16 @@ fi
                 .as_deref()
                 .filter(|r| !r.is_empty() && *r != "latest")
                 .unwrap_or("main");
+            let home = dirs::home_dir()
+                .unwrap_or_default()
+                .display()
+                .to_string();
             let mut ref_exports = format!(
                 "BUSIBOX_FRONTEND_GITHUB_REF={ref_val} \
                  SITE_DOMAIN={site_domain} \
-                 MODEL_HOST_CACHE=$HOME/.cache \
-                 HF_HOST_CACHE=$HOME/.cache/huggingface \
-                 FASTEMBED_HOST_CACHE=$HOME/.cache/fastembed "
+                 MODEL_HOST_CACHE={home}/.cache \
+                 HF_HOST_CACHE={home}/.cache/huggingface \
+                 FASTEMBED_HOST_CACHE={home}/.cache/fastembed "
             );
             if let Some(ref backend) = profile_llm_backend {
                 ref_exports.push_str(&format!("LLM_BACKEND={backend} "));
