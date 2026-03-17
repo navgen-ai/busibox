@@ -43,6 +43,8 @@ spec:
               value: "INFO"
             - name: POSTGRES_HOST
               value: "postgres"
+            - name: POSTGRES_PORT
+              value: "5432"
             - name: POSTGRES_DB
               value: "data"
             - name: POSTGRES_USER
@@ -54,10 +56,14 @@ spec:
                   key: POSTGRES_PASSWORD
             - name: MILVUS_HOST
               value: "milvus"
+            - name: MILVUS_PORT
+              value: "19530"
             - name: MILVUS_COLLECTION
               value: "documents"
             - name: REDIS_HOST
               value: "redis"
+            - name: REDIS_PORT
+              value: "6379"
             - name: ENABLE_CACHING
               value: "true"
             - name: EMBEDDING_API_URL

@@ -659,9 +659,84 @@ fn spawn_k8s_raw_action(app: &mut App, make_target: &str) {
     let environment: Option<String> = app
         .active_profile()
         .map(|(_, p)| p.environment.clone());
+    let vault_prefix: Option<String> = app
+        .active_profile()
+        .and_then(|(_, p)| p.vault_prefix.clone());
     let vault_password: Option<String> = app.vault_password.clone();
 
     std::thread::spawn(move || {
+        // For deploy targets, verify vault password before running
+        if target.contains("k8s-deploy") {
+            if let (Some(ref vp), Some(ref vprefix)) = (&vault_password, &vault_prefix) {
+                let vault_path = repo_root.join(format!(
+                    "provision/ansible/roles/secrets/vars/vault.{vprefix}.yml"
+                ));
+                let example_path =
+                    repo_root.join("provision/ansible/roles/secrets/vars/vault.example.yml");
+                let env_script = repo_root.join("scripts/lib/vault-pass-from-env.sh");
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&env_script, std::fs::Permissions::from_mode(0o755));
+                }
+
+                if vault_path.exists() {
+                    let test_result = std::process::Command::new("ansible-vault")
+                        .args(["view", &vault_path.to_string_lossy(), "--vault-password-file", &env_script.to_string_lossy()])
+                        .env("ANSIBLE_VAULT_PASSWORD", vp.as_str())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                    let can_decrypt = test_result.map(|s| s.success()).unwrap_or(false);
+
+                    if !can_decrypt {
+                        let _ = tx.send(K8sManageUpdate::Log(
+                            "⚠ Vault password mismatch — recreating vault file from example...".into(),
+                        ));
+                        let _ = std::fs::remove_file(&vault_path);
+                        if example_path.exists() {
+                            let _ = std::fs::copy(&example_path, &vault_path);
+                            let encrypt_result = std::process::Command::new("ansible-vault")
+                                .args(["encrypt", &vault_path.to_string_lossy(), "--vault-password-file", &env_script.to_string_lossy()])
+                                .env("ANSIBLE_VAULT_PASSWORD", vp.as_str())
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .status();
+                            if encrypt_result.map(|s| s.success()).unwrap_or(false) {
+                                let _ = tx.send(K8sManageUpdate::Log("✓ Vault file recreated with correct password".into()));
+                            } else {
+                                let _ = tx.send(K8sManageUpdate::Log("ERROR: Vault encryption failed".into()));
+                                let _ = tx.send(K8sManageUpdate::Complete { success: false });
+                                return;
+                            }
+                        } else {
+                            let _ = tx.send(K8sManageUpdate::Log("ERROR: No vault example file found".into()));
+                            let _ = tx.send(K8sManageUpdate::Complete { success: false });
+                            return;
+                        }
+                    } else {
+                        let _ = tx.send(K8sManageUpdate::Log("✓ Vault password verified".into()));
+                    }
+                } else if example_path.exists() {
+                    let _ = tx.send(K8sManageUpdate::Log("Creating vault file from example...".into()));
+                    let _ = std::fs::copy(&example_path, &vault_path);
+                    let encrypt_result = std::process::Command::new("ansible-vault")
+                        .args(["encrypt", &vault_path.to_string_lossy(), "--vault-password-file", &env_script.to_string_lossy()])
+                        .env("ANSIBLE_VAULT_PASSWORD", vp.as_str())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                    if encrypt_result.map(|s| s.success()).unwrap_or(false) {
+                        let _ = tx.send(K8sManageUpdate::Log("✓ Vault file created and encrypted".into()));
+                    } else {
+                        let _ = tx.send(K8sManageUpdate::Log("ERROR: Vault encryption failed".into()));
+                        let _ = tx.send(K8sManageUpdate::Complete { success: false });
+                        return;
+                    }
+                }
+            }
+        }
+
         let _ = tx.send(K8sManageUpdate::Log(format!("Running: make {target}")));
 
         let mut env_prefix = String::new();
@@ -681,6 +756,9 @@ fn spawn_k8s_raw_action(app: &mut App, make_target: &str) {
                 _ => "staging",
             };
             env_prefix.push_str(&format!("BUSIBOX_ENV={env} CONTAINER_PREFIX={prefix} "));
+            if let Some(ref vp) = vault_prefix {
+                env_prefix.push_str(&format!("VAULT_PREFIX={vp} "));
+            }
         }
 
         // Merge stderr into stdout to avoid pipe deadlocks with kubectl exec
@@ -691,7 +769,9 @@ fn spawn_k8s_raw_action(app: &mut App, make_target: &str) {
             .arg("-c")
             .arg(&cmd)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
+            .stderr(std::process::Stdio::null())
+            .stdin(std::process::Stdio::null())
+            .env("BUSIBOX_NONINTERACTIVE", "1");
         if let Some(ref vp) = vault_password {
             k8s_cmd.env("ANSIBLE_VAULT_PASSWORD", vp.as_str());
         }

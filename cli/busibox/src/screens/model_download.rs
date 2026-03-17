@@ -336,11 +336,7 @@ fn save_profile_and_continue(app: &mut App) {
         backend: backend_lower.clone(),
         label,
         created: Some(chrono_now()),
-        vault_prefix: Some(if *environment == "production" {
-            "prod".to_string()
-        } else {
-            "staging".to_string()
-        }),
+        vault_prefix: Some(profile_id.clone()),
         remote: is_remote,
         remote_host: if is_remote {
             Some(app.remote_host_input.clone())
@@ -390,7 +386,7 @@ fn save_profile_and_continue(app: &mut App) {
         dev_apps_dir: None,
     };
 
-    match profile::upsert_profile(&app.repo_root, &profile_id, profile, true) {
+    match profile::create_profile(&app.repo_root, &profile_id, profile, true) {
         Ok(()) => {
             // Release old lock, acquire lock on the newly-active profile
             app.profile_lock = None;

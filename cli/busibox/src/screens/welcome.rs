@@ -1058,8 +1058,14 @@ pub fn trigger_k8s_cluster_check(app: &mut App) {
         });
 
         let kctl = |args: &str| -> Result<String, String> {
+            let mut cmd_args: Vec<&str> = args.split_whitespace().collect();
+            // Add a default timeout to prevent hanging on slow/unreachable clusters
+            let timeout_flag = "--request-timeout=15s".to_string();
+            if !cmd_args.iter().any(|a| a.starts_with("--request-timeout")) {
+                cmd_args.push(&timeout_flag);
+            }
             let output = std::process::Command::new("kubectl")
-                .args(args.split_whitespace())
+                .args(&cmd_args)
                 .env("KUBECONFIG", &kc_path)
                 .output()
                 .map_err(|e| format!("kubectl not found: {e}"))?;

@@ -1242,12 +1242,12 @@ fn handle_vault_setup(app: &mut App) {
         }
     };
 
-    // Derive vault prefix from environment (same logic as service-deploy.sh get_container_prefix)
-    let vault_prefix = crate::screens::install::env_to_prefix(
-        &app.active_profile()
-            .map(|(_, p)| p.environment.clone())
-            .unwrap_or_else(|| "development".into()),
-    );
+    // Use profile's vault_prefix (which is the profile ID, unique per profile)
+    let vault_prefix = app.active_profile()
+        .and_then(|(_, p)| p.vault_prefix.clone())
+        .unwrap_or_else(|| crate::screens::install::env_to_prefix(
+            &app.active_profile().map(|(_, p)| p.environment.clone()).unwrap_or_default()
+        ));
 
     eprintln!("\n╔══════════════════════════════════════════════════════╗");
     eprintln!("║             Vault Password Setup                     ║");

@@ -34,18 +34,15 @@ from .config import config
 
 logger = logging.getLogger(__name__)
 
-# Container names
+# Container names — only required for Docker/Proxmox backends, not K8s
 CONTAINER_PREFIX = os.environ.get("CONTAINER_PREFIX", "").strip()
-if not CONTAINER_PREFIX:
-    raise RuntimeError("CONTAINER_PREFIX must be set for deploy-api")
-CORE_APPS_CONTAINER = f"{CONTAINER_PREFIX}-core-apps"
-PROXY_CONTAINER = f"{CONTAINER_PREFIX}-proxy"
+if not CONTAINER_PREFIX and not config.is_k8s_backend():
+    raise RuntimeError("CONTAINER_PREFIX must be set for deploy-api (Docker/Proxmox)")
+CORE_APPS_CONTAINER = f"{CONTAINER_PREFIX}-core-apps" if CONTAINER_PREFIX else ""
+PROXY_CONTAINER = f"{CONTAINER_PREFIX}-proxy" if CONTAINER_PREFIX else ""
 
-# Docs content directory where docs-api reads from
-# In Docker: /app/docs (inside docs-api container)
-# In Proxmox: /srv/docs/docs (on docs-lxc or apps-lxc)
 DOCS_CONTENT_DIR = os.environ.get("DOCS_CONTENT_DIR", "/srv/docs/docs")
-DOCS_API_CONTAINER = f"{CONTAINER_PREFIX}-docs-api"
+DOCS_API_CONTAINER = f"{CONTAINER_PREFIX}-docs-api" if CONTAINER_PREFIX else ""
 
 # All core apps live in the jazzmind/busibox-frontend monorepo.
 MONOREPO = "jazzmind/busibox-frontend"

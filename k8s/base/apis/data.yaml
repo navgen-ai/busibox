@@ -41,6 +41,8 @@ spec:
           env:
             - name: POSTGRES_HOST
               value: "postgres"
+            - name: POSTGRES_PORT
+              value: "5432"
             - name: POSTGRES_DB
               value: "data"
             - name: POSTGRES_USER
@@ -52,6 +54,8 @@ spec:
                   key: POSTGRES_PASSWORD
             - name: REDIS_HOST
               value: "redis"
+            - name: REDIS_PORT
+              value: "6379"
             - name: MINIO_ENDPOINT
               value: "minio:9000"
             - name: MINIO_ACCESS_KEY
@@ -70,6 +74,8 @@ spec:
               value: "documents"
             - name: MILVUS_HOST
               value: "milvus"
+            - name: MILVUS_PORT
+              value: "19530"
             - name: MILVUS_COLLECTION
               value: "documents"
             - name: LITELLM_BASE_URL
@@ -154,6 +160,8 @@ spec:
           env:
             - name: POSTGRES_HOST
               value: "postgres"
+            - name: POSTGRES_PORT
+              value: "5432"
             - name: POSTGRES_DB
               value: "data"
             - name: POSTGRES_USER
@@ -165,6 +173,8 @@ spec:
                   key: POSTGRES_PASSWORD
             - name: REDIS_HOST
               value: "redis"
+            - name: REDIS_PORT
+              value: "6379"
             - name: REDIS_STREAM
               value: "jobs:data"
             - name: REDIS_CONSUMER_GROUP
@@ -187,6 +197,8 @@ spec:
               value: "documents"
             - name: MILVUS_HOST
               value: "milvus"
+            - name: MILVUS_PORT
+              value: "19530"
             - name: MILVUS_COLLECTION
               value: "documents"
             - name: LITELLM_BASE_URL

@@ -45,10 +45,14 @@ spec:
               value: "8011"
             - name: DEPLOYMENT_BACKEND
               value: "k8s"
+            - name: CONTAINER_PREFIX
+              value: "busibox"
             - name: POSTGRES_HOST
               value: "postgres"
             - name: POSTGRES_PORT
               value: "5432"
+            - name: REDIS_PORT
+              value: "6379"
             - name: POSTGRES_ADMIN_USER
               value: "postgres"
             - name: POSTGRES_ADMIN_PASSWORD

@@ -56,7 +56,7 @@ set_vault_environment() {
     local env_prefix="$1"
     
     if [[ -z "$env_prefix" ]]; then
-        _vault_error "Environment prefix required (dev, staging, prod, demo)"
+        _vault_error "Vault prefix required (e.g. profile ID or dev, staging, prod)"
         return 1
     fi
     
@@ -379,6 +379,13 @@ ensure_vault_access() {
         if [[ -f "$env_script" ]]; then
             [[ -x "$env_script" ]] || chmod +x "$env_script"
             export ANSIBLE_VAULT_PASSWORD_FILE="$env_script"
+            # Verify password can actually decrypt the vault
+            if [[ -f "$VAULT_FILE" ]] && is_vault_encrypted; then
+                if ! ansible-vault view "$VAULT_FILE" --vault-password-file="$env_script" &>/dev/null; then
+                    _vault_error "ANSIBLE_VAULT_PASSWORD cannot decrypt vault: $VAULT_FILE"
+                    return 1
+                fi
+            fi
             return 0
         else
             _vault_warn "vault-pass-from-env.sh not found at $env_script"
@@ -388,6 +395,12 @@ ensure_vault_access() {
     # Check if vault file exists
     if ! check_vault_file; then
         _vault_warn "Vault file not found: $VAULT_FILE"
+        
+        # In non-interactive mode, just fail
+        if [[ -n "${BUSIBOX_NONINTERACTIVE:-}" ]]; then
+            _vault_error "Vault file not found (non-interactive mode). Create it first via the CLI."
+            return 1
+        fi
         
         # Offer to create from example
         if [[ -f "$VAULT_EXAMPLE" ]]; then
@@ -411,6 +424,10 @@ ensure_vault_access() {
     # Check if vault is encrypted
     if ! is_vault_encrypted; then
         _vault_warn "Vault file is not encrypted!"
+        if [[ -n "${BUSIBOX_NONINTERACTIVE:-}" ]]; then
+            _vault_error "Vault file is not encrypted (non-interactive mode)."
+            return 1
+        fi
         echo ""
         read -p "Encrypt vault file now? (Y/n) " encrypt_now
         if [[ ! "$encrypt_now" =~ ^[Nn]$ ]]; then
@@ -461,6 +478,13 @@ ensure_vault_access() {
     
     # Password file doesn't exist - prompt for password
     _vault_info "No password file found at: $vault_pass_file"
+    
+    # In non-interactive mode, fail instead of prompting
+    if [[ -n "${BUSIBOX_NONINTERACTIVE:-}" ]]; then
+        _vault_error "No vault password available (non-interactive mode)."
+        _vault_error "Ensure ANSIBLE_VAULT_PASSWORD is set or run vault setup from the CLI."
+        return 1
+    fi
     
     local max_attempts=3
     local attempt=1
@@ -541,24 +565,31 @@ get_vault_secret() {
     
     # Convert dot notation to yq path (e.g., secrets.postgresql.password -> .secrets.postgresql.password)
     local yq_path=".$key_path"
+    local _result=""
     
     # Check if yq is available
     if command -v yq &>/dev/null; then
         if is_vault_encrypted; then
-            ansible-vault view "$VAULT_FILE" 2>/dev/null | yq -r "$yq_path" 2>/dev/null
+            _result=$(ansible-vault view "$VAULT_FILE" 2>/dev/null | yq -r "$yq_path" 2>/dev/null)
         else
-            yq -r "$yq_path" "$VAULT_FILE" 2>/dev/null
+            _result=$(yq -r "$yq_path" "$VAULT_FILE" 2>/dev/null)
         fi
     else
         # Fallback: use grep/sed for simple key extraction
         # This only works for simple keys, not nested structures
         local simple_key="${key_path##*.}"
         if is_vault_encrypted; then
-            ansible-vault view "$VAULT_FILE" 2>/dev/null | grep -E "^[[:space:]]*${simple_key}:" | head -1 | sed 's/.*:[[:space:]]*//' | tr -d '"'"'"
+            _result=$(ansible-vault view "$VAULT_FILE" 2>/dev/null | grep -E "^[[:space:]]*${simple_key}:" | head -1 | sed 's/.*:[[:space:]]*//' | tr -d '"'"'")
         else
-            grep -E "^[[:space:]]*${simple_key}:" "$VAULT_FILE" | head -1 | sed 's/.*:[[:space:]]*//' | tr -d '"'"'"
+            _result=$(grep -E "^[[:space:]]*${simple_key}:" "$VAULT_FILE" | head -1 | sed 's/.*:[[:space:]]*//' | tr -d '"'"'")
         fi
     fi
+
+    # yq returns "null" for missing keys or when ansible-vault fails; treat as empty
+    if [[ "$_result" == "null" || -z "$_result" ]]; then
+        return 1
+    fi
+    echo "$_result"
 }
 
 # Check if a secret exists and has a non-placeholder value

@@ -164,7 +164,7 @@ pub fn profiles_path(repo_root: &Path) -> PathBuf {
     repo_root.join(".busibox").join("profiles.json")
 }
 
-/// Load profiles from disk. Auto-migrates old-style profile IDs on first load.
+/// Load profiles from disk. Auto-migrates old-style profile IDs and vault prefixes on first load.
 pub fn load_profiles(repo_root: &Path) -> Result<ProfilesFile> {
     let path = profiles_path(repo_root);
     if !path.exists() {
@@ -177,6 +177,7 @@ pub fn load_profiles(repo_root: &Path) -> Result<ProfilesFile> {
     let contents = std::fs::read_to_string(&path)?;
     let mut profiles: ProfilesFile = serde_json::from_str(&contents)?;
     migrate_profile_ids(repo_root, &mut profiles);
+    migrate_vault_prefixes(repo_root, &mut profiles);
     Ok(profiles)
 }
 
@@ -227,6 +228,24 @@ pub fn upsert_profile(
     ensure_profile_state_dir(repo_root, id)?;
     let _ = write_profile_state(repo_root, id, &profile);
     Ok(())
+}
+
+/// Create a new profile, returning an error if a profile with the given ID already exists.
+/// This prevents accidental overwrites when creating profiles.
+pub fn create_profile(
+    repo_root: &Path,
+    id: &str,
+    profile: Profile,
+    set_active: bool,
+) -> Result<()> {
+    let profiles = load_profiles(repo_root)?;
+    if profiles.profiles.contains_key(id) {
+        return Err(eyre!(
+            "Profile '{}' already exists. Choose a different name or edit the existing profile.",
+            id
+        ));
+    }
+    upsert_profile(repo_root, id, profile, set_active)
 }
 
 /// Delete a profile by ID. If the deleted profile was active, clears the active field.
@@ -504,6 +523,35 @@ pub fn migrate_profile_ids(repo_root: &Path, profiles: &mut ProfilesFile) -> boo
     }
 
     true
+}
+
+/// Migrate vault_prefix from environment-based values (prod, staging, dev) to
+/// profile-ID-based values. Each profile gets its own vault file so profiles
+/// don't share secrets. Copies the old vault file to vault.{profile_id}.yml
+/// if the new file doesn't exist yet.
+fn migrate_vault_prefixes(repo_root: &Path, profiles: &mut ProfilesFile) {
+    let vault_dir = repo_root.join("provision/ansible/roles/secrets/vars");
+    let old_prefixes = ["prod", "staging", "dev", "demo"];
+    let mut changed = false;
+
+    for (id, profile) in profiles.profiles.iter_mut() {
+        let current = profile.vault_prefix.as_deref().unwrap_or("dev").to_string();
+        if old_prefixes.contains(&current.as_str()) && current != *id {
+            let old_vault = vault_dir.join(format!("vault.{current}.yml"));
+            let new_vault = vault_dir.join(format!("vault.{id}.yml"));
+            if old_vault.exists() && !new_vault.exists() {
+                let _ = std::fs::copy(&old_vault, &new_vault);
+                eprintln!("[migration] Copied vault.{current}.yml -> vault.{id}.yml");
+            }
+            eprintln!("[migration] Profile '{id}': vault_prefix '{current}' -> '{id}'");
+            profile.vault_prefix = Some(id.clone());
+            changed = true;
+        }
+    }
+
+    if changed {
+        let _ = save_profiles(repo_root, profiles);
+    }
 }
 
 // ============================================================================

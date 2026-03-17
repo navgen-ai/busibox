@@ -1054,8 +1054,13 @@ fn spawn_install_worker(app: &mut App) {
     let vault_password: Option<String> = app.vault_password.clone();
     let clean_install = app.clean_install;
     let _is_update = app.is_update;
-    // Derive vault prefix from environment (same logic as service-deploy.sh get_container_prefix)
+    // vault_prefix: per-profile, used for vault file naming (vault.{profile_id}.yml)
     let vault_prefix: String = app
+        .active_profile()
+        .and_then(|(id, p)| p.vault_prefix.clone().or(Some(id.to_string())))
+        .unwrap_or_else(|| "dev".into());
+    // container_prefix: per-environment, used for Docker container naming (prod-postgres)
+    let container_prefix: String = app
         .active_profile()
         .map(|(_, p)| env_to_prefix(&p.environment))
         .unwrap_or_else(|| "dev".into());
@@ -1232,13 +1237,80 @@ fn spawn_install_worker(app: &mut App) {
         if !is_remote && profile_backend == "docker" {
             propagate_dev_apps_dir_to_state(
                 &repo_root,
-                &vault_prefix,
+                &container_prefix,
                 profile_dev_apps_dir.as_deref(),
             );
         }
 
         // K8s backend: run make k8s-deploy and skip the entire Ansible/vault flow
         if profile_backend == "k8s" {
+            // Verify vault password matches the local vault file before deploying.
+            // The migration may have copied a vault file encrypted with a different password.
+            if let Some(ref vp) = vault_password {
+                let vault_path = repo_root.join(format!(
+                    "provision/ansible/roles/secrets/vars/vault.{vault_prefix}.yml"
+                ));
+                let example_path =
+                    repo_root.join("provision/ansible/roles/secrets/vars/vault.example.yml");
+                let env_script = repo_root.join("scripts/lib/vault-pass-from-env.sh");
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&env_script, std::fs::Permissions::from_mode(0o755));
+                }
+
+                if vault_path.exists() {
+                    let test_result = std::process::Command::new("ansible-vault")
+                        .args(["view", &vault_path.to_string_lossy(), "--vault-password-file", &env_script.to_string_lossy()])
+                        .env("ANSIBLE_VAULT_PASSWORD", vp.as_str())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                    let can_decrypt = test_result.map(|s| s.success()).unwrap_or(false);
+
+                    if !can_decrypt {
+                        let _ = tx.send(InstallUpdate::Log(
+                            "⚠ Vault password mismatch — recreating vault file from example...".into(),
+                        ));
+                        let _ = std::fs::remove_file(&vault_path);
+                        if let Err(e) = std::fs::copy(&example_path, &vault_path) {
+                            let _ = tx.send(InstallUpdate::Log(format!("ERROR: {e}")));
+                            let _ = tx.send(InstallUpdate::Complete { portal_url: None });
+                            return;
+                        }
+                        match encrypt_vault_local(&vault_path, vp) {
+                            Ok(true) => {
+                                let _ = tx.send(InstallUpdate::Log("✓ Vault file recreated with correct password".into()));
+                            }
+                            _ => {
+                                let _ = tx.send(InstallUpdate::Log("ERROR: Vault encryption failed".into()));
+                                let _ = tx.send(InstallUpdate::Complete { portal_url: None });
+                                return;
+                            }
+                        }
+                    } else {
+                        let _ = tx.send(InstallUpdate::Log("✓ Vault password verified".into()));
+                    }
+                } else if example_path.exists() {
+                    let _ = tx.send(InstallUpdate::Log("Creating vault file from example...".into()));
+                    if let Err(e) = std::fs::copy(&example_path, &vault_path) {
+                        let _ = tx.send(InstallUpdate::Log(format!("ERROR: {e}")));
+                        let _ = tx.send(InstallUpdate::Complete { portal_url: None });
+                        return;
+                    }
+                    match encrypt_vault_local(&vault_path, vp) {
+                        Ok(true) => {
+                            let _ = tx.send(InstallUpdate::Log("✓ Vault file created and encrypted".into()));
+                        }
+                        _ => {
+                            let _ = tx.send(InstallUpdate::Log("ERROR: Vault encryption failed".into()));
+                            let _ = tx.send(InstallUpdate::Complete { portal_url: None });
+                            return;
+                        }
+                    }
+                }
+            }
+
             let _ = tx.send(InstallUpdate::Log(
                 "K8s backend detected — running k8s-deploy...".into(),
             ));
@@ -1250,7 +1322,7 @@ fn spawn_install_worker(app: &mut App) {
             if let Some(ref ov) = app_k8s_overlay {
                 env_prefix.push_str(&format!("K8S_OVERLAY={ov} "));
             }
-            env_prefix.push_str(&format!("BUSIBOX_ENV={profile_environment} CONTAINER_PREFIX={vault_prefix} "));
+            env_prefix.push_str(&format!("BUSIBOX_ENV={profile_environment} CONTAINER_PREFIX={container_prefix} VAULT_PREFIX={vault_prefix} "));
             if let Some(ref backend) = profile_llm_backend {
                 env_prefix.push_str(&format!("LLM_BACKEND={backend} "));
             }
@@ -1280,7 +1352,9 @@ fn spawn_install_worker(app: &mut App) {
                 .arg("-c")
                 .arg(&cmd)
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null());
+                .stderr(std::process::Stdio::null())
+                .stdin(std::process::Stdio::null())
+                .env("BUSIBOX_NONINTERACTIVE", "1");
             if let Some(ref vp) = vault_password {
                 k8s_cmd.env("ANSIBLE_VAULT_PASSWORD", vp.as_str());
             }
@@ -2766,7 +2840,7 @@ fi
                     let dl_tx = tx.clone();
                     let dl_tier = profile_model_tier.clone();
                     let dl_backend = profile_llm_backend.clone();
-                    let dl_prefix = vault_prefix.clone();
+                    let dl_prefix = container_prefix.clone();
                     model_download_handle = if is_remote {
                         if let Some((ref host, ref user, ref key)) = ssh_details {
                             let host = host.clone();
@@ -2971,7 +3045,7 @@ fi
                 } else {
                     format!(r#"
                         set -e
-                        PREFIX="{vault_prefix}"
+                        PREFIX="{container_prefix}"
                         # Check for running busibox compose projects and stop conflicting ones
                         # Normal install: only stop containers, preserve volumes/images/caches for faster rebuilds
                         PROJECTS=$(docker compose ls --format '{{{{.Name}}}}' 2>/dev/null | grep -i busibox || true)

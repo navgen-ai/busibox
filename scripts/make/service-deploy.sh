@@ -463,8 +463,9 @@ main() {
     box_footer
     echo ""
     
-    # Set vault environment before accessing vault
-    set_vault_environment "$prefix" 2>/dev/null || true
+    # Set vault environment: VAULT_PREFIX (per-profile) takes precedence over container prefix
+    local vault_prefix="${VAULT_PREFIX:-$prefix}"
+    set_vault_environment "$vault_prefix" 2>/dev/null || true
     
     # Ensure vault access (fatal if it fails)
     if ! ensure_vault_access 2>/dev/null; then

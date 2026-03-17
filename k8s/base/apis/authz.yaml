@@ -41,6 +41,8 @@ spec:
           env:
             - name: POSTGRES_HOST
               value: "postgres"
+            - name: POSTGRES_PORT
+              value: "5432"
             - name: POSTGRES_DB
               value: "authz"
             - name: POSTGRES_USER

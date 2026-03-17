@@ -94,6 +94,11 @@ DO_DELETE=false
 DO_SECRETS=false
 DO_CLEAN_STORAGE=false
 DO_TRIGGER_BUILD=false
+FORCE_YES=false    # Skip interactive confirmations (for TUI/automation)
+# Auto-set FORCE_YES when running non-interactively (e.g. from the Rust TUI)
+if [[ -n "${BUSIBOX_NONINTERACTIVE:-}" ]]; then
+    FORCE_YES=true
+fi
 SERVICE_FILTER=""  # Empty = all services, otherwise specific image name
 
 # ============================================================================
@@ -115,6 +120,7 @@ while [[ $# -gt 0 ]]; do
         --clean-storage) DO_CLEAN_STORAGE=true; shift ;;
         --status) DO_STATUS=true; shift ;;
         --delete) DO_DELETE=true; shift ;;
+        --yes|-y) FORCE_YES=true; shift ;;
         --secrets) DO_SECRETS=true; shift ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
@@ -134,6 +140,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --clean-storage    Delete deployments + PVCs (for resizing/migrating volumes)"
             echo "  --status           Show deployment status"
             echo "  --delete           Delete all busibox resources"
+            echo "  --yes, -y          Skip interactive confirmations (for TUI/automation)"
             echo "  -h, --help         Show this help"
             exit 0
             ;;
@@ -216,7 +223,8 @@ wait_for_rollout() {
     local _ready_list=" "
 
     while [[ $(( SECONDS - start_time )) -lt $timeout ]]; do
-        local pending=()
+        # Use a space-delimited string instead of array for bash 3 compat with set -u
+        local _pending_list=""
 
         for resource in "${resources[@]}"; do
             local name="${resource##*/}"
@@ -227,18 +235,18 @@ wait_for_rollout() {
                 echo "  ✓ ${name}"
                 _ready_list="${_ready_list}${name} "
             else
-                pending+=("$resource")
+                _pending_list="${_pending_list} ${resource}"
             fi
         done
 
         # If all ready, done
-        if [[ ${#pending[@]} -eq 0 ]]; then
+        if [[ -z "${_pending_list}" ]]; then
             all_ready=true
             break
         fi
 
         # Print status of pending ones
-        for resource in "${pending[@]}"; do
+        for resource in $_pending_list; do
             pod_status_line "$resource"
         done
 
@@ -269,7 +277,7 @@ wait_for_rollout() {
         warn "${group_name}: some services not ready after ${timeout}s (continuing anyway)"
         for resource in "${resources[@]}"; do
             local name="${resource##*/}"
-            [[ -z "${already_ready[$name]:-}" ]] && pod_status_line "$resource"
+            case "$_ready_list" in *" ${name} "*) ;; *) pod_status_line "$resource" ;; esac
         done
     fi
     echo ""
@@ -485,16 +493,16 @@ generate_secrets() {
 
     if [[ -f "${REPO_ROOT}/scripts/lib/vault.sh" ]]; then
         source "${REPO_ROOT}/scripts/lib/vault.sh"
-        # Determine vault environment from active profile or fallback to state files.
-        local vault_env="prod"
-        if type profile_get_active &>/dev/null; then
+        # Determine vault environment: VAULT_PREFIX env var > active profile > fallback
+        local vault_env="${VAULT_PREFIX:-}"
+        if [[ -z "$vault_env" ]] && type profile_get_active &>/dev/null; then
             local _active
             _active=$(profile_get_active 2>/dev/null)
             if [[ -n "$_active" ]]; then
                 vault_env=$(profile_get_vault_prefix "$_active" 2>/dev/null)
-                vault_env="${vault_env:-prod}"
             fi
         fi
+        vault_env="${vault_env:-prod}"
         
         # Fallback: scan legacy state files if profile didn't provide vault env
         if [[ "$vault_env" == "prod" ]] && ! type profile_get_active &>/dev/null; then
@@ -511,8 +519,8 @@ generate_secrets() {
             done
         fi
         info "Using vault environment: ${vault_env}"
-        set_vault_environment "$vault_env" 2>/dev/null || true
-        if ensure_vault_access 2>/dev/null; then
+        set_vault_environment "$vault_env" || true
+        if ensure_vault_access; then
             postgres_password=$(get_vault_secret "secrets.postgresql.password" 2>/dev/null || echo "$postgres_password")
             minio_access_key=$(get_vault_secret "secrets.minio.root_user" 2>/dev/null || echo "$minio_access_key")
             minio_secret_key=$(get_vault_secret "secrets.minio.root_password" 2>/dev/null || echo "$minio_secret_key")
@@ -535,14 +543,43 @@ generate_secrets() {
         fi
     fi
 
-    # Fail if critical secrets are still empty
-    local _missing=()
-    [[ -z "$postgres_password" ]] && _missing+=("POSTGRES_PASSWORD")
-    [[ -z "$minio_access_key" ]] && _missing+=("MINIO_ACCESS_KEY")
-    [[ -z "$minio_secret_key" ]] && _missing+=("MINIO_SECRET_KEY")
-    [[ -z "$authz_master_key" ]] && _missing+=("AUTHZ_MASTER_KEY")
-    if [[ ${#_missing[@]} -gt 0 ]]; then
-        error "Missing critical secrets: ${_missing[*]}"
+    # Replace CHANGE_ME_ placeholders with generated values
+    _replace_placeholder() {
+        local val="$1"
+        local len="${2:-24}"
+        if [[ "$val" == CHANGE_ME_* || -z "$val" ]]; then
+            generate_secret "$len"
+        else
+            echo "$val"
+        fi
+    }
+    _replace_placeholder_hex() {
+        local val="$1"
+        local bytes="${2:-16}"
+        if [[ "$val" == CHANGE_ME_* || "$val" == sk-CHANGE_ME_* || -z "$val" ]]; then
+            openssl rand -hex "$bytes"
+        else
+            echo "$val"
+        fi
+    }
+
+    postgres_password=$(_replace_placeholder "$postgres_password" 24)
+    minio_access_key=$(_replace_placeholder "$minio_access_key" 16)
+    minio_secret_key=$(_replace_placeholder "$minio_secret_key" 24)
+    authz_master_key=$(_replace_placeholder "$authz_master_key" 32)
+    litellm_api_key=$(_replace_placeholder "$litellm_api_key" 16)
+    litellm_master_key=$(_replace_placeholder_hex "$litellm_master_key" 16)
+    neo4j_password=$(_replace_placeholder "$neo4j_password" 24)
+    config_encryption_key=$(_replace_placeholder_hex "$config_encryption_key" 32)
+
+    # Fail if critical secrets are still empty after generation
+    local _missing=""
+    [[ -z "$postgres_password" ]] && _missing="${_missing} POSTGRES_PASSWORD"
+    [[ -z "$minio_access_key" ]] && _missing="${_missing} MINIO_ACCESS_KEY"
+    [[ -z "$minio_secret_key" ]] && _missing="${_missing} MINIO_SECRET_KEY"
+    [[ -z "$authz_master_key" ]] && _missing="${_missing} AUTHZ_MASTER_KEY"
+    if [[ -n "$_missing" ]]; then
+        error "Missing critical secrets:${_missing}"
         error "Ensure vault is configured and accessible before generating K8s secrets"
         exit 1
     fi
@@ -761,10 +798,12 @@ clean_storage() {
     warn "This will delete all Deployments with PVCs and all PVCs in namespace '${NAMESPACE}'!"
     warn "Data in persistent volumes will be LOST."
     echo ""
-    read -p "Are you sure? (y/N) " confirm
-    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-        echo "Cancelled."
-        return 1
+    if ! $FORCE_YES; then
+        read -p "Are you sure? (y/N) " confirm
+        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+            echo "Cancelled."
+            return 1
+        fi
     fi
 
     # Delete any remaining StatefulSets from previous deployments
@@ -804,10 +843,12 @@ clean_storage() {
 
 delete_all() {
     warn "This will delete ALL Busibox resources from namespace '${NAMESPACE}'!"
-    read -p "Are you sure? (y/N) " confirm
-    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-        echo "Cancelled."
-        return
+    if ! $FORCE_YES; then
+        read -p "Are you sure? (y/N) " confirm
+        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+            echo "Cancelled."
+            return
+        fi
     fi
 
     info "Deleting all Busibox resources..."
@@ -821,16 +862,21 @@ delete_all() {
     # Delete secrets
     kctl delete secret busibox-secrets -n "${NAMESPACE}" --ignore-not-found 2>/dev/null || true
 
-    # Delete PVCs (data!)
-    read -p "Also delete persistent data (PVCs)? (y/N) " confirm_pvcs
-    if [[ "$confirm_pvcs" == "y" || "$confirm_pvcs" == "Y" ]]; then
+    if $FORCE_YES; then
+        # When called from TUI with --yes, delete PVCs and namespace automatically
         kctl delete pvc --all -n "${NAMESPACE}" 2>/dev/null || true
-    fi
-
-    # Delete namespace
-    read -p "Delete namespace '${NAMESPACE}'? (y/N) " confirm_ns
-    if [[ "$confirm_ns" == "y" || "$confirm_ns" == "Y" ]]; then
         kctl delete namespace "${NAMESPACE}" --ignore-not-found 2>/dev/null || true
+    else
+        # Interactive: ask about PVCs and namespace
+        read -p "Also delete persistent data (PVCs)? (y/N) " confirm_pvcs
+        if [[ "$confirm_pvcs" == "y" || "$confirm_pvcs" == "Y" ]]; then
+            kctl delete pvc --all -n "${NAMESPACE}" 2>/dev/null || true
+        fi
+
+        read -p "Delete namespace '${NAMESPACE}'? (y/N) " confirm_ns
+        if [[ "$confirm_ns" == "y" || "$confirm_ns" == "Y" ]]; then
+            kctl delete namespace "${NAMESPACE}" --ignore-not-found 2>/dev/null || true
+        fi
     fi
 
     success "Cleanup complete"

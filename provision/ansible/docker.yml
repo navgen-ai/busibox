@@ -52,6 +52,7 @@
           ═══════════════════════════════════════════════════════════════════
           Environment: {{ busibox_env | default('development') }}
           Container Prefix: {{ container_prefix | default('dev') }}
+          Vault Prefix: {{ vault_prefix | default(container_prefix) | default('dev') }}
           Compose Project: {{ compose_project_name | default(container_prefix) }}
           Docker Mode: {{ docker_dev_mode | default('local-dev') }}
           ═══════════════════════════════════════════════════════════════════
@@ -61,13 +62,13 @@
     # Priority: vault.{prefix}.yml > vault.yml (legacy fallback)
     - name: Check for environment-specific vault file
       ansible.builtin.stat:
-        path: "{{ playbook_dir }}/roles/secrets/vars/vault.{{ container_prefix | default('dev') }}.yml"
+        path: "{{ playbook_dir }}/roles/secrets/vars/vault.{{ vault_prefix | default(container_prefix) | default('dev') }}.yml"
       register: env_vault_file
       tags: always
 
     - name: Load secrets from environment-specific vault
       ansible.builtin.include_vars:
-        file: "roles/secrets/vars/vault.{{ container_prefix | default('dev') }}.yml"
+        file: "roles/secrets/vars/vault.{{ vault_prefix | default(container_prefix) | default('dev') }}.yml"
       when: env_vault_file.stat.exists
       no_log: false
       tags: always
@@ -85,7 +86,7 @@
         msg: |
           ⚠️  WARNING: No vault file loaded!
           
-          Expected vault file: roles/secrets/vars/vault.{{ container_prefix | default('dev') }}.yml
+          Expected vault file: roles/secrets/vars/vault.{{ vault_prefix | default(container_prefix) | default('dev') }}.yml
           Fallback vault file: roles/secrets/vars/vault.yml
           
           Secrets may not be available. Deployment may fail.

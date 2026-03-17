@@ -923,11 +923,7 @@ fn apply_field(app: &mut App, field: usize, value: &str) {
         FIELD_LABEL => profile.label = value.to_string(),
         FIELD_ENVIRONMENT => {
             profile.environment = value.to_string();
-            profile.vault_prefix = Some(match value {
-                "production" => "prod".to_string(),
-                "development" | "demo" => "dev".to_string(),
-                _ => "staging".to_string(),
-            });
+            profile.vault_prefix = Some(id.clone());
         }
         FIELD_BACKEND => profile.backend = value.to_string(),
         FIELD_DOCKER_RUNTIME => {

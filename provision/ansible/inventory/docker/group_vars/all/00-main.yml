@@ -22,6 +22,9 @@ node_env: "{{ 'production' if busibox_env == 'demo' else 'development' }}"
 # ============================================================================
 # Container prefix for naming (dev-, staging-, prod-)
 container_prefix: "{{ lookup('env', 'CONTAINER_PREFIX') | default('dev', true) }}"
+# Vault prefix for vault file naming (vault.{vault_prefix}.yml)
+# Per-profile: defaults to container_prefix for backward compatibility
+vault_prefix: "{{ lookup('env', 'VAULT_PREFIX') | default(container_prefix, true) }}"
 compose_project_name: "{{ container_prefix }}-busibox"
 
 # Docker Compose files to use
