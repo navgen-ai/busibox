@@ -27,17 +27,7 @@ jobs:
     steps:
       - id: set-matrix
         run: |
-          ALL='[
-            {"name":"authz-api","dockerfile":"srv/authz/Dockerfile","context":"srv"},
-            {"name":"data-api","dockerfile":"srv/data/Dockerfile","context":"srv"},
-            {"name":"search-api","dockerfile":"srv/search/Dockerfile","context":"srv"},
-            {"name":"agent-api","dockerfile":"srv/agent/Dockerfile","context":"srv"},
-            {"name":"bridge-api","dockerfile":"srv/bridge/Dockerfile","context":"srv/bridge"},
-            {"name":"docs-api","dockerfile":"srv/docs/Dockerfile","context":"srv"},
-            {"name":"deploy-api","dockerfile":"srv/deploy/Dockerfile","context":"srv"},
-            {"name":"embedding-api","dockerfile":"srv/embedding/Dockerfile","context":"srv/embedding"},
-            {"name":"milvus-init","dockerfile":"provision/docker/milvus-init.Dockerfile","context":"."}
-          ]'
+          ALL='[{"name":"authz-api","dockerfile":"srv/authz/Dockerfile","context":"srv"},{"name":"data-api","dockerfile":"srv/data/Dockerfile","context":"srv"},{"name":"search-api","dockerfile":"srv/search/Dockerfile","context":"srv"},{"name":"agent-api","dockerfile":"srv/agent/Dockerfile","context":"srv"},{"name":"bridge-api","dockerfile":"srv/bridge/Dockerfile","context":"srv/bridge"},{"name":"docs-api","dockerfile":"srv/docs/Dockerfile","context":"srv"},{"name":"deploy-api","dockerfile":"srv/deploy/Dockerfile","context":"srv"},{"name":"embedding-api","dockerfile":"srv/embedding/Dockerfile","context":"srv/embedding"},{"name":"milvus-init","dockerfile":"provision/docker/milvus-init.Dockerfile","context":"."}]'
           SERVICE="${{ github.event.inputs.service }}"
           if [ -n "$SERVICE" ]; then
             FILTERED=$(echo "$ALL" | jq -c --arg svc "$SERVICE" '[.[] | select(.name == $svc)]')
@@ -47,7 +37,7 @@ jobs:
             fi
             echo "matrix={\"include\":$FILTERED}" >> "$GITHUB_OUTPUT"
           else
-            echo "matrix={\"include\":$ALL}" >> "$GITHUB_OUTPUT"
+            echo "matrix={\"include\":$(echo "$ALL" | jq -c .)}" >> "$GITHUB_OUTPUT"
           fi
 
   build:
