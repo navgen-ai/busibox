@@ -61,6 +61,43 @@ VAULT_FLAGS=$(shell \
   fi \
 )
 
+# Vault file detection for deployment_environment override
+# Ansible roles load secrets via vault.{{ deployment_environment }}.yml but the
+# inventory may set a value (e.g. "staging") whose vault file doesn't exist.
+# We detect the actual vault file: VAULT_PREFIX env var > inventory default > probe.
+SECRETS_DIR=$(CURDIR)/roles/secrets/vars
+
+# Resolve the vault prefix to use for deployment_environment.
+# Priority: VAULT_PREFIX env var > inventory-derived default > first existing vault file
+ifeq ($(ENV_NAME),production)
+  _INV_VAULT_PREFIX=prod
+else ifeq ($(ENV_NAME),staging)
+  _INV_VAULT_PREFIX=staging
+else ifeq ($(ENV_NAME),demo)
+  _INV_VAULT_PREFIX=demo
+else
+  _INV_VAULT_PREFIX=dev
+endif
+
+DEPLOY_ENV=$(shell \
+  vp="$${VAULT_PREFIX:-}"; \
+  if [ -n "$$vp" ] && [ -f "$(SECRETS_DIR)/vault.$${vp}.yml" ]; then \
+    echo "$$vp"; \
+  elif [ -f "$(SECRETS_DIR)/vault.$(_INV_VAULT_PREFIX).yml" ]; then \
+    echo "$(_INV_VAULT_PREFIX)"; \
+  elif [ -f "$(SECRETS_DIR)/vault.prod.yml" ]; then \
+    echo "prod"; \
+  elif [ -f "$(SECRETS_DIR)/vault.dev.yml" ]; then \
+    echo "dev"; \
+  else \
+    echo "$(_INV_VAULT_PREFIX)"; \
+  fi \
+)
+
+# Append deployment_environment override to VAULT_FLAGS so every ansible-playbook
+# invocation automatically picks up the correct vault file without modifying each target.
+VAULT_FLAGS+= -e deployment_environment=$(DEPLOY_ENV)
+
 # Extra arguments (can override with: make vllm-embedding EXTRA_ARGS="-e skip_model_check=true")
 EXTRA_ARGS=
 
@@ -1043,8 +1080,20 @@ DOCKER_VAULT_FLAGS = $(shell \
 # Container prefix (default: dev)
 CONTAINER_PREFIX ?= dev
 
+# Docker vault prefix: VAULT_PREFIX > CONTAINER_PREFIX > dev
+DOCKER_DEPLOY_ENV=$(shell \
+  vp="$${VAULT_PREFIX:-$(CONTAINER_PREFIX)}"; \
+  if [ -n "$$vp" ] && [ -f "$(SECRETS_DIR)/vault.$${vp}.yml" ]; then \
+    echo "$$vp"; \
+  elif [ -f "$(SECRETS_DIR)/vault.dev.yml" ]; then \
+    echo "dev"; \
+  else \
+    echo "$$vp"; \
+  fi \
+)
+
 # Docker deployment variables
-DOCKER_VARS = -e container_prefix=$(CONTAINER_PREFIX) -e busibox_env=$(or $(BUSIBOX_ENV),development)
+DOCKER_VARS = -e container_prefix=$(CONTAINER_PREFIX) -e busibox_env=$(or $(BUSIBOX_ENV),development) -e deployment_environment=$(DOCKER_DEPLOY_ENV)
 
 .PHONY: docker docker-infrastructure docker-apis docker-llm docker-frontend docker-status docker-logs docker-clean
 

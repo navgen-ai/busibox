@@ -292,6 +292,17 @@ deploy_service() {
     # Without this, `docker compose up` sees no config change and leaves existing
     # containers running with stale/placeholder env vars.
     local cmd="ansible-playbook -i ${inventory} ${playbook} --tags ${tag}"
+
+    # Override deployment_environment so Ansible roles load the correct vault file.
+    # The inventory may define deployment_environment as "staging" or "prod", but
+    # the actual vault file on disk uses the profile's vault_prefix (e.g.
+    # "10-96-200-23-production-proxmox" or "prod"). VAULT_PREFIX is set by the
+    # CLI/profile system; fall back to the container prefix for backward compat.
+    local vault_env="${VAULT_PREFIX:-$prefix}"
+    if [[ -n "$vault_env" ]]; then
+        cmd="${cmd} -e deployment_environment=${vault_env}"
+    fi
+
     if [[ "$backend" == "docker" ]]; then
         cmd="${cmd} -e docker_force_recreate=true"
         if [[ "${IMAGE_SOURCE:-}" == "ghcr" ]]; then

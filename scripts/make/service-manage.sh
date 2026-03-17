@@ -174,6 +174,9 @@ main() {
     # Set globals for backend files
     export CONTAINER_PREFIX="$prefix"
     export CURRENT_ENV="$env"
+    # Propagate VAULT_PREFIX so make targets in provision/ansible/Makefile
+    # can resolve the correct vault file for deployment_environment
+    export VAULT_PREFIX="${VAULT_PREFIX:-$prefix}"
 
     # Load the appropriate backend
     load_backend "$backend"

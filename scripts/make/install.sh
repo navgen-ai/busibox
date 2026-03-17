@@ -1940,6 +1940,7 @@ bootstrap_docker_ansible() {
     local playbook_cmd="ansible-playbook -i inventory/docker docker.yml"
     playbook_cmd+=" -e container_prefix=${container_prefix}"
     playbook_cmd+=" -e busibox_env=${ENVIRONMENT:-development}"
+    playbook_cmd+=" -e deployment_environment=${VAULT_PREFIX:-${container_prefix}}"
     playbook_cmd+=" -e github_token=${GITHUB_AUTH_TOKEN:-}"
     playbook_cmd+=" -e admin_email=${ADMIN_EMAIL:-}"
     playbook_cmd+=" -e docker_dev_mode=${DOCKER_DEV_MODE:-local-dev}"
@@ -2442,6 +2443,7 @@ bootstrap_proxmox_ansible() {
     # Build ansible-playbook command
     local playbook_cmd="ansible-playbook -i inventory/${inventory_name} site.yml"
     playbook_cmd+=" -e busibox_env=${ENVIRONMENT}"
+    playbook_cmd+=" -e deployment_environment=${VAULT_PREFIX:-${vault_prefix}}"
     playbook_cmd+=" -e github_token=${GITHUB_AUTH_TOKEN:-}"
     playbook_cmd+=" -e admin_email=${ADMIN_EMAIL:-}"
     
