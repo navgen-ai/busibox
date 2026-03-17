@@ -79,5 +79,8 @@ jobs:
           tags: |
             ${{ env.IMAGE_PREFIX }}/${{ matrix.name }}:latest
             ${{ env.IMAGE_PREFIX }}/${{ matrix.name }}:${{ steps.meta.outputs.sha_tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/jazzmind/busibox
+            org.opencontainers.image.description=Busibox ${{ matrix.name }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
