@@ -974,16 +974,33 @@ impl ModelRecommendation {
     }
 }
 
-/// Check if a model is cached locally in the HuggingFace cache directory.
+fn has_fastembed_onnx_files(base_path: &std::path::Path) -> bool {
+    base_path.join("model_optimized.onnx").is_file()
+        || base_path.join("model.onnx").is_file()
+        || base_path.join("onnx").join("model.onnx").is_file()
+}
+
+/// Check if a model is cached locally in either HuggingFace or FastEmbed cache.
 pub fn is_model_cached_locally(model_name: &str) -> bool {
     if model_name.is_empty() {
         return false;
     }
+
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let cache_dir = format!("{home}/.cache/huggingface/hub");
-    let model_dir_name = format!("models--{}", model_name.replace('/', "--"));
-    let model_path = std::path::Path::new(&cache_dir).join(&model_dir_name);
-    model_path.is_dir()
+    let hf_cache_dir = std::path::Path::new(&home).join(".cache").join("huggingface").join("hub");
+    let hf_model_dir_name = format!("models--{}", model_name.replace('/', "--"));
+    let hf_model_path = hf_cache_dir.join(hf_model_dir_name);
+    if hf_model_path.is_dir() {
+        return true;
+    }
+
+    // FastEmbed stores models as ~/.cache/fastembed/{org_model} where '/' and ':' become '_'.
+    let fastembed_model_dir_name = model_name.replace('/', "_").replace(':', "_");
+    let fastembed_model_path = std::path::Path::new(&home)
+        .join(".cache")
+        .join("fastembed")
+        .join(fastembed_model_dir_name);
+    fastembed_model_path.is_dir() && has_fastembed_onnx_files(&fastembed_model_path)
 }
 
 /// Check model cache status on a remote machine via SSH.
@@ -997,9 +1014,19 @@ pub fn check_remote_model_cache(
         if name.is_empty() {
             continue;
         }
-        let model_dir_name = format!("models--{}", name.replace('/', "--"));
+        let hf_model_dir_name = format!("models--{}", name.replace('/', "--"));
+        let fastembed_model_dir_name = name.replace('/', "_").replace(':', "_");
         let cmd = format!(
-            "[ -d \"$HOME/.cache/huggingface/hub/{model_dir_name}\" ] && echo CACHED || echo MISSING"
+            "if [ -d \"$HOME/.cache/huggingface/hub/{hf_model_dir_name}\" ]; then \
+               echo CACHED; \
+             elif [ -d \"$HOME/.cache/fastembed/{fastembed_model_dir_name}\" ] && \
+                  ( [ -f \"$HOME/.cache/fastembed/{fastembed_model_dir_name}/model_optimized.onnx\" ] || \
+                    [ -f \"$HOME/.cache/fastembed/{fastembed_model_dir_name}/model.onnx\" ] || \
+                    [ -f \"$HOME/.cache/fastembed/{fastembed_model_dir_name}/onnx/model.onnx\" ] ); then \
+               echo CACHED; \
+             else \
+               echo MISSING; \
+             fi"
         );
         let cached = ssh
             .run(&cmd)

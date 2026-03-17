@@ -154,7 +154,7 @@ async def update_document_roles(
     - Copies/removes vectors in Milvus partitions for each role change
     """
     user_id = request.state.user_id
-    user_update_roles = getattr(request.state, "role_ids_update", [])
+    user_update_roles = getattr(request.state, "role_ids", [])
     
     config = Config().to_dict()
     milvus_service = MilvusService(config)
@@ -368,7 +368,7 @@ async def share_document(
     - Owner may lose access if they don't have read permission on assigned roles
     """
     user_id = request.state.user_id
-    user_create_roles = getattr(request.state, "role_ids_create", [])
+    user_create_roles = getattr(request.state, "role_ids", [])
     
     config = Config().to_dict()
     milvus_service = MilvusService(config)

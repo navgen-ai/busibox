@@ -291,6 +291,7 @@ Each service runs in an isolated LXC container:
 - **Authentication**: JWT tokens from Agent API
 - **Authorization**: Role-based (RBAC)
 - **Data Security**: PostgreSQL Row-Level Security (RLS)
+- **Document Sharing**: Three visibility modes (private/shared/team) via self-service roles. See `docs/developers/architecture/11-document-sharing.md`
 - **Network**: Container isolation, ufw firewall
 - **Secrets**: Ansible Vault with encrypted vault key management (see below)
 
@@ -481,6 +482,7 @@ make manage SERVICE=authz ACTION=redeploy  # ✅
 - **Rules**: `.cursor/rules/` - AI agent organization rules
 - **Doc Organization**: `docs/README.md` - Documentation structure
 - **Architecture**: `docs/developers/architecture/` - System design
+- **Document Sharing**: `docs/developers/architecture/11-document-sharing.md` - Sharing model
 - **Deployment**: `docs/administrators/` - Deployment and operations
 - **Testing**: `TESTING.md` - Testing strategy
 - **Ansible Setup**: `provision/ansible/SETUP.md` - Ansible usage

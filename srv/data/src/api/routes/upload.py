@@ -223,7 +223,7 @@ async def upload_file(
             )
         
         # Verify user has create permission on all specified roles
-        user_create_roles = getattr(request.state, "role_ids_create", [])
+        user_create_roles = getattr(request.state, "role_ids", [])
         for role_id in parsed_role_ids:
             if role_id not in user_create_roles:
                 logger.warning(
