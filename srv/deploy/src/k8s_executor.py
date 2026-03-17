@@ -169,6 +169,7 @@ set -e
 if [ -d "{app_path}/.git" ]; then
     echo "Updating existing repo..."
     cd "{app_path}"
+    git remote set-url origin {auth_url}
     git fetch origin
     git checkout {branch}
     git reset --hard origin/{branch}

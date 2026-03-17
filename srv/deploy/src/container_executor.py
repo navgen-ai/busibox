@@ -903,10 +903,12 @@ async def clone_or_update_repo(
     _, _, exists = await execute_in_container(check_cmd)
     
     if exists == 0:
-        # Update existing repo
+        # Update existing repo — always refresh the remote URL so
+        # an expired/rotated token doesn't cause fetch failures.
         logs.append(f"📥 Updating existing repository...")
         command = f"""
 cd {app_path} && \
+git remote set-url origin {repo_url} && \
 git fetch origin && \
 git checkout {deploy_config.githubBranch} && \
 git reset --hard origin/{deploy_config.githubBranch}

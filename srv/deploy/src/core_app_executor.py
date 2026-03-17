@@ -495,6 +495,8 @@ async def deploy_core_app(
             if [ -d "$MONO_DIR/.git" ]; then
                 echo "DEBUG: Updating existing monorepo at $MONO_DIR"
                 cd "$MONO_DIR"
+                echo "DEBUG: Refreshing remote URL..."
+                git remote set-url origin {repo_url}
                 echo "DEBUG: git fetch origin..."
                 git fetch origin 2>&1
                 echo "DEBUG: git fetch done (exit $?)"
