@@ -42,6 +42,10 @@ class AgentDefinition(Base):
         Boolean, default=False,
         comment="Allow automatic fallback to frontier cloud model when context window is exceeded"
     )
+    mcp_servers: Mapped[Optional[list]] = mapped_column(
+        JSON, default=None, nullable=True,
+        comment="External MCP server configs [{name, transport, url/command, ...}]"
+    )
     created_by: Mapped[Optional[str]] = mapped_column(String(255))
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)

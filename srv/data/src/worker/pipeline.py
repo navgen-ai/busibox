@@ -465,6 +465,19 @@ class PipelineMixin:
         pass1_duration = time.time() - pass1_start
         pass1_combined = self.progressive_pipeline._combine_page_texts(ctx.page_texts)
 
+        # Record Pass 1 OCR provenance
+        if hasattr(self, 'provenance') and self.provenance and self.provenance.root_node:
+            ocr_node = self.provenance.record_ocr(
+                file_id=file_id,
+                pass_number=1,
+                input_text=content_hash,
+                output_text=pass1_combined,
+                model_version="pymupdf4llm",
+                page_count=len(ctx.page_texts),
+                rls_context=self._current_rls_context,
+            )
+            ctx._provenance_ocr_node = ocr_node
+
         ctx.page_count = len(ctx.page_texts) or page_count
         ctx.pass_metadata["pass1"] = {
             "pages": ctx.page_count,
@@ -560,6 +573,17 @@ class PipelineMixin:
                     file_id=file_id,
                     image_count=len(images_data),
                 )
+                # Record image extraction provenance
+                if hasattr(self, 'provenance') and self.provenance:
+                    for img_idx, img_data in enumerate(images_data):
+                        page_num = images_metadata[img_idx].get('page') if img_idx < len(images_metadata) else None
+                        self.provenance.record_image(
+                            file_id=file_id,
+                            image_index=img_idx,
+                            image_data=img_data,
+                            page_number=page_num,
+                            rls_context=self._current_rls_context,
+                        )
                 try:
                     conn = self.postgres_service._get_connection(self._current_rls_context)
                     with conn.cursor() as cur:
@@ -672,6 +696,19 @@ class PipelineMixin:
             
             pass2 = self.progressive_pipeline.run_pass2(ctx, progress_callback=_progress)
             
+            # Record Pass 2 OCR provenance
+            if hasattr(self, 'provenance') and self.provenance and self.provenance.root_node:
+                ocr_node_p2 = self.provenance.record_ocr(
+                    file_id=file_id,
+                    pass_number=2,
+                    input_text=self.progressive_pipeline._combine_page_texts(ctx.page_texts) if ctx.page_texts else "",
+                    output_text=pass2.combined_text or "",
+                    model_version="tesseract",
+                    page_count=pass2.pages_changed,
+                    rls_context=self._current_rls_context,
+                )
+                ctx._provenance_ocr_node = ocr_node_p2
+
             if pass2.pages_changed > 0:
                 chunks = self._progressive_chunk_embed_index(
                     ctx, pass2, file_id, user_id, content_hash,
@@ -804,6 +841,29 @@ class PipelineMixin:
         chunk_texts = [c.text for c in chunks]
         embeddings = self.embedder.embed_chunks_sync(chunk_texts)
         
+        # Record chunk and embedding provenance
+        ocr_node = getattr(ctx, '_provenance_ocr_node', None)
+        if hasattr(self, 'provenance') and self.provenance and ocr_node:
+            chunk_nodes = self.provenance.record_chunks(
+                file_id=file_id,
+                ocr_node=ocr_node,
+                chunks=chunks,
+                processing_pass=processing_pass,
+                rls_context=self._current_rls_context,
+            )
+            embedding_dim = len(embeddings[0]) if embeddings else 0
+            embedding_model = getattr(self.embedder, 'model_name', None)
+            for i, chunk_node in enumerate(chunk_nodes):
+                if i < len(embeddings):
+                    self.provenance.record_embedding(
+                        file_id=file_id,
+                        chunk_node=chunk_node,
+                        chunk_index=chunks[i].chunk_index if i < len(chunks) else i,
+                        embedding_dim=embedding_dim,
+                        model_version=embedding_model,
+                        rls_context=self._current_rls_context,
+                    )
+
         # Index in Milvus (delete + re-insert for progressive updates)
         chunk_dicts_for_milvus = [
             {

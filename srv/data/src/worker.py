@@ -88,6 +88,7 @@ from processors.image_extractor import ImageExtractor
 from worker import ErrorHandler, HistoryLogger
 from worker.pipeline import PipelineMixin, CancelledError
 from worker.triggers import TriggerMixin
+from worker.provenance_tracker import ProvenanceTracker
 
 # Import WorkerRLSContext for setting RLS context on database operations
 from api.middleware.jwt_auth import WorkerRLSContext
@@ -146,6 +147,9 @@ class IngestWorker(PipelineMixin, TriggerMixin):
         self.error_handler: Optional[ErrorHandler] = None
         self.history: Optional[HistoryLogger] = None
         
+        # Provenance tracker (initialized in connect())
+        self.provenance: Optional[ProvenanceTracker] = None
+        
         # Processors (initialized in connect())
         self.text_extractor: Optional[TextExtractor] = None
         self.chunker: Optional[Chunker] = None
@@ -203,6 +207,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
         self.history_service.connect()
         self.error_handler = ErrorHandler(self.config, self.postgres_service, self.redis_client)
         self.history = HistoryLogger(self.history_service)
+        self.provenance = ProvenanceTracker(self.postgres_service)
         
         # Initialize processors
         self.text_extractor = TextExtractor(self.config)
@@ -647,6 +652,18 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                 logger.info(
                     "Force reprocess enabled, skipping duplicate check",
                     file_id=file_id,
+                )
+            
+            # Record upload provenance (root of the hash chain)
+            if self.provenance and start_stage == "parsing":
+                size_bytes = int(job_data.get("size_bytes", 0))
+                self.provenance.record_upload(
+                    file_id=file_id,
+                    content_hash=content_hash,
+                    original_filename=original_filename,
+                    mime_type=mime_type,
+                    size_bytes=size_bytes,
+                    rls_context=self._current_rls_context,
                 )
             
             # For partial reprocessing, load existing data if starting from later stage.

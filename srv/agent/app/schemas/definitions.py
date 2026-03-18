@@ -30,6 +30,19 @@ class ContextCompressionConfig(BaseModel):
     compression_model: Optional[str] = Field(default="fast")
 
 
+class MCPServerEntry(BaseModel):
+    """Configuration for an MCP server that the agent can use for tools."""
+    name: str = Field(description="Unique name for this MCP server connection")
+    transport: str = Field(default="stdio", description="Transport: 'stdio' or 'sse'")
+    url: Optional[str] = Field(default=None, description="SSE endpoint URL (required for sse transport)")
+    command: Optional[str] = Field(default=None, description="Command to launch (required for stdio transport)")
+    args: Optional[List[str]] = Field(default=None, description="Command arguments for stdio transport")
+    env: Optional[Dict[str, str]] = Field(default=None, description="Environment variables for stdio subprocess")
+    headers: Optional[Dict[str, str]] = Field(default=None, description="HTTP headers for SSE transport")
+    tool_filter: Optional[List[str]] = Field(default=None, description="Whitelist of tool names (None = all)")
+    timeout_seconds: int = Field(default=30, description="Per-call timeout")
+
+
 class AgentDefinitionCreate(BaseModel):
     name: str
     display_name: Optional[str] = None
@@ -39,6 +52,11 @@ class AgentDefinitionCreate(BaseModel):
     tools: Dict[str, Any] = Field(default_factory=dict)
     workflows: Optional[Dict[str, Any]] = None
     scopes: List[str] = Field(default_factory=list)
+    mcp_servers: Optional[List[MCPServerEntry]] = Field(
+        default=None,
+        description="External MCP servers whose tools this agent can use. "
+        "Tools are discovered at runtime and registered alongside built-in tools."
+    )
     is_active: bool = True
     is_builtin: bool = Field(
         default=False,
@@ -76,6 +94,7 @@ class AgentDefinitionUpdate(BaseModel):
     tools: Optional[Dict[str, Any]] = None
     workflows: Optional[Dict[str, Any]] = None
     scopes: Optional[List[str]] = None
+    mcp_servers: Optional[List[MCPServerEntry]] = None
     is_active: Optional[bool] = None
     is_builtin: Optional[bool] = None
     allow_frontier_fallback: Optional[bool] = None

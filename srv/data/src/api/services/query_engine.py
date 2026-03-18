@@ -393,7 +393,7 @@ class QueryEngine:
                 sql += self._build_aggregation_query(aggregate_spec)
         else:
             # Regular query with optional aggregations
-            select_fields = query.get("select", ["*"])
+            select_fields = query.get("select") or ["*"]
             sql += "\n        SELECT "
             
             if "*" in select_fields or not select_fields:
@@ -641,7 +641,7 @@ class QueryEngine:
             else:
                 sql += self._build_aggregation_query(aggregate_spec)
         else:
-            select_fields = query.get("select", ["*"])
+            select_fields = query.get("select") or ["*"]
             sql += "\n        SELECT "
             
             if "*" in select_fields or not select_fields:

@@ -167,6 +167,23 @@ class DataService:
                     uuid.UUID(library_id) if library_id else None,
                 )
                 
+                # Also insert initial records into data_records table
+                if records and await self._use_records_table(conn, document_id):
+                    for record in records:
+                        record_uuid = uuid.UUID(record["id"]) if self._is_uuid(record["id"]) else uuid.uuid4()
+                        await conn.execute("""
+                            INSERT INTO data_records (
+                                record_id, document_id, data, owner_id, created_by,
+                                visibility, created_at, updated_at
+                            ) VALUES ($1, $2, $3, $4, $5, 'inherit', NOW(), NOW())
+                        """,
+                            record_uuid,
+                            uuid.UUID(document_id),
+                            json.dumps(record),
+                            uuid.UUID(user_id),
+                            uuid.UUID(user_id),
+                        )
+                
                 # Create completed status (data docs don't need processing)
                 await conn.execute("""
                     INSERT INTO data_status (
@@ -1194,16 +1211,9 @@ class DataService:
             pg_record_id = rec["record_id"]
             
             async with conn.transaction():
-                await conn.execute(
-                    "UPDATE data_records SET visibility = $2, updated_at = NOW() WHERE record_id = $1",
-                    pg_record_id, visibility,
-                )
-                
-                await conn.execute(
-                    "DELETE FROM record_roles WHERE record_id = $1",
-                    pg_record_id,
-                )
-                
+                # Insert roles BEFORE changing visibility to 'shared' because
+                # PostgreSQL RLS SELECT policies on the new row require matching
+                # record_roles to exist when visibility='shared'.
                 if visibility == "shared" and role_ids:
                     for rid in role_ids:
                         await conn.execute("""
@@ -1216,6 +1226,18 @@ class DataService:
                             f"Role-{rid[:8]}",
                             uuid.UUID(user_id) if user_id else None,
                         )
+                
+                await conn.execute(
+                    "UPDATE data_records SET visibility = $2, updated_at = NOW() WHERE record_id = $1",
+                    pg_record_id, visibility,
+                )
+                
+                # Remove roles that are no longer needed
+                if visibility != "shared":
+                    await conn.execute(
+                        "DELETE FROM record_roles WHERE record_id = $1",
+                        pg_record_id,
+                    )
         
         return {
             "recordId": record_id,
@@ -1249,16 +1271,8 @@ class DataService:
                 """, uuid.UUID(document_id), record_ids)
                 
                 for rec in recs:
-                    await conn.execute(
-                        "UPDATE data_records SET visibility = $2, updated_at = NOW() WHERE record_id = $1",
-                        rec["record_id"], visibility,
-                    )
-                    
-                    await conn.execute(
-                        "DELETE FROM record_roles WHERE record_id = $1",
-                        rec["record_id"],
-                    )
-                    
+                    # Insert roles BEFORE changing visibility (RLS requires
+                    # record_roles to exist for shared visibility SELECT check)
                     if visibility == "shared" and role_ids:
                         for rid in role_ids:
                             await conn.execute("""
@@ -1271,6 +1285,17 @@ class DataService:
                                 f"Role-{rid[:8]}",
                                 uuid.UUID(user_id) if user_id else None,
                             )
+                    
+                    await conn.execute(
+                        "UPDATE data_records SET visibility = $2, updated_at = NOW() WHERE record_id = $1",
+                        rec["record_id"], visibility,
+                    )
+                    
+                    if visibility != "shared":
+                        await conn.execute(
+                            "DELETE FROM record_roles WHERE record_id = $1",
+                            rec["record_id"],
+                        )
                     
                     updated += 1
         

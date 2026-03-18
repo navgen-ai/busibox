@@ -41,6 +41,12 @@ from app.schemas.streaming import StreamEvent, thought, tool_start, tool_result,
 from app.services.attachment_resolver import attachment_resolver
 from app.services.token_service import get_or_exchange_token
 from app.services.skills_service import get_skills_service
+from app.services.mcp_client import (
+    MCPServerConfig,
+    get_mcp_client,
+    build_mcp_tool_function,
+    parse_mcp_server_configs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -347,6 +353,9 @@ class AgentConfig:
     # The agent's run() result will contain a serialised JSON string of this type.
     output_type: Optional[Type[BaseModel]] = None
     
+    # MCP server configs for external tool loading
+    mcp_servers: List[MCPServerConfig] = field(default_factory=list)
+
     # Context compression settings
     enable_history_compression: bool = True  # Whether to compress long conversation history
     compression_threshold_chars: int = 8000  # Character threshold to trigger compression
@@ -964,8 +973,49 @@ class BaseStreamingAgent(StreamingAgent):
                 logger.info(
                     f"{self.name} received {len(agent_context.relevant_insights)} relevant insights from dispatcher"
                 )
+
+        # Discover and register tools from MCP servers (lazy, first-run only)
+        if self.config.mcp_servers:
+            await self._register_mcp_tools()
         
         return agent_context
+
+    async def _register_mcp_tools(self) -> None:
+        """
+        Discover tools from configured MCP servers and register them
+        in the ToolRegistry so LLM-driven execution can find them.
+
+        Called once during context setup. Skips servers whose tools are
+        already registered.
+        """
+        client = get_mcp_client()
+
+        for server_config in self.config.mcp_servers:
+            try:
+                tool_defs = await client.discover_tools(server_config)
+                registered_count = 0
+
+                for tool_def in tool_defs:
+                    if ToolRegistry.has(tool_def.qualified_name):
+                        continue
+
+                    proxy_fn = build_mcp_tool_function(server_config, tool_def)
+                    ToolRegistry.register(tool_def.qualified_name, proxy_fn)
+                    registered_count += 1
+
+                    if tool_def.qualified_name not in self.config.tools:
+                        self.config.tools.append(tool_def.qualified_name)
+
+                if registered_count > 0:
+                    logger.info(
+                        "%s registered %d MCP tools from '%s'",
+                        self.name, registered_count, server_config.name,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "%s failed to load MCP tools from '%s': %s",
+                    self.name, server_config.name, e,
+                )
 
     async def _resolve_attachments(
         self,
@@ -2117,6 +2167,10 @@ def create_agent_from_definition(definition: Any) -> BaseStreamingAgent:
     tools_config = definition.tools or {}
     tool_names = tools_config.get("names", []) if isinstance(tools_config, dict) else []
     
+    # Parse MCP server configs if present
+    raw_mcp = getattr(definition, 'mcp_servers', None) or []
+    mcp_configs = parse_mcp_server_configs(raw_mcp) if raw_mcp else []
+
     # Create config
     config = AgentConfig(
         name=definition.name,
@@ -2129,6 +2183,7 @@ def create_agent_from_definition(definition: Any) -> BaseStreamingAgent:
         tool_strategy=tool_strategy,
         max_iterations=workflows.get("max_iterations", 5),
         allow_frontier_fallback=getattr(definition, 'allow_frontier_fallback', False),
+        mcp_servers=mcp_configs,
     )
     
     # Check for predefined pipeline

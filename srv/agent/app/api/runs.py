@@ -27,6 +27,7 @@ from app.models.domain import AgentDefinition
 from app.schemas.auth import Principal
 from app.schemas.run import RunCreate, RunInvoke, RunInvokeResponse, RunRead, ScheduleCreate, ScheduleRead
 from app.services.run_service import create_run, get_run_by_id, list_runs
+from app.services.run_provenance import verify_run_provenance
 from app.services.builtin_agents import BUILTIN_AGENT_METADATA
 from app.services.scheduler import run_scheduler
 from app.workflows.engine import execute_workflow
@@ -404,6 +405,49 @@ async def get_run(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     
     return RunRead.model_validate(run_record)
+
+
+@router.get("/{run_id}/provenance")
+async def get_run_provenance(
+    run_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Get and verify the provenance chain for an agent run.
+
+    Returns the cryptographic hash chain proving what inputs, tool calls,
+    and outputs occurred during the run, with integrity verification.
+    """
+    run_record = await get_run_by_id(session, run_id)
+
+    if not run_record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+
+    if run_record.created_by != principal.sub and "admin" not in principal.roles:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    provenance_events = [
+        e for e in (run_record.events or [])
+        if e.get("type") == "provenance"
+    ]
+
+    if not provenance_events:
+        return {
+            "run_id": str(run_id),
+            "has_provenance": False,
+            "message": "No provenance data recorded for this run",
+        }
+
+    provenance_event = provenance_events[-1]
+    verification = verify_run_provenance(provenance_event)
+
+    return {
+        "run_id": str(run_id),
+        "has_provenance": True,
+        "provenance": provenance_event.get("data", {}),
+        "verification": verification,
+    }
 
 
 @router.get("", response_model=List[RunRead])

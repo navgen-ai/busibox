@@ -212,6 +212,10 @@ async def register_agent(
     tool_names = payload.tools.get("names", [])
     validate_tool_references(tool_names)
     
+    mcp_servers_data = None
+    if payload.mcp_servers:
+        mcp_servers_data = [s.model_dump(exclude_none=True) for s in payload.mcp_servers]
+
     definition = AgentDefinition(
         name=payload.name,
         display_name=payload.display_name,
@@ -221,6 +225,7 @@ async def register_agent(
         tools=payload.tools,
         workflows=payload.workflows,
         scopes=payload.scopes,
+        mcp_servers=mcp_servers_data,
         is_active=payload.is_active,
         is_builtin=is_builtin,
         created_by=created_by,

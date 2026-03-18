@@ -29,6 +29,7 @@ from app.schemas.auth import Principal
 from app.services.agent_registry import agent_registry
 from app.services.token_service import get_or_exchange_token
 from app.services.version_isolation import capture_definition_snapshot
+from app.services.run_provenance import build_run_provenance
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -331,6 +332,26 @@ async def create_run(
                     run_record.output = {"result": str(result)}
                 
                 add_run_event(run_record, "execution_completed", data={"status": "succeeded"})
+                
+                # Build provenance chain for the completed run
+                try:
+                    tool_calls = [
+                        e.get("data", {})
+                        for e in (run_record.events or [])
+                        if e.get("type") == "tool_call"
+                    ]
+                    provenance_event = build_run_provenance(
+                        run_input=payload,
+                        tool_calls=tool_calls,
+                        run_output=run_record.output,
+                        agent_id=str(agent_id),
+                        model_version=getattr(agent, 'model', None) if agent else None,
+                    )
+                    run_record.events.append(provenance_event)
+                    attributes.flag_modified(run_record, "events")
+                except Exception as prov_err:
+                    logger.warning(f"Failed to build run provenance (non-fatal): {prov_err}")
+
                 logger.info(f"Agent {agent_id} run {run_record.id} succeeded")
                 span.set_status(trace.Status(trace.StatusCode.OK))
                 
