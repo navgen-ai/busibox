@@ -430,13 +430,16 @@ class QueryEngine:
         where: Dict,
         params: List[Any],
         param_idx: int,
+        column: str = "record",
     ) -> Tuple[str, List[Any], int]:
         """Build WHERE clause for JSONB query."""
+        col = column
+        
         # Logical AND
         if "and" in where:
             clauses = []
             for cond in where["and"]:
-                clause, params, param_idx = self._build_where_clause(cond, params, param_idx)
+                clause, params, param_idx = self._build_where_clause(cond, params, param_idx, column=col)
                 clauses.append(f"({clause})")
             return " AND ".join(clauses), params, param_idx
         
@@ -444,13 +447,13 @@ class QueryEngine:
         if "or" in where:
             clauses = []
             for cond in where["or"]:
-                clause, params, param_idx = self._build_where_clause(cond, params, param_idx)
+                clause, params, param_idx = self._build_where_clause(cond, params, param_idx, column=col)
                 clauses.append(f"({clause})")
             return " OR ".join(clauses), params, param_idx
         
         # Logical NOT
         if "not" in where:
-            clause, params, param_idx = self._build_where_clause(where["not"], params, param_idx)
+            clause, params, param_idx = self._build_where_clause(where["not"], params, param_idx, column=col)
             return f"NOT ({clause})", params, param_idx
         
         # Field condition
@@ -461,53 +464,49 @@ class QueryEngine:
         if not field:
             return "TRUE", params, param_idx
         
-        # Handle nested fields with -> instead of .
         json_path = self._field_to_jsonb_path(field)
         
-        # Build condition based on operator
         if op == "eq":
             params.append(json.dumps(value))
-            clause = f"record{json_path} = ${param_idx}::jsonb"
+            clause = f"{col}{json_path} = ${param_idx}::jsonb"
             param_idx += 1
         elif op == "ne":
             params.append(json.dumps(value))
-            clause = f"record{json_path} != ${param_idx}::jsonb"
+            clause = f"{col}{json_path} != ${param_idx}::jsonb"
             param_idx += 1
         elif op in ("gt", "gte", "lt", "lte"):
-            # Numeric comparison - extract as text and cast
             params.append(value)
             op_symbol = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
-            clause = f"(record{json_path})::numeric {op_symbol} ${param_idx}"
+            clause = f"({col}{json_path})::numeric {op_symbol} ${param_idx}"
             param_idx += 1
         elif op == "in":
-            # IN list
             params.append(value)
-            clause = f"record{json_path} <@ ${param_idx}::jsonb"  # contained by
+            clause = f"{col}{json_path} <@ ${param_idx}::jsonb"
             param_idx += 1
         elif op == "nin":
             params.append(value)
-            clause = f"NOT (record{json_path} <@ ${param_idx}::jsonb)"
+            clause = f"NOT ({col}{json_path} <@ ${param_idx}::jsonb)"
             param_idx += 1
         elif op == "contains":
             params.append(f"%{value}%")
-            clause = f"(record->>{json_path[2:]}) LIKE ${param_idx}"
+            clause = f"({col}->>{json_path[2:]}) LIKE ${param_idx}"
             param_idx += 1
         elif op == "startswith":
             params.append(f"{value}%")
-            clause = f"(record->>{json_path[2:]}) LIKE ${param_idx}"
+            clause = f"({col}->>{json_path[2:]}) LIKE ${param_idx}"
             param_idx += 1
         elif op == "endswith":
             params.append(f"%{value}")
-            clause = f"(record->>{json_path[2:]}) LIKE ${param_idx}"
+            clause = f"({col}->>{json_path[2:]}) LIKE ${param_idx}"
             param_idx += 1
         elif op == "isnull":
             if value:
-                clause = f"record{json_path} IS NULL OR record{json_path} = 'null'::jsonb"
+                clause = f"{col}{json_path} IS NULL OR {col}{json_path} = 'null'::jsonb"
             else:
-                clause = f"record{json_path} IS NOT NULL AND record{json_path} != 'null'::jsonb"
+                clause = f"{col}{json_path} IS NOT NULL AND {col}{json_path} != 'null'::jsonb"
         elif op == "regex":
             params.append(value)
-            clause = f"(record->>{json_path[2:]}) ~ ${param_idx}"
+            clause = f"({col}->>{json_path[2:]}) ~ ${param_idx}"
             param_idx += 1
         else:
             clause = "TRUE"
@@ -592,6 +591,83 @@ class QueryEngine:
     # Query Execution with Connection
     # ========================================================================
     
+    async def _has_records_table(self, conn: asyncpg.Connection) -> bool:
+        """Check if data_records table exists."""
+        try:
+            return bool(await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_name = 'data_records'
+                )
+            """))
+        except Exception:
+            return False
+
+    def build_records_table_query(
+        self,
+        document_id: str,
+        query: Dict,
+    ) -> tuple:
+        """
+        Build a query against the data_records table instead of JSONB.
+        
+        Same query format as build_jsonb_query, but targets individual
+        record rows rather than JSONB array elements.
+        """
+        import uuid as _uuid
+        params: list = [_uuid.UUID(document_id)]
+        param_idx = 2
+        
+        sql = """
+        WITH records AS (
+            SELECT data AS record, ordinal AS row_num
+            FROM data_records
+            WHERE document_id = $1
+        """
+        
+        where = query.get("where")
+        if where:
+            where_sql, params, param_idx = self._build_where_clause(where, params, param_idx, column="data")
+            sql += f"\n            AND {where_sql}"
+        
+        sql += "\n        )"
+        
+        aggregate_spec = query.get("aggregate")
+        group_by = query.get("groupBy")
+        
+        if aggregate_spec and not query.get("select"):
+            if group_by:
+                sql += self._build_grouped_aggregation_query(aggregate_spec, group_by, params, param_idx)
+            else:
+                sql += self._build_aggregation_query(aggregate_spec)
+        else:
+            select_fields = query.get("select", ["*"])
+            sql += "\n        SELECT "
+            
+            if "*" in select_fields or not select_fields:
+                sql += "record"
+            else:
+                field_selects = [f"record->>'{field}' as \"{field}\"" for field in select_fields]
+                sql += ", ".join(field_selects)
+            
+            sql += "\n        FROM records"
+            
+            order_by = query.get("orderBy")
+            if order_by:
+                order_clauses = []
+                for spec in order_by:
+                    field = spec.get("field")
+                    direction = spec.get("direction", "asc").upper()
+                    order_clauses.append(f"(record->>'{field}') {direction} NULLS LAST")
+                sql += f"\n        ORDER BY {', '.join(order_clauses)}"
+            
+            limit = query.get("limit", 100)
+            offset = query.get("offset", 0)
+            sql += f"\n        LIMIT ${param_idx} OFFSET ${param_idx + 1}"
+            params.extend([limit, offset])
+        
+        return sql, params
+
     async def execute_query(
         self,
         conn: asyncpg.Connection,
@@ -602,23 +678,27 @@ class QueryEngine:
         """
         Execute a query against a data document.
         
-        Args:
-            conn: Database connection (should have RLS set)
-            document_id: Document UUID
-            query: Query specification
-            use_jsonb_query: If True, use PostgreSQL JSONB query instead of in-memory
-            
-        Returns:
-            Query result
+        Prefers data_records table (row-per-record with RLS) when available,
+        falling back to data_content JSONB for backward compatibility.
         """
+        import uuid as _uuid
+        
+        use_records_table = await self._has_records_table(conn)
+        
+        if use_records_table:
+            has_rows = await conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM data_records WHERE document_id = $1 LIMIT 1)",
+                _uuid.UUID(document_id) if isinstance(document_id, str) else document_id,
+            )
+            if has_rows:
+                return await self._execute_records_table_query(conn, document_id, query)
+        
         if use_jsonb_query:
-            # Use PostgreSQL JSONB query
             sql, params = self.build_jsonb_query(document_id, query)
             logger.debug("Executing JSONB query", sql=sql[:200], params=params[:3])
             
             rows = await conn.fetch(sql, *params)
             
-            # Check if this is an aggregation query
             if query.get("aggregate") and not query.get("select"):
                 if query.get("groupBy"):
                     return {
@@ -631,7 +711,6 @@ class QueryEngine:
                         "total": 1,
                     }
             
-            # Regular query - convert rows to dicts
             records = []
             for row in rows:
                 if "record" in row.keys():
@@ -639,7 +718,6 @@ class QueryEngine:
                 else:
                     records.append(dict(row))
             
-            # Get total count (separate query)
             count_sql = f"""
             SELECT jsonb_array_length(data_content) as total
             FROM data_files
@@ -655,7 +733,6 @@ class QueryEngine:
                 "offset": query.get("offset", 0),
             }
         else:
-            # In-memory query
             row = await conn.fetchrow("""
                 SELECT data_content
                 FROM data_files
@@ -667,6 +744,51 @@ class QueryEngine:
             
             records = json.loads(row["data_content"])
             return self.execute_in_memory(records, query)
+
+    async def _execute_records_table_query(
+        self,
+        conn: asyncpg.Connection,
+        document_id: str,
+        query: Dict,
+    ) -> Dict:
+        """Execute query against data_records table."""
+        sql, params = self.build_records_table_query(document_id, query)
+        logger.debug("Executing records-table query", sql=sql[:200])
+        
+        rows = await conn.fetch(sql, *params)
+        
+        if query.get("aggregate") and not query.get("select"):
+            if query.get("groupBy"):
+                return {
+                    "aggregations": [dict(row) for row in rows],
+                    "total": len(rows),
+                }
+            else:
+                return {
+                    "aggregations": dict(rows[0]) if rows else {},
+                    "total": 1,
+                }
+        
+        import uuid as _uuid
+        records = []
+        for row in rows:
+            if "record" in row.keys():
+                records.append(json.loads(row["record"]))
+            else:
+                records.append(dict(row))
+        
+        total_row = await conn.fetchrow(
+            "SELECT COUNT(*) as total FROM data_records WHERE document_id = $1",
+            _uuid.UUID(document_id) if isinstance(document_id, str) else document_id,
+        )
+        total = total_row["total"] if total_row else 0
+        
+        return {
+            "records": records,
+            "total": total,
+            "limit": query.get("limit", 100),
+            "offset": query.get("offset", 0),
+        }
     
     # ========================================================================
     # Query Validation

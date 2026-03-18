@@ -304,7 +304,21 @@ class DataService:
                 visibility=row["visibility"],
             )
             
-            return self._row_to_document(row, include_records)
+            doc = self._row_to_document(row, include_records=False)
+            
+            if include_records:
+                use_table = await self._use_records_table(conn, document_id)
+                if use_table:
+                    record_rows = await conn.fetch(
+                        "SELECT data FROM data_records WHERE document_id = $1 ORDER BY ordinal, created_at",
+                        uuid.UUID(document_id),
+                    )
+                    doc["records"] = [json.loads(r["data"]) for r in record_rows]
+                    doc["recordCount"] = len(doc["records"])
+                elif row.get("data_content"):
+                    doc["records"] = json.loads(row["data_content"])
+            
+            return doc
     
     async def update_document(
         self,
@@ -404,32 +418,65 @@ class DataService:
         return deleted
     
     # ========================================================================
-    # Record Operations
+    # Record Operations (data_records table with JSONB fallback)
     # ========================================================================
-    
+
+    async def _use_records_table(self, conn, document_id: str) -> bool:
+        """Check if the data_records table exists and should be used."""
+        try:
+            exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_name = 'data_records'
+                )
+            """)
+            return bool(exists)
+        except Exception:
+            return False
+
+    async def _sync_record_count(self, conn, document_id: str) -> None:
+        """Update data_record_count on data_files from data_records table."""
+        count = await conn.fetchval(
+            "SELECT COUNT(*) FROM data_records WHERE document_id = $1",
+            uuid.UUID(document_id),
+        )
+        await conn.execute("""
+            UPDATE data_files
+            SET data_record_count = $2,
+                data_version = data_version + 1,
+                data_modified_at = NOW(),
+                updated_at = NOW()
+            WHERE file_id = $1 AND doc_type = 'data'
+        """, uuid.UUID(document_id), count)
+
     async def insert_records(
         self,
         request,
         document_id: str,
         records: List[Dict],
         validate: bool = True,
+        record_visibility: Optional[str] = None,
+        record_role_ids: Optional[List[str]] = None,
     ) -> Tuple[int, List[str]]:
         """
         Insert records into a data document.
+        
+        Uses data_records table (row-per-record with RLS) when available,
+        falling back to data_content JSONB for backward compatibility.
         
         Args:
             request: FastAPI Request for RLS context
             document_id: Document UUID
             records: List of record dicts to insert
             validate: Whether to validate against schema
-            
-        Returns:
-            Tuple of (inserted count, list of new record IDs)
+            record_visibility: Optional per-record visibility ('inherit', 'personal', 'shared')
+            record_role_ids: Optional role IDs for records with visibility='shared'
         """
         user_id = getattr(request.state, "user_id", None)
         
         async with self.acquire_with_rls(request) as conn:
-            # Get current document
+            use_table = await self._use_records_table(conn, document_id)
+            
             row = await conn.fetchrow("""
                 SELECT data_schema, data_content, data_version
                 FROM data_files
@@ -441,64 +488,112 @@ class DataService:
                 raise ValueError(f"Document {document_id} not found")
             
             schema = json.loads(row["data_schema"]) if row["data_schema"] else None
-            current_records = json.loads(row["data_content"] or "[]")
             
-            # Process and validate new records
             new_ids = []
-            for record in records:
-                if "id" not in record:
-                    record["id"] = str(uuid.uuid4())
-                new_ids.append(record["id"])
-                
-                # Add auto fields
-                record["_created_at"] = datetime.utcnow().isoformat()
-                record["_created_by"] = user_id
-                
-                if validate and schema:
-                    self._validate_record(schema, record)
-                
-                current_records.append(record)
-            
-            # Update document
-            await conn.execute("""
-                UPDATE data_files
-                SET data_content = $2,
-                    data_record_count = $3,
-                    data_version = data_version + 1,
-                    data_modified_at = NOW(),
-                    updated_at = NOW()
-                WHERE file_id = $1 AND doc_type = 'data'
-            """,
-                uuid.UUID(document_id),
-                json.dumps(current_records),
-                len(current_records),
-            )
-            
-            # Record history
             batch_id = str(uuid.uuid4())
-            for record in records:
+            vis = record_visibility or "inherit"
+            
+            if use_table:
+                for record in records:
+                    if "id" not in record:
+                        record["id"] = str(uuid.uuid4())
+                    new_ids.append(record["id"])
+                    
+                    record["_created_at"] = datetime.utcnow().isoformat()
+                    record["_created_by"] = user_id
+                    
+                    if validate and schema:
+                        self._validate_record(schema, record)
+                    
+                    record_id = uuid.UUID(record["id"]) if self._is_uuid(record["id"]) else uuid.uuid4()
+                    
+                    await conn.execute("""
+                        INSERT INTO data_records (
+                            record_id, document_id, data, owner_id, created_by,
+                            visibility, created_at, updated_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+                    """,
+                        record_id,
+                        uuid.UUID(document_id),
+                        json.dumps(record),
+                        uuid.UUID(user_id) if user_id else uuid.UUID('00000000-0000-0000-0000-000000000000'),
+                        uuid.UUID(user_id) if user_id else None,
+                        vis,
+                    )
+                    
+                    if vis == "shared" and record_role_ids:
+                        for role_id in record_role_ids:
+                            await conn.execute("""
+                                INSERT INTO record_roles (record_id, role_id, role_name, added_by)
+                                VALUES ($1, $2, $3, $4)
+                                ON CONFLICT (record_id, role_id) DO NOTHING
+                            """,
+                                record_id,
+                                uuid.UUID(role_id),
+                                f"Role-{role_id[:8]}",
+                                uuid.UUID(user_id) if user_id else None,
+                            )
+                    
+                    await conn.execute("""
+                        INSERT INTO data_record_history (
+                            document_id, record_id, operation, new_data, changed_by, batch_id
+                        ) VALUES ($1, $2, 'insert', $3, $4, $5)
+                    """,
+                        uuid.UUID(document_id),
+                        record["id"],
+                        json.dumps(record),
+                        uuid.UUID(user_id) if user_id else None,
+                        uuid.UUID(batch_id),
+                    )
+                
+                await self._sync_record_count(conn, document_id)
+            else:
+                current_records = json.loads(row["data_content"] or "[]")
+                
+                for record in records:
+                    if "id" not in record:
+                        record["id"] = str(uuid.uuid4())
+                    new_ids.append(record["id"])
+                    
+                    record["_created_at"] = datetime.utcnow().isoformat()
+                    record["_created_by"] = user_id
+                    
+                    if validate and schema:
+                        self._validate_record(schema, record)
+                    
+                    current_records.append(record)
+                
                 await conn.execute("""
-                    INSERT INTO data_record_history (
-                        document_id, record_id, operation, new_data, changed_by, batch_id
-                    ) VALUES ($1, $2, 'insert', $3, $4, $5)
+                    UPDATE data_files
+                    SET data_content = $2,
+                        data_record_count = $3,
+                        data_version = data_version + 1,
+                        data_modified_at = NOW(),
+                        updated_at = NOW()
+                    WHERE file_id = $1 AND doc_type = 'data'
                 """,
                     uuid.UUID(document_id),
-                    record["id"],
-                    json.dumps(record),
-                    uuid.UUID(user_id) if user_id else None,
-                    uuid.UUID(batch_id),
+                    json.dumps(current_records),
+                    len(current_records),
                 )
+                
+                for record in records:
+                    await conn.execute("""
+                        INSERT INTO data_record_history (
+                            document_id, record_id, operation, new_data, changed_by, batch_id
+                        ) VALUES ($1, $2, 'insert', $3, $4, $5)
+                    """,
+                        uuid.UUID(document_id),
+                        record["id"],
+                        json.dumps(record),
+                        uuid.UUID(user_id) if user_id else None,
+                        uuid.UUID(batch_id),
+                    )
         
-        # Invalidate cache
         if self.cache_manager:
             await self.cache_manager.invalidate_document(document_id)
         
-        logger.info(
-            "Records inserted",
-            document_id=document_id,
-            count=len(records),
-        )
-        
+        logger.info("Records inserted", document_id=document_id, count=len(records))
         return len(records), new_ids
     
     async def update_records(
@@ -512,20 +607,13 @@ class DataService:
         """
         Update records in a data document.
         
-        Args:
-            request: FastAPI Request for RLS context
-            document_id: Document UUID
-            updates: Field updates to apply
-            where: Optional filter for which records to update
-            validate: Whether to validate against schema
-            
-        Returns:
-            Number of records updated
+        Uses data_records table when available, falling back to JSONB.
         """
         user_id = getattr(request.state, "user_id", None)
         
         async with self.acquire_with_rls(request) as conn:
-            # Get current document
+            use_table = await self._use_records_table(conn, document_id)
+            
             row = await conn.fetchrow("""
                 SELECT data_schema, data_content, data_version
                 FROM data_files
@@ -537,69 +625,111 @@ class DataService:
                 raise ValueError(f"Document {document_id} not found")
             
             schema = json.loads(row["data_schema"]) if row["data_schema"] else None
-            current_records = json.loads(row["data_content"] or "[]")
-            
-            # Apply updates
-            updated_count = 0
             batch_id = str(uuid.uuid4())
+            updated_count = 0
             
-            for i, record in enumerate(current_records):
-                if where is None or self._record_matches_filter(record, where):
-                    old_record = record.copy()
-                    
-                    # Apply updates
-                    for key, value in updates.items():
-                        record[key] = value
-                    
-                    # Add audit fields
-                    record["_updated_at"] = datetime.utcnow().isoformat()
-                    record["_updated_by"] = user_id
-                    
-                    # Validate if needed
-                    if validate and schema:
-                        self._validate_record(schema, record)
-                    
-                    current_records[i] = record
-                    updated_count += 1
-                    
-                    # Record history
+            if use_table:
+                record_rows = await conn.fetch(
+                    "SELECT record_id, data FROM data_records WHERE document_id = $1",
+                    uuid.UUID(document_id),
+                )
+                
+                for rrow in record_rows:
+                    record = json.loads(rrow["data"])
+                    if where is None or self._record_matches_filter(record, where):
+                        old_record = record.copy()
+                        
+                        for key, value in updates.items():
+                            record[key] = value
+                        
+                        record["_updated_at"] = datetime.utcnow().isoformat()
+                        record["_updated_by"] = user_id
+                        
+                        if validate and schema:
+                            self._validate_record(schema, record)
+                        
+                        await conn.execute("""
+                            UPDATE data_records
+                            SET data = $2, updated_by = $3, updated_at = NOW()
+                            WHERE record_id = $1
+                        """,
+                            rrow["record_id"],
+                            json.dumps(record),
+                            uuid.UUID(user_id) if user_id else None,
+                        )
+                        
+                        updated_count += 1
+                        
+                        await conn.execute("""
+                            INSERT INTO data_record_history (
+                                document_id, record_id, operation, old_data, new_data, changed_by, batch_id
+                            ) VALUES ($1, $2, 'update', $3, $4, $5, $6)
+                        """,
+                            uuid.UUID(document_id),
+                            record.get("id", "unknown"),
+                            json.dumps(old_record),
+                            json.dumps(record),
+                            uuid.UUID(user_id) if user_id else None,
+                            uuid.UUID(batch_id),
+                        )
+                
+                if updated_count > 0:
                     await conn.execute("""
-                        INSERT INTO data_record_history (
-                            document_id, record_id, operation, old_data, new_data, changed_by, batch_id
-                        ) VALUES ($1, $2, 'update', $3, $4, $5, $6)
+                        UPDATE data_files
+                        SET data_version = data_version + 1,
+                            data_modified_at = NOW(),
+                            updated_at = NOW()
+                        WHERE file_id = $1 AND doc_type = 'data'
+                    """, uuid.UUID(document_id))
+            else:
+                current_records = json.loads(row["data_content"] or "[]")
+                
+                for i, record in enumerate(current_records):
+                    if where is None or self._record_matches_filter(record, where):
+                        old_record = record.copy()
+                        
+                        for key, value in updates.items():
+                            record[key] = value
+                        
+                        record["_updated_at"] = datetime.utcnow().isoformat()
+                        record["_updated_by"] = user_id
+                        
+                        if validate and schema:
+                            self._validate_record(schema, record)
+                        
+                        current_records[i] = record
+                        updated_count += 1
+                        
+                        await conn.execute("""
+                            INSERT INTO data_record_history (
+                                document_id, record_id, operation, old_data, new_data, changed_by, batch_id
+                            ) VALUES ($1, $2, 'update', $3, $4, $5, $6)
+                        """,
+                            uuid.UUID(document_id),
+                            record.get("id", "unknown"),
+                            json.dumps(old_record),
+                            json.dumps(record),
+                            uuid.UUID(user_id) if user_id else None,
+                            uuid.UUID(batch_id),
+                        )
+                
+                if updated_count > 0:
+                    await conn.execute("""
+                        UPDATE data_files
+                        SET data_content = $2,
+                            data_version = data_version + 1,
+                            data_modified_at = NOW(),
+                            updated_at = NOW()
+                        WHERE file_id = $1 AND doc_type = 'data'
                     """,
                         uuid.UUID(document_id),
-                        record.get("id", "unknown"),
-                        json.dumps(old_record),
-                        json.dumps(record),
-                        uuid.UUID(user_id) if user_id else None,
-                        uuid.UUID(batch_id),
+                        json.dumps(current_records),
                     )
-            
-            if updated_count > 0:
-                # Update document
-                await conn.execute("""
-                    UPDATE data_files
-                    SET data_content = $2,
-                        data_version = data_version + 1,
-                        data_modified_at = NOW(),
-                        updated_at = NOW()
-                    WHERE file_id = $1 AND doc_type = 'data'
-                """,
-                    uuid.UUID(document_id),
-                    json.dumps(current_records),
-                )
         
-        # Invalidate cache
         if self.cache_manager:
             await self.cache_manager.invalidate_document(document_id)
         
-        logger.info(
-            "Records updated",
-            document_id=document_id,
-            count=updated_count,
-        )
-        
+        logger.info("Records updated", document_id=document_id, count=updated_count)
         return updated_count
     
     async def delete_records(
@@ -612,19 +742,13 @@ class DataService:
         """
         Delete records from a data document.
         
-        Args:
-            request: FastAPI Request for RLS context
-            document_id: Document UUID
-            where: Optional filter for which records to delete
-            record_ids: Optional list of specific record IDs to delete
-            
-        Returns:
-            Tuple of (number of records deleted, list of deleted record IDs)
+        Uses data_records table when available, falling back to JSONB.
         """
         user_id = getattr(request.state, "user_id", None)
         
         async with self.acquire_with_rls(request) as conn:
-            # Get current document
+            use_table = await self._use_records_table(conn, document_id)
+            
             row = await conn.fetchrow("""
                 SELECT data_content, data_version
                 FROM data_files
@@ -635,68 +759,100 @@ class DataService:
             if not row:
                 raise ValueError(f"Document {document_id} not found")
             
-            current_records = json.loads(row["data_content"] or "[]")
-            
-            # Filter records to keep
             deleted_count = 0
             deleted_ids: List[str] = []
-            kept_records = []
             batch_id = str(uuid.uuid4())
             
-            for record in current_records:
-                should_delete = False
+            if use_table:
+                record_rows = await conn.fetch(
+                    "SELECT record_id, data FROM data_records WHERE document_id = $1",
+                    uuid.UUID(document_id),
+                )
                 
-                if record_ids and record.get("id") in record_ids:
-                    should_delete = True
-                elif where and self._record_matches_filter(record, where):
-                    should_delete = True
+                for rrow in record_rows:
+                    record = json.loads(rrow["data"])
+                    should_delete = False
+                    
+                    if record_ids and record.get("id") in record_ids:
+                        should_delete = True
+                    elif where and self._record_matches_filter(record, where):
+                        should_delete = True
+                    
+                    if should_delete:
+                        rid = record.get("id")
+                        if rid:
+                            deleted_ids.append(rid)
+                        
+                        await conn.execute("""
+                            INSERT INTO data_record_history (
+                                document_id, record_id, operation, old_data, changed_by, batch_id
+                            ) VALUES ($1, $2, 'delete', $3, $4, $5)
+                        """,
+                            uuid.UUID(document_id),
+                            record.get("id", "unknown"),
+                            json.dumps(record),
+                            uuid.UUID(user_id) if user_id else None,
+                            uuid.UUID(batch_id),
+                        )
+                        
+                        await conn.execute(
+                            "DELETE FROM data_records WHERE record_id = $1",
+                            rrow["record_id"],
+                        )
+                        deleted_count += 1
                 
-                if should_delete:
-                    deleted_count += 1
-                    rid = record.get("id")
-                    if rid:
-                        deleted_ids.append(rid)
-                    # Record history
+                if deleted_count > 0:
+                    await self._sync_record_count(conn, document_id)
+            else:
+                current_records = json.loads(row["data_content"] or "[]")
+                kept_records = []
+                
+                for record in current_records:
+                    should_delete = False
+                    
+                    if record_ids and record.get("id") in record_ids:
+                        should_delete = True
+                    elif where and self._record_matches_filter(record, where):
+                        should_delete = True
+                    
+                    if should_delete:
+                        deleted_count += 1
+                        rid = record.get("id")
+                        if rid:
+                            deleted_ids.append(rid)
+                        await conn.execute("""
+                            INSERT INTO data_record_history (
+                                document_id, record_id, operation, old_data, changed_by, batch_id
+                            ) VALUES ($1, $2, 'delete', $3, $4, $5)
+                        """,
+                            uuid.UUID(document_id),
+                            record.get("id", "unknown"),
+                            json.dumps(record),
+                            uuid.UUID(user_id) if user_id else None,
+                            uuid.UUID(batch_id),
+                        )
+                    else:
+                        kept_records.append(record)
+                
+                if deleted_count > 0:
                     await conn.execute("""
-                        INSERT INTO data_record_history (
-                            document_id, record_id, operation, old_data, changed_by, batch_id
-                        ) VALUES ($1, $2, 'delete', $3, $4, $5)
+                        UPDATE data_files
+                        SET data_content = $2,
+                            data_record_count = $3,
+                            data_version = data_version + 1,
+                            data_modified_at = NOW(),
+                            updated_at = NOW()
+                        WHERE file_id = $1 AND doc_type = 'data'
                     """,
                         uuid.UUID(document_id),
-                        record.get("id", "unknown"),
-                        json.dumps(record),
-                        uuid.UUID(user_id) if user_id else None,
-                        uuid.UUID(batch_id),
+                        json.dumps(kept_records),
+                        len(kept_records),
                     )
-                else:
-                    kept_records.append(record)
-            
-            if deleted_count > 0:
-                # Update document
-                await conn.execute("""
-                    UPDATE data_files
-                    SET data_content = $2,
-                        data_record_count = $3,
-                        data_version = data_version + 1,
-                        data_modified_at = NOW(),
-                        updated_at = NOW()
-                    WHERE file_id = $1 AND doc_type = 'data'
-                """,
-                    uuid.UUID(document_id),
-                    json.dumps(kept_records),
-                    len(kept_records),
-                )
         
-        # Invalidate cache
         if self.cache_manager:
             await self.cache_manager.invalidate_document(document_id)
         
-        logger.info(
-            "Records deleted",
-            document_id=document_id,
-            count=deleted_count,
-        )
-        
+        logger.info("Records deleted", document_id=document_id, count=deleted_count)
         return deleted_count, deleted_ids
     
     # ========================================================================
@@ -979,8 +1135,159 @@ class DataService:
         }
     
     # ========================================================================
+    # Record-Level Role Management
+    # ========================================================================
+
+    async def get_record_roles(
+        self,
+        request,
+        document_id: str,
+        record_id: str,
+    ) -> List[Dict]:
+        """Get role assignments for a specific record."""
+        async with self.acquire_with_rls(request) as conn:
+            rec = await conn.fetchrow(
+                "SELECT record_id FROM data_records WHERE document_id = $1 AND (data->>'id') = $2",
+                uuid.UUID(document_id), record_id,
+            )
+            if not rec:
+                raise ValueError(f"Record {record_id} not found in document {document_id}")
+            
+            rows = await conn.fetch("""
+                SELECT role_id::text, role_name, added_at, added_by::text
+                FROM record_roles
+                WHERE record_id = $1
+                ORDER BY added_at
+            """, rec["record_id"])
+            return [dict(r) for r in rows]
+
+    async def set_record_visibility(
+        self,
+        request,
+        document_id: str,
+        record_id: str,
+        visibility: str,
+        role_ids: Optional[List[str]] = None,
+    ) -> Dict:
+        """
+        Set visibility and roles for a specific record.
+        
+        Args:
+            visibility: 'inherit', 'personal', or 'shared'
+            role_ids: Required when visibility='shared'
+        """
+        user_id = getattr(request.state, "user_id", None)
+        
+        if visibility not in ("inherit", "personal", "shared"):
+            raise ValueError("visibility must be 'inherit', 'personal', or 'shared'")
+        if visibility == "shared" and not role_ids:
+            raise ValueError("role_ids required for shared visibility")
+        
+        async with self.acquire_with_rls(request) as conn:
+            rec = await conn.fetchrow(
+                "SELECT record_id FROM data_records WHERE document_id = $1 AND (data->>'id') = $2",
+                uuid.UUID(document_id), record_id,
+            )
+            if not rec:
+                raise ValueError(f"Record {record_id} not found")
+            
+            pg_record_id = rec["record_id"]
+            
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE data_records SET visibility = $2, updated_at = NOW() WHERE record_id = $1",
+                    pg_record_id, visibility,
+                )
+                
+                await conn.execute(
+                    "DELETE FROM record_roles WHERE record_id = $1",
+                    pg_record_id,
+                )
+                
+                if visibility == "shared" and role_ids:
+                    for rid in role_ids:
+                        await conn.execute("""
+                            INSERT INTO record_roles (record_id, role_id, role_name, added_by)
+                            VALUES ($1, $2, $3, $4)
+                            ON CONFLICT (record_id, role_id) DO NOTHING
+                        """,
+                            pg_record_id,
+                            uuid.UUID(rid),
+                            f"Role-{rid[:8]}",
+                            uuid.UUID(user_id) if user_id else None,
+                        )
+        
+        return {
+            "recordId": record_id,
+            "visibility": visibility,
+            "roleIds": role_ids or [],
+        }
+
+    async def bulk_set_record_visibility(
+        self,
+        request,
+        document_id: str,
+        record_ids: List[str],
+        visibility: str,
+        role_ids: Optional[List[str]] = None,
+    ) -> int:
+        """Set visibility for multiple records in a document at once."""
+        user_id = getattr(request.state, "user_id", None)
+        
+        if visibility not in ("inherit", "personal", "shared"):
+            raise ValueError("visibility must be 'inherit', 'personal', or 'shared'")
+        if visibility == "shared" and not role_ids:
+            raise ValueError("role_ids required for shared visibility")
+        
+        updated = 0
+        async with self.acquire_with_rls(request) as conn:
+            async with conn.transaction():
+                recs = await conn.fetch("""
+                    SELECT record_id, data->>'id' AS rid
+                    FROM data_records
+                    WHERE document_id = $1 AND (data->>'id') = ANY($2)
+                """, uuid.UUID(document_id), record_ids)
+                
+                for rec in recs:
+                    await conn.execute(
+                        "UPDATE data_records SET visibility = $2, updated_at = NOW() WHERE record_id = $1",
+                        rec["record_id"], visibility,
+                    )
+                    
+                    await conn.execute(
+                        "DELETE FROM record_roles WHERE record_id = $1",
+                        rec["record_id"],
+                    )
+                    
+                    if visibility == "shared" and role_ids:
+                        for rid in role_ids:
+                            await conn.execute("""
+                                INSERT INTO record_roles (record_id, role_id, role_name, added_by)
+                                VALUES ($1, $2, $3, $4)
+                                ON CONFLICT (record_id, role_id) DO NOTHING
+                            """,
+                                rec["record_id"],
+                                uuid.UUID(rid),
+                                f"Role-{rid[:8]}",
+                                uuid.UUID(user_id) if user_id else None,
+                            )
+                    
+                    updated += 1
+        
+        return updated
+
+    # ========================================================================
     # Helper Methods
     # ========================================================================
+    
+    @staticmethod
+    def _is_uuid(value: str) -> bool:
+        """Check if a string is a valid UUID."""
+        try:
+            uuid.UUID(value)
+            return True
+        except (ValueError, AttributeError):
+            return False
     
     def _validate_record(self, schema: Dict, record: Dict) -> None:
         """

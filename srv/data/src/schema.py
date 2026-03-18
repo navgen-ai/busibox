@@ -360,6 +360,36 @@ def get_data_schema() -> SchemaManager:
         )
     """)
     
+    # Data records table - individual records with per-record RLS
+    schema.add_table("""
+        CREATE TABLE IF NOT EXISTS data_records (
+            record_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            document_id UUID NOT NULL REFERENCES data_files(file_id) ON DELETE CASCADE,
+            data JSONB NOT NULL DEFAULT '{}',
+            owner_id UUID NOT NULL,
+            created_by UUID,
+            updated_by UUID,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW(),
+            visibility VARCHAR(20) DEFAULT 'inherit'
+                CHECK (visibility IN ('inherit', 'personal', 'shared')),
+            ordinal INTEGER DEFAULT 0
+        )
+    """)
+    
+    # Record roles table - per-record role-based access control
+    schema.add_table("""
+        CREATE TABLE IF NOT EXISTS record_roles (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            record_id UUID NOT NULL REFERENCES data_records(record_id) ON DELETE CASCADE,
+            role_id UUID NOT NULL,
+            role_name VARCHAR(100) NOT NULL,
+            added_at TIMESTAMP DEFAULT NOW(),
+            added_by UUID,
+            UNIQUE(record_id, role_id)
+        )
+    """)
+    
     # Data record history - audit log
     schema.add_table("""
         CREATE TABLE IF NOT EXISTS data_record_history (
@@ -894,6 +924,18 @@ def get_data_schema() -> SchemaManager:
     schema.add_index("CREATE INDEX IF NOT EXISTS idx_data_cache_last_accessed ON data_document_cache(last_accessed)")
     schema.add_index("CREATE INDEX IF NOT EXISTS idx_data_cache_flush ON data_document_cache(flush_scheduled_at) WHERE flush_scheduled_at IS NOT NULL")
     
+    # data_records indexes
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_data_records_document ON data_records(document_id)")
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_data_records_owner ON data_records(owner_id)")
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_data_records_visibility ON data_records(visibility)")
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_data_records_created_at ON data_records(created_at DESC)")
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_data_records_data ON data_records USING GIN (data)")
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_data_records_ordinal ON data_records(document_id, ordinal)")
+    
+    # record_roles indexes
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_record_roles_record ON record_roles(record_id)")
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_record_roles_role ON record_roles(role_id)")
+    
     # data_record_history indexes
     schema.add_index("CREATE INDEX IF NOT EXISTS idx_record_history_document ON data_record_history(document_id)")
     schema.add_index("CREATE INDEX IF NOT EXISTS idx_record_history_record ON data_record_history(document_id, record_id)")
@@ -1191,6 +1233,173 @@ def get_data_schema() -> SchemaManager:
         )
     """)
     
+    # DATA_RECORDS POLICIES
+    schema.add_rls("ALTER TABLE data_records ENABLE ROW LEVEL SECURITY")
+    schema.add_rls("ALTER TABLE data_records FORCE ROW LEVEL SECURITY")
+    schema.add_rls("ALTER TABLE record_roles ENABLE ROW LEVEL SECURITY")
+    schema.add_rls("ALTER TABLE record_roles FORCE ROW LEVEL SECURITY")
+    
+    schema.add_rls("DROP POLICY IF EXISTS records_inherit_select ON data_records")
+    schema.add_rls("DROP POLICY IF EXISTS records_personal_select ON data_records")
+    schema.add_rls("DROP POLICY IF EXISTS records_shared_select ON data_records")
+    schema.add_rls("DROP POLICY IF EXISTS records_insert ON data_records")
+    schema.add_rls("DROP POLICY IF EXISTS records_inherit_update ON data_records")
+    schema.add_rls("DROP POLICY IF EXISTS records_personal_update ON data_records")
+    schema.add_rls("DROP POLICY IF EXISTS records_shared_update ON data_records")
+    schema.add_rls("DROP POLICY IF EXISTS records_inherit_delete ON data_records")
+    schema.add_rls("DROP POLICY IF EXISTS records_personal_delete ON data_records")
+    schema.add_rls("DROP POLICY IF EXISTS records_shared_delete ON data_records")
+    
+    # Inherit: record is visible if the parent document is visible (via data_files RLS)
+    schema.add_rls("""
+        CREATE POLICY records_inherit_select ON data_records FOR SELECT USING (
+            visibility = 'inherit' AND EXISTS (
+                SELECT 1 FROM data_files f WHERE f.file_id = data_records.document_id
+            )
+        )
+    """)
+    
+    # Personal: only the record owner can see it
+    schema.add_rls("""
+        CREATE POLICY records_personal_select ON data_records FOR SELECT USING (
+            visibility = 'personal'
+            AND owner_id = COALESCE(
+                NULLIF(current_setting('app.user_id', true), '')::uuid,
+                '00000000-0000-0000-0000-000000000000'::uuid
+            )
+        )
+    """)
+    
+    # Shared: user must have a matching role in record_roles
+    schema.add_rls("""
+        CREATE POLICY records_shared_select ON data_records FOR SELECT USING (
+            visibility = 'shared'
+            AND EXISTS (
+                SELECT 1 FROM record_roles rr
+                WHERE rr.record_id = data_records.record_id
+                AND rr.role_id = ANY(
+                    COALESCE(
+                        string_to_array(current_setting('app.user_role_ids_read', true), ',')::uuid[],
+                        ARRAY[]::uuid[]
+                    )
+                )
+            )
+        )
+    """)
+    
+    # INSERT: anyone who can write to the parent document can insert records
+    schema.add_rls("""
+        CREATE POLICY records_insert ON data_records FOR INSERT WITH CHECK (true)
+    """)
+    
+    # UPDATE: inherit follows document, personal is owner-only, shared is role-based
+    schema.add_rls("""
+        CREATE POLICY records_inherit_update ON data_records FOR UPDATE USING (
+            visibility = 'inherit' AND EXISTS (
+                SELECT 1 FROM data_files f WHERE f.file_id = data_records.document_id
+            )
+        ) WITH CHECK (true)
+    """)
+    
+    schema.add_rls("""
+        CREATE POLICY records_personal_update ON data_records FOR UPDATE USING (
+            visibility = 'personal'
+            AND owner_id = COALESCE(
+                NULLIF(current_setting('app.user_id', true), '')::uuid,
+                '00000000-0000-0000-0000-000000000000'::uuid
+            )
+        ) WITH CHECK (true)
+    """)
+    
+    schema.add_rls("""
+        CREATE POLICY records_shared_update ON data_records FOR UPDATE USING (
+            visibility = 'shared'
+            AND EXISTS (
+                SELECT 1 FROM record_roles rr
+                WHERE rr.record_id = data_records.record_id
+                AND rr.role_id = ANY(
+                    COALESCE(
+                        string_to_array(current_setting('app.user_role_ids_update', true), ',')::uuid[],
+                        ARRAY[]::uuid[]
+                    )
+                )
+            )
+        ) WITH CHECK (true)
+    """)
+    
+    # DELETE: same pattern as update
+    schema.add_rls("""
+        CREATE POLICY records_inherit_delete ON data_records FOR DELETE USING (
+            visibility = 'inherit' AND EXISTS (
+                SELECT 1 FROM data_files f WHERE f.file_id = data_records.document_id
+            )
+        )
+    """)
+    
+    schema.add_rls("""
+        CREATE POLICY records_personal_delete ON data_records FOR DELETE USING (
+            visibility = 'personal'
+            AND owner_id = COALESCE(
+                NULLIF(current_setting('app.user_id', true), '')::uuid,
+                '00000000-0000-0000-0000-000000000000'::uuid
+            )
+        )
+    """)
+    
+    schema.add_rls("""
+        CREATE POLICY records_shared_delete ON data_records FOR DELETE USING (
+            visibility = 'shared'
+            AND EXISTS (
+                SELECT 1 FROM record_roles rr
+                WHERE rr.record_id = data_records.record_id
+                AND rr.role_id = ANY(
+                    COALESCE(
+                        string_to_array(current_setting('app.user_role_ids_delete', true), ',')::uuid[],
+                        ARRAY[]::uuid[]
+                    )
+                )
+            )
+        )
+    """)
+    
+    # RECORD_ROLES POLICIES
+    schema.add_rls("DROP POLICY IF EXISTS record_roles_select ON record_roles")
+    schema.add_rls("DROP POLICY IF EXISTS record_roles_insert ON record_roles")
+    schema.add_rls("DROP POLICY IF EXISTS record_roles_delete ON record_roles")
+    
+    schema.add_rls("""
+        CREATE POLICY record_roles_select ON record_roles FOR SELECT USING (
+            role_id = ANY(
+                COALESCE(
+                    string_to_array(current_setting('app.user_role_ids_read', true), ',')::uuid[],
+                    ARRAY[]::uuid[]
+                )
+            )
+        )
+    """)
+    
+    schema.add_rls("""
+        CREATE POLICY record_roles_insert ON record_roles FOR INSERT WITH CHECK (
+            role_id = ANY(
+                COALESCE(
+                    string_to_array(current_setting('app.user_role_ids_create', true), ',')::uuid[],
+                    ARRAY[]::uuid[]
+                )
+            )
+        )
+    """)
+    
+    schema.add_rls("""
+        CREATE POLICY record_roles_delete ON record_roles FOR DELETE USING (
+            role_id = ANY(
+                COALESCE(
+                    string_to_array(current_setting('app.user_role_ids_update', true), ',')::uuid[],
+                    ARRAY[]::uuid[]
+                )
+            )
+        )
+    """)
+    
     # DATA_DOCUMENT_CACHE POLICIES
     schema.add_rls("DROP POLICY IF EXISTS data_cache_select ON data_document_cache")
     schema.add_rls("DROP POLICY IF EXISTS data_cache_modify ON data_document_cache")
@@ -1271,6 +1480,8 @@ def get_data_schema() -> SchemaManager:
     schema.add_function("GRANT SELECT, INSERT, UPDATE, DELETE ON library_tag_cache TO busibox_user")
     schema.add_function("GRANT SELECT, INSERT, UPDATE, DELETE ON data_document_cache TO busibox_user")
     schema.add_function("GRANT SELECT, INSERT ON data_record_history TO busibox_user")
+    schema.add_function("GRANT SELECT, INSERT, UPDATE, DELETE ON data_records TO busibox_user")
+    schema.add_function("GRANT SELECT, INSERT, UPDATE, DELETE ON record_roles TO busibox_user")
     schema.add_function("GRANT SELECT, INSERT, UPDATE, DELETE ON library_triggers TO busibox_user")
     
     return schema

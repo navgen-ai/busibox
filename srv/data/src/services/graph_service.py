@@ -656,12 +656,17 @@ class GraphService:
         records: List[Dict] = None,
         owner_id: str = "",
         visibility: str = "personal",
+        record_metadata: Optional[List[Dict]] = None,
     ) -> int:
         """
         Sync data document records to graph nodes.
         
         Creates/updates nodes for each record if the schema has graphNode defined,
         and creates relationships based on graphRelationships.
+        
+        Per-record visibility is supported via record_metadata. Each entry
+        can contain 'visibility' and 'owner_id' that override the document-level
+        values. Records with visibility='inherit' use the document's visibility.
         
         Args:
             document_id: Data document ID
@@ -670,6 +675,7 @@ class GraphService:
             records: List of records to sync
             owner_id: Owner user ID
             visibility: Document visibility
+            record_metadata: Optional per-record metadata list (same length as records)
             
         Returns:
             Number of nodes created/updated
@@ -684,7 +690,6 @@ class GraphService:
         records = records or []
         count = 0
         
-        # Create a node for the document itself
         await self.upsert_node(
             label="DataDocument",
             properties={
@@ -696,23 +701,31 @@ class GraphService:
             visibility=visibility,
         )
         
-        # Create nodes for each record
-        for record in records:
+        for idx, record in enumerate(records):
             record_id = record.get("id")
             if not record_id:
                 continue
+            
+            rec_vis = visibility
+            rec_owner = owner_id
+            if record_metadata and idx < len(record_metadata):
+                meta = record_metadata[idx]
+                rv = meta.get("visibility", "inherit")
+                if rv != "inherit":
+                    rec_vis = rv
+                if meta.get("owner_id"):
+                    rec_owner = meta["owner_id"]
             
             node_id = await self.upsert_node(
                 label=graph_node_label,
                 properties=record,
                 node_id=record_id,
-                owner_id=owner_id,
-                visibility=visibility,
+                owner_id=rec_owner,
+                visibility=rec_vis,
             )
             
             if node_id:
                 count += 1
-                # Create RECORD_OF relationship to parent document
                 await self.create_relationship(
                     from_id=record_id,
                     rel_type="RECORD_OF",

@@ -110,6 +110,8 @@ class InsertRecordsRequest(BaseModel):
     """Request to insert records."""
     records: List[Dict] = Field(..., description="Records to insert")
     validate_schema: bool = Field(default=True, alias="validate", description="Whether to validate against schema")
+    recordVisibility: Optional[str] = Field(None, description="Per-record visibility: inherit (default), personal, or shared")
+    recordRoleIds: Optional[List[str]] = Field(None, description="Role IDs for records when recordVisibility='shared'")
     
     class Config:
         populate_by_name = True
@@ -629,6 +631,115 @@ async def update_data_document_roles(
 
 
 # =============================================================================
+# Record-Level Visibility Endpoints
+# =============================================================================
+
+class SetRecordVisibilityRequest(BaseModel):
+    """Request to set visibility on a specific record."""
+    visibility: str = Field(..., description="Record visibility: inherit, personal, or shared")
+    roleIds: Optional[List[str]] = Field(None, description="Role IDs (required when visibility='shared')")
+
+
+class BulkSetRecordVisibilityRequest(BaseModel):
+    """Request to set visibility on multiple records."""
+    recordIds: List[str] = Field(..., description="Record IDs to update")
+    visibility: str = Field(..., description="Record visibility: inherit, personal, or shared")
+    roleIds: Optional[List[str]] = Field(None, description="Role IDs (required when visibility='shared')")
+
+
+@router.get(
+    "/{document_id}/records/{record_id}/roles",
+    summary="Get record role assignments",
+    dependencies=[Depends(require_data_read)],
+)
+async def get_record_roles(
+    request: Request,
+    document_id: str,
+    record_id: str,
+    data_service: DataService = Depends(get_data_service),
+):
+    """Get role assignments for a specific record."""
+    validate_uuid(document_id, "document_id")
+
+    try:
+        roles = await data_service.get_record_roles(request, document_id, record_id)
+        return {
+            "documentId": document_id,
+            "recordId": record_id,
+            "roles": roles,
+            "roleIds": [r["role_id"] for r in roles],
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error("Failed to get record roles", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put(
+    "/{document_id}/records/{record_id}/visibility",
+    summary="Set record visibility and roles",
+    dependencies=[Depends(require_data_write)],
+)
+async def set_record_visibility(
+    request: Request,
+    document_id: str,
+    record_id: str,
+    body: SetRecordVisibilityRequest,
+    data_service: DataService = Depends(get_data_service),
+):
+    """Set visibility and role assignments for a specific record."""
+    validate_uuid(document_id, "document_id")
+
+    try:
+        result = await data_service.set_record_visibility(
+            request, document_id, record_id,
+            visibility=body.visibility,
+            role_ids=body.roleIds,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("Failed to set record visibility", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put(
+    "/{document_id}/records/visibility",
+    summary="Bulk set record visibility",
+    dependencies=[Depends(require_data_write)],
+)
+async def bulk_set_record_visibility(
+    request: Request,
+    document_id: str,
+    body: BulkSetRecordVisibilityRequest,
+    data_service: DataService = Depends(get_data_service),
+):
+    """Set visibility and role assignments for multiple records at once."""
+    validate_uuid(document_id, "document_id")
+
+    try:
+        updated = await data_service.bulk_set_record_visibility(
+            request, document_id,
+            record_ids=body.recordIds,
+            visibility=body.visibility,
+            role_ids=body.roleIds,
+        )
+        return {
+            "documentId": document_id,
+            "updated": updated,
+            "visibility": body.visibility,
+            "message": f"Updated visibility for {updated} records",
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("Failed to bulk set record visibility", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
 # Record Endpoints
 # =============================================================================
 
@@ -653,6 +764,8 @@ async def insert_records(
             document_id,
             records=body.records,
             validate=body.validate_schema,
+            record_visibility=body.recordVisibility,
+            record_role_ids=body.recordRoleIds,
         )
         
         # Sync new records to graph (non-blocking, re-reads full doc for schema)
@@ -1357,6 +1470,134 @@ async def sync_document_to_graph(
     except Exception as e:
         logger.error("Failed to sync graph", document_id=document_id, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Data Records Migration Endpoint
+# =============================================================================
+
+@router.post(
+    "/migrate-to-records-table",
+    summary="Migrate JSONB records to data_records table",
+    dependencies=[Depends(require_data_write)],
+)
+async def migrate_to_records_table(
+    request: Request,
+    dryRun: bool = Query(False, description="Preview migration without writing"),
+    sourceApp: Optional[str] = Query(None, description="Only migrate documents from this app"),
+    data_service: DataService = Depends(get_data_service),
+):
+    """
+    Migrate existing data_content JSONB records into the data_records table.
+    
+    Records are created with visibility='inherit' so they inherit the parent
+    document's RLS. After migration, the JSONB data_content is cleared to avoid
+    double-serving data.
+    
+    Idempotent: documents already migrated (having rows in data_records) are skipped.
+    """
+    from api.main import pg_service
+    from api.middleware.jwt_auth import set_rls_session_vars
+
+    user_id = getattr(request.state, "user_id", None)
+    migrated_docs = []
+    skipped_docs = []
+    total_records = 0
+
+    async with pg_service.pool.acquire() as conn:
+        await set_rls_session_vars(conn, request)
+
+        query = """
+            SELECT file_id, filename, owner_id, data_content, data_schema
+            FROM data_files
+            WHERE doc_type = 'data'
+              AND data_content IS NOT NULL
+              AND data_content != '[]'::jsonb
+        """
+        params = []
+        if sourceApp:
+            query += " AND metadata->>'sourceApp' = $1"
+            params.append(sourceApp)
+
+        query += " ORDER BY created_at"
+        docs = await conn.fetch(query, *params)
+
+        for doc in docs:
+            doc_id = doc["file_id"]
+            records = json.loads(doc["data_content"] or "[]")
+            if not records:
+                continue
+
+            existing_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM data_records WHERE document_id = $1",
+                doc_id,
+            )
+            if existing_count > 0:
+                skipped_docs.append({
+                    "id": str(doc_id),
+                    "name": doc["filename"],
+                    "existingRecords": existing_count,
+                })
+                continue
+
+            if dryRun:
+                migrated_docs.append({
+                    "id": str(doc_id),
+                    "name": doc["filename"],
+                    "recordCount": len(records),
+                })
+                total_records += len(records)
+                continue
+
+            owner_id = doc["owner_id"]
+
+            async with conn.transaction():
+                for idx, record in enumerate(records):
+                    record_id = record.get("id")
+                    try:
+                        pg_record_id = uuid.UUID(record_id) if record_id else uuid.uuid4()
+                    except ValueError:
+                        pg_record_id = uuid.uuid4()
+
+                    created_by_val = record.get("_created_by")
+                    try:
+                        created_by = uuid.UUID(created_by_val) if created_by_val else None
+                    except (ValueError, TypeError):
+                        created_by = None
+
+                    await conn.execute("""
+                        INSERT INTO data_records (
+                            record_id, document_id, data, owner_id, created_by,
+                            visibility, ordinal, created_at, updated_at
+                        ) VALUES ($1, $2, $3, $4, $5, 'inherit', $6, NOW(), NOW())
+                        ON CONFLICT (record_id) DO NOTHING
+                    """,
+                        pg_record_id, doc_id, json.dumps(record),
+                        owner_id, created_by, idx,
+                    )
+
+                await conn.execute("""
+                    UPDATE data_files
+                    SET data_content = '[]'::jsonb,
+                        data_record_count = $2,
+                        updated_at = NOW()
+                    WHERE file_id = $1
+                """, doc_id, len(records))
+
+            migrated_docs.append({
+                "id": str(doc_id),
+                "name": doc["filename"],
+                "recordCount": len(records),
+            })
+            total_records += len(records)
+
+    return {
+        "dryRun": dryRun,
+        "migratedDocuments": migrated_docs,
+        "skippedDocuments": skipped_docs,
+        "totalRecordsMigrated": total_records,
+        "message": f"{'Would migrate' if dryRun else 'Migrated'} {total_records} records from {len(migrated_docs)} documents",
+    }
 
 
 # =============================================================================
