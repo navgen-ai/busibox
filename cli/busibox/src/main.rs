@@ -195,7 +195,6 @@ fn main() -> Result<()> {
                         app.install_complete = true;
                         if let Some(url) = portal_url {
                             app.install_portal_url = Some(url.clone());
-                            app.install_log.push(format!("Portal setup: {url}"));
                         }
                         put_back = false;
                         break;

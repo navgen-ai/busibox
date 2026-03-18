@@ -1039,8 +1039,14 @@ services:
       RATE_LIMIT_SECONDS: 10
       # Dev apps directory - host path for display in UI
       DEV_APPS_DIR_HOST: ${DEV_APPS_DIR:-./dev-apps}
-      # GitHub token (needed for docker compose to validate core-apps service)
-      # Passed through so docker compose can validate all services in compose file
+      # Secrets passed through so deploy-api can relay them to docker compose
+      # when starting other services (compose v5 validates all service defs)
+      AUTHZ_MASTER_KEY: ${AUTHZ_MASTER_KEY:?AUTHZ_MASTER_KEY must be set}
+      SSO_JWT_SECRET: ${SSO_JWT_SECRET:?SSO_JWT_SECRET must be set}
+      CONFIG_ENCRYPTION_KEY: ${CONFIG_ENCRYPTION_KEY:?CONFIG_ENCRYPTION_KEY must be set}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}
       GITHUB_AUTH_TOKEN: ${GITHUB_AUTH_TOKEN:-}
       # Host Agent (for MLX control on Apple Silicon)
       # The host-agent runs on the host machine and is accessible via host.docker.internal

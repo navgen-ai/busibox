@@ -1334,15 +1334,6 @@ async def start_service_sse(
                 # Pass environment variables so docker compose can validate all services
                 env = os.environ.copy()
                 
-                # Check if GITHUB_AUTH_TOKEN is available (needed for core-apps service validation)
-                github_token = env.get('GITHUB_AUTH_TOKEN')
-                if not github_token:
-                    logger.warning("[SSE] GITHUB_AUTH_TOKEN not found in environment - docker compose may fail if core-apps is referenced")
-                    # Try to get it from the compose file's context if available
-                    # For now, we'll let docker compose fail with a clear error
-                else:
-                    logger.info("[SSE] GITHUB_AUTH_TOKEN found in environment")
-                
                 # Build docker compose command
                 # Get host path - busibox is mounted at this same path inside the container
                 # This allows buildx to find files and Docker to mount volumes correctly
@@ -1800,9 +1791,6 @@ async def start_service_sse(
                         yield f"data: {json.dumps({'type': 'success', 'message': f'Service {service} started successfully', 'done': True})}\n\n"
                 else:
                     error_msg = f'Service {service} failed to start (exit code {returncode})'
-                    # Check if it's a GITHUB_AUTH_TOKEN error
-                    if not github_token:
-                        error_msg += '. GITHUB_AUTH_TOKEN is missing - restart deploy-api container after setting it in docker-compose.yml'
                     yield f"data: {json.dumps({'type': 'error', 'message': error_msg, 'done': True})}\n\n"
                 
             except Exception as e:

@@ -480,15 +480,14 @@ pub fn render(f: &mut Frame, app: &App) {
                 "  Press r to retry or c to copy error details",
                 theme::muted(),
             )));
-        } else if let Some(url) = &app.install_portal_url {
+        } else if app.install_portal_url.is_some() {
             lines.push(Line::from(vec![
-                Span::styled("  → ", theme::info()),
-                Span::styled("Setup: ", theme::normal()),
-                Span::styled(url.as_str(), theme::highlight()),
+                Span::styled("  ✓ ", theme::success()),
+                Span::styled("Installation complete!", theme::normal()),
             ]));
             lines.push(Line::from(Span::styled(
-                "  Press Enter to generate admin login credentials",
-                theme::muted(),
+                "  Press Enter to generate admin login link",
+                theme::highlight(),
             )));
         }
     }
