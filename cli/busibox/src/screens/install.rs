@@ -1,4 +1,4 @@
-use crate::app::{App, InstallStatus, MessageKind, ModelInstallState, Screen, ServiceInstallState, SetupTarget};
+use crate::app::{App, InstallStatus, InstallUpdate, MessageKind, ModelInstallState, Screen, ServiceInstallState, SetupTarget};
 use crate::modules::remote;
 use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -507,15 +507,26 @@ pub fn render(f: &mut Frame, app: &App) {
         .last()
         .map(|s| s.as_str())
         .unwrap_or("");
-    let log_style = if last_log.contains("ERROR") || last_log.contains("FAILED") {
-        theme::error()
+    if app.install_waiting_confirm.is_some() {
+        let confirm_line = Paragraph::new(Line::from(vec![
+            Span::styled("? ", theme::warning()),
+            Span::styled(&app.install_confirm_prompt, theme::warning()),
+            Span::styled("  [y/n]", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        ]));
+        f.render_widget(confirm_line, chunks[3]);
     } else {
-        theme::dim()
-    };
-    let log_line = Paragraph::new(Line::from(Span::styled(last_log, log_style)));
-    f.render_widget(log_line, chunks[3]);
+        let log_style = if last_log.contains("ERROR") || last_log.contains("FAILED") {
+            theme::error()
+        } else {
+            theme::dim()
+        };
+        let log_line = Paragraph::new(Line::from(Span::styled(last_log, log_style)));
+        f.render_widget(log_line, chunks[3]);
+    }
 
-    let help_text = if app.install_waiting_retry.is_some() {
+    let help_text = if app.install_waiting_confirm.is_some() {
+        " y Yes  n No  l View logs"
+    } else if app.install_waiting_retry.is_some() {
         " Enter Retry  c Copy Log  l View logs  Esc Back"
     } else if app.install_complete && any_failed {
         " r Retry  c Copy Error  l View logs  Esc Back"
@@ -524,7 +535,7 @@ pub fn render(f: &mut Frame, app: &App) {
     } else {
         " l View logs  Esc Cancel"
     };
-    let help_style = if app.install_waiting_retry.is_some() || (app.install_complete && any_failed) {
+    let help_style = if app.install_waiting_confirm.is_some() || app.install_waiting_retry.is_some() || (app.install_complete && any_failed) {
         theme::warning()
     } else {
         theme::muted()
@@ -859,6 +870,31 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Handle waiting-for-confirm state (y/n question from worker)
+    if app.install_waiting_confirm.is_some() {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                if let Some(resp) = app.install_waiting_confirm.take() {
+                    let _ = resp.send(true);
+                }
+                app.install_confirm_prompt.clear();
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                if let Some(resp) = app.install_waiting_confirm.take() {
+                    let _ = resp.send(false);
+                }
+                app.install_confirm_prompt.clear();
+            }
+            KeyCode::Char('l') => {
+                app.install_log_visible = true;
+                app.install_log_scroll = app.install_log.len().saturating_sub(1);
+                app.install_log_autoscroll = true;
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match key.code {
         KeyCode::Esc => {
             app.screen = Screen::Welcome;
@@ -1052,7 +1088,7 @@ fn spawn_install_worker(app: &mut App) {
     let remote_path_input = app.remote_path_input.clone();
     let vault_password: Option<String> = app.vault_password.clone();
     let clean_install = app.clean_install;
-    let _is_update = app.is_update;
+    let is_update = app.is_update;
     // vault_prefix: per-profile, used for vault file naming (vault.{profile_id}.yml)
     let vault_prefix: String = app
         .active_profile()
@@ -1930,6 +1966,23 @@ fi
         }
         vault_setup_done = true;
         } // end if ansible_vault_available
+
+        // For updates: resolve LLM config FIRST, before any services deploy.
+        // This ensures the user makes their config choice upfront, not mid-deploy.
+        let mut litellm_config_resolved = false;
+        let litellm_in_stages = stages.iter().any(|(_, _, svcs)| svcs.iter().any(|s| s == "litellm"));
+        if is_update && is_remote && litellm_in_stages {
+            litellm_config_resolved = resolve_litellm_config_for_install(
+                &tx,
+                &repo_root,
+                &remote_path,
+                &ssh_details,
+                profile_host.as_deref(),
+                profile_model_tier.as_deref(),
+                profile_llm_backend.as_deref(),
+                profile_network_base_octets.as_deref(),
+            );
+        }
 
         let mut model_download_handle: Option<std::thread::JoinHandle<i32>> = None;
         let mut any_failed = false;
@@ -3443,9 +3496,9 @@ fi
                 continue;
             }
 
-            // For remote Proxmox installs, generate model_config.yml on the remote host
-            // before deploying LiteLLM, then pull it back locally so Ansible can use it.
-            if is_remote && stage_services_to_deploy.iter().any(|s| s == "litellm") {
+            // LLM config: for updates it was resolved pre-flight above.
+            // For fresh installs, generate from the pipeline if no local config exists.
+            if is_remote && stage_services_to_deploy.iter().any(|s| s == "litellm") && !litellm_config_resolved {
                 let _ = tx.send(InstallUpdate::Log(
                     "Preparing LiteLLM model pipeline...".into(),
                 ));
@@ -3458,78 +3511,44 @@ fi
                         let _ = tx_model.send(InstallUpdate::Log(format!("  [model-pipeline] {line}")));
                     };
 
-                    // Phase 3 path: try deploy-api endpoints first.
-                    // Falls back to script-based generation if token/service URL is unavailable.
-                    let api_pipeline_cmd = r#"
-                        set -e
-                        API_BASE="${DEPLOY_API_URL:-http://deploy-api:8011}"
-                        TOKEN="${DEPLOY_BOOTSTRAP_TOKEN:-${LITELLM_API_KEY:-}}"
-                        if [ -z "$TOKEN" ]; then
-                          echo "No DEPLOY_BOOTSTRAP_TOKEN/LITELLM_API_KEY found; skipping deploy-api pipeline"
-                          exit 99
-                        fi
-                        echo "Calling deploy-api auto assignment..."
-                        curl -fsS -X POST "${API_BASE}/api/v1/services/vllm/assignments/auto" \
-                          -H "Authorization: Bearer ${TOKEN}" >/tmp/busibox-vllm-auto.json
-                        echo "Calling deploy-api apply..."
-                        curl -fsS -X POST "${API_BASE}/api/v1/services/vllm/apply" \
-                          -H "Authorization: Bearer ${TOKEN}" >/tmp/busibox-vllm-apply.sse
-                        echo "Deploy-api model pipeline complete"
-                    "#;
-
-                    match remote::exec_remote_streaming(&ssh, &remote_path, api_pipeline_cmd, on_model_line) {
+                    let mut env_prefix = String::new();
+                    if let Some(ref tier) = profile_model_tier {
+                        env_prefix.push_str(&format!("LLM_TIER={} MODEL_TIER={} ", shell_escape(tier), shell_escape(tier)));
+                    }
+                    if let Some(ref backend) = profile_llm_backend {
+                        env_prefix.push_str(&format!("LLM_BACKEND={} ", shell_escape(backend)));
+                    }
+                    if let Some(ref octets) = profile_network_base_octets {
+                        env_prefix.push_str(&format!("NETWORK_BASE_OCTETS={} ", shell_escape(octets)));
+                    }
+                    let gen_cmd = format!("{env_prefix}bash scripts/llm/generate-model-config.sh");
+                    match remote::exec_remote_streaming(&ssh, &remote_path, &gen_cmd, on_model_line) {
                         Ok(0) => {
-                            let _ = tx.send(InstallUpdate::Log(
-                                "✓ Deploy API model pipeline completed".into(),
-                            ));
-                            Ok(())
-                        }
-                        Ok(99) | Ok(_) => {
-                            let _ = tx.send(InstallUpdate::Log(
-                                "Deploy API model pipeline unavailable; using script fallback".into(),
-                            ));
-
-                            let mut env_prefix = String::new();
-                            if let Some(ref tier) = profile_model_tier {
-                                env_prefix.push_str(&format!("LLM_TIER={} MODEL_TIER={} ", shell_escape(tier), shell_escape(tier)));
-                            }
-                            if let Some(ref backend) = profile_llm_backend {
-                                env_prefix.push_str(&format!("LLM_BACKEND={} ", shell_escape(backend)));
-                            }
-                            if let Some(ref octets) = profile_network_base_octets {
-                                env_prefix.push_str(&format!("NETWORK_BASE_OCTETS={} ", shell_escape(octets)));
-                            }
-                            let gen_cmd = format!("{env_prefix}bash scripts/llm/generate-model-config.sh");
-                            match remote::exec_remote_streaming(&ssh, &remote_path, &gen_cmd, on_model_line) {
-                                Ok(0) => {
-                                    let remote_model_cfg = format!(
-                                        "{}/provision/ansible/group_vars/all/model_config.yml",
-                                        remote_path.trim_end_matches('/')
-                                    );
-                                    let local_model_cfg = repo_root.join("provision/ansible/group_vars/all/model_config.yml");
-                                    match remote::pull_file(
-                                        effective_host,
-                                        user,
-                                        key,
-                                        &remote_model_cfg,
-                                        &local_model_cfg,
-                                    ) {
-                                        Ok(()) => {
-                                            let _ = tx.send(InstallUpdate::Log(format!(
-                                                "✓ Pulled model_config.yml to {}",
-                                                local_model_cfg.display()
-                                            )));
-                                            Ok(())
-                                        }
-                                        Err(e) => Err(color_eyre::eyre::eyre!(e.to_string())),
-                                    }
+                            let remote_model_cfg = format!(
+                                "{}/provision/ansible/group_vars/all/model_config.yml",
+                                remote_path.trim_end_matches('/')
+                            );
+                            let local_model_cfg = repo_root.join("provision/ansible/group_vars/all/model_config.yml");
+                            match remote::pull_file(
+                                effective_host,
+                                user,
+                                key,
+                                &remote_model_cfg,
+                                &local_model_cfg,
+                            ) {
+                                Ok(()) => {
+                                    let _ = tx.send(InstallUpdate::Log(format!(
+                                        "✓ Pulled model_config.yml to {}",
+                                        local_model_cfg.display()
+                                    )));
+                                    Ok(())
                                 }
-                                Ok(code) => Err(color_eyre::eyre::eyre!(
-                                    "generate-model-config.sh failed (exit code {code})"
-                                )),
-                                Err(e) => Err(e),
+                                Err(e) => Err(color_eyre::eyre::eyre!(e.to_string())),
                             }
                         }
+                        Ok(code) => Err(color_eyre::eyre::eyre!(
+                            "generate-model-config.sh failed (exit code {code})"
+                        )),
                         Err(e) => Err(e),
                     }
                 } else {
@@ -3778,5 +3797,154 @@ pub fn open_browser(url: &str) {
         let _ = std::process::Command::new("xdg-open")
             .arg(url)
             .spawn();
+    }
+}
+
+/// Pre-flight resolution of model_config.yml for update installs.
+/// Compares local vs deployed config and asks the user if they differ.
+/// Returns true if the config was resolved (no further generation needed).
+fn resolve_litellm_config_for_install(
+    tx: &std::sync::mpsc::Sender<InstallUpdate>,
+    repo_root: &std::path::Path,
+    remote_path: &str,
+    ssh_details: &Option<(String, String, String)>,
+    profile_host: Option<&str>,
+    _profile_model_tier: Option<&str>,
+    _profile_llm_backend: Option<&str>,
+    _profile_network_base_octets: Option<&str>,
+) -> bool {
+    let (host, user, key) = match ssh_details {
+        Some((h, u, k)) => (h.as_str(), u.as_str(), k.as_str()),
+        None => return false,
+    };
+    let display_host = profile_host.unwrap_or(host);
+    let model_cfg_rel = "provision/ansible/group_vars/all/model_config.yml";
+    let local_model_cfg = repo_root.join(model_cfg_rel);
+    let remote_model_cfg = format!("{}/{}", remote_path.trim_end_matches('/'), model_cfg_rel);
+
+    if !local_model_cfg.exists() {
+        // No local config — will be generated inline during the litellm stage
+        return false;
+    }
+
+    let _ = tx.send(InstallUpdate::Log(
+        "Pre-flight: checking LLM config (local vs deployed)...".into(),
+    ));
+
+    let ssh = crate::modules::ssh::SshConnection::new(display_host, user, key);
+    let cat_cmd = format!(
+        "{}cat '{}' 2>/dev/null || echo ''",
+        remote::SHELL_PATH_PREAMBLE,
+        remote_model_cfg,
+    );
+    let deployed_content = ssh.run(&cat_cmd).unwrap_or_default();
+    let deployed_content = deployed_content.trim();
+
+    let local_content = std::fs::read_to_string(&local_model_cfg).unwrap_or_default();
+    let local_content = local_content.trim();
+
+    if deployed_content.is_empty() {
+        let _ = tx.send(InstallUpdate::Log(
+            "No config deployed on remote yet — will generate during install.".into(),
+        ));
+        return false;
+    }
+
+    let normalize = |s: &str| -> Vec<String> {
+        s.lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect()
+    };
+    let local_lines = normalize(local_content);
+    let deployed_lines = normalize(deployed_content);
+
+    if local_lines == deployed_lines {
+        let _ = tx.send(InstallUpdate::Log(
+            "✓ Local LLM config matches deployed — no changes needed.".into(),
+        ));
+        return true;
+    }
+
+    // Configs differ — show both and ask
+    let _ = tx.send(InstallUpdate::Log(String::new()));
+    let _ = tx.send(InstallUpdate::Log(
+        "╔══ LLM config mismatch detected ══╗".into(),
+    ));
+    let _ = tx.send(InstallUpdate::Log(
+        "The local saved config differs from what's currently deployed.".into(),
+    ));
+
+    let _ = tx.send(InstallUpdate::Log(String::new()));
+    let _ = tx.send(InstallUpdate::Log("── LOCAL (saved from Models screen) ──".into()));
+    show_install_config_summary(tx, local_content);
+
+    let _ = tx.send(InstallUpdate::Log(String::new()));
+    let _ = tx.send(InstallUpdate::Log("── DEPLOYED (currently running on remote) ──".into()));
+    show_install_config_summary(tx, deployed_content);
+
+    let _ = tx.send(InstallUpdate::Log(String::new()));
+
+    let (confirm_tx, confirm_rx) = std::sync::mpsc::channel::<bool>();
+    let _ = tx.send(InstallUpdate::WaitForConfirm {
+        prompt: "Deploy LOCAL saved config? (y=local, n=keep deployed)".to_string(),
+        response: confirm_tx,
+    });
+
+    match confirm_rx.recv() {
+        Ok(true) => {
+            let _ = tx.send(InstallUpdate::Log(
+                "Using local saved config for update.".into(),
+            ));
+            // Re-sync to push local config to remote
+            let _ = tx.send(InstallUpdate::Log("Syncing local config to remote...".into()));
+            if let Err(e) = remote::sync(repo_root, display_host, user, key, remote_path) {
+                let _ = tx.send(InstallUpdate::Log(format!("WARNING: Re-sync failed: {e}")));
+            }
+            true
+        }
+        Ok(false) => {
+            let _ = tx.send(InstallUpdate::Log(
+                "Keeping deployed config. Pulling to local to stay in sync...".into(),
+            ));
+            match remote::pull_file(display_host, user, key, &remote_model_cfg, &local_model_cfg) {
+                Ok(()) => {
+                    let _ = tx.send(InstallUpdate::Log("✓ Local config updated from deployed.".into()));
+                }
+                Err(e) => {
+                    let _ = tx.send(InstallUpdate::Log(format!("WARNING: Failed to pull: {e}")));
+                }
+            }
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+fn show_install_config_summary(tx: &std::sync::mpsc::Sender<InstallUpdate>, content: &str) {
+    let mut model_count = 0;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("- model_name:") || trimmed.starts_with("model_name:") {
+            model_count += 1;
+            let _ = tx.send(InstallUpdate::Log(format!("  {trimmed}")));
+        }
+    }
+    if model_count == 0 {
+        let mut shown = 0;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let _ = tx.send(InstallUpdate::Log(format!("  {trimmed}")));
+            shown += 1;
+            if shown >= 15 {
+                let _ = tx.send(InstallUpdate::Log("  ...".into()));
+                break;
+            }
+        }
+    } else {
+        let _ = tx.send(InstallUpdate::Log(format!("  ({model_count} model(s) configured)")));
     }
 }

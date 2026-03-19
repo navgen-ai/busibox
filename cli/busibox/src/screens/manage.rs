@@ -26,6 +26,84 @@ fn service_to_make_name(display_name: &str) -> &str {
     }
 }
 
+/// Map display name → Docker container suffix for `docker inspect`.
+/// Returns None for services that don't have a single container (e.g. infra or frontend sub-apps).
+fn service_to_docker_container(display_name: &str) -> Option<&'static str> {
+    match display_name {
+        "authz" => Some("authz-api"),
+        "agent" => Some("agent-api"),
+        "data" => Some("data-api"),
+        "data-worker" => Some("data-worker"),
+        "search" => Some("search-api"),
+        "deploy" => Some("deploy-api"),
+        "docs" => Some("docs-api"),
+        "embedding" => Some("embedding-api"),
+        "bridge" => Some("bridge-api"),
+        "config" => Some("config-api"),
+        "litellm" => Some("litellm"),
+        "vllm" => Some("vllm"),
+        "mlx" => Some("mlx"),
+        "proxy" => Some("proxy"),
+        "core-apps" => Some("core-apps"),
+        "user-apps" => Some("user-apps"),
+        _ => None,
+    }
+}
+
+/// Map display name → Proxmox `.deploy_version` file path.
+/// Only API services that Ansible deploys from the busibox repo have these.
+fn service_to_deploy_version_path(display_name: &str) -> Option<&'static str> {
+    match display_name {
+        "authz" => Some("/opt/authz/.deploy_version"),
+        "agent" => Some("/opt/agent-api/.deploy_version"),
+        "data" | "data-worker" => Some("/opt/data-api/.deploy_version"),
+        "search" => Some("/opt/search-api/.deploy_version"),
+        "deploy" => Some("/opt/deploy/.deploy_version"),
+        "docs" => Some("/opt/docs-api/.deploy_version"),
+        "embedding" => Some("/opt/embedding/.deploy_version"),
+        "config" => Some("/opt/config/.deploy_version"),
+        _ => None,
+    }
+}
+
+/// Extract the git commit SHA from a `.deploy_version` JSON blob.
+/// Tries `git_commit` first (agent uses a content-hash for `commit`), then `commit`.
+fn extract_git_commit_from_deploy_version(json_str: &str) -> Option<String> {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+        if let Some(gc) = v.get("git_commit").and_then(|v| v.as_str()) {
+            let gc = gc.trim();
+            if !gc.is_empty() && gc != "unknown" {
+                return Some(gc.to_string());
+            }
+        }
+        if let Some(c) = v.get("commit").and_then(|v| v.as_str()) {
+            let c = c.trim();
+            if !c.is_empty() && c != "unknown" {
+                return Some(c.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Format the version cell text and style for a service.
+fn format_version_cell(svc: &ServiceStatus) -> (String, Style) {
+    if svc.version.is_empty() {
+        return ("—".to_string(), theme::dim());
+    }
+    match svc.commits_behind {
+        Some(0) => {
+            (format!("{} ✓", svc.version), theme::success())
+        }
+        Some(n) if n > 0 => {
+            (format!("{} ↑{}", svc.version, n), theme::warning())
+        }
+        _ => {
+            (svc.version.clone(), theme::muted())
+        }
+    }
+}
+
 fn get_all_services(app: &App) -> Vec<(&'static str, String)> {
     use crate::modules::hardware::LlmBackend;
 
@@ -132,6 +210,8 @@ pub fn render(f: &mut Frame, app: &App) {
                     theme::muted()
                 };
 
+                let (version_text, version_style) = format_version_cell(svc);
+
                 let row_style = if i == app.manage_selected {
                     theme::selected()
                 } else {
@@ -142,6 +222,7 @@ pub fn render(f: &mut Frame, app: &App) {
                     Cell::from(svc.group.clone()).style(theme::muted()),
                     Cell::from(svc.name.clone()).style(theme::normal()),
                     Cell::from(svc.status.clone()).style(status_style),
+                    Cell::from(version_text).style(version_style),
                 ])
                 .style(row_style)
             })
@@ -176,8 +257,9 @@ pub fn render(f: &mut Frame, app: &App) {
             visible_rows,
             [
                 Constraint::Length(16),
-                Constraint::Min(20),
-                Constraint::Length(20),
+                Constraint::Min(16),
+                Constraint::Length(14),
+                Constraint::Length(16),
             ],
         )
         .header(
@@ -185,6 +267,7 @@ pub fn render(f: &mut Frame, app: &App) {
                 Cell::from("Group").style(theme::muted()),
                 Cell::from("Service").style(theme::muted()),
                 Cell::from("Status").style(theme::muted()),
+                Cell::from("Version").style(theme::muted()),
             ])
             .bottom_margin(1),
         )
@@ -500,6 +583,8 @@ pub fn load_service_status(app: &mut App) {
             name,
             group: group.to_string(),
             status: "checking...".into(),
+            version: String::new(),
+            commits_behind: None,
         });
     }
 
@@ -554,8 +639,20 @@ pub fn load_service_status(app: &mut App) {
     let service_names: Vec<String> = app.manage_services.iter().map(|s| s.name.clone()).collect();
     let network_base = profile.effective_network_base().to_string();
     let vllm_network_base = profile.vllm_network_base().to_string();
+    let repo_root = app.repo_root.clone();
 
-    std::thread::spawn(move || {
+    // Clone values needed by the version check thread
+    let version_tx = tx.clone();
+    let version_service_names = service_names.clone();
+    let version_is_proxmox = is_proxmox;
+    let version_is_remote = is_remote;
+    let version_ssh_details = ssh_details.clone();
+    let version_prefix = prefix.clone();
+    let version_repo_root = repo_root.clone();
+
+    // Thread 1: health checks (existing logic)
+    let health_tx = tx.clone();
+    let health_handle = std::thread::spawn(move || {
         let defs = health::all_service_defs(is_mlx);
 
         let check_defs: Vec<&health::ServiceHealthDef> = service_names
@@ -578,7 +675,7 @@ pub fn load_service_status(app: &mut App) {
                     HealthStatus::Down => "down".to_string(),
                     HealthStatus::Checking => "checking...".to_string(),
                 };
-                let _ = tx.send(ManageUpdate::StatusResult {
+                let _ = health_tx.send(ManageUpdate::StatusResult {
                     name: def.name.to_string(),
                     status: status_str,
                 });
@@ -592,7 +689,7 @@ pub fn load_service_status(app: &mut App) {
                 let ssh_details = ssh_details.clone();
                 let network_base = network_base.clone();
                 let vllm_network_base = vllm_network_base.clone();
-                let tx = tx.clone();
+                let health_tx = health_tx.clone();
 
                 let handle = std::thread::spawn(move || {
                     let ssh = ssh_details.as_ref().map(|(h, u, k)| {
@@ -607,7 +704,7 @@ pub fn load_service_status(app: &mut App) {
                         HealthStatus::Down => "down".to_string(),
                         HealthStatus::Checking => "checking...".to_string(),
                     };
-                    let _ = tx.send(ManageUpdate::StatusResult {
+                    let _ = health_tx.send(ManageUpdate::StatusResult {
                         name: def.name.to_string(),
                         status: status_str,
                     });
@@ -618,9 +715,465 @@ pub fn load_service_status(app: &mut App) {
                 let _ = handle.join();
             }
         }
+    });
 
+    // Thread 2: version checks (new - runs in parallel with health)
+    let version_handle = std::thread::spawn(move || {
+        fetch_service_versions(
+            &version_service_names,
+            &version_tx,
+            version_is_proxmox,
+            version_is_remote,
+            version_ssh_details.as_ref(),
+            &version_prefix,
+            &version_repo_root,
+        );
+    });
+
+    // Coordinator thread: wait for both, then send Complete
+    std::thread::spawn(move || {
+        let _ = health_handle.join();
+        let _ = version_handle.join();
         let _ = tx.send(ManageUpdate::Complete { success: true });
     });
+}
+
+/// Fetch deployed version info for all services and send VersionResult updates.
+fn fetch_service_versions(
+    service_names: &[String],
+    tx: &std::sync::mpsc::Sender<ManageUpdate>,
+    is_proxmox: bool,
+    is_remote: bool,
+    ssh_details: Option<&(String, String, String)>,
+    prefix: &str,
+    repo_root: &std::path::Path,
+) {
+    // Get the local HEAD commit for comparison
+    let local_head = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(repo_root)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+
+    if is_proxmox {
+        fetch_versions_proxmox(service_names, tx, ssh_details, &local_head, repo_root);
+    } else {
+        fetch_versions_docker(service_names, tx, is_remote, ssh_details, prefix, &local_head, repo_root);
+    }
+}
+
+/// Fetch versions from Docker container labels using a single batched command.
+fn fetch_versions_docker(
+    service_names: &[String],
+    tx: &std::sync::mpsc::Sender<ManageUpdate>,
+    is_remote: bool,
+    ssh_details: Option<&(String, String, String)>,
+    prefix: &str,
+    local_head: &str,
+    repo_root: &std::path::Path,
+) {
+    // Build a single shell command that reads version labels from all containers at once.
+    // Output: one line per container: "container_suffix|version_label"
+    let mut inspect_parts: Vec<String> = Vec::new();
+    let mut name_to_container: Vec<(String, String)> = Vec::new();
+
+    for name in service_names {
+        if let Some(container_suffix) = service_to_docker_container(name) {
+            let container_name = format!("{prefix}-{container_suffix}");
+            inspect_parts.push(format!(
+                "echo \"{container_suffix}|$(docker inspect --format '{{{{index .Config.Labels \"version\"}}}}' '{container_name}' 2>/dev/null || echo '')\""
+            ));
+            name_to_container.push((name.clone(), container_suffix.to_string()));
+        }
+    }
+
+    if inspect_parts.is_empty() {
+        return;
+    }
+
+    let batch_cmd = inspect_parts.join("; ");
+    let output = if is_remote {
+        if let Some((host, user, key)) = ssh_details {
+            let ssh = crate::modules::ssh::SshConnection::new(host, user, key);
+            let full_cmd = format!("{}{batch_cmd}", remote::SHELL_PATH_PREAMBLE);
+            ssh.run(&full_cmd).unwrap_or_default()
+        } else {
+            return;
+        }
+    } else {
+        std::process::Command::new("bash")
+            .arg("-c")
+            .arg(&batch_cmd)
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default()
+    };
+
+    // Parse output lines: "container_suffix|version"
+    let mut version_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for line in output.lines() {
+        if let Some((suffix, version)) = line.split_once('|') {
+            let v = version.trim().to_string();
+            if !v.is_empty() && v != "<no value>" && v != "unknown" {
+                version_map.insert(suffix.trim().to_string(), v);
+            }
+        }
+    }
+
+    for (name, container_suffix) in &name_to_container {
+        if let Some(deployed_commit) = version_map.get(container_suffix.as_str()) {
+            let commits_behind = count_commits_behind(deployed_commit, local_head, repo_root);
+            let _ = tx.send(ManageUpdate::VersionResult {
+                name: name.clone(),
+                version: deployed_commit.clone(),
+                commits_behind,
+            });
+        }
+    }
+}
+
+/// Fetch versions from Proxmox `.deploy_version` files using a single batched SSH command.
+fn fetch_versions_proxmox(
+    service_names: &[String],
+    tx: &std::sync::mpsc::Sender<ManageUpdate>,
+    ssh_details: Option<&(String, String, String)>,
+    local_head: &str,
+    repo_root: &std::path::Path,
+) {
+    let (host, user, key) = match ssh_details {
+        Some(d) => (&d.0, &d.1, &d.2),
+        None => return,
+    };
+
+    // Build a single command that cats all deploy_version files
+    let mut cat_parts: Vec<String> = Vec::new();
+    let mut name_to_path: Vec<(String, String)> = Vec::new();
+
+    for name in service_names {
+        if let Some(path) = service_to_deploy_version_path(name) {
+            cat_parts.push(format!(
+                "echo \"DEPLOY_VERSION_START:{name}\"; cat '{path}' 2>/dev/null || echo '{{}}'; echo \"DEPLOY_VERSION_END:{name}\""
+            ));
+            name_to_path.push((name.clone(), path.to_string()));
+        }
+    }
+
+    if cat_parts.is_empty() {
+        return;
+    }
+
+    let batch_cmd = cat_parts.join("; ");
+    let ssh = crate::modules::ssh::SshConnection::new(host, user, key);
+    let full_cmd = format!("{}{batch_cmd}", remote::SHELL_PATH_PREAMBLE);
+    let output = ssh.run(&full_cmd).unwrap_or_default();
+
+    // Parse blocks: DEPLOY_VERSION_START:name ... json ... DEPLOY_VERSION_END:name
+    let mut current_name: Option<String> = None;
+    let mut current_json = String::new();
+
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("DEPLOY_VERSION_START:") {
+            current_name = Some(rest.trim().to_string());
+            current_json.clear();
+        } else if let Some(rest) = line.strip_prefix("DEPLOY_VERSION_END:") {
+            let end_name = rest.trim();
+            if current_name.as_deref() == Some(end_name) {
+                if let Some(deployed_commit) = extract_git_commit_from_deploy_version(&current_json) {
+                    let commits_behind = count_commits_behind(&deployed_commit, local_head, repo_root);
+                    let _ = tx.send(ManageUpdate::VersionResult {
+                        name: end_name.to_string(),
+                        version: deployed_commit,
+                        commits_behind,
+                    });
+                }
+            }
+            current_name = None;
+            current_json.clear();
+        } else if current_name.is_some() {
+            if !current_json.is_empty() {
+                current_json.push('\n');
+            }
+            current_json.push_str(line);
+        }
+    }
+}
+
+/// Count how many commits `deployed_commit` is behind `local_head`.
+/// Returns None if the comparison can't be made (unknown commit, not in history, etc.).
+/// Returns Some(0) if they match, Some(N) if behind by N commits.
+fn count_commits_behind(deployed_commit: &str, local_head: &str, repo_root: &std::path::Path) -> Option<i32> {
+    if deployed_commit.is_empty() || local_head.is_empty() {
+        return None;
+    }
+    // Quick check: if the short SHAs match, it's current
+    if deployed_commit.starts_with(local_head) || local_head.starts_with(deployed_commit) {
+        return Some(0);
+    }
+    // Count commits between deployed and HEAD: git rev-list --count deployed..HEAD
+    let output = std::process::Command::new("git")
+        .args(["rev-list", "--count", &format!("{deployed_commit}..HEAD")])
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let count_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        count_str.parse::<i32>().ok()
+    } else {
+        None
+    }
+}
+
+/// Resolve which model_config.yml to use for a LiteLLM deploy.
+///
+/// 1. If no local config exists → generate a fresh one from the remote pipeline.
+/// 2. If local exists → fetch the currently deployed config from remote and compare.
+///    - If identical → proceed silently (no question asked).
+///    - If different → show both side-by-side and ask the user which to use.
+/// Returns true if a fresh config was generated (so caller can offer vLLM redeploy).
+fn resolve_model_config(
+    tx: &std::sync::mpsc::Sender<ManageUpdate>,
+    repo_root: &std::path::Path,
+    remote_path: &str,
+    ssh_details: &Option<(String, String, String)>,
+    profile_host: Option<&str>,
+    profile_model_tier: Option<&str>,
+    profile_llm_backend: Option<&str>,
+    profile_network_base_octets: Option<&str>,
+) -> bool {
+    let (host, user, key) = match ssh_details {
+        Some((h, u, k)) => (h.as_str(), u.as_str(), k.as_str()),
+        None => return false,
+    };
+    let display_host = profile_host.unwrap_or(host);
+    let model_cfg_rel = "provision/ansible/group_vars/all/model_config.yml";
+    let local_model_cfg = repo_root.join(model_cfg_rel);
+    let remote_model_cfg = format!("{}/{}", remote_path.trim_end_matches('/'), model_cfg_rel);
+
+    if !local_model_cfg.exists() {
+        // No local config — generate a fresh one
+        let _ = tx.send(ManageUpdate::Log(
+            "No local model_config.yml found — generating from remote...".into(),
+        ));
+        return generate_and_pull_model_config(
+            tx, repo_root, remote_path, display_host, user, key,
+            profile_model_tier, profile_llm_backend, profile_network_base_octets,
+        );
+    }
+
+    // Local config exists. Fetch the deployed config to compare.
+    let _ = tx.send(ManageUpdate::Log(
+        "Checking LLM config: comparing local vs deployed...".into(),
+    ));
+
+    let ssh = crate::modules::ssh::SshConnection::new(display_host, user, key);
+    let cat_cmd = format!(
+        "{}cat '{}' 2>/dev/null || echo ''",
+        remote::SHELL_PATH_PREAMBLE,
+        remote_model_cfg,
+    );
+    let deployed_content = ssh.run(&cat_cmd).unwrap_or_default();
+    let deployed_content = deployed_content.trim();
+
+    let local_content = std::fs::read_to_string(&local_model_cfg).unwrap_or_default();
+    let local_content = local_content.trim();
+
+    if deployed_content.is_empty() {
+        // Nothing deployed yet — use local
+        let _ = tx.send(ManageUpdate::Log(
+            "No config deployed on remote yet — using local saved config.".into(),
+        ));
+        return false;
+    }
+
+    // Normalize for comparison: trim each line, skip blank lines and comments
+    let normalize = |s: &str| -> Vec<String> {
+        s.lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect()
+    };
+    let local_lines = normalize(local_content);
+    let deployed_lines = normalize(deployed_content);
+
+    if local_lines == deployed_lines {
+        let _ = tx.send(ManageUpdate::Log(
+            "✓ Local config matches deployed config — no changes needed.".into(),
+        ));
+        return false;
+    }
+
+    // Configs differ — show both and ask
+    let _ = tx.send(ManageUpdate::Log(String::new()));
+    let _ = tx.send(ManageUpdate::Log(
+        "╔══ LLM config mismatch detected ══╗".into(),
+    ));
+    let _ = tx.send(ManageUpdate::Log(
+        "The local saved config differs from what's currently deployed.".into(),
+    ));
+
+    // Show a compact summary of differences
+    let _ = tx.send(ManageUpdate::Log(String::new()));
+    let _ = tx.send(ManageUpdate::Log("── LOCAL (saved from Models screen) ──".into()));
+    show_config_summary(tx, local_content);
+
+    let _ = tx.send(ManageUpdate::Log(String::new()));
+    let _ = tx.send(ManageUpdate::Log("── DEPLOYED (currently running on remote) ──".into()));
+    show_config_summary(tx, deployed_content);
+
+    let _ = tx.send(ManageUpdate::Log(String::new()));
+
+    let (confirm_tx, confirm_rx) = std::sync::mpsc::channel::<bool>();
+    let _ = tx.send(ManageUpdate::WaitForConfirm {
+        prompt: "Deploy LOCAL saved config? (y=local, n=keep deployed)".to_string(),
+        response: confirm_tx,
+    });
+
+    match confirm_rx.recv() {
+        Ok(true) => {
+            // User chose local — rsync will push it; nothing else needed
+            let _ = tx.send(ManageUpdate::Log(
+                "Using local saved config for deploy.".into(),
+            ));
+            // Re-sync to push local config to remote
+            let _ = tx.send(ManageUpdate::Log("Syncing local config to remote...".into()));
+            if let Err(e) = remote::sync(repo_root, display_host, user, key, remote_path) {
+                let _ = tx.send(ManageUpdate::Log(format!("WARNING: Re-sync failed: {e}")));
+            }
+            true
+        }
+        Ok(false) => {
+            // User chose deployed — pull deployed to local so they stay in sync
+            let _ = tx.send(ManageUpdate::Log(
+                "Keeping deployed config. Pulling to local to stay in sync...".into(),
+            ));
+            match remote::pull_file(display_host, user, key, &remote_model_cfg, &local_model_cfg) {
+                Ok(()) => {
+                    let _ = tx.send(ManageUpdate::Log("✓ Local config updated from deployed.".into()));
+                }
+                Err(e) => {
+                    let _ = tx.send(ManageUpdate::Log(format!("WARNING: Failed to pull: {e}")));
+                }
+            }
+            false
+        }
+        Err(_) => false,
+    }
+}
+
+/// Show a compact summary of a model_config.yml: just the model entries.
+fn show_config_summary(tx: &std::sync::mpsc::Sender<ManageUpdate>, content: &str) {
+    let mut model_count = 0;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        // Show lines that define models (look for model_name or litellm_params entries)
+        if trimmed.starts_with("- model_name:") || trimmed.starts_with("model_name:") {
+            model_count += 1;
+            let _ = tx.send(ManageUpdate::Log(format!("  {trimmed}")));
+        }
+    }
+    if model_count == 0 {
+        // Fallback: show first 15 non-comment lines
+        let mut shown = 0;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let _ = tx.send(ManageUpdate::Log(format!("  {trimmed}")));
+            shown += 1;
+            if shown >= 15 {
+                let _ = tx.send(ManageUpdate::Log("  ...".into()));
+                break;
+            }
+        }
+    } else {
+        let _ = tx.send(ManageUpdate::Log(format!("  ({model_count} model(s) configured)")));
+    }
+}
+
+/// Generate model_config.yml on the remote host and pull it back locally.
+/// Returns true on success.
+fn generate_and_pull_model_config(
+    tx: &std::sync::mpsc::Sender<ManageUpdate>,
+    repo_root: &std::path::Path,
+    remote_path: &str,
+    display_host: &str,
+    user: &str,
+    key: &str,
+    profile_model_tier: Option<&str>,
+    profile_llm_backend: Option<&str>,
+    profile_network_base_octets: Option<&str>,
+) -> bool {
+    let ssh = crate::modules::ssh::SshConnection::new(display_host, user, key);
+    let tx_model = tx.clone();
+    let on_model_line = |line: &str| {
+        let _ = tx_model.send(ManageUpdate::Log(format!("  [model-pipeline] {line}")));
+    };
+
+    let mut env_prefix = String::new();
+    if let Some(tier) = profile_model_tier {
+        env_prefix.push_str(&format!(
+            "LLM_TIER={} MODEL_TIER={} ",
+            shell_escape(tier),
+            shell_escape(tier),
+        ));
+    }
+    if let Some(backend) = profile_llm_backend {
+        env_prefix.push_str(&format!("LLM_BACKEND={} ", shell_escape(backend)));
+    }
+    if let Some(octets) = profile_network_base_octets {
+        env_prefix.push_str(&format!("NETWORK_BASE_OCTETS={} ", shell_escape(octets)));
+    }
+    let gen_cmd = format!("{env_prefix}bash scripts/llm/generate-model-config.sh");
+
+    let model_cfg_rel = "provision/ansible/group_vars/all/model_config.yml";
+    let local_model_cfg = repo_root.join(model_cfg_rel);
+    let remote_model_cfg = format!("{}/{}", remote_path.trim_end_matches('/'), model_cfg_rel);
+
+    match remote::exec_remote_streaming(&ssh, remote_path, &gen_cmd, on_model_line) {
+        Ok(0) => {
+            match remote::pull_file(display_host, user, key, &remote_model_cfg, &local_model_cfg) {
+                Ok(()) => {
+                    let _ = tx.send(ManageUpdate::Log(format!(
+                        "✓ Generated and saved model_config.yml to {}",
+                        local_model_cfg.display(),
+                    )));
+                    // Re-sync so the config is available on remote for the deploy
+                    if let Err(e) = remote::sync(repo_root, display_host, user, key, remote_path) {
+                        let _ = tx.send(ManageUpdate::Log(format!("WARNING: Re-sync failed: {e}")));
+                    }
+                    true
+                }
+                Err(e) => {
+                    let _ = tx.send(ManageUpdate::Log(format!(
+                        "WARNING: Failed to pull model_config.yml: {e}"
+                    )));
+                    false
+                }
+            }
+        }
+        Ok(code) => {
+            let _ = tx.send(ManageUpdate::Log(format!(
+                "WARNING: generate-model-config.sh exited with code {code}"
+            )));
+            false
+        }
+        Err(e) => {
+            let _ = tx.send(ManageUpdate::Log(format!(
+                "WARNING: generate-model-config.sh failed: {e}"
+            )));
+            false
+        }
+    }
 }
 
 fn run_action(app: &mut App, action: &str) {
@@ -744,140 +1297,21 @@ fn spawn_action_worker(app: &mut App, service_name: &str, action: &str) {
             }
         }
 
-        // For litellm redeploy/restart, regenerate model_config.yml (with keep/overwrite prompt)
+        // For litellm redeploy/restart, resolve which model_config.yml to deploy.
+        // Compare local (saved from model-screen) vs deployed (on remote host).
+        // If identical: proceed silently. If different: show both and ask.
         let mut model_config_regenerated = false;
         if (service == "litellm") && (action == "redeploy" || action == "restart") && is_remote {
-            if let Some((ref host, ref user, ref key)) = ssh_details {
-                let display_host = profile_host.as_deref().unwrap_or(host);
-                let model_cfg_rel = "provision/ansible/group_vars/all/model_config.yml";
-                let local_model_cfg = repo_root.join(model_cfg_rel);
-
-                let should_generate = if local_model_cfg.exists() {
-                    let _ = tx.send(ManageUpdate::Log(
-                        format!(
-                            "Existing local model_config.yml found at {}.",
-                            local_model_cfg.display()
-                        ),
-                    ));
-                    let (confirm_tx, confirm_rx) = std::sync::mpsc::channel::<bool>();
-                    let _ = tx.send(ManageUpdate::WaitForConfirm {
-                        prompt: "Regenerate from remote model pipeline and replace local model_config.yml?"
-                            .to_string(),
-                        response: confirm_tx,
-                    });
-                    match confirm_rx.recv() {
-                        Ok(answer) => answer,
-                        Err(_) => false,
-                    }
-                } else {
-                    let _ = tx.send(ManageUpdate::Log(
-                        "No existing model_config.yml — generating...".into(),
-                    ));
-                    true
-                };
-
-                if should_generate {
-                    let _ = tx.send(ManageUpdate::Log(
-                        "Generating model_config.yml on remote host...".into(),
-                    ));
-
-                    let ssh = crate::modules::ssh::SshConnection::new(
-                        display_host, user, key,
-                    );
-                    let tx_model = tx.clone();
-                    let on_model_line = |line: &str| {
-                        let _ = tx_model.send(ManageUpdate::Log(
-                            format!("  [model-pipeline] {line}"),
-                        ));
-                    };
-
-                    let mut env_prefix = String::new();
-                    if let Some(ref tier) = profile_model_tier {
-                        env_prefix.push_str(&format!(
-                            "LLM_TIER={} MODEL_TIER={} ",
-                            shell_escape(tier),
-                            shell_escape(tier),
-                        ));
-                    }
-                    if let Some(ref backend) = profile_llm_backend {
-                        env_prefix.push_str(&format!(
-                            "LLM_BACKEND={} ",
-                            shell_escape(backend),
-                        ));
-                    }
-                    if let Some(ref octets) = profile_network_base_octets {
-                        env_prefix.push_str(&format!(
-                            "NETWORK_BASE_OCTETS={} ",
-                            shell_escape(octets),
-                        ));
-                    }
-                    let gen_cmd = format!(
-                        "{env_prefix}bash scripts/llm/generate-model-config.sh"
-                    );
-                    match remote::exec_remote_streaming(
-                        &ssh, &remote_path, &gen_cmd, on_model_line,
-                    ) {
-                        Ok(0) => {
-                            let remote_model_cfg = format!(
-                                "{}/{}",
-                                remote_path.trim_end_matches('/'),
-                                model_cfg_rel,
-                            );
-                            match remote::pull_file(
-                                display_host,
-                                user,
-                                key,
-                                &remote_model_cfg,
-                                &local_model_cfg,
-                            ) {
-                                Ok(()) => {
-                                    let _ = tx.send(ManageUpdate::Log(format!(
-                                        "✓ Pulled model_config.yml to {}",
-                                        local_model_cfg.display(),
-                                    )));
-                                }
-                                Err(e) => {
-                                    let _ = tx.send(ManageUpdate::Log(format!(
-                                        "WARNING: Failed to pull model_config.yml: {e}"
-                                    )));
-                                }
-                            }
-                        }
-                        Ok(code) => {
-                            let _ = tx.send(ManageUpdate::Log(format!(
-                                "WARNING: generate-model-config.sh exited with code {code}"
-                            )));
-                        }
-                        Err(e) => {
-                            let _ = tx.send(ManageUpdate::Log(format!(
-                                "WARNING: generate-model-config.sh failed: {e}"
-                            )));
-                        }
-                    }
-                    // Re-sync so the newly pulled model_config.yml is available on remote
-                    if local_model_cfg.exists() {
-                        let _ = tx.send(ManageUpdate::Log(
-                            "Re-syncing model_config.yml to remote...".into(),
-                        ));
-                        if let Err(e) = remote::sync(
-                            &repo_root, display_host, user, key, &remote_path,
-                        ) {
-                            let _ = tx.send(ManageUpdate::Log(format!(
-                                "WARNING: Re-sync failed: {e}"
-                            )));
-                        }
-                    }
-                    model_config_regenerated = true;
-                } else {
-                    let _ = tx.send(ManageUpdate::Log(
-                        "Keeping existing local model_config.yml (saved model-screen config)".into(),
-                    ));
-                    let _ = tx.send(ManageUpdate::Log(
-                        "Using existing local model_config.yml for LiteLLM deploy (no defaults applied)"
-                            .into(),
-                    ));
-                }
-            }
+            model_config_regenerated = resolve_model_config(
+                &tx,
+                &repo_root,
+                &remote_path,
+                &ssh_details,
+                profile_host.as_deref(),
+                profile_model_tier.as_deref(),
+                profile_llm_backend.as_deref(),
+                profile_network_base_octets.as_deref(),
+            );
         }
 
         let env_val = profile_env.as_deref().unwrap_or("development");

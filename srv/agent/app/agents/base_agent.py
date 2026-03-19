@@ -897,7 +897,8 @@ class BaseStreamingAgent(StreamingAgent):
                 )
                 agent_context.deps = BusiboxDeps(
                     principal=agent_context.principal,
-                    busibox_client=busibox_client
+                    busibox_client=busibox_client,
+                    metadata=agent_context.metadata,
                 )
             except Exception as e:
                 logger.error(f"Token exchange failed: {e}", exc_info=True)

@@ -152,6 +152,8 @@ pub struct App {
     pub install_rx: Option<mpsc::Receiver<InstallUpdate>>,
     pub install_waiting_retry: Option<std::sync::mpsc::Sender<bool>>,
     pub install_prereq_hint: Vec<String>,
+    pub install_waiting_confirm: Option<std::sync::mpsc::Sender<bool>>,
+    pub install_confirm_prompt: String,
     pub install_waiting_token: Option<std::sync::mpsc::Sender<String>>,
     pub install_token_input: String,
     pub install_token_message: String,
@@ -439,6 +441,11 @@ pub enum InstallUpdate {
         hint: Vec<String>,
         response: std::sync::mpsc::Sender<bool>,
     },
+    /// Worker pauses and asks a yes/no question.
+    WaitForConfirm {
+        prompt: String,
+        response: std::sync::mpsc::Sender<bool>,
+    },
     /// Worker needs a GitHub token to continue.
     /// User types the token, presses Enter, and it's sent back.
     NeedGitHubToken {
@@ -451,6 +458,7 @@ pub enum InstallUpdate {
 pub enum ManageUpdate {
     Log(String),
     StatusResult { name: String, status: String },
+    VersionResult { name: String, version: String, commits_behind: Option<i32> },
     Complete { success: bool },
     /// Worker pauses and asks a yes/no question.
     /// The user's answer (true = yes/overwrite, false = no/keep) is sent back.
@@ -580,6 +588,10 @@ pub struct ServiceStatus {
     pub name: String,
     pub group: String,
     pub status: String,
+    /// Deployed git commit (short SHA), or empty if unknown.
+    pub version: String,
+    /// How many commits behind HEAD this deploy is. None = unknown/checking.
+    pub commits_behind: Option<i32>,
 }
 
 impl App {
@@ -666,6 +678,8 @@ impl App {
             install_rx: None,
             install_waiting_retry: None,
             install_prereq_hint: Vec::new(),
+            install_waiting_confirm: None,
+            install_confirm_prompt: String::new(),
             install_waiting_token: None,
             install_token_input: String::new(),
             install_token_message: String::new(),

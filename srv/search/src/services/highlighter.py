@@ -4,7 +4,7 @@ Text highlighting service for search results.
 
 import re
 import structlog
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Set, Tuple, Optional
 import nltk
 from nltk.tokenize import word_tokenize
 from nltk.stem import PorterStemmer
@@ -16,6 +16,25 @@ try:
     nltk.data.find('tokenizers/punkt')
 except LookupError:
     nltk.download('punkt', quiet=True)
+
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download('stopwords', quiet=True)
+
+_STOPWORDS: Set[str] = set()
+try:
+    from nltk.corpus import stopwords
+    _STOPWORDS = set(stopwords.words('english'))
+except Exception:
+    _STOPWORDS = {
+        'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+        'of', 'with', 'by', 'from', 'is', 'it', 'be', 'as', 'are', 'was',
+        'were', 'been', 'has', 'have', 'had', 'do', 'does', 'did', 'will',
+        'shall', 'may', 'can', 'not', 'no', 'so', 'if', 'up', 'out', 'into',
+        'this', 'that', 'these', 'those', 'he', 'she', 'we', 'they', 'me',
+        'him', 'her', 'us', 'them', 'my', 'his', 'its', 'our', 'your', 'all',
+    }
 
 
 class HighlightingService:
@@ -100,25 +119,22 @@ class HighlightingService:
     
     def _tokenize_and_stem(self, text: str) -> List[str]:
         """
-        Tokenize and stem text.
-        
-        Args:
-            text: Input text
-        
-        Returns:
-            List of stemmed tokens
+        Tokenize and stem text, filtering stopwords and very short terms.
         """
         try:
             tokens = word_tokenize(text.lower())
-            # Filter out punctuation and short tokens
-            tokens = [t for t in tokens if t.isalnum() and len(t) > 1]
-            # Stem tokens
+            tokens = [
+                t for t in tokens
+                if t.isalnum() and len(t) > 2 and t not in _STOPWORDS
+            ]
             stems = [self.stemmer.stem(t) for t in tokens]
             return stems
         except Exception as e:
             logger.error("Tokenization failed", error=str(e))
-            # Fallback to simple split
-            return text.lower().split()
+            return [
+                w for w in text.lower().split()
+                if len(w) > 2 and w not in _STOPWORDS
+            ]
     
     def _find_matches(
         self,
@@ -128,49 +144,34 @@ class HighlightingService:
         """
         Find all matches of query tokens in text.
         
-        Args:
-            query_tokens: Stemmed query tokens
-            text: Text to search
-        
         Returns:
             List of (start, end, matched_term, score) tuples
         """
         matches = []
-        
-        # Tokenize text while preserving offsets
-        text_lower = text.lower()
         words = re.finditer(r'\b\w+\b', text)
-        
+
         for word_match in words:
             word = word_match.group()
             start = word_match.start()
             end = word_match.end()
-            
-            # Skip very short words
-            if len(word) < 2:
+
+            if len(word) < 3 or word.lower() in _STOPWORDS:
                 continue
-            
-            # Stem the word
-            stemmed = self.stemmer.stem(word)
-            
-            # Check if it matches any query token
+
+            stemmed = self.stemmer.stem(word.lower())
+
             for query_token in query_tokens:
                 if stemmed == query_token:
-                    # Exact stem match
-                    score = 1.0
-                    matches.append((start, end, word, score))
+                    matches.append((start, end, word, 1.0))
                     break
-                elif query_token in stemmed or stemmed in query_token:
-                    # Partial match
-                    score = 0.7
-                    matches.append((start, end, word, score))
-                    break
-                elif self._edit_distance(stemmed, query_token) <= 2:
-                    # Fuzzy match (edit distance <= 2)
-                    score = 0.5
-                    matches.append((start, end, word, score))
-                    break
-        
+                elif len(query_token) >= 4 and len(stemmed) >= 4:
+                    if query_token in stemmed or stemmed in query_token:
+                        matches.append((start, end, word, 0.7))
+                        break
+                    elif len(stemmed) >= 5 and len(query_token) >= 5 and self._edit_distance(stemmed, query_token) <= 2:
+                        matches.append((start, end, word, 0.5))
+                        break
+
         return matches
     
     def _extract_fragments(

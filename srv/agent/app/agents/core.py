@@ -27,10 +27,16 @@ class BusiboxDeps:
     Provides:
     - principal: Authenticated user with roles/scopes
     - busibox_client: HTTP client for Busibox services (search/data/RAG)
+    - metadata: Application context from the chat request (e.g. file_ids, system_context)
     """
 
     principal: Principal
     busibox_client: BusiboxClient
+    metadata: Dict[str, Any] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.metadata is None:
+            self.metadata = {}
 
 
 class ChatOutput(BaseModel):

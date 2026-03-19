@@ -185,6 +185,11 @@ fn main() -> Result<()> {
                         app.install_prereq_hint = hint;
                         app.install_waiting_retry = Some(response);
                     }
+                    Ok(app::InstallUpdate::WaitForConfirm { prompt, response }) => {
+                        app.install_confirm_prompt = prompt;
+                        app.install_waiting_confirm = Some(response);
+                        break;
+                    }
                     Ok(app::InstallUpdate::NeedGitHubToken { message, response }) => {
                         app.install_token_message = message;
                         app.install_token_input.clear();
@@ -239,6 +244,14 @@ fn main() -> Result<()> {
                                 app.manage_services.iter_mut().find(|s| s.name == name)
                             {
                                 svc.status = status;
+                            }
+                        }
+                        Ok(app::ManageUpdate::VersionResult { name, version, commits_behind }) => {
+                            if let Some(svc) =
+                                app.manage_services.iter_mut().find(|s| s.name == name)
+                            {
+                                svc.version = version;
+                                svc.commits_behind = commits_behind;
                             }
                         }
                         Ok(app::ManageUpdate::WaitForConfirm { prompt, response }) => {

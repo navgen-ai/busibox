@@ -1,10 +1,13 @@
 """Document search tool for RAG agents."""
+import structlog
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Tool, RunContext
 
 from app.agents.core import BusiboxDeps
+
+logger = structlog.get_logger()
 
 
 class DocumentSearchInput(BaseModel):
@@ -17,6 +20,7 @@ class DocumentSearchInput(BaseModel):
 
 class SearchResultItem(BaseModel):
     """Individual search result."""
+    file_id: str = Field(description="Unique file identifier for citations")
     filename: str = Field(description="Name of the source document")
     text: str = Field(description="Relevant text excerpt from the document")
     score: float = Field(description="Relevance score")
@@ -47,34 +51,38 @@ async def search_documents(
     This tool performs semantic, keyword, or hybrid search across the user's
     document library. Results are automatically filtered based on user permissions.
     
+    When called from a document-scoped chat, file_ids are automatically injected
+    from the application context so the search is restricted to the relevant documents.
+    
     Args:
         ctx: RunContext with authenticated BusiboxClient
         query: Search query string
         limit: Maximum number of results (default: 5, max: 50)
         mode: Search mode - "hybrid" (recommended), "semantic", or "keyword"
         file_ids: Optional list of file IDs to restrict search
-        
-    Returns:
-        DocumentSearchOutput with formatted context and result metadata
-        
-    Raises:
-        Exception: If search API is unavailable or returns an error
     """
     try:
-        # Use authenticated BusiboxClient from context
+        effective_file_ids = file_ids
+        if not effective_file_ids and ctx.deps.metadata:
+            ctx_file_ids = ctx.deps.metadata.get("file_ids")
+            if ctx_file_ids and isinstance(ctx_file_ids, list):
+                effective_file_ids = ctx_file_ids
+                logger.info(
+                    "document_search: injecting file_ids from metadata context",
+                    extra={"count": len(effective_file_ids)},
+                )
+
         response = await ctx.deps.busibox_client.search(
             query=query,
             top_k=min(limit, 50),
             mode=mode,
-            file_ids=file_ids,
+            file_ids=effective_file_ids,
             rerank=True,
             expand_graph=True,
         )
         
-        # Parse response - BusiboxClient returns raw dict from search API
         results = response.get("results", [])
         
-        # Check if we got results
         if not results or len(results) == 0:
             return DocumentSearchOutput(
                 found=False,
@@ -83,31 +91,40 @@ async def search_documents(
                 results=[],
             )
         
-        # Format results for LLM consumption
         formatted_results = []
         context_parts = []
         
         for idx, result in enumerate(results, 1):
+            fid = result.get("file_id", "unknown")
+            fname = result.get("filename") or f"Document {fid[:8]}"
+            page_num = result.get("page_number") if result.get("page_number", 0) > 0 else None
+
             result_item = SearchResultItem(
-                filename=result.get("filename") or f"Document {result.get('file_id', 'unknown')[:8]}",
+                file_id=fid,
+                filename=fname,
                 text=result.get("text", ""),
                 score=result.get("score", 0.0),
-                page_number=result.get("page_number") if result.get("page_number", 0) > 0 else None,
+                page_number=page_num,
                 chunk_index=result.get("chunk_index", 0),
             )
             formatted_results.append(result_item)
             
-            source_info = result_item.filename
-            if result_item.page_number:
-                source_info += f", Page {result_item.page_number}"
-            
+            source_parts = [fname]
+            if page_num:
+                source_parts.append(f"p.{page_num}")
+            source_ref = ", ".join(source_parts)
+
             context_parts.append(
-                f"--- Document {idx} [Source: {source_info}, Relevance: {result_item.score:.2f}] ---\n{result.get('text', '')}"
+                f"--- Source {idx} [{source_ref}] (file_id:{fid}) ---\n{result.get('text', '')}"
             )
         
         full_context = "\n\n".join(context_parts)
+        full_context += (
+            "\n\nIMPORTANT: When citing information from these sources, always include "
+            "a citation using this format: [Source: filename, p.N](doc:file_id) — "
+            "for example: [Source: report.pdf, p.5](doc:abc-123-def)"
+        )
 
-        # Append graph context if available
         graph_context_str: Optional[str] = None
         graph_data = response.get("graph")
         if graph_data and graph_data.get("graph_context"):
@@ -123,7 +140,6 @@ async def search_documents(
         )
     
     except Exception as e:
-        # Return error information
         error_msg = f"Search failed: {str(e)}"
         return DocumentSearchOutput(
             found=False,
@@ -134,10 +150,9 @@ async def search_documents(
         )
 
 
-# Create the Pydantic AI tool
 document_search_tool = Tool(
     search_documents,
-    takes_ctx=True,  # Requires RunContext for authenticated API calls
+    takes_ctx=True,
     name="document_search",
     description="""Search through the user's uploaded documents to find relevant information.
 Use this tool when:
@@ -147,6 +162,9 @@ Use this tool when:
 
 The tool performs hybrid search (combining semantic and keyword matching) for best results.
 Results are automatically filtered based on user permissions (RLS).
+
+IMPORTANT: When you use information from search results in your response, always cite the 
+source using this format: [Source: filename, p.N](doc:file_id)
 
 Example: "What does the compliance document say about data retention?"
 """,
