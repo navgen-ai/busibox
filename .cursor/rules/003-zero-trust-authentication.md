@@ -124,6 +124,41 @@ All types can be used as `subject_token` for token exchange.
 
 ## Anti-Patterns to Avoid
 
+### ❌ Service-to-Service Authentication (HARD RULE)
+
+**NEVER** create service accounts, shared secrets, API keys, or client credentials
+for one service to call another. This violates Zero Trust. All inter-service
+calls must carry a **user's identity** via JWT token exchange.
+
+If a service needs data from another service:
+- **During a user request**: exchange the user's token for the target audience
+- **During startup/background**: use delegation tokens created while a user was present,
+  or read directly from the shared database layer (Postgres) which both services can access
+- **During deployment**: use Ansible which has direct database/filesystem access
+
+```python
+# ❌ NEVER - service-to-service API keys
+CONFIG_API_KEY = "shared-secret-123"
+headers = {"X-Service-Key": CONFIG_API_KEY}
+resp = await client.get(f"{config_api_url}/admin/config", headers=headers)
+
+# ❌ NEVER - client credentials grant
+token = await get_client_credentials_token(
+    client_id="agent-api",
+    client_secret="secret",
+    audience="config-api"
+)
+
+# ✅ OK - user token exchange during request
+config_token = await get_service_token(principal.token, principal.sub, "config-api")
+
+# ✅ OK - direct database read at startup (same Postgres cluster)
+conn = await asyncpg.connect(config_database_url)
+row = await conn.fetchrow("SELECT value FROM config_entries WHERE key = $1", key)
+
+# ✅ OK - Ansible reads config DB and injects into service env at deploy time
+```
+
 ### ❌ Service Account Impersonation
 
 ```python

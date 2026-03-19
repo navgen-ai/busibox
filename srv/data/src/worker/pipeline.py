@@ -66,15 +66,17 @@ class PipelineMixin:
         """Persist per-page text as JSON in MinIO for on-demand enhancement."""
         import json as _json
 
-        page_data = [
-            {
+        page_data = []
+        for pt in ctx.page_texts:
+            entry = {
                 "page_number": pt.page_number,
                 "text": pt.text,
                 "source_pass": pt.source_pass,
-                "flags": pt.flags if pt.flags else [],
+                "flags": list(pt.flags) if pt.flags else [],
             }
-            for pt in ctx.page_texts
-        ]
+            if pt.vision_description:
+                entry["vision_description"] = pt.vision_description
+            page_data.append(entry)
 
         path_parts = storage_path.rsplit("/", 2)
         if len(path_parts) >= 2:
@@ -362,7 +364,6 @@ class PipelineMixin:
                 file_id=file_id,
                 stage=stage,
                 progress=pct,
-                pages_processed=pct,
                 total_pages=ctx.page_count,
                 status_message=msg,
                 request=self._current_rls_context,
@@ -400,7 +401,11 @@ class PipelineMixin:
 
         pass1_start = time.time()
         total_chunks = 0
+        if start_pass > 1:
+            existing_count = self.postgres_service.get_chunk_count(file_id, request=self._current_rls_context)
+            total_chunks = existing_count or 0
         chunk_index_offset = 0
+        all_pass1_chunks: List[Chunk] = []
         overlap_page_texts: list = []
         OVERLAP_PAGES = 2
 
@@ -431,6 +436,7 @@ class PipelineMixin:
                         visibility, role_ids,
                         batch_chunks, processing_pass=1,
                     )
+                    all_pass1_chunks.extend(batch_chunks)
                     chunk_index_offset += len(batch_chunks)
                     total_chunks += len(batch_chunks)
 
@@ -478,6 +484,30 @@ class PipelineMixin:
                 rls_context=self._current_rls_context,
             )
             ctx._provenance_ocr_node = ocr_node
+
+        # Record chunk/embedding provenance for pass 1 chunks
+        if all_pass1_chunks and hasattr(self, 'provenance') and self.provenance:
+            ocr_node = getattr(ctx, '_provenance_ocr_node', None)
+            if ocr_node:
+                chunk_nodes = self.provenance.record_chunks(
+                    file_id=file_id,
+                    ocr_node=ocr_node,
+                    chunks=all_pass1_chunks,
+                    processing_pass=1,
+                    rls_context=self._current_rls_context,
+                )
+                embedding_dim = self.embedder.dimension if hasattr(self.embedder, 'dimension') else 768
+                embedding_model = getattr(self.embedder, 'model_name', None)
+                for i, chunk_node in enumerate(chunk_nodes):
+                    if i < len(all_pass1_chunks):
+                        self.provenance.record_embedding(
+                            file_id=file_id,
+                            chunk_node=chunk_node,
+                            chunk_index=all_pass1_chunks[i].chunk_index if hasattr(all_pass1_chunks[i], 'chunk_index') else i,
+                            embedding_dim=embedding_dim,
+                            model_version=embedding_model,
+                            rls_context=self._current_rls_context,
+                        )
 
         ctx.page_count = len(ctx.page_texts) or page_count
         ctx.pass_metadata["pass1"] = {
@@ -709,6 +739,18 @@ class PipelineMixin:
                     rls_context=self._current_rls_context,
                 )
                 ctx._provenance_ocr_node = ocr_node_p2
+
+            # Record vision description provenance for pages that got descriptions
+            if hasattr(self, 'provenance') and self.provenance and self.provenance.root_node:
+                for pt in ctx.page_texts:
+                    if pt.vision_description:
+                        self.provenance.record_vision(
+                            file_id=file_id,
+                            page_number=pt.page_number,
+                            vision_mode="chart" if "has_chart" in pt.flags else "describe",
+                            description=pt.vision_description,
+                            rls_context=self._current_rls_context,
+                        )
 
             if pass2.pages_changed > 0:
                 chunks = self._progressive_chunk_embed_index(

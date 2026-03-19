@@ -290,6 +290,7 @@ Each service runs in an isolated LXC container:
 ### Security
 - **Authentication**: JWT tokens from Agent API
 - **Authorization**: Role-based (RBAC)
+- **Zero Trust**: **NEVER create service-to-service API keys, shared secrets, or client credentials.** All inter-service calls carry user identity via JWT token exchange. For startup/deploy-time needs, use direct database reads or Ansible. See `.cursor/rules/003-zero-trust-authentication.md`
 - **Data Security**: PostgreSQL Row-Level Security (RLS)
 - **Document Sharing**: Three visibility modes (private/shared/team) via self-service roles. See `docs/developers/architecture/11-document-sharing.md`
 - **Network**: Container isolation, ufw firewall

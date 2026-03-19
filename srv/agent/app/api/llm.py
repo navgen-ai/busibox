@@ -239,7 +239,7 @@ BEDROCK_CURATED_MODELS = [
 # Purposes that can be overridden via the UI
 CONFIGURABLE_PURPOSES = [
     "fast", "agent", "chat", "frontier", "tool_calling", "test", "default",
-    "cleanup", "parsing", "classify",
+    "cleanup", "parsing", "classify", "vision",
     "video", "image", "transcribe", "voice",
 ]
 
@@ -753,18 +753,17 @@ async def _clean_stale_litellm_db(
         await conn.close()
 
 
-async def _get_api_key_for_provider(provider: str) -> Optional[str]:
+async def _get_api_key_for_provider(
+    provider: str,
+    principal: Optional[Principal] = None,
+) -> Optional[str]:
     """
     Get the actual (decrypted) API key for a cloud provider.
     
-    LiteLLM stores keys encrypted in DB via /config/update. But when models
-    are called, LiteLLM resolves them from its own env. So we also need the
-    raw key for direct provider API calls (listing models).
-    
-    Strategy:
-    1. Check os.environ (fastest, set when keys are saved via UI)
-    2. Query LiteLLM config/DB for stored env vars (survives agent-api restarts)
-    3. If found in LiteLLM, also populate os.environ for future calls
+    Strategy (first match wins):
+    1. os.environ (fastest, set when keys are saved via UI in current process)
+    2. config-api (encrypted persistent store, requires user token)
+    3. LiteLLM config/DB (may have plaintext env vars from /config/yaml)
     
     For Bedrock: returns a truthy value if AWS credentials are configured.
     Live model listing uses SigV4-signed calls to the Bedrock API when IAM
@@ -779,11 +778,33 @@ async def _get_api_key_for_provider(provider: str) -> Optional[str]:
             return "iam-configured"
         if os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
             return "bearer-configured"
-        # Try LiteLLM config/DB
+        # Strategy 2: config-api
+        if principal:
+            config_token = await _get_config_api_token(principal)
+            if config_token:
+                config_keys = await _read_all_llm_keys_from_config_api(config_token)
+                ak = config_keys.get("AWS_ACCESS_KEY_ID", "")
+                sk = config_keys.get("AWS_SECRET_ACCESS_KEY", "")
+                if ak and sk and _looks_like_real_key(ak) and _looks_like_real_key(sk):
+                    os.environ["AWS_ACCESS_KEY_ID"] = ak
+                    os.environ["AWS_SECRET_ACCESS_KEY"] = sk
+                    region = config_keys.get("AWS_REGION_NAME", "")
+                    if region:
+                        os.environ["AWS_REGION_NAME"] = region
+                    logger.info("Restored Bedrock IAM credentials from config-api to os.environ")
+                    return "iam-configured"
+                bt = config_keys.get("AWS_BEARER_TOKEN_BEDROCK", "")
+                if bt and _looks_like_real_key(bt):
+                    os.environ["AWS_BEARER_TOKEN_BEDROCK"] = bt
+                    region = config_keys.get("AWS_REGION_NAME", "")
+                    if region:
+                        os.environ["AWS_REGION_NAME"] = region
+                    logger.info("Restored Bedrock bearer token from config-api to os.environ")
+                    return "bearer-configured"
+        # Strategy 3: LiteLLM config/DB
         env_vars = await _get_configured_env_vars()
         if (env_vars.get("AWS_ACCESS_KEY_ID") and _looks_like_real_key(env_vars.get("AWS_ACCESS_KEY_ID", "")) and
             env_vars.get("AWS_SECRET_ACCESS_KEY") and _looks_like_real_key(env_vars.get("AWS_SECRET_ACCESS_KEY", ""))):
-            # Restore to os.environ for future calls
             os.environ["AWS_ACCESS_KEY_ID"] = env_vars["AWS_ACCESS_KEY_ID"]
             os.environ["AWS_SECRET_ACCESS_KEY"] = env_vars["AWS_SECRET_ACCESS_KEY"]
             if env_vars.get("AWS_REGION_NAME"):
@@ -810,19 +831,24 @@ async def _get_api_key_for_provider(provider: str) -> Optional[str]:
     if val and val != litellm_key:
         return val
     
-    # Strategy 2: Query LiteLLM config/DB for stored env vars
-    # This handles the case where keys were saved via UI but agent-api restarted
+    # Strategy 2: config-api (persistent encrypted store)
+    if principal:
+        config_token = await _get_config_api_token(principal)
+        if config_token:
+            config_val = await _read_key_from_config_api(env_var, config_token)
+            if config_val and _looks_like_real_key(config_val):
+                os.environ[env_var] = config_val
+                logger.info(f"Restored {provider} API key from config-api to os.environ")
+                return config_val
+    
+    # Strategy 3: Query LiteLLM config/DB for stored env vars
     env_vars = await _get_configured_env_vars()
     val = env_vars.get(env_var, "")
     if val and _looks_like_real_key(val):
-        # Restore to os.environ so future calls don't need to re-query
         os.environ[env_var] = val
         logger.info(f"Restored {provider} API key from LiteLLM config to os.environ")
         return val
     
-    # If not in os.environ and not readable from LiteLLM, the key may be
-    # encrypted in LiteLLM's DB. We can't decrypt it.
-    # Return None to signal we can't make direct provider API calls.
     return None
 
 
@@ -1707,6 +1733,124 @@ async def llm_health(
 # API Key Management
 # =============================================================================
 
+
+# ---------------------------------------------------------------------------
+# Config-API helpers for persistent cloud-provider key storage
+# ---------------------------------------------------------------------------
+
+_CONFIG_API_KEY_CATEGORY = "llm-keys"
+
+
+async def _get_config_api_token(principal: Principal) -> Optional[str]:
+    """Exchange the user's agent-api JWT for a config-api scoped token."""
+    if not principal.token:
+        return None
+    try:
+        from app.auth.tokens import get_service_token
+        return await get_service_token(
+            user_token=principal.token,
+            user_id=principal.sub,
+            target_audience="config-api",
+        )
+    except Exception as e:
+        logger.warning(f"[CONFIG-API] Token exchange failed: {e}")
+        return None
+
+
+async def _save_key_to_config_api(
+    env_var_name: str,
+    value: str,
+    config_token: str,
+    description: Optional[str] = None,
+) -> bool:
+    """Store a single env-var key/value in config-api (encrypted)."""
+    config_url = settings.config_api_url
+    if not config_url:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.put(
+                f"{config_url}/admin/config/{env_var_name}",
+                headers={"Authorization": f"Bearer {config_token}"},
+                json={
+                    "value": value,
+                    "encrypted": True,
+                    "scope": "platform",
+                    "tier": "admin",
+                    "category": _CONFIG_API_KEY_CATEGORY,
+                    "description": description or f"Cloud provider key: {env_var_name}",
+                },
+            )
+            if resp.is_success:
+                logger.info(f"[CONFIG-API] Saved {env_var_name}")
+                return True
+            logger.warning(f"[CONFIG-API] PUT {env_var_name} returned {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        logger.warning(f"[CONFIG-API] Failed to save {env_var_name}: {e}")
+    return False
+
+
+async def _read_key_from_config_api(
+    env_var_name: str,
+    config_token: str,
+) -> Optional[str]:
+    """Read a single raw (decrypted) key from config-api."""
+    config_url = settings.config_api_url
+    if not config_url:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{config_url}/admin/config/{env_var_name}/raw",
+                headers={"Authorization": f"Bearer {config_token}"},
+            )
+            if resp.status_code == 404:
+                return None
+            if resp.is_success:
+                data = resp.json()
+                return data.get("value")
+            logger.warning(f"[CONFIG-API] GET {env_var_name}/raw returned {resp.status_code}")
+    except Exception as e:
+        logger.warning(f"[CONFIG-API] Failed to read {env_var_name}: {e}")
+    return None
+
+
+async def _read_all_llm_keys_from_config_api(
+    config_token: str,
+) -> Dict[str, str]:
+    """Read all llm-keys from config-api, decrypting each one."""
+    config_url = settings.config_api_url
+    if not config_url:
+        return {}
+    result: Dict[str, str] = {}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{config_url}/admin/config",
+                params={"category": _CONFIG_API_KEY_CATEGORY},
+                headers={"Authorization": f"Bearer {config_token}"},
+            )
+            if not resp.is_success:
+                return {}
+            configs = resp.json().get("configs", [])
+            for cfg in configs:
+                key = cfg.get("key", "")
+                if not key:
+                    continue
+                if cfg.get("encrypted"):
+                    raw_resp = await client.get(
+                        f"{config_url}/admin/config/{key}/raw",
+                        headers={"Authorization": f"Bearer {config_token}"},
+                    )
+                    if raw_resp.is_success:
+                        result[key] = raw_resp.json().get("value", "")
+                else:
+                    result[key] = cfg.get("value", "")
+    except Exception as e:
+        logger.warning(f"[CONFIG-API] Failed to list llm-keys: {e}")
+    return result
+
+
 @router.post("/keys")
 async def save_provider_key(
     request: ProviderKeyRequest,
@@ -1836,6 +1980,20 @@ async def save_provider_key(
     import os
     for env_key, env_val in env_vars_to_save.items():
         os.environ[env_key] = env_val
+    
+    # Persist to config-api so keys survive restarts (best-effort, non-blocking)
+    config_token = await _get_config_api_token(principal)
+    if config_token:
+        for env_key, env_val in env_vars_to_save.items():
+            await _save_key_to_config_api(
+                env_key, env_val, config_token,
+                description=f"{provider.title()} credential: {env_key}",
+            )
+    else:
+        logger.warning(
+            f"[CONFIG-API] Could not exchange token for config-api; "
+            f"{provider} keys saved to LiteLLM only (will not survive LiteLLM reset)"
+        )
     
     # Auto-register video purpose model when OpenAI key is saved
     if provider == "openai":
@@ -1969,16 +2127,27 @@ async def list_provider_keys(
     """List which cloud providers have API keys configured. Admin only."""
     _require_admin(principal)
     
+    # Merge keys from LiteLLM and config-api for a complete picture
     env_vars = await _get_configured_env_vars()
+    
+    config_token = await _get_config_api_token(principal)
+    if config_token:
+        config_keys = await _read_all_llm_keys_from_config_api(config_token)
+        for k, v in config_keys.items():
+            if v and _looks_like_real_key(v) and not _is_key_configured(env_vars, k):
+                env_vars[k] = v
     
     providers_info = []
     for provider, env_var in [("openai", "OPENAI_API_KEY"), ("anthropic", "ANTHROPIC_API_KEY")]:
         configured = _is_key_configured(env_vars, env_var)
+        masked = None
+        if configured:
+            raw = env_vars.get(env_var, "")
+            masked = _mask_key(raw) if _looks_like_real_key(raw) else "****configured****"
         providers_info.append(ProviderKeyInfo(
             provider=provider,
             configured=configured,
-            # Keys in DB may be encrypted - just show configured status
-            masked_key="****configured****" if configured else None,
+            masked_key=masked,
         ))
     
     # Bedrock: check IAM credentials or Bedrock API Key (bearer token)
@@ -2670,7 +2839,7 @@ async def list_cloud_models(
         )
     
     # Check if API key is available for direct provider calls
-    api_key = await _get_api_key_for_provider(provider)
+    api_key = await _get_api_key_for_provider(provider, principal=principal)
     key_configured = api_key is not None
     
     # Also check LiteLLM DB (key might be stored there even if not in os.environ)

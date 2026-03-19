@@ -880,6 +880,8 @@ services:
       AUTH_TOKEN_URL: http://authz-api:8010/oauth/token
       # Deploy API (for MLX auto-start)
       DEPLOY_API_URL: http://deploy-api:8011
+      # Config API (persistent encrypted config storage for cloud provider keys)
+      CONFIG_API_URL: http://config-api:8012
       LLM_BACKEND: ${LLM_BACKEND:-${DETECTED_LLM_BACKEND:-}}
       # Email notifications - uses Bridge API (preferred) or direct SMTP as fallback
       BRIDGE_API_URL: "http://bridge-api:8081"

@@ -141,7 +141,7 @@ async def detect_vllm_gpus() -> List[Dict[str, Any]]:
     return gpus
 
 
-async def list_cached_models() -> List[str]:
+async def _list_cached_models_vllm() -> List[str]:
     host = vllm_host()
     cmd = (
         "python3 - <<'PY'\n"
@@ -158,6 +158,61 @@ async def list_cached_models() -> List[str]:
     if code != 0:
         return []
     return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _resolve_host_agent_token() -> str:
+    """Resolve host-agent token, checking env file as fallback."""
+    token = os.getenv("HOST_AGENT_TOKEN", "")
+    if token:
+        return token
+    busibox_path = os.getenv("BUSIBOX_HOST_PATH", "")
+    prefix = os.getenv("CONTAINER_PREFIX", "dev")
+    if busibox_path:
+        env_file = os.path.join(busibox_path, f".env.{prefix}")
+        try:
+            with open(env_file) as f:
+                for line in f:
+                    if line.startswith("HOST_AGENT_TOKEN="):
+                        return line.split("=", 1)[1].strip()
+        except FileNotFoundError:
+            pass
+    return ""
+
+
+async def _list_cached_models_mlx() -> List[str]:
+    """Query host-agent for cached models on an MLX (Apple Silicon) system."""
+    import httpx
+
+    host_agent_url = os.getenv("HOST_AGENT_URL", "http://host.docker.internal:8089")
+    token = _resolve_host_agent_token()
+
+    headers: Dict[str, str] = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(f"{host_agent_url}/mlx/models", headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                cached: List[str] = []
+                for tier in data.get("tiers", []):
+                    for _role, model_info in (tier.get("models", {}) or {}).items():
+                        name = model_info.get("name", "")
+                        if name and model_info.get("cached"):
+                            if name not in cached:
+                                cached.append(name)
+                return sorted(cached)
+    except Exception:
+        pass
+    return []
+
+
+async def list_cached_models() -> List[str]:
+    backend = os.getenv("LLM_BACKEND", "").lower()
+    if backend == "mlx":
+        return await _list_cached_models_mlx()
+    return await _list_cached_models_vllm()
 
 
 def _estimate_params_b(model_key: str, model_name: str) -> float:
@@ -356,7 +411,7 @@ def unassign_model(config_data: Dict[str, Any], registry: Dict[str, Any], model_
     return config_data
 
 
-async def list_active_models(host: str) -> List[Dict[str, Any]]:
+async def _list_active_models_vllm(host: str) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     if not host:
         return rows
@@ -381,6 +436,48 @@ async def list_active_models(host: str) -> List[Dict[str, Any]]:
                 pass
         rows.append(row)
     return rows
+
+
+async def _list_active_models_mlx() -> List[Dict[str, Any]]:
+    """Query host-agent /mlx/status?target=all for active MLX servers."""
+    import httpx
+
+    host_agent_url = os.getenv("HOST_AGENT_URL", "http://host.docker.internal:8089")
+    token = _resolve_host_agent_token()
+
+    headers: Dict[str, str] = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    rows: List[Dict[str, Any]] = []
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{host_agent_url}/mlx/status",
+                params={"target": "all"},
+                headers=headers,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                for target in ("primary", "fast"):
+                    srv = data.get(target, {})
+                    if srv:
+                        rows.append({
+                            "port": srv.get("port"),
+                            "running": srv.get("running", False),
+                            "healthy": srv.get("healthy", False),
+                            "model": srv.get("model"),
+                        })
+    except Exception:
+        pass
+    return rows
+
+
+async def list_active_models(host: str) -> List[Dict[str, Any]]:
+    backend = os.getenv("LLM_BACKEND", "").lower()
+    if backend == "mlx":
+        return await _list_active_models_mlx()
+    return await _list_active_models_vllm(host)
 
 
 async def run_make_install_litellm() -> Tuple[int, str]:

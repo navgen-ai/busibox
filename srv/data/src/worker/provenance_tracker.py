@@ -100,6 +100,53 @@ class ProvenanceTracker:
             )
             return None
 
+    def load_root_node(self, file_id: str, rls_context=None) -> Optional[ProvenanceNode]:
+        """Load the existing upload provenance node for a file.
+
+        Used by pass 2/3 continuation jobs to chain new provenance steps
+        onto the existing tree instead of creating duplicate upload records.
+        """
+        try:
+            conn = self._get_conn(rls_context)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT id, entity_type, entity_id, step_type,
+                               input_hash, output_hash, chain_hash,
+                               parent_id
+                        FROM data_provenance
+                        WHERE entity_id = %s AND step_type = 'upload'
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """,
+                        (file_id,),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        node = ProvenanceNode(
+                            id=str(row[0]),
+                            entity_type=row[1],
+                            entity_id=row[2],
+                            step_type=row[3],
+                            input_hash=row[4],
+                            output_hash=row[5],
+                            chain_hash=row[6],
+                            parent_id=str(row[7]) if row[7] else None,
+                        )
+                        self._root_node = node
+                        self._nodes[node.id] = node
+                        return node
+                    return None
+            finally:
+                self._return_conn(conn)
+        except Exception as e:
+            logger.warning(
+                "Failed to load root provenance node (non-fatal)",
+                extra={"file_id": file_id, "error": str(e)},
+            )
+            return None
+
     def record_ocr(
         self,
         file_id: str,
@@ -287,6 +334,52 @@ class ProvenanceTracker:
         except Exception as e:
             logger.warning(
                 "Failed to record image provenance (non-fatal)",
+                extra={"file_id": file_id, "error": str(e)},
+            )
+            return None
+
+    def record_vision(
+        self,
+        file_id: str,
+        page_number: int,
+        vision_mode: str,
+        description: str,
+        model_version: Optional[str] = None,
+        rls_context=None,
+    ) -> Optional[ProvenanceNode]:
+        """Record provenance for a vision description of a page."""
+        parent = self._root_node
+        if not parent:
+            return None
+
+        try:
+            conn = self._get_conn(rls_context)
+            try:
+                vision_id = f"{file_id}:vision:{page_number}"
+                node = self._service.record_step_sync(
+                    conn=conn,
+                    entity_type="file",
+                    entity_id=vision_id,
+                    step_type="vlm_describe",
+                    input_content=parent.output_hash,
+                    output_content=description,
+                    parent_provenance_id=parent.id,
+                    parent_chain_hash=parent.chain_hash,
+                    model_version=model_version,
+                    processor_version=PIPELINE_VERSION,
+                    metadata={
+                        "page_number": page_number,
+                        "vision_mode": vision_mode,
+                        "description_length": len(description),
+                    },
+                )
+                self._nodes[node.id] = node
+                return node
+            finally:
+                self._return_conn(conn)
+        except Exception as e:
+            logger.warning(
+                "Failed to record vision provenance (non-fatal)",
                 extra={"file_id": file_id, "error": str(e)},
             )
             return None

@@ -127,6 +127,10 @@ class Settings(BaseSettings):
         None,
         description="Deploy API URL for reading runtime config (portal name, etc.)",
     )
+    config_api_url: Optional[str] = Field(
+        None,
+        description="Config API URL for persistent encrypted config storage (e.g., http://config-api:8012)",
+    )
     
     # Email configuration
     # Bridge API is the preferred email provider (handles SMTP/Resend internally)

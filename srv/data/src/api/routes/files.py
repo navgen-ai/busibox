@@ -2096,6 +2096,7 @@ async def cancel_processing(fileId: str, request: Request):
 class EnhanceRequest(BaseModel):
     mode: str = Field(..., pattern="^(llm_cleanup|vision_describe|vision_table|vision_chart|vision_ocr)$")
     context_text: Optional[str] = None
+    preview: bool = False
 
 
 @router.post("/{fileId}/pages/{pageNum}/enhance", dependencies=[Depends(require_data_write)])
@@ -2216,8 +2217,8 @@ async def enhance_page(fileId: str, pageNum: int, body: EnhanceRequest, request:
                 import os as _os
                 _os.unlink(tmp.name)
 
-        # Update page_texts.json if text changed
-        if enhanced_text != original_text:
+        # Update page_texts.json if text changed (skip in preview mode)
+        if enhanced_text != original_text and not body.preview:
             page_data[target_idx]["text"] = enhanced_text
             page_data[target_idx]["source_pass"] = f"enhance:{body.mode}"
 
@@ -2268,6 +2269,7 @@ async def enhance_page(fileId: str, pageNum: int, body: EnhanceRequest, request:
                 "page_number": pageNum,
                 "mode": body.mode,
                 "changed": enhanced_text != original_text,
+                "preview": body.preview,
             },
         )
     except Exception as e:

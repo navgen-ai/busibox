@@ -389,6 +389,20 @@ class PostgresService:
         finally:
             self._return_connection(conn)
     
+    def get_chunk_count(self, file_id: str, request=None) -> int:
+        """Return the actual chunk count from data_chunks for a file."""
+        conn = self._get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT count(*)::int FROM data_chunks WHERE file_id = %s",
+                    (file_id,),
+                )
+                row = cur.fetchone()
+                return row[0] if row else 0
+        finally:
+            self._return_connection(conn)
+
     def upsert_chunks(self, file_id: str, chunks: List[Dict], processing_pass: int = 1):
         """
         Insert or update chunks for a file (progressive pipeline).

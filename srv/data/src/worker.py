@@ -655,18 +655,25 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                 )
             
             # Record upload provenance (root of the hash chain).
-            # Always record on both fresh uploads and reprocessing so
-            # downstream pipeline steps have a root_node to chain from.
+            # For fresh uploads and full reprocessing (start_stage == "parsing"),
+            # create a new root node (clearing old provenance).
+            # For pass 2/3 continuation jobs, load the existing root node.
             if self.provenance:
-                size_bytes = int(job_data.get("size_bytes", 0))
-                self.provenance.record_upload(
-                    file_id=file_id,
-                    content_hash=content_hash,
-                    original_filename=original_filename,
-                    mime_type=mime_type,
-                    size_bytes=size_bytes,
-                    rls_context=self._current_rls_context,
-                )
+                if start_stage == "parsing":
+                    size_bytes = int(job_data.get("size_bytes", 0))
+                    self.provenance.record_upload(
+                        file_id=file_id,
+                        content_hash=content_hash,
+                        original_filename=original_filename,
+                        mime_type=mime_type,
+                        size_bytes=size_bytes,
+                        rls_context=self._current_rls_context,
+                    )
+                else:
+                    self.provenance.load_root_node(
+                        file_id=file_id,
+                        rls_context=self._current_rls_context,
+                    )
             
             # For partial reprocessing, load existing data if starting from later stage.
             # These early-return paths must NOT reset the document status/counts.

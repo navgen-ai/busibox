@@ -329,11 +329,7 @@ class ProvenanceService:
 
     async def get_chain_for_file(self, pg_service, file_id: str, request=None) -> List[ProvenanceNode]:
         """Get the full provenance tree for a file (all nodes rooted at the file upload)."""
-        pool = pg_service._pool
-        async with pool.acquire() as conn:
-            if request:
-                await pg_service._set_rls_vars(conn, request)
-
+        async with pg_service.acquire(request=request) as conn:
             rows = await conn.fetch(
                 """
                 WITH RECURSIVE tree AS (

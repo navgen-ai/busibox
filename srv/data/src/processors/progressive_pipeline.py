@@ -53,6 +53,7 @@ class PageText:
     needs_marker: bool = False
     marker_reason: str = ""
     flags: set = field(default_factory=set)
+    vision_description: Optional[str] = None
 
     @staticmethod
     def compute_hash(text: str) -> str:
@@ -144,15 +145,30 @@ class ProgressivePipeline:
         page_texts_raw = self.text_extractor.extract_all_pages_fast(ctx.file_path)
         ctx.page_count = len(page_texts_raw) or ctx.page_count
 
+        fitz_doc = None
+        try:
+            import fitz
+            fitz_doc = fitz.open(ctx.file_path)
+        except Exception:
+            pass
+
         page_texts: List[PageText] = []
         for i, text in enumerate(page_texts_raw):
+            fitz_page = None
+            if fitz_doc and i < len(fitz_doc):
+                fitz_page = fitz_doc[i]
+            flags = self._detect_page_flags(text, fitz_page=fitz_page)
             pt = PageText(
                 page_number=i + 1,
                 text=text,
                 text_hash=PageText.compute_hash(text),
                 source_pass=1,
+                flags=flags,
             )
             page_texts.append(pt)
+
+        if fitz_doc:
+            fitz_doc.close()
 
             if progress_callback and ctx.page_count > 0:
                 pct = 5 + int(15 * (i + 1) / ctx.page_count)
@@ -214,10 +230,21 @@ class ProgressivePipeline:
             ctx.file_path, page_numbers,
         )
 
+        # Open the PDF for native image/drawing detection
+        fitz_doc = None
+        try:
+            import fitz
+            fitz_doc = fitz.open(ctx.file_path)
+        except Exception:
+            pass
+
         batch_page_texts: List[PageText] = []
         for i, text in enumerate(page_texts_raw):
             page_num = start_page + i
-            flags = self._detect_page_flags(text)
+            fitz_page = None
+            if fitz_doc and (page_num - 1) < len(fitz_doc):
+                fitz_page = fitz_doc[page_num - 1]
+            flags = self._detect_page_flags(text, fitz_page=fitz_page)
             pt = PageText(
                 page_number=page_num,
                 text=text,
@@ -226,6 +253,9 @@ class ProgressivePipeline:
                 flags=flags,
             )
             batch_page_texts.append(pt)
+
+        if fitz_doc:
+            fitz_doc.close()
 
             if progress_callback and ctx.page_count > 0:
                 pct = 5 + int(25 * page_num / ctx.page_count)
@@ -275,8 +305,13 @@ class ProgressivePipeline:
         return chunks
 
     @staticmethod
-    def _detect_page_flags(text: str) -> set:
-        """Detect quality flags for a page based on its extracted text."""
+    def _detect_page_flags(text: str, fitz_page=None) -> set:
+        """Detect quality flags for a page based on text and optional PDF structure.
+
+        Args:
+            text: Extracted page text
+            fitz_page: Optional PyMuPDF page object for native image/drawing detection
+        """
         flags: set = set()
         stripped = text.strip()
 
@@ -290,10 +325,26 @@ class ProgressivePipeline:
         if placeholder_count > 0:
             flags.add("has_images")
 
+        # Native PyMuPDF image/drawing detection (more reliable than text heuristics)
+        if fitz_page is not None:
+            try:
+                image_list = fitz_page.get_images(full=False)
+                if len(image_list) > 0:
+                    flags.add("has_images")
+                    flags.add("has_graphics")
+
+                drawings = fitz_page.get_drawings()
+                if len(drawings) > 5:
+                    flags.add("has_graphics")
+                    if len(drawings) > 20:
+                        flags.add("has_chart")
+            except Exception:
+                pass
+
         chart_keywords = re.compile(
             r'\b(Figure|Chart|Graph|Exhibit)\b', re.IGNORECASE
         )
-        if placeholder_count > 0 and chart_keywords.search(text):
+        if ("has_images" in flags or "has_graphics" in flags) and chart_keywords.search(text):
             flags.add("has_chart")
 
         pipe_lines = [
@@ -361,6 +412,14 @@ class ProgressivePipeline:
             pt = ctx.page_texts[i]
             flags = pt.flags
             improved_text: Optional[str] = None
+            vision_desc: Optional[str] = None
+
+            # For pages with graphics, generate a standalone description
+            # in parallel with text improvement
+            needs_description = (
+                ("has_graphics" in flags or "has_images" in flags or "has_chart" in flags)
+                and self.vision_extractor
+            )
 
             if "has_chart" in flags and self.vision_extractor:
                 result = asyncio.get_event_loop().run_until_complete(
@@ -371,6 +430,7 @@ class ProgressivePipeline:
                 )
                 if result.success and result.text:
                     improved_text = result.text
+                    vision_desc = result.text
                     vision_used += 1
 
             elif "garbled_table" in flags and self.vision_extractor:
@@ -393,6 +453,7 @@ class ProgressivePipeline:
                 )
                 if result.success and result.text:
                     improved_text = result.text
+                    vision_desc = result.text
                     vision_used += 1
 
             elif "low_text" in flags:
@@ -413,6 +474,24 @@ class ProgressivePipeline:
                         improved_text = result.text
                         vision_used += 1
 
+            # If no vision description yet but page has graphics, get one
+            if needs_description and not vision_desc and self.vision_extractor:
+                try:
+                    desc_mode = "chart" if "has_chart" in flags else "describe"
+                    desc_result = asyncio.get_event_loop().run_until_complete(
+                        self.vision_extractor.analyse_page(
+                            ctx.file_path, pt.page_number, mode=desc_mode,
+                            existing_text=pt.text,
+                        )
+                    )
+                    if desc_result.success and desc_result.text:
+                        vision_desc = desc_result.text
+                except Exception as e:
+                    logger.warning(
+                        "Vision description failed (non-fatal)",
+                        page=pt.page_number, error=str(e),
+                    )
+
             if improved_text and self._is_meaningful_improvement(pt.text, improved_text):
                 ctx.page_texts[i] = PageText(
                     page_number=pt.page_number,
@@ -420,9 +499,19 @@ class ProgressivePipeline:
                     text_hash=PageText.compute_hash(improved_text),
                     source_pass=2,
                     flags=pt.flags,
+                    vision_description=vision_desc,
                 )
                 pages_changed += 1
             else:
+                if vision_desc:
+                    ctx.page_texts[i] = PageText(
+                        page_number=pt.page_number,
+                        text=pt.text,
+                        text_hash=pt.text_hash,
+                        source_pass=pt.source_pass,
+                        flags=pt.flags,
+                        vision_description=vision_desc,
+                    )
                 pages_skipped += 1
 
             if progress_callback and flagged_indices:
@@ -823,12 +912,19 @@ class ProgressivePipeline:
     PAGE_MARKER_TEMPLATE = "<!-- page:{} -->"
 
     def _combine_page_texts(self, page_texts: List[PageText]) -> str:
-        """Combine per-page text into a single document string with page markers."""
+        """Combine per-page text into a single document string with page markers.
+
+        Appends vision descriptions as blockquotes so they are included in
+        chunks and become searchable via semantic search.
+        """
         parts = []
         for pt in page_texts:
             if pt.text.strip():
                 marker = self.PAGE_MARKER_TEMPLATE.format(pt.page_number)
-                parts.append(f"{marker}\n{pt.text}")
+                page_content = pt.text
+                if pt.vision_description:
+                    page_content += f"\n\n> [Image Description]: {pt.vision_description}"
+                parts.append(f"{marker}\n{page_content}")
         return "\n\n---\n\n".join(parts)
 
     def _is_meaningful_improvement(self, old_text: str, new_text: str) -> bool:
