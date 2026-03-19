@@ -2955,13 +2955,85 @@ async def register_cloud_models(
     if not new_models:
         return {"success": True, "registered": 0, "message": "All models already registered"}
     
-    # Use LiteLLM /model/new to add each model
-    registered_count = 0
-    errors = []
+    registered_count, errors = await _register_models_in_litellm(
+        new_models, base_url, headers
+    )
     
+    if registered_count > 0:
+        # Verify models actually loaded into LiteLLM's router.
+        # LiteLLM's /model/new returns 200 even when its background reload
+        # will fail due to stale encrypted data from a previous salt key.
+        await asyncio.sleep(2)
+        current = await _get_registered_model_names()
+        expected_names = {m["model_name"] for m in new_models}
+        missing = expected_names - current
+        
+        if missing:
+            logger.warning(
+                f"Models registered but not loaded ({len(missing)} missing). "
+                f"Cleaning stale encrypted data and retrying."
+            )
+            config = _read_local_litellm_config()
+            config_model_names = None
+            if config:
+                config_model_names = [
+                    e.get("model_name", "")
+                    for e in config.get("model_list", [])
+                    if e.get("model_name")
+                ]
+            await _clean_stale_litellm_db(
+                config_model_names=config_model_names, purge_user_data=True,
+            )
+            try:
+                await sync_config_models_to_litellm()
+            except Exception as e:
+                logger.warning(f"Config model re-sync after cleanup: {e}")
+            
+            # Retry registration for the missing models
+            retry_models = [m for m in new_models if m["model_name"] in missing]
+            retry_count, retry_errors = await _register_models_in_litellm(
+                retry_models, base_url, headers
+            )
+            registered_count = registered_count - len(missing) + retry_count
+            errors.extend(retry_errors)
+            
+            if retry_count > 0:
+                result_msg = (
+                    f"Registered {registered_count} model(s) "
+                    f"(cleaned stale encrypted data automatically)"
+                )
+            else:
+                result_msg = (
+                    f"Registered {registered_count} model(s). "
+                    f"Some models may not load until stale data is fully cleaned."
+                )
+        else:
+            result_msg = f"Registered {registered_count} model(s)"
+    else:
+        result_msg = f"Registered {registered_count} model(s)"
+    
+    result: Dict[str, Any] = {
+        "success": registered_count > 0 or len(errors) == 0,
+        "registered": registered_count,
+        "message": result_msg,
+    }
+    if errors:
+        result["errors"] = errors
+    
+    return result
+
+
+async def _register_models_in_litellm(
+    models: List[Dict[str, Any]],
+    base_url: str,
+    headers: Dict[str, str],
+) -> Tuple[int, List[str]]:
+    """Post model entries to LiteLLM /model/new. Returns (count, errors)."""
+    registered = 0
+    errors: List[str] = []
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            for model_entry in new_models:
+            for model_entry in models:
                 try:
                     resp = await client.post(
                         f"{base_url}/model/new",
@@ -2969,7 +3041,7 @@ async def register_cloud_models(
                         json=model_entry,
                     )
                     if resp.status_code == 200:
-                        registered_count += 1
+                        registered += 1
                         logger.info(f"Registered cloud model: {model_entry['model_name']}")
                     else:
                         error_text = resp.text[:200]
@@ -2985,16 +3057,7 @@ async def register_cloud_models(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Failed to connect to LiteLLM: {e}"
         )
-    
-    result: Dict[str, Any] = {
-        "success": registered_count > 0 or len(errors) == 0,
-        "registered": registered_count,
-        "message": f"Registered {registered_count} model(s)",
-    }
-    if errors:
-        result["errors"] = errors
-    
-    return result
+    return registered, errors
 
 
 # =============================================================================
