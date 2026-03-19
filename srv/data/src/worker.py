@@ -654,8 +654,10 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                     file_id=file_id,
                 )
             
-            # Record upload provenance (root of the hash chain)
-            if self.provenance and start_stage == "parsing":
+            # Record upload provenance (root of the hash chain).
+            # Always record on both fresh uploads and reprocessing so
+            # downstream pipeline steps have a root_node to chain from.
+            if self.provenance:
                 size_bytes = int(job_data.get("size_bytes", 0))
                 self.provenance.record_upload(
                     file_id=file_id,

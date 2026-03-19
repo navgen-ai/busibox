@@ -51,10 +51,27 @@ class ProvenanceTracker:
         size_bytes: int,
         rls_context=None,
     ) -> Optional[ProvenanceNode]:
-        """Record the initial file upload as the root of the provenance chain."""
+        """Record the initial file upload as the root of the provenance chain.
+
+        On reprocessing, clears any existing provenance for this file first
+        so the new chain starts fresh.
+        """
         try:
             conn = self._get_conn(rls_context)
             try:
+                # Clear existing provenance for this file so reprocessing
+                # doesn't create duplicate chains.
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        DELETE FROM data_provenance
+                        WHERE entity_id = %s
+                           OR entity_id LIKE %s
+                        """,
+                        (file_id, f"{file_id}:%"),
+                    )
+                    conn.commit()
+
                 node = self._service.record_step_sync(
                     conn=conn,
                     entity_type="file",
