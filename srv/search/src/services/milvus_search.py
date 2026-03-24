@@ -79,6 +79,23 @@ class MilvusSearchService:
             self.connected = False
             return False
     
+    def get_collection_stats(self) -> Dict:
+        """Get collection statistics including entity count."""
+        if not self.connect():
+            return {"totalRecords": 0, "tableCount": 0, "vectorCount": 0, "indexSize": 0}
+
+        try:
+            entity_count = self.collection.num_entities
+            return {
+                "totalRecords": entity_count,
+                "tableCount": 1,
+                "vectorCount": entity_count,
+                "indexSize": 0,
+            }
+        except Exception as e:
+            logger.error("Failed to get collection stats", error=str(e))
+            return {"totalRecords": 0, "tableCount": 0, "vectorCount": 0, "indexSize": 0}
+
     def disconnect(self):
         """Disconnect from Milvus."""
         if self.connected:

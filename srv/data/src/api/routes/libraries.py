@@ -51,6 +51,7 @@ class CreateLibraryRequest(BaseModel):
     library_type: Optional[str] = Field(None, alias="libraryType", description="Personal library type (DOCS, RESEARCH, TASKS)")
     created_by: Optional[str] = Field(None, alias="createdBy", description="Creator user ID (from Busibox Portal sync)")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Library metadata (keywords, classification rules, etc.)")
+    source_app: Optional[str] = Field(None, alias="sourceApp", description="Source app that created this library (e.g., 'busibox-workforce')")
     
     class Config:
         populate_by_name = True  # Allow both snake_case and camelCase
@@ -178,12 +179,15 @@ async def get_library_by_folder(
 async def list_libraries(
     request: Request,
     include_shared: bool = Query(True, description="Include shared libraries"),
+    include_app_libraries: bool = Query(False, description="Include app-created libraries (source_app set)"),
     _: dict = Depends(require_data_read),
 ):
     """
     List libraries accessible to the current user.
     
     Returns personal libraries and optionally shared libraries.
+    By default, app-created libraries (those with source_app set) are excluded
+    from shared results. Pass include_app_libraries=true to include them.
     """
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
@@ -199,7 +203,9 @@ async def list_libraries(
         await library_service.ensure_all_personal_libraries(user_id)
         
         # List libraries
-        libraries = await library_service.list_user_libraries(user_id, include_shared)
+        libraries = await library_service.list_user_libraries(
+            user_id, include_shared, include_app_libraries
+        )
         
         # Get document counts for each library (using RLS)
         libraries_with_counts = []
@@ -298,6 +304,7 @@ async def create_library(
                 library_id=body.id,
                 description=body.description,
                 metadata=body.metadata,
+                source_app=body.source_app,
             )
         elif body.is_personal:
             if body.library_type == PersonalLibraryTypes.CUSTOM:
@@ -312,6 +319,7 @@ async def create_library(
                 is_personal=False,
                 description=body.description,
                 metadata=body.metadata,
+                source_app=body.source_app,
             )
         
         return JSONResponse(

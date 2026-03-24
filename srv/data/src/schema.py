@@ -908,6 +908,69 @@ def get_data_schema() -> SchemaManager:
         END $$;
     """)
     
+    # source_app column on libraries table to distinguish app-created libraries from user libraries
+    schema.add_migration("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'libraries' AND column_name = 'source_app'
+            ) THEN
+                ALTER TABLE libraries ADD COLUMN source_app VARCHAR(100);
+            END IF;
+        END $$;
+    """)
+
+    # Backfill source_app for existing app-created libraries (e.g. checkin-* from busibox-workforce)
+    schema.add_migration("""
+        UPDATE libraries SET source_app = 'busibox-workforce'
+        WHERE source_app IS NULL AND name LIKE 'checkin-%';
+    """)
+
+    # Deduplicate app data documents and add unique index to prevent future duplicates.
+    # Keeps the row with the most records for each (filename, sourceApp) pair.
+    # Temporary permissive RLS policies allow SELECT+DELETE through FORCE RLS.
+    # Cascade deletes to child tables bypass RLS per PostgreSQL design.
+    schema.add_migration("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_indexes
+                WHERE indexname = 'idx_data_files_unique_app_doc'
+            ) THEN
+                BEGIN
+                    CREATE POLICY _migration_select ON data_files FOR SELECT USING (true);
+                EXCEPTION WHEN duplicate_object THEN NULL;
+                END;
+                BEGIN
+                    CREATE POLICY _migration_delete ON data_files FOR DELETE USING (true);
+                EXCEPTION WHEN duplicate_object THEN NULL;
+                END;
+
+                DELETE FROM data_files
+                WHERE file_id IN (
+                    SELECT file_id FROM (
+                        SELECT file_id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY filename, metadata->>'sourceApp'
+                                   ORDER BY data_record_count DESC NULLS LAST, created_at ASC
+                               ) AS rn
+                        FROM data_files
+                        WHERE doc_type = 'data' AND metadata->>'sourceApp' IS NOT NULL
+                    ) ranked
+                    WHERE rn > 1
+                );
+
+                DROP POLICY IF EXISTS _migration_select ON data_files;
+                DROP POLICY IF EXISTS _migration_delete ON data_files;
+
+                CREATE UNIQUE INDEX idx_data_files_unique_app_doc
+                ON data_files (filename, (metadata->>'sourceApp'))
+                WHERE doc_type = 'data' AND metadata->>'sourceApp' IS NOT NULL;
+            END IF;
+        END $$;
+    """)
+
     # ==========================================================================
     # Indexes
     # ==========================================================================
@@ -924,11 +987,6 @@ def get_data_schema() -> SchemaManager:
     schema.add_index("CREATE INDEX IF NOT EXISTS idx_data_files_library ON data_files(library_id)")
     schema.add_index("CREATE INDEX IF NOT EXISTS idx_data_files_has_markdown ON data_files(has_markdown)")
     schema.add_index("CREATE INDEX IF NOT EXISTS idx_data_files_encrypted ON data_files(is_encrypted)")
-    schema.add_index("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_data_files_unique_app_doc
-        ON data_files (filename, (metadata->>'sourceApp'))
-        WHERE doc_type = 'data' AND metadata->>'sourceApp' IS NOT NULL
-    """)
     
     # data_status indexes
     schema.add_index("CREATE INDEX IF NOT EXISTS idx_data_status_stage ON data_status(stage)")

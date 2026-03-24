@@ -531,6 +531,30 @@ async def admin_delete_document(
 
 
 @router.get(
+    "/admin/documents/{document_id}",
+    summary="Get document with records (admin)",
+    dependencies=[Depends(require_data_admin)],
+)
+async def admin_get_document(
+    request: Request,
+    document_id: str,
+    data_service: DataService = Depends(get_data_service),
+):
+    """Get a data document including its records, bypassing RLS."""
+    validate_uuid(document_id, "document_id")
+    try:
+        doc = await data_service.admin_get_document(request, document_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        return doc
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Admin get document failed", document_id=document_id, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
     "/admin/documents/{document_id}/records",
     summary="List records for a document (admin, metadata only)",
     dependencies=[Depends(require_data_admin)],

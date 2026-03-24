@@ -620,3 +620,62 @@ def _text_similarity(text1: str, text2: str) -> float:
     
     return len(intersection) / len(union)
 
+
+# =============================================================================
+# Admin Stats Endpoints
+# =============================================================================
+
+
+@router.get("/tags")
+async def get_tags(request: Request):
+    """Return all tag groups from library_tag_cache with usage counts."""
+    try:
+        from api.main import pg_pool
+        async with pg_pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT ltc.library_id, ltc.groups, l.name AS library_name
+                FROM library_tag_cache ltc
+                JOIN libraries l ON l.id = ltc.library_id
+                WHERE l.deleted_at IS NULL
+            """)
+
+            tag_counts: Dict[str, int] = {}
+            for row in rows:
+                groups = row.get("groups")
+                if not groups:
+                    continue
+                import json as _json
+                parsed = groups if isinstance(groups, (list, dict)) else _json.loads(groups)
+                if isinstance(parsed, list):
+                    for group in parsed:
+                        tags = group.get("tags", []) if isinstance(group, dict) else []
+                        for tag in tags:
+                            name = tag.get("name") if isinstance(tag, dict) else str(tag)
+                            if name:
+                                tag_counts[name] = tag_counts.get(name, 0) + 1
+                elif isinstance(parsed, dict):
+                    for tag_name in parsed.keys():
+                        tag_counts[tag_name] = tag_counts.get(tag_name, 0) + 1
+
+            tags = [{"name": k, "count": v} for k, v in sorted(tag_counts.items())]
+            return {"tags": tags}
+    except Exception as e:
+        logger.error("Failed to get tags", error=str(e), exc_info=True)
+        return {"tags": []}
+
+
+@router.get("/stats")
+async def get_database_stats(request: Request):
+    """Return vector database statistics (Milvus entity counts)."""
+    try:
+        stats = milvus_service.get_collection_stats()
+        return stats
+    except Exception as e:
+        logger.error("Failed to get database stats", error=str(e), exc_info=True)
+        return {
+            "totalRecords": 0,
+            "tableCount": 0,
+            "vectorCount": 0,
+            "indexSize": 0,
+        }
+

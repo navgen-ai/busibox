@@ -54,8 +54,9 @@ class DataService:
     @staticmethod
     def _resolve_role_name(request, role_id: str) -> str:
         """Resolve a human-readable role name from the JWT context, falling back to truncated ID."""
-        user_roles = getattr(request.state, "user_roles", []) or []
-        for role in user_roles:
+        user_context = getattr(request.state, "user_context", None)
+        roles = getattr(user_context, "roles", []) if user_context else []
+        for role in roles:
             rid = getattr(role, "id", None) or (role.get("id") if isinstance(role, dict) else None)
             if str(rid) == str(role_id):
                 name = getattr(role, "name", None) or (role.get("name") if isinstance(role, dict) else None)
@@ -1050,6 +1051,7 @@ class DataService:
     ) -> List[Dict]:
         """
         Get all role assignments for a document the requester can access.
+        Enriches stored placeholder names (Role-{id[:8]}) with real names from JWT context.
         """
         async with self.acquire_with_rls(request) as conn:
             exists = await conn.fetchval(
@@ -1072,7 +1074,14 @@ class DataService:
                 """,
                 uuid.UUID(document_id),
             )
-            return [dict(row) for row in rows]
+            results = [dict(row) for row in rows]
+            for role in results:
+                stored_name = role.get("role_name", "")
+                if stored_name.startswith("Role-") and len(stored_name) <= 14:
+                    resolved = self._resolve_role_name(request, role["role_id"])
+                    if not resolved.startswith("Role-"):
+                        role["role_name"] = resolved
+            return results
 
     async def set_document_roles(
         self,
@@ -1612,6 +1621,52 @@ class DataService:
                 uuid.UUID(document_id),
             )
             return result == "DELETE 1"
+
+    async def admin_get_document(
+        self, request, document_id: str, include_records: bool = True
+    ) -> Optional[Dict]:
+        """
+        Get a data document using admin context (bypasses RLS).
+        Requires data.admin scope (enforced by the route).
+        """
+        async with self.acquire_admin(request) as conn:
+            row = await conn.fetchrow("""
+                SELECT
+                    file_id,
+                    filename as name,
+                    owner_id,
+                    visibility,
+                    metadata,
+                    data_schema,
+                    data_content,
+                    data_record_count,
+                    data_version,
+                    data_modified_at,
+                    library_id,
+                    created_at,
+                    updated_at
+                FROM data_files
+                WHERE file_id = $1 AND doc_type = 'data'
+            """, uuid.UUID(document_id))
+
+            if not row:
+                return None
+
+            doc = self._row_to_document(row, include_records=False)
+
+            if include_records:
+                use_table = await self._use_records_table(conn, document_id)
+                if use_table:
+                    record_rows = await conn.fetch(
+                        "SELECT data FROM data_records WHERE document_id = $1 ORDER BY ordinal, created_at",
+                        uuid.UUID(document_id),
+                    )
+                    doc["records"] = [json.loads(r["data"]) for r in record_rows]
+                    doc["recordCount"] = len(doc["records"])
+                elif row.get("data_content"):
+                    doc["records"] = json.loads(row["data_content"])
+
+            return doc
 
     def _row_to_document(self, row: asyncpg.Record, include_records: bool = True) -> Dict:
         """

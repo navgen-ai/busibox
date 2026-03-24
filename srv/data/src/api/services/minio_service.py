@@ -5,7 +5,7 @@ Handles file uploads with chunked streaming and SHA-256 hash calculation.
 """
 
 import hashlib
-from typing import BinaryIO, Optional
+from typing import BinaryIO, Dict, Optional
 
 import structlog
 from minio import Minio
@@ -239,6 +239,28 @@ class MinIOService:
             logger.error("Failed to upload text to MinIO", error=str(e), object_path=object_path)
             raise
     
+    async def get_storage_stats(self) -> Dict:
+        """Get storage statistics: total file count and used bytes across all buckets."""
+        import asyncio
+
+        def _collect():
+            buckets = self.client.list_buckets()
+            total_size = 0
+            file_count = 0
+            for bucket in buckets:
+                for obj in self.client.list_objects(bucket.name, recursive=True):
+                    total_size += obj.size or 0
+                    file_count += 1
+            return {
+                "totalSize": total_size,
+                "usedSize": total_size,
+                "fileCount": file_count,
+                "bucketCount": len(buckets),
+            }
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _collect)
+
     async def upload_bytes(self, data: bytes, object_path: str, content_type: str = 'application/octet-stream') -> None:
         """
         Upload binary data to MinIO.

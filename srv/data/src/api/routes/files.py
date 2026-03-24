@@ -400,6 +400,26 @@ async def reprocess_all_files(request: Request, body: BulkReprocessRequest = Non
 
 
 # =============================================================================
+# Storage Stats
+# =============================================================================
+
+@router.get("/storage/stats", dependencies=[Depends(require_data_read)])
+async def get_storage_stats(request: Request):
+    """Get file storage statistics from MinIO (total size, file count, bucket count)."""
+    try:
+        config = Config()
+        minio_service = MinIOService(config.as_dict())
+        stats = await minio_service.get_storage_stats()
+        return JSONResponse(status_code=200, content=stats)
+    except Exception as e:
+        logger.error("Failed to get storage stats", error=str(e), exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Failed to get storage stats", "details": str(e)}
+        )
+
+
+# =============================================================================
 # Single File Operations
 # =============================================================================
 

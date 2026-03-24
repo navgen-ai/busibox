@@ -125,7 +125,7 @@ class LibraryService:
             library = await conn.fetchrow(
                 """
                 SELECT id, name, description, is_personal, user_id, library_type, 
-                       metadata, created_by, deleted_at, created_at, updated_at
+                       metadata, created_by, deleted_at, created_at, updated_at, source_app
                 FROM libraries
                 WHERE user_id = $1 
                   AND library_type = $2 
@@ -150,7 +150,7 @@ class LibraryService:
                 legacy_library = await conn.fetchrow(
                     """
                     SELECT id, name, description, is_personal, user_id, library_type,
-                           metadata, created_by, deleted_at, created_at, updated_at
+                           metadata, created_by, deleted_at, created_at, updated_at, source_app
                     FROM libraries
                     WHERE user_id = $1
                       AND library_type IS NULL
@@ -181,7 +181,7 @@ class LibraryService:
                     library = await conn.fetchrow(
                         """
                         SELECT id, name, description, is_personal, user_id, library_type,
-                               metadata, created_by, deleted_at, created_at, updated_at
+                               metadata, created_by, deleted_at, created_at, updated_at, source_app
                         FROM libraries
                         WHERE id = $1
                         """,
@@ -216,7 +216,7 @@ class LibraryService:
             library = await conn.fetchrow(
                 """
                 SELECT id, name, description, is_personal, user_id, library_type,
-                       metadata, created_by, deleted_at, created_at, updated_at
+                       metadata, created_by, deleted_at, created_at, updated_at, source_app
                 FROM libraries
                 WHERE id = $1
                 """,
@@ -286,7 +286,7 @@ class LibraryService:
             library = await conn.fetchrow(
                 """
                 SELECT id, name, description, is_personal, user_id, library_type,
-                       metadata, created_by, deleted_at, created_at, updated_at
+                       metadata, created_by, deleted_at, created_at, updated_at, source_app
                 FROM libraries
                 WHERE LOWER(name) = LOWER($1)
                   AND deleted_at IS NULL
@@ -322,7 +322,7 @@ class LibraryService:
             library = await conn.fetchrow(
                 """
                 SELECT id, name, description, is_personal, user_id, library_type,
-                       metadata, created_by, deleted_at, created_at, updated_at
+                       metadata, created_by, deleted_at, created_at, updated_at, source_app
                 FROM libraries
                 WHERE id = $1 AND deleted_at IS NULL
                 """,
@@ -338,6 +338,7 @@ class LibraryService:
         self,
         user_id: str,
         include_shared: bool = True,
+        include_app_libraries: bool = False,
     ) -> List[Dict]:
         """
         List libraries accessible to a user.
@@ -345,6 +346,7 @@ class LibraryService:
         Args:
             user_id: The user's UUID
             include_shared: Whether to include shared libraries
+            include_app_libraries: Whether to include app-created libraries (source_app IS NOT NULL)
             
         Returns:
             List of library records
@@ -365,14 +367,16 @@ class LibraryService:
                 END
             """
             
+            app_lib_filter = "" if include_app_libraries else "AND source_app IS NULL"
+            
             if include_shared:
                 libraries = await conn.fetch(
                     f"""
                     SELECT id, name, description, is_personal, user_id, library_type,
-                           metadata, created_by, deleted_at, created_at, updated_at
+                           metadata, created_by, deleted_at, created_at, updated_at, source_app
                     FROM libraries
                     WHERE ((is_personal = true AND user_id = $1)
-                       OR is_personal = false)
+                       OR (is_personal = false {app_lib_filter}))
                     AND deleted_at IS NULL
                     ORDER BY is_personal DESC, {personal_type_order}, name ASC
                     """,
@@ -382,7 +386,7 @@ class LibraryService:
                 libraries = await conn.fetch(
                     f"""
                     SELECT id, name, description, is_personal, user_id, library_type,
-                           metadata, created_by, deleted_at, created_at, updated_at
+                           metadata, created_by, deleted_at, created_at, updated_at, source_app
                     FROM libraries
                     WHERE is_personal = true 
                       AND user_id = $1
@@ -404,6 +408,7 @@ class LibraryService:
         library_id: Optional[str] = None,
         description: Optional[str] = None,
         metadata: Optional[Dict] = None,
+        source_app: Optional[str] = None,
     ) -> Dict:
         """
         Create a new library.
@@ -417,6 +422,7 @@ class LibraryService:
             library_id: Optional explicit library ID (for syncing from Busibox Portal)
             description: Optional library description
             metadata: Optional library metadata (keywords, classification rules, etc.)
+            source_app: Optional source app that created this library
             
         Returns:
             Created library record
@@ -445,7 +451,7 @@ class LibraryService:
                     library = await conn.fetchrow(
                         """
                         SELECT id, name, description, is_personal, user_id, library_type,
-                               metadata, created_by, deleted_at, created_at, updated_at
+                               metadata, created_by, deleted_at, created_at, updated_at, source_app
                         FROM libraries
                         WHERE id = $1
                         """,
@@ -456,8 +462,8 @@ class LibraryService:
             await conn.execute(
                 """
                 INSERT INTO libraries (id, name, description, is_personal, user_id, library_type,
-                                       metadata, created_by, created_at, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, NOW(), NOW())
+                                       metadata, created_by, source_app, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, NOW(), NOW())
                 """,
                 lib_uuid,
                 name,
@@ -467,12 +473,13 @@ class LibraryService:
                 library_type,
                 metadata_json,
                 created_by_uuid,
+                source_app,
             )
             
             library = await conn.fetchrow(
                 """
                 SELECT id, name, description, is_personal, user_id, library_type,
-                       metadata, created_by, deleted_at, created_at, updated_at
+                       metadata, created_by, deleted_at, created_at, updated_at, source_app
                 FROM libraries
                 WHERE id = $1
                 """,
@@ -551,7 +558,7 @@ class LibraryService:
             library = await conn.fetchrow(
                 """
                 SELECT id, name, description, is_personal, user_id, library_type,
-                       metadata, created_by, deleted_at, created_at, updated_at
+                       metadata, created_by, deleted_at, created_at, updated_at, source_app
                 FROM libraries
                 WHERE id = $1
                 """,
@@ -866,7 +873,7 @@ class LibraryService:
                 libraries = await conn.fetch(
                     """
                     SELECT id, name, description, is_personal, user_id, library_type,
-                           metadata, created_by, deleted_at, created_at, updated_at
+                           metadata, created_by, deleted_at, created_at, updated_at, source_app
                     FROM libraries
                     WHERE deleted_at IS NULL
                       AND metadata->'classificationRules' IS NOT NULL
@@ -879,7 +886,7 @@ class LibraryService:
                 libraries = await conn.fetch(
                     """
                     SELECT id, name, description, is_personal, user_id, library_type,
-                           metadata, created_by, deleted_at, created_at, updated_at
+                           metadata, created_by, deleted_at, created_at, updated_at, source_app
                     FROM libraries
                     WHERE deleted_at IS NULL
                       AND is_personal = false
@@ -949,6 +956,7 @@ def library_to_response(library: Dict) -> Dict:
         "userId": str(library["user_id"]) if library["user_id"] else None,
         "libraryType": library["library_type"],
         "metadata": metadata_raw if metadata_raw else {},
+        "sourceApp": library.get("source_app"),
         "createdBy": str(library["created_by"]),
         "deletedAt": library["deleted_at"].isoformat() if library["deleted_at"] else None,
         "createdAt": library["created_at"].isoformat() if library["created_at"] else None,
