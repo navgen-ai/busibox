@@ -3498,9 +3498,11 @@ generate_docker_vllm_config() {
     info "  Memory tier: ${tier}"
 
     # Phase 2: Generate model_config.yml (GPU/port/model assignments)
+    # Docker runs a single vLLM container, so cap at 1 model.
+    # All purposes route through the same model. Proxmox can run multiple.
     local gen_model_config="${REPO_ROOT}/scripts/llm/generate-model-config.sh"
     if [[ -f "$gen_model_config" ]]; then
-        LLM_BACKEND=vllm GPU_COUNT="$gpu_count" LLM_TIER="$tier" \
+        LLM_BACKEND=vllm GPU_COUNT="$gpu_count" LLM_TIER="$tier" MAX_VLLM_INSTANCES=1 \
             bash "$gen_model_config" || {
                 warn "Failed to generate model_config.yml — vLLM models may not be configured"
                 return 0
@@ -4267,6 +4269,24 @@ check_prerequisites() {
             ((errors++))
         else
             success "Docker Compose available"
+        fi
+        
+        # NVIDIA Container Toolkit (required for vLLM GPU passthrough in Docker)
+        if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+            if [[ -f /.dockerenv ]]; then
+                # Inside manager container — can't reliably check docker info
+                success "NVIDIA Container Toolkit (skipped — manager container)"
+            elif docker info 2>/dev/null | grep -qi "nvidia"; then
+                success "NVIDIA Container Toolkit available"
+            else
+                error "NVIDIA Container Toolkit is not installed or not configured for Docker"
+                info "  vLLM requires GPU passthrough via nvidia-container-toolkit."
+                info "  Install it with:"
+                info "    Ubuntu/Debian: sudo apt-get install -y nvidia-container-toolkit && sudo systemctl restart docker"
+                info "    RHEL/Fedora:   sudo dnf install -y nvidia-container-toolkit && sudo systemctl restart docker"
+                info "  See: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html"
+                ((errors++))
+            fi
         fi
     elif [[ "$PLATFORM" == "proxmox" ]]; then
         # Proxmox Container Tools

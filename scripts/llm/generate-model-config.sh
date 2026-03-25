@@ -17,6 +17,7 @@
 #   LLM_TIER/MODEL_TIER   Memory tier (minimal/entry/standard/enhanced) — selects
 #                          tier-appropriate models from model_registry.yml tiers section
 #   GPU_COUNT             Override detected GPU count
+#   MAX_VLLM_INSTANCES    Cap on assigned vLLM models (Docker=1, Proxmox=unlimited)
 #   NETWORK_BASE_OCTETS   For informational output (e.g. 10.96.200)
 #
 # OUTPUT:
@@ -80,7 +81,7 @@ echo "[INFO] GPU count: ${GPU_COUNT_ENV}" >&2
 echo "[INFO] Tier: ${LLM_TIER:-${MODEL_TIER:-unset}}" >&2
 echo "[INFO] Network base: ${NETWORK_BASE_OCTETS:-unset}" >&2
 
-export REPO_ROOT REGISTRY_FILE MODEL_CONFIG_FILE GPU_COUNT_ENV LLM_TIER="${LLM_TIER:-${MODEL_TIER:-}}"
+export REPO_ROOT REGISTRY_FILE MODEL_CONFIG_FILE GPU_COUNT_ENV LLM_TIER="${LLM_TIER:-${MODEL_TIER:-}}" MAX_VLLM_INSTANCES="${MAX_VLLM_INSTANCES:-0}"
 
 "${PYTHON_BIN}" <<'PYEOF'
 import os
@@ -224,7 +225,12 @@ def find_explicit_tp(model_key: str, tp_overrides: Dict[str, int]) -> int | None
             return v
     return None
 
-def assign_models(vllm_models: List[Tuple[str, Dict[str, Any]]], gpus: int) -> Dict[str, Dict[str, Any]]:
+def assign_models(
+    vllm_models: List[Tuple[str, Dict[str, Any]]],
+    gpus: int,
+    max_instances: int = 0,
+    purposes: Dict[str, str] | None = None,
+) -> Dict[str, Dict[str, Any]]:
     assigned: Dict[str, Dict[str, Any]] = {}
     port = 8000
     explicit = get_explicit_gpu_assignments()
@@ -246,8 +252,29 @@ def assign_models(vllm_models: List[Tuple[str, Dict[str, Any]]], gpus: int) -> D
             port += 1
             explicitly_assigned.add(model_key)
 
+    def _at_cap() -> bool:
+        return max_instances > 0 and len(assigned) >= max_instances
+
     # Second pass: auto-assign remaining models
     remaining = [(k, e) for k, e in vllm_models if k not in explicitly_assigned]
+
+    # When limited to a single instance, directly assign the model that serves
+    # the most important purpose (agent > default > chat) regardless of size.
+    if max_instances == 1 and not _at_cap() and purposes and len(remaining) > 1:
+        priority_key = None
+        for role in ("agent", "default", "chat"):
+            candidate = purposes.get(role, "")
+            for k, _ in remaining:
+                if k == candidate:
+                    priority_key = k
+                    break
+            if priority_key:
+                break
+        if priority_key:
+            assigned[priority_key] = {"gpu": "0", "port": port, "tensor_parallel": 1}
+            port += 1
+            remaining = [(k, e) for k, e in remaining if k != priority_key]
+
     small = []
     large = []
     for model_key, entry in remaining:
@@ -257,7 +284,7 @@ def assign_models(vllm_models: List[Tuple[str, Dict[str, Any]]], gpus: int) -> D
     # Small models: prefer GPU 0, then 1
     small_index = 0
     for model_key, entry in small:
-        if gpus <= 0:
+        if gpus <= 0 or _at_cap():
             break
         if small_index == 0:
             gpu = "0"
@@ -271,6 +298,8 @@ def assign_models(vllm_models: List[Tuple[str, Dict[str, Any]]], gpus: int) -> D
 
     # Large models: prefer 2,3 with TP=2 when available
     for model_key, entry in large:
+        if _at_cap():
+            break
         if gpus >= 4:
             assigned[model_key] = {"gpu": "2,3", "port": port, "tensor_parallel": 2}
         elif gpus >= 3:
@@ -294,7 +323,32 @@ for _purpose, model_key in model_purposes.items():
         vllm_model_keys.append(model_key)
 
 vllm_entries = [(k, available_models.get(k, {})) for k in vllm_model_keys]
-routing = assign_models(vllm_entries, gpu_count)
+max_vllm_instances = int(os.environ.get("MAX_VLLM_INSTANCES", "0") or "0")
+if max_vllm_instances > 0:
+    print(f"[INFO] MAX_VLLM_INSTANCES={max_vllm_instances} — limiting assigned models", file=sys.stderr)
+routing = assign_models(vllm_entries, gpu_count, max_instances=max_vllm_instances, purposes=model_purposes)
+
+# When capped (e.g. Docker), remap unassigned vLLM purposes to an assigned model
+if max_vllm_instances > 0 and routing:
+    assigned_keys = set(routing.keys())
+    # Pick the best assigned model: prefer "agent" or "default" purpose model, else first assigned
+    primary_key = None
+    for preferred in ("agent", "default", "chat"):
+        candidate = model_purposes.get(preferred, "")
+        if candidate in assigned_keys:
+            primary_key = candidate
+            break
+    if not primary_key:
+        primary_key = next(iter(assigned_keys))
+    remapped = 0
+    for purpose, mk in list(model_purposes.items()):
+        if mk in vllm_model_keys and mk not in assigned_keys:
+            model_purposes[purpose] = primary_key
+            remapped += 1
+    if remapped:
+        print(f"[INFO] Remapped {remapped} purpose(s) to assigned model '{primary_key}'", file=sys.stderr)
+    # Remove unassigned vLLM models from the build list
+    vllm_model_keys = [k for k in vllm_model_keys if k in assigned_keys]
 
 output_models: Dict[str, Any] = {}
 

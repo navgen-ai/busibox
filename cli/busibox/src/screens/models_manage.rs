@@ -1979,7 +1979,16 @@ fn apply_tier_inner(app: &mut App, deploy: bool) {
                     "--- Step 3/5: Waiting for vLLM models to become available ---".into(),
                 ));
 
-                let vllm_ports = collect_assigned_vllm_ports(&repo_root, is_remote, &ssh_details, &remote_path);
+                let mut vllm_ports = collect_assigned_vllm_ports(&repo_root, is_remote, &ssh_details, &remote_path);
+
+                // Docker runs a single vLLM container — only check the primary port
+                if !is_proxmox && vllm_ports.len() > 1 {
+                    let _ = tx.send(ModelsManageUpdate::Log(format!(
+                        "Docker mode: checking primary port {} only (single container)",
+                        vllm_ports[0],
+                    )));
+                    vllm_ports.truncate(1);
+                }
 
                 if vllm_ports.is_empty() {
                     let _ = tx.send(ModelsManageUpdate::Log(

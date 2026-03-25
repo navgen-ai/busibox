@@ -1,4 +1,6 @@
 ---
 # vLLM Docker Role Defaults
+# Use the same port for both internal and host so the CLI can health-check
+# via localhost:<port> using the port stored in model_config.yml.
 vllm_docker_port: 8000
-vllm_docker_host_port: 8080
+vllm_docker_host_port: 8000

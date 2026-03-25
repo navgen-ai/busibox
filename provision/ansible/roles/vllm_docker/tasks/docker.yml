@@ -110,9 +110,9 @@
     VLLM_CPU_OFFLOAD_GB: "{{ _vllm_model.cpu_offload_gb | default(0) | string }}"
     VLLM_CUDA_VISIBLE_DEVICES: "{{ _vllm_model.gpu | default('') }}"
     VLLM_PORT: "{{ _vllm_model.port | default(8000) | string }}"
-    VLLM_HOST_PORT: "{{ vllm_docker_host_port | default(8080) | string }}"
+    VLLM_HOST_PORT: "{{ _vllm_model.port | default(8000) | string }}"
   register: _vllm_up_result
-  changed_when: "'Creating' in _vllm_up_result.stdout or 'Recreating' in _vllm_up_result.stdout"
+  changed_when: true
   when: _vllm_model is defined and _vllm_model | length > 0
 
 - name: Show vLLM compose output
@@ -122,7 +122,7 @@
 
 - name: Wait for vLLM health endpoint
   ansible.builtin.uri:
-    url: "http://localhost:{{ vllm_docker_host_port | default(8080) }}/health"
+    url: "http://localhost:{{ _vllm_model.port | default(8000) }}/health"
     method: GET
     status_code: [200]
   register: _vllm_health
@@ -138,5 +138,5 @@
       vLLM Status: {{ 'HEALTHY' if _vllm_health.status | default(0) == 200 else 'STARTING (model may still be loading — check: docker logs ' ~ _vllm_prefix ~ '-vllm)' }}
       Model: {{ _vllm_model.model_name | default('unknown') }}
       Container endpoint: http://vllm:{{ _vllm_model.port | default(8000) }}/v1
-      Host endpoint: http://localhost:{{ vllm_docker_host_port | default(8080) }}/v1
+      Host endpoint: http://localhost:{{ _vllm_model.port | default(8000) }}/v1
   when: _vllm_model is defined and _vllm_model | length > 0
