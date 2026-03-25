@@ -963,6 +963,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     app.admin_login_totp_code = None;
                     app.admin_login_verify_url = None;
                     app.admin_login_error = None;
+                    app.admin_login_use_setup = true;
                     app.pending_admin_login = true;
                     app.screen = Screen::AdminLogin;
                 }

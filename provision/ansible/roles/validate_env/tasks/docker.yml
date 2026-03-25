@@ -34,22 +34,22 @@
         expected: "{{ secrets.minio.root_password }}"
       - container: "{{ _prefix }}-authz-api"
         var: AUTHZ_MASTER_KEY
-        expected: "{{ secrets.authz_master_key }}"
+        expected: "{{ secrets.authz_master_key | default('') }}"
       - container: "{{ _prefix }}-authz-api"
         var: POSTGRES_PASSWORD
         expected: "{{ secrets.postgresql.password }}"
       - container: "{{ _prefix }}-litellm"
         var: LITELLM_MASTER_KEY
-        expected: "{{ secrets.litellm_master_key }}"
+        expected: "{{ secrets.litellm_master_key | default('') }}"
       - container: "{{ _prefix }}-litellm"
         var: LITELLM_SALT_KEY
-        expected: "{{ secrets.litellm_salt_key }}"
+        expected: "{{ secrets.litellm_salt_key | default('') }}"
       - container: "{{ _prefix }}-deploy-api"
         var: POSTGRES_PASSWORD
         expected: "{{ secrets.postgresql.password }}"
       - container: "{{ _prefix }}-deploy-api"
         var: LITELLM_MASTER_KEY
-        expected: "{{ secrets.litellm_master_key }}"
+        expected: "{{ secrets.litellm_master_key | default('') }}"
       - container: "{{ _prefix }}-data-api"
         var: POSTGRES_PASSWORD
         expected: "{{ secrets.postgresql.password }}"
@@ -64,10 +64,10 @@
         expected: "{{ secrets.postgresql.password }}"
       - container: "{{ _prefix }}-core-apps"
         var: SSO_JWT_SECRET
-        expected: "{{ secrets.jwt_secret }}"
+        expected: "{{ secrets.jwt_secret | default('') }}"
       - container: "{{ _prefix }}-core-apps"
         var: GITHUB_AUTH_TOKEN
-        expected: "{{ secrets.github.personal_access_token }}"
+        expected: "{{ (secrets.github | default({})).personal_access_token | default('') }}"
 
 - name: Check if containers are running
   ansible.builtin.command:

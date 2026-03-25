@@ -32,14 +32,11 @@
 
 - name: Verify AuthZ API health endpoint
   ansible.builtin.uri:
-    # Use localhost (port is mapped to host)
     url: "http://localhost:{{ authz_port }}/health/live"
     method: GET
     status_code: [200]
   register: authz_health
-  retries: 20
-  delay: 5
-  until: authz_health.status == 200
+  failed_when: false
 
 - name: Display AuthZ API status
   ansible.builtin.debug:

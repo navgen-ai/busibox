@@ -146,21 +146,66 @@
   when: up_result is defined
 
 - name: Wait for services to be healthy
-  ansible.builtin.shell: |
-    cd {{ docker_compose_dir }}
-    # Docker compose ps --format json returns either an object (single) or array (multiple)
-    json_output=$(docker compose {{ docker_compose_file_args }} {{ _env_file_arg }} \
-      ps --format json {{ _services_arg }})
-    # Handle both array and object formats
-    echo "$json_output" | jq -r 'if type == "array" then .[].Health else .Health end // "none"'
-  args:
+  ansible.builtin.shell:
+    cmd: |
+      timeout={{ docker_health_timeout | int }}
+      elapsed=0
+
+      if command -v jq >/dev/null 2>&1; then
+        parse_health() { echo "$1" | jq -r 'if type == "array" then [.[].Health] else [.Health] end | .[]? // "none"' 2>/dev/null; }
+      elif command -v python3 >/dev/null 2>&1; then
+        parse_health() { echo "$1" | python3 -c "
+      import sys,json
+      d=json.load(sys.stdin)
+      items=d if isinstance(d,list) else [d]
+      for i in items: print(i.get('Health','none'))
+      " 2>/dev/null || echo "none"; }
+      else
+        echo "WARNING: Neither jq nor python3 found"
+        exit 1
+      fi
+
+      while [ $elapsed -lt $timeout ]; do
+        json_output=$(${COMPOSE_CMD} ps --format json ${WAIT_SERVICES} 2>/dev/null)
+        healths=$(parse_health "$json_output")
+
+        starting=0
+        for h in $healths; do
+          [ "$h" = "starting" ] && starting=$((starting+1))
+        done
+
+        if [ $starting -eq 0 ]; then
+          echo "All services healthy (${elapsed}s)"
+          exit 0
+        fi
+
+        sleep 5
+        elapsed=$((elapsed + 5))
+      done
+      echo "Timeout after ${timeout}s — some services may still be starting"
+      exit 0
     chdir: "{{ docker_compose_dir }}"
-  environment: *docker_secrets_env
-  register: health_check
-  until: >
-    health_check.stdout_lines | select('equalto', 'starting') | list | length == 0
-  retries: "{{ (docker_health_timeout | int / 5) | int }}"
-  delay: 5
+    executable: /bin/bash
+  environment:
+    DOCKER_CONFIG: "{{ _docker_config_override }}"
+    DOCKER_HOST: "{{ lookup('env', 'DOCKER_HOST') | default('', true) }}"
+    COMPOSE_PROJECT_NAME: "{{ compose_project_name }}"
+    COMPOSE_CMD: "docker compose {{ docker_compose_file_args }} {{ _env_file_arg }}"
+    WAIT_SERVICES: "{{ _services_arg }}"
+    CONTAINER_PREFIX: "{{ container_prefix | default('dev') }}"
+    POSTGRES_PASSWORD: "{{ busibox_secrets.POSTGRES_PASSWORD }}"
+    MINIO_ROOT_USER: "{{ busibox_secrets.MINIO_ROOT_USER }}"
+    MINIO_ROOT_PASSWORD: "{{ busibox_secrets.MINIO_ROOT_PASSWORD }}"
+    MINIO_ACCESS_KEY: "{{ busibox_secrets.MINIO_ROOT_USER }}"
+    MINIO_SECRET_KEY: "{{ busibox_secrets.MINIO_ROOT_PASSWORD }}"
+    NEO4J_PASSWORD: "{{ busibox_secrets.NEO4J_PASSWORD }}"
+    CONFIG_ENCRYPTION_KEY: "{{ busibox_secrets.CONFIG_ENCRYPTION_KEY }}"
+    LITELLM_MASTER_KEY: "{{ busibox_secrets.LITELLM_MASTER_KEY }}"
+    LITELLM_API_KEY: "{{ busibox_secrets.LITELLM_MASTER_KEY }}"
+    LITELLM_SALT_KEY: "{{ busibox_secrets.LITELLM_SALT_KEY }}"
+    AUTHZ_MASTER_KEY: "{{ busibox_secrets.AUTHZ_MASTER_KEY }}"
+    SSO_JWT_SECRET: "{{ busibox_secrets.SSO_JWT_SECRET }}"
+    GITHUB_AUTH_TOKEN: "{{ busibox_secrets.GITHUB_AUTH_TOKEN }}"
   when: docker_wait_for_health | default(false)
+  register: health_check
   changed_when: false
-  failed_when: false

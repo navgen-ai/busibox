@@ -57,10 +57,12 @@ pub fn render(f: &mut Frame, app: &App) {
             Span::styled(" to copy full output to clipboard", theme::muted()),
         ]));
     } else if let Some(magic_link) = &app.admin_login_magic_link {
-        lines.push(Line::from(Span::styled(
-            "  Magic Link (expires in 24h):",
-            theme::heading(),
-        )));
+        let link_label = if app.admin_login_use_setup {
+            "  Setup Link (expires in 24h):"
+        } else {
+            "  Login Link (expires in 24h):"
+        };
+        lines.push(Line::from(Span::styled(link_label, theme::heading())));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             format!("  {magic_link}"),

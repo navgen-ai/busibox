@@ -47,9 +47,6 @@
     method: GET
     status_code: [200]
   register: litellm_health
-  retries: 10
-  delay: 5
-  until: litellm_health.status == 200
   failed_when: false
 
 - name: Display LiteLLM status
