@@ -703,17 +703,43 @@ async def token(request: Request):
                     detail="user_does_not_have_app_access"
                 )
             
-            # Get roles that grant access to this specific app
-            # This is the intersection of user's roles and roles bound to the app
+            # Get all roles bound to this app resource.
+            # Role bindings fall into two categories:
+            #   1) Access-gate roles (e.g. Admin, HR) — used to decide WHO can
+            #      access the app.  The user must hold one of these in
+            #      authz_user_roles (already verified by user_can_access_resource).
+            #   2) Auto-granted app role (e.g. app:busibox-workforce) — bound
+            #      to the app but NOT in authz_user_roles.  Every user who
+            #      passes the access check receives this role automatically.
+            #
+            # For least-privilege, the issued token carries ONLY the
+            # auto-granted app role(s).  Access-gate roles are not included
+            # because they are broader org-level roles that would let the app
+            # see data from other apps/contexts.
             app_role_bindings = await db.get_roles_for_resource("app", token_req.resource_id)
-            app_role_ids = {b["id"] for b in app_role_bindings}  # id is the role_id
-            app_roles = [r for r in roles if r["id"] in app_role_ids]
-            
+            user_role_ids = {r["id"] for r in roles}
+
+            # Auto-granted: app-bound roles the user does NOT directly hold
+            auto_granted = [
+                {"id": b["id"], "name": b["name"]}
+                for b in app_role_bindings
+                if b["id"] not in user_role_ids
+            ]
+
+            # If there are no auto-granted roles (legacy app without an app
+            # role), fall back to the intersection so existing apps don't break.
+            if auto_granted:
+                app_roles = auto_granted
+            else:
+                app_role_ids = {b["id"] for b in app_role_bindings}
+                app_roles = [r for r in roles if r["id"] in app_role_ids]
+
             logger.info(
                 "App access verified",
                 user_id=user_id,
                 resource_id=token_req.resource_id,
                 app_roles=[r["name"] for r in app_roles],
+                auto_granted=[r["name"] for r in auto_granted],
             )
 
         # Build role claims (id + name only, for data access filtering)
