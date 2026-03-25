@@ -26,14 +26,14 @@
 #   - all: Everything
 #   - infrastructure: postgres, redis, minio, milvus, neo4j
 #   - apis: authz, embedding, data, search, agent, docs, deploy, bridge
-#   - llm: litellm
+#   - llm: vllm (when LLM_BACKEND=vllm), litellm
 #   - frontend: proxy, core-apps
 #   - user-apps: user-apps container
 #
 #   Each service has its own tag for targeted deployment:
 #     postgres, redis, minio, milvus, neo4j (infrastructure)
 #     authz, embedding, data, search, agent, docs, deploy, bridge (apis)
-#     litellm (llm), proxy, core-apps (frontend)
+#     vllm, litellm (llm), proxy, core-apps (frontend)
 
 - name: Busibox Docker Deployment
   hosts: localhost
@@ -314,7 +314,20 @@
     # =========================================================================
     # LLM SERVICES
     # =========================================================================
-    
+
+    - name: Deploy vLLM (local GPU inference)
+      ansible.builtin.include_role:
+        name: vllm_docker
+        tasks_from: docker
+        apply:
+          tags:
+            - llm
+            - vllm
+      when: lookup('env', 'LLM_BACKEND') == 'vllm'
+      tags:
+        - llm
+        - vllm
+
     - name: Deploy LiteLLM
       ansible.builtin.include_role:
         name: litellm

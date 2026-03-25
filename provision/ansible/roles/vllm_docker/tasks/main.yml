@@ -1,0 +1,6 @@
+---
+# vLLM Docker Role - Main entry point
+# Delegates to platform-specific tasks
+- name: Include Docker tasks
+  ansible.builtin.include_tasks: docker.yml
+  when: ansible_connection == 'local' or (busibox_backend | default('docker')) == 'docker'

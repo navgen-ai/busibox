@@ -1286,27 +1286,41 @@ services:
           - nginx
 
 # ===========================================================================
-  # LOCAL LLM INFERENCE (Demo Mode)
+  # LOCAL LLM INFERENCE (vLLM on NVIDIA GPU)
   # ===========================================================================
 
   # vLLM - Local LLM Inference (x86/Linux with NVIDIA GPU)
-  # Only starts with: docker compose --profile demo-vllm up
+  # Activated by Ansible when LLM_BACKEND=vllm via --profile vllm
   # For Apple Silicon, use start-mlx-server.sh instead (runs natively on host)
+  #
+  # Configuration is driven by environment variables set by the installer
+  # (generate-model-config.sh -> model_config.yml -> Ansible role).
   vllm:
-    profiles: ["demo-vllm"]
+    profiles: ["vllm"]
     image: vllm/vllm-openai:latest
     container_name: ${CONTAINER_PREFIX:-dev}-vllm
     hostname: vllm
-    command: >
-      --model Qwen/Qwen2.5-7B-Instruct-AWQ
-      --quantization awq
-      --max-model-len 8192
-      --host 0.0.0.0
-      --port 8000
-    ports:
-      - "8080:8000"
+    environment:
+      VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen3.5-0.8B}
+      VLLM_SERVED_MODEL_NAME: ${VLLM_SERVED_MODEL_NAME:-}
+      VLLM_MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-8192}
+      VLLM_GPU_MEMORY_UTILIZATION: ${VLLM_GPU_MEMORY_UTILIZATION:-0.9}
+      VLLM_TENSOR_PARALLEL_SIZE: ${VLLM_TENSOR_PARALLEL_SIZE:-1}
+      VLLM_QUANTIZATION: ${VLLM_QUANTIZATION:-}
+      VLLM_TOOL_CALL_PARSER: ${VLLM_TOOL_CALL_PARSER:-}
+      VLLM_TOOL_CHAT_TEMPLATE: ${VLLM_TOOL_CHAT_TEMPLATE:-}
+      VLLM_MAX_NUM_SEQS: ${VLLM_MAX_NUM_SEQS:-32}
+      VLLM_CPU_OFFLOAD_GB: ${VLLM_CPU_OFFLOAD_GB:-0}
+      VLLM_PORT: ${VLLM_PORT:-8000}
+      VLLM_EXTRA_ARGS: ${VLLM_EXTRA_ARGS:-}
+      CUDA_VISIBLE_DEVICES: ${VLLM_CUDA_VISIBLE_DEVICES:-}
+      HF_HOME: /root/.cache/huggingface
     volumes:
       - ${HF_HOST_CACHE:-vllm_cache}:/root/.cache/huggingface
+      - ./provision/docker/vllm-entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/bin/bash", "/entrypoint.sh"]
+    ports:
+      - "${VLLM_HOST_PORT:-8080}:${VLLM_PORT:-8000}"
     deploy:
       resources:
         reservations:
@@ -1315,11 +1329,11 @@ services:
               count: all
               capabilities: [gpu]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT:-8000}/health"]
       interval: 10s
       timeout: 5s
-      start_period: 120s
-      retries: 5
+      start_period: 180s
+      retries: 10
     restart: unless-stopped
     networks:
       - busibox-net
@@ -1388,7 +1402,8 @@ volumes:
   # On macOS with `make install`, FASTEMBED_HOST_CACHE points to ~/.cache/fastembed
   # which contains pre-downloaded models for instant startup
   fastembed_cache:
-  # vLLM cache - for demo mode on x86/Linux with NVIDIA GPU
+  # vLLM cache - HuggingFace model cache for vLLM on x86/Linux with NVIDIA GPU
+  # When HF_HOST_CACHE is set (e.g. to ~/.cache/huggingface), this volume is unused
   vllm_cache:
   # User apps - persistent storage for deployed external applications
   user_apps_data:

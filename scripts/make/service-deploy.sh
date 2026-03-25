@@ -140,7 +140,13 @@ is_valid_service() {
 expand_services() {
     local input="$1"
     local expanded=""
-    
+
+    # Load LLM_BACKEND from state if not already set (needed for llm/all group expansion)
+    if [[ -z "${LLM_BACKEND:-}" ]] && type get_state &>/dev/null; then
+        LLM_BACKEND="$(get_state "LLM_BACKEND" "" 2>/dev/null || echo "")"
+        export LLM_BACKEND
+    fi
+
     # Split by comma
     IFS=',' read -ra services <<< "$input"
     
@@ -158,13 +164,21 @@ expand_services() {
                 expanded="${expanded} authz embedding data search agent deploy config bridge docs"
                 ;;
             llm)
-                expanded="${expanded} litellm"
+                if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+                    expanded="${expanded} vllm litellm"
+                else
+                    expanded="${expanded} litellm"
+                fi
                 ;;
             frontend)
                 expanded="${expanded} core-apps nginx"
                 ;;
             all)
-                expanded="${expanded} postgres redis minio milvus neo4j authz embedding data search agent deploy config bridge docs litellm core-apps nginx"
+                if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+                    expanded="${expanded} postgres redis minio milvus neo4j authz embedding data search agent deploy config bridge docs vllm litellm core-apps nginx"
+                else
+                    expanded="${expanded} postgres redis minio milvus neo4j authz embedding data search agent deploy config bridge docs litellm core-apps nginx"
+                fi
                 ;;
             *)
                 expanded="${expanded} ${svc}"

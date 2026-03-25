@@ -3466,6 +3466,64 @@ wait_for_model_download() {
     set_state "MODEL_DOWNLOAD_PID" ""
 }
 
+# =============================================================================
+# VLLM CONFIG GENERATION (Docker)
+# =============================================================================
+
+# Generate model_config.yml and litellm-config.yaml for Docker vLLM installs.
+# Called after the wizard sets LLM_BACKEND=vllm and before Docker bootstrap.
+generate_docker_vllm_config() {
+    if [[ "${LLM_BACKEND:-}" != "vllm" ]]; then
+        return 0
+    fi
+    if [[ "${PLATFORM:-}" != "docker" ]]; then
+        return 0
+    fi
+
+    info "Generating vLLM model configuration for Docker..."
+
+    local tier="${LLM_TIER:-}"
+    if [[ -z "$tier" ]]; then
+        tier=$(bash "${REPO_ROOT}/scripts/llm/get-memory-tier.sh" vllm 2>/dev/null || echo "minimal")
+        export LLM_TIER="$tier"
+    fi
+
+    local gpu_count="${GPU_COUNT:-}"
+    if [[ -z "$gpu_count" ]] && command -v nvidia-smi &>/dev/null; then
+        gpu_count=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l | tr -d ' ')
+    fi
+    gpu_count="${gpu_count:-0}"
+
+    info "  GPU count: ${gpu_count}"
+    info "  Memory tier: ${tier}"
+
+    # Phase 2: Generate model_config.yml (GPU/port/model assignments)
+    local gen_model_config="${REPO_ROOT}/scripts/llm/generate-model-config.sh"
+    if [[ -f "$gen_model_config" ]]; then
+        LLM_BACKEND=vllm GPU_COUNT="$gpu_count" LLM_TIER="$tier" \
+            bash "$gen_model_config" || {
+                warn "Failed to generate model_config.yml — vLLM models may not be configured"
+                return 0
+            }
+        success "model_config.yml generated"
+    else
+        warn "generate-model-config.sh not found at $gen_model_config"
+    fi
+
+    # Phase 3: Generate litellm-config.yaml (LiteLLM routing to vLLM backends)
+    local gen_litellm_config="${REPO_ROOT}/scripts/llm/generate-litellm-config.sh"
+    if [[ -f "$gen_litellm_config" ]]; then
+        LLM_BACKEND=vllm LLM_TIER="$tier" ENVIRONMENT="${ENVIRONMENT:-development}" \
+            bash "$gen_litellm_config" || {
+                warn "Failed to generate litellm-config.yaml — LiteLLM may not route to vLLM"
+                return 0
+            }
+        success "litellm-config.yaml generated for vLLM"
+    else
+        warn "generate-litellm-config.sh not found at $gen_litellm_config"
+    fi
+}
+
 # Global variable to track background embedding download PID
 EMBEDDING_DOWNLOAD_PID=""
 
@@ -5220,6 +5278,10 @@ main() {
     set_state "SITE_DOMAIN" "$SITE_DOMAIN"
     set_state "ALLOWED_DOMAINS" "${ALLOWED_DOMAINS:-*}"
     
+    # Generate vLLM model config and litellm config for Docker + vLLM installs.
+    # Must run after secrets/env are ready but before bootstrap starts containers.
+    generate_docker_vllm_config
+
     # Bootstrap based on platform
     set_install_phase "bootstrap_started"
     
@@ -5260,6 +5322,16 @@ main() {
         info "MLX host-agent setup will run on the macOS host after container deployment completes..."
         touch "${REPO_ROOT}/.mlx-setup-needed"
         # Embedding model download uses Docker, which works inside the manager container
+        show_stage 92 "Downloading Embedding Model" "Pre-downloading FastEmbed model for document search."
+        download_embedding_model
+    elif [[ "$LLM_BACKEND" == "vllm" && "$PLATFORM" == "docker" ]]; then
+        # Download vLLM models to host HuggingFace cache before container starts.
+        # The vLLM container bind-mounts this cache, so models are available instantly.
+        show_stage 91 "Downloading vLLM Models" "Pre-downloading HuggingFace models for vLLM inference."
+        LLM_BACKEND=vllm LLM_TIER="${LLM_TIER:-}" \
+            bash "${REPO_ROOT}/scripts/llm/download-models.sh" all 2>&1 || {
+                warn "vLLM model download failed — models will be downloaded when the container starts (slower first boot)"
+            }
         show_stage 92 "Downloading Embedding Model" "Pre-downloading FastEmbed model for document search."
         download_embedding_model
     elif [[ "$PLATFORM" != "proxmox" && "$PLATFORM" != "k8s" ]]; then

@@ -14,7 +14,8 @@
 #
 # INPUTS (optional env vars):
 #   LLM_BACKEND           Default: auto-detect (vllm if nvidia-smi exists, else mlx)
-#   LLM_TIER/MODEL_TIER   Currently informational only (kept for future tier filtering)
+#   LLM_TIER/MODEL_TIER   Memory tier (minimal/entry/standard/enhanced) — selects
+#                          tier-appropriate models from model_registry.yml tiers section
 #   GPU_COUNT             Override detected GPU count
 #   NETWORK_BASE_OCTETS   For informational output (e.g. 10.96.200)
 #
@@ -79,7 +80,7 @@ echo "[INFO] GPU count: ${GPU_COUNT_ENV}" >&2
 echo "[INFO] Tier: ${LLM_TIER:-${MODEL_TIER:-unset}}" >&2
 echo "[INFO] Network base: ${NETWORK_BASE_OCTETS:-unset}" >&2
 
-export REPO_ROOT REGISTRY_FILE MODEL_CONFIG_FILE GPU_COUNT_ENV
+export REPO_ROOT REGISTRY_FILE MODEL_CONFIG_FILE GPU_COUNT_ENV LLM_TIER="${LLM_TIER:-${MODEL_TIER:-}}"
 
 "${PYTHON_BIN}" <<'PYEOF'
 import os
@@ -111,7 +112,51 @@ available_models: Dict[str, Any] = registry.get("available_models", {}) or {}
 model_purposes: Dict[str, str] = registry.get("model_purposes", {}) or {}
 existing_models: Dict[str, Any] = (existing.get("models", {}) or {})
 
-# Apply PURPOSE_<ROLE>=<model_key> overrides from environment
+# Apply tier-based model purpose overrides when LLM_TIER is set.
+# Tier entries from model_registry.yml (e.g. tiers.entry.vllm) map roles to model
+# keys. These override the default model_purposes for vLLM-backed roles, ensuring
+# the selected models match the available VRAM.
+llm_tier = os.environ.get("LLM_TIER", "").strip("'\"").strip()
+if llm_tier:
+    tiers = registry.get("tiers", {}) or {}
+    tier_cfg = tiers.get(llm_tier, {})
+    vllm_tier_models = tier_cfg.get("vllm", {}) or {}
+    if vllm_tier_models:
+        print(f"[INFO] Applying tier '{llm_tier}' vLLM model overrides:", file=sys.stderr)
+        for role, model_key in vllm_tier_models.items():
+            old = model_purposes.get(role, "(unset)")
+            model_purposes[role] = model_key
+            print(f"[INFO]   {role}: {old} -> {model_key}", file=sys.stderr)
+
+        # For roles not explicitly in the tier, propagate the tier's agent/fast
+        # model to cover common aliases (chat, tool_calling, parsing, etc.)
+        # This avoids deploying models that won't fit in the available VRAM.
+        tier_agent = vllm_tier_models.get("agent", "")
+        tier_fast = vllm_tier_models.get("fast", "")
+        propagate_roles = {
+            "default": tier_agent,
+            "chat": tier_agent,
+            "tool_calling": tier_agent,
+            "parsing": tier_agent,
+            "cleanup": tier_agent,
+            "vision": tier_agent,
+            "research": tier_agent,
+            "classify": tier_fast,
+            "test": tier_fast,
+        }
+        for role, fallback_key in propagate_roles.items():
+            if role not in vllm_tier_models and fallback_key:
+                entry = available_models.get(fallback_key, {})
+                if entry.get("provider", "").lower() == "vllm":
+                    old = model_purposes.get(role, "(unset)")
+                    model_purposes[role] = fallback_key
+                    print(f"[INFO]   {role}: {old} -> {fallback_key} (propagated from tier)", file=sys.stderr)
+    elif llm_tier not in tiers:
+        print(f"[WARN] Unknown tier '{llm_tier}' — using default model_purposes", file=sys.stderr)
+    else:
+        print(f"[INFO] Tier '{llm_tier}' has no vLLM-specific models — using defaults", file=sys.stderr)
+
+# Apply PURPOSE_<ROLE>=<model_key> overrides from environment (highest priority).
 # e.g. PURPOSE_FAST=qwen3.5-0.8b-vllm -> fast: qwen3.5-0.8b-vllm
 # e.g. PURPOSE_TOOL_CALLING=model-key -> tool_calling: model-key
 for key, val in os.environ.items():
