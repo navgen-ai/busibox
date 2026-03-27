@@ -1,5 +1,5 @@
 use crate::app::{App, MessageKind, Screen};
-use crate::modules::{profile, vault};
+use crate::modules::{profile, remote, vault};
 use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Margin;
@@ -276,6 +276,38 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                                         app.kill_ssh_tunnel();
                                         if vault::has_vault_key(&switched_profile) {
                                             app.pending_vault_setup = true;
+                                        } else if let Some((pid, prof)) = app.active_profile() {
+                                            let vp = prof.vault_prefix.clone().unwrap_or_else(|| pid.to_string());
+                                            if let Some(lp) = vault::find_legacy_vault_pass(&vp) {
+                                                if let Ok(pw) = std::fs::read_to_string(&lp) {
+                                                    let pw = pw.trim().to_string();
+                                                    if !pw.is_empty() {
+                                                        match remote::validate_and_upgrade_vault(&app.repo_root, &vp, &pw) {
+                                                            Ok(remote::VaultUpgradeResult::Clean) => {
+                                                                app.set_message("Vault validated — all keys present", MessageKind::Success);
+                                                            }
+                                                            Ok(remote::VaultUpgradeResult::Created { added }) => {
+                                                                app.set_message(&format!("Vault created with {} keys", added.len()), MessageKind::Success);
+                                                            }
+                                                            Ok(remote::VaultUpgradeResult::Upgraded { added, removed, copied }) => {
+                                                                let parts: Vec<String> = [
+                                                                    if added.is_empty() { None } else { Some(format!("{} added", added.len())) },
+                                                                    if removed.is_empty() { None } else { Some(format!("{} removed", removed.len())) },
+                                                                    if copied.is_empty() { None } else { Some(format!("{} copied", copied.len())) },
+                                                                ].into_iter().flatten().collect();
+                                                                app.set_message(&format!("Vault upgraded: {}", parts.join(", ")), MessageKind::Success);
+                                                            }
+                                                            Ok(remote::VaultUpgradeResult::Issues { message }) => {
+                                                                app.set_message(&format!("Vault issues: {message}"), MessageKind::Warning);
+                                                            }
+                                                            Err(e) => {
+                                                                app.set_message(&format!("Vault upgrade error: {e}"), MessageKind::Warning);
+                                                            }
+                                                        }
+                                                        app.vault_password = Some(pw);
+                                                    }
+                                                }
+                                            }
                                         }
                                         app.health_results.clear();
                                         app.health_groups.clear();

@@ -1652,6 +1652,30 @@ fn apply_tier_inner(app: &mut App, deploy: bool) {
 
     let profile_id: Option<String> = app.active_profile().map(|(id, _)| id.to_string());
 
+    let hf_token: Option<String> = app
+        .active_profile()
+        .and_then(|(_, p)| p.huggingface_token.clone())
+        .or_else(|| {
+            app.profiles
+                .as_ref()
+                .and_then(|pf| pf.defaults.as_ref())
+                .and_then(|d| d.huggingface_token.clone())
+        })
+        .filter(|t| !t.is_empty());
+
+    let profile_environment: String = app
+        .active_profile()
+        .map(|(_, p)| p.environment.clone())
+        .unwrap_or_else(|| "development".into());
+    let profile_backend: String = app
+        .active_profile()
+        .map(|(_, p)| p.backend.clone())
+        .unwrap_or_else(|| "docker".into());
+    let container_prefix: String = app
+        .active_profile()
+        .map(|(_, p)| super::install::env_to_prefix(&p.environment))
+        .unwrap_or_else(|| "dev".into());
+
     let is_proxmox = app
         .active_profile()
         .map(|(_, p)| p.backend == "proxmox")
@@ -1678,6 +1702,12 @@ fn apply_tier_inner(app: &mut App, deploy: bool) {
             map
         })
         .unwrap_or_default();
+
+    let env_prefix = format!(
+        "BUSIBOX_ENV={profile_environment} \
+         BUSIBOX_BACKEND={profile_backend} \
+         CONTAINER_PREFIX={container_prefix} "
+    );
 
     let deploy = deploy;
     std::thread::spawn(move || {
@@ -1916,7 +1946,7 @@ fn apply_tier_inner(app: &mut App, deploy: bool) {
                 ));
 
                 let mlx_args = format!(
-                    "manage SERVICE=mlx ACTION=redeploy LLM_BACKEND=mlx LLM_TIER={}",
+                    "{env_prefix}manage SERVICE=mlx ACTION=redeploy LLM_BACKEND=mlx LLM_TIER={}",
                     shell_escape(&tier_name)
                 );
                 step2_ok = run_make_step(
@@ -1933,7 +1963,23 @@ fn apply_tier_inner(app: &mut App, deploy: bool) {
                     "--- Step 2/5: Deploying vLLM services ---".into(),
                 ));
 
-                let download_args = format!("install SERVICE={llm_svc}");
+                let cache_home = if is_remote {
+                    "$HOME".to_string()
+                } else {
+                    dirs::home_dir()
+                        .unwrap_or_default()
+                        .display()
+                        .to_string()
+                };
+                let mut download_args = format!(
+                    "{env_prefix}\
+                     LLM_BACKEND=vllm \
+                     HF_HOST_CACHE={cache_home}/.cache/huggingface "
+                );
+                if let Some(ref tok) = hf_token {
+                    download_args.push_str(&format!("HF_TOKEN={} ", shell_escape(tok)));
+                }
+                download_args.push_str(&format!("install SERVICE={llm_svc}"));
                 step2_ok = run_make_step(
                     &tx,
                     is_remote,
@@ -2028,9 +2074,9 @@ fn apply_tier_inner(app: &mut App, deploy: bool) {
             ));
 
             let litellm_args = if let Some(ref b) = llm_backend {
-                format!("install SERVICE=litellm LLM_BACKEND={} LLM_TIER={}", shell_escape(b), shell_escape(&tier_name))
+                format!("{env_prefix}install SERVICE=litellm LLM_BACKEND={} LLM_TIER={}", shell_escape(b), shell_escape(&tier_name))
             } else {
-                "install SERVICE=litellm".to_string()
+                format!("{env_prefix}install SERVICE=litellm")
             };
             step3_ok = run_make_step(
                 &tx,

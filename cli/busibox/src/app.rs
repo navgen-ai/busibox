@@ -1,7 +1,7 @@
 use crate::modules::benchmark::{self, BenchmarkConfig, BenchmarkResult};
 use crate::modules::hardware::HardwareProfile;
 use crate::modules::health::{GroupHealth, HealthUpdate, ServiceHealthResult};
-use crate::modules::models::{DeployedModel, DeployedModelSet, DeployedModelUpdate, ModelRecommendation, TierModel, TierModelSet};
+use crate::modules::models::{DeployedModel, DeployedModelSet, DeployedModelUpdate, ModelDownloadUpdate, ModelRecommendation, TierModel, TierModelSet};
 use crate::modules::profile::{Profile, ProfilesFile};
 use crate::modules::ssh::SshConnection;
 use crate::modules::tailscale::TailscaleStatus;
@@ -26,6 +26,7 @@ pub enum Screen {
     AdminLogin,
     K8sSetup,
     K8sManage,
+    ValidateSecrets,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,6 +79,10 @@ pub struct App {
     pub model_cache_status: Vec<ModelCacheEntry>,
     pub model_cache_check_state: ModelCacheCheckState,
     pub active_tier_models: Option<TierModelSet>,
+
+    // Background model download state (auto-download from welcome screen)
+    pub model_bg_download_rx: Option<mpsc::Receiver<ModelDownloadUpdate>>,
+    pub model_bg_download_active: bool,
 
     // Deployed models state (hybrid dashboard)
     pub deployed_models: Option<DeployedModelSet>,
@@ -225,6 +230,15 @@ pub struct App {
     pub k8s_cluster_info: Option<K8sClusterInfo>,
     pub k8s_cluster_rx: Option<mpsc::Receiver<K8sClusterUpdate>>,
 
+    // Validate secrets screen state
+    pub validate_secrets_results: Vec<crate::modules::remote::SecretKeyStatus>,
+    pub validate_secrets_scroll: usize,
+    pub validate_secrets_loading: bool,
+    pub validate_secrets_rx: Option<mpsc::Receiver<ValidateSecretsUpdate>>,
+    pub validate_secrets_vault_file: String,
+    pub validate_secrets_is_remote: bool,
+    pub validate_secrets_error: Option<String>,
+
     // Profile state
     pub profiles: Option<ProfilesFile>,
     pub profile_selected: usize,
@@ -319,6 +333,8 @@ pub struct App {
     pub pending_sync_admin_login: bool,
     // Pending standalone code sync to remote host.
     pub pending_code_sync: bool,
+    // Pending compare secrets between local and remote.
+    pub pending_compare_secrets: bool,
 
     pub ssh_tunnel_process: Option<std::process::Child>,
 
@@ -380,6 +396,7 @@ pub struct ModelCacheEntry {
     pub name: String,
     pub role: String,
     pub cached: bool,
+    pub downloading: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -538,6 +555,14 @@ pub enum K8sManageUpdate {
     Complete { #[allow(dead_code)] success: bool },
 }
 
+pub enum ValidateSecretsUpdate {
+    Results {
+        keys: Vec<crate::modules::remote::SecretKeyStatus>,
+        local_error: Option<String>,
+        remote_error: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum K8sClusterStatus {
     Unknown,
@@ -624,6 +649,8 @@ impl App {
             model_cache_status: Vec::new(),
             model_cache_check_state: ModelCacheCheckState::NotChecked,
             active_tier_models: None,
+            model_bg_download_rx: None,
+            model_bg_download_active: false,
             deployed_models: None,
             deployed_models_rx: None,
             deployed_models_loading: false,
@@ -733,6 +760,13 @@ impl App {
             k8s_cluster_status: K8sClusterStatus::Unknown,
             k8s_cluster_info: None,
             k8s_cluster_rx: None,
+            validate_secrets_results: Vec::new(),
+            validate_secrets_scroll: 0,
+            validate_secrets_loading: false,
+            validate_secrets_rx: None,
+            validate_secrets_vault_file: String::new(),
+            validate_secrets_is_remote: false,
+            validate_secrets_error: None,
             profiles: None,
             profile_selected: 0,
             profile_lock: None,
@@ -780,6 +814,7 @@ impl App {
             pending_admin_login: false,
             pending_sync_admin_login: false,
             pending_code_sync: false,
+            pending_compare_secrets: false,
             ssh_tunnel_process: None,
             ssh_tunnel_active: false,
             ssh_tunnel_child: None,
@@ -923,7 +958,7 @@ impl App {
             };
         }
 
-        match &self.deployment_state {
+        let mut actions = match &self.deployment_state {
             DeploymentState::Unknown | DeploymentState::Checking => {
                 vec![]
             }
@@ -939,6 +974,12 @@ impl App {
             DeploymentState::Complete => {
                 vec!["Admin Login", "Manage Services", "Benchmark Models", "Update", "Clean Install"]
             }
+        };
+
+        if self.vault_password.is_some() && !actions.is_empty() {
+            actions.push("Validate Secrets");
         }
+
+        actions
     }
 }

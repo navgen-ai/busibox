@@ -357,6 +357,8 @@ fn render_docker_proxmox_system_info(app: &App) -> Vec<Line<'_>> {
         for entry in &app.model_cache_status {
             let (icon, style) = if entry.cached {
                 ("✓", theme::success())
+            } else if entry.downloading {
+                ("↓", theme::info())
             } else {
                 ("○", theme::warning())
             };
@@ -368,11 +370,22 @@ fn render_docker_proxmox_system_info(app: &App) -> Vec<Line<'_>> {
             ]));
         }
         let cached_count = app.model_cache_status.iter().filter(|e| e.cached).count();
+        let downloading_count = app.model_cache_status.iter().filter(|e| e.downloading).count();
         let total_count = app.model_cache_status.len();
         if cached_count == total_count {
             info_lines.push(Line::from(Span::styled(
                 "  All models ready",
                 theme::success(),
+            )));
+        } else if downloading_count > 0 {
+            info_lines.push(Line::from(Span::styled(
+                format!("  Downloading... {}/{} cached", cached_count, total_count),
+                theme::info(),
+            )));
+        } else if app.model_bg_download_active {
+            info_lines.push(Line::from(Span::styled(
+                format!("  Queued for download... {}/{} cached", cached_count, total_count),
+                theme::dim(),
             )));
         } else {
             info_lines.push(Line::from(Span::styled(
@@ -974,6 +987,13 @@ fn handle_action_select(app: &mut App, action: &str) {
             app.k8s_manage_action_complete = false;
             app.screen = Screen::K8sManage;
         }
+        "Validate Secrets" => {
+            app.set_message(
+                "⠋ Validating vault secrets...",
+                crate::app::MessageKind::Info,
+            );
+            app.pending_compare_secrets = true;
+        }
         _ => {}
     }
 }
@@ -1413,6 +1433,7 @@ pub fn check_model_cache(app: &mut App) {
                 name,
                 role,
                 cached,
+                downloading: false,
             })
             .collect();
     } else {
@@ -1424,6 +1445,7 @@ pub fn check_model_cache(app: &mut App) {
                     name: m.name.clone(),
                     role: m.role.clone(),
                     cached,
+                    downloading: false,
                 });
             }
         }
@@ -1523,6 +1545,113 @@ pub fn process_deployed_model_updates(app: &mut App) {
 
         if put_back {
             app.deployed_models_rx = Some(rx);
+        }
+    }
+}
+
+/// If the model cache check is done and there are uncached models, start
+/// downloading them in the background. Skips if downloads are already active.
+pub fn start_missing_model_downloads(app: &mut App) {
+    use crate::modules::models;
+
+    if app.model_bg_download_active {
+        return;
+    }
+    if app.model_cache_check_state != ModelCacheCheckState::Done {
+        return;
+    }
+
+    let missing: Vec<(String, String)> = app
+        .model_cache_status
+        .iter()
+        .filter(|e| !e.cached && !e.name.is_empty())
+        .map(|e| (e.name.clone(), e.role.clone()))
+        .collect();
+
+    if missing.is_empty() {
+        return;
+    }
+
+    let profile = match app.active_profile() {
+        Some((_, p)) => p.clone(),
+        None => return,
+    };
+
+    let is_remote = profile.remote;
+    let ssh_details = if is_remote {
+        match profile.effective_host() {
+            Some(host) => Some((
+                host.to_string(),
+                profile.effective_user().to_string(),
+                profile.effective_ssh_key().to_string(),
+            )),
+            None => return,
+        }
+    } else {
+        None
+    };
+    let remote_path = profile.effective_remote_path().to_string();
+
+    let rx = models::start_background_downloads(
+        missing,
+        app.repo_root.clone(),
+        is_remote,
+        ssh_details,
+        remote_path,
+    );
+
+    app.model_bg_download_rx = Some(rx);
+    app.model_bg_download_active = true;
+}
+
+/// Process background model download updates. Called from the main loop tick.
+pub fn process_model_download_updates(app: &mut App) {
+    use crate::modules::models::ModelDownloadUpdate;
+
+    if let Some(rx) = app.model_bg_download_rx.take() {
+        use std::sync::mpsc::TryRecvError;
+        let mut put_back = true;
+
+        loop {
+            match rx.try_recv() {
+                Ok(ModelDownloadUpdate::Started { model_name, .. }) => {
+                    for entry in &mut app.model_cache_status {
+                        if entry.name == model_name {
+                            entry.downloading = true;
+                        }
+                    }
+                }
+                Ok(ModelDownloadUpdate::Complete { model_name }) => {
+                    for entry in &mut app.model_cache_status {
+                        if entry.name == model_name {
+                            entry.cached = true;
+                            entry.downloading = false;
+                        }
+                    }
+                }
+                Ok(ModelDownloadUpdate::Failed { model_name, .. }) => {
+                    for entry in &mut app.model_cache_status {
+                        if entry.name == model_name {
+                            entry.downloading = false;
+                        }
+                    }
+                }
+                Ok(ModelDownloadUpdate::AllDone) => {
+                    app.model_bg_download_active = false;
+                    put_back = false;
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    app.model_bg_download_active = false;
+                    put_back = false;
+                    break;
+                }
+            }
+        }
+
+        if put_back {
+            app.model_bg_download_rx = Some(rx);
         }
     }
 }

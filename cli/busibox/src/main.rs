@@ -112,15 +112,30 @@ fn main() -> Result<()> {
         if !is_k8s {
             screens::welcome::check_model_cache(&mut app);
             screens::welcome::load_active_tier_models(&mut app);
+            screens::welcome::start_missing_model_downloads(&mut app);
         }
         screens::welcome::trigger_health_checks(&mut app);
     }
 
-    // If the active profile has an encrypted vault key, prompt for unlock on startup
+    // If the active profile has an encrypted vault key, prompt for unlock on startup.
+    // If there's no encrypted key but a legacy plaintext pass file exists, load it silently.
     if active_locked {
-        if let Some((id, _)) = app.active_profile() {
+        if let Some((id, profile)) = app.active_profile() {
             if modules::vault::has_vault_key(&id) {
                 app.pending_vault_setup = true;
+            } else {
+                let vault_prefix = resolve_vault_prefix(&id.to_string(), profile);
+                if let Some(legacy_path) = modules::vault::find_legacy_vault_pass(&vault_prefix) {
+                    if let Ok(pw) = std::fs::read_to_string(&legacy_path) {
+                        let pw = pw.trim().to_string();
+                        if !pw.is_empty() {
+                            if let Some((msg, kind)) = run_vault_upgrade(&app.repo_root, &vault_prefix, &pw, false) {
+                                app.set_message(&msg, kind);
+                            }
+                            app.vault_password = Some(pw);
+                        }
+                    }
+                }
             }
         }
     }
@@ -161,12 +176,18 @@ fn main() -> Result<()> {
         if app.screen == Screen::K8sManage && app.k8s_manage_action_running {
             app.k8s_manage_tick = app.k8s_manage_tick.wrapping_add(1);
         }
+        if app.screen == Screen::ValidateSecrets && app.validate_secrets_loading {
+            app.manage_tick = app.manage_tick.wrapping_add(1);
+        }
 
         // Drain health check updates
         screens::welcome::process_health_updates(&mut app);
 
         // Drain deployed model status updates
         screens::welcome::process_deployed_model_updates(&mut app);
+
+        // Drain background model download updates
+        screens::welcome::process_model_download_updates(&mut app);
 
         // Drain K8s cluster status updates
         screens::welcome::process_k8s_cluster_updates(&mut app);
@@ -413,6 +434,38 @@ fn main() -> Result<()> {
             }
         }
 
+        // Drain validate secrets updates
+        if let Some(rx) = app.validate_secrets_rx.take() {
+            use std::sync::mpsc::TryRecvError;
+            match rx.try_recv() {
+                Ok(app::ValidateSecretsUpdate::Results {
+                    keys,
+                    local_error,
+                    remote_error,
+                }) => {
+                    app.validate_secrets_results = keys;
+                    app.validate_secrets_loading = false;
+                    if let Some(err) = local_error {
+                        app.validate_secrets_error = Some(err);
+                    } else if let Some(err) = remote_error {
+                        app.validate_secrets_error =
+                            Some(format!("Remote: {}", err));
+                    }
+                    // don't put_back -- single-shot
+                }
+                Err(TryRecvError::Empty) => {
+                    app.validate_secrets_rx = Some(rx);
+                }
+                Err(TryRecvError::Disconnected) => {
+                    app.validate_secrets_loading = false;
+                    if app.validate_secrets_results.is_empty() {
+                        app.validate_secrets_error =
+                            Some("Worker disconnected unexpectedly".into());
+                    }
+                }
+            }
+        }
+
         // Handle deferred resume install (so status message renders first)
         if app.pending_resume_install {
             app.pending_resume_install = false;
@@ -432,6 +485,12 @@ fn main() -> Result<()> {
             perform_code_sync(&mut app);
         }
 
+        // Handle validate secrets (local vault check).
+        if app.pending_compare_secrets {
+            app.pending_compare_secrets = false;
+            perform_validate_secrets(&mut app);
+        }
+
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
@@ -444,8 +503,12 @@ fn main() -> Result<()> {
         if app.pending_vault_setup {
             app.pending_vault_setup = false;
             tui::suspend()?;
-            handle_vault_setup(&mut app);
+            let upgrade_msg = handle_vault_setup(&mut app);
             terminal = tui::resume()?;
+
+            if let Some((msg, kind)) = upgrade_msg {
+                app.set_message(&msg, kind);
+            }
 
             // If vault setup succeeded (password is set), start the install worker
             if app.vault_password.is_some() && app.screen == Screen::Install {
@@ -619,6 +682,7 @@ fn render(app: &App, f: &mut ratatui::Frame) {
         Screen::AdminLogin => screens::admin_login::render(f, app),
         Screen::K8sSetup => screens::k8s_setup::render(f, app),
         Screen::K8sManage => screens::k8s_manage::render(f, app),
+        Screen::ValidateSecrets => screens::validate_secrets::render(f, app),
     }
 
     // Profile header bar overlay (except Welcome and ProfileSelect)
@@ -698,6 +762,7 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         && !app.profile_edit_tier_selecting
         && app.screen != Screen::AdminLogin
         && app.screen != Screen::ModelBenchmark
+        && app.screen != Screen::ValidateSecrets
     {
         app.should_quit = true;
         return;
@@ -722,6 +787,7 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         Screen::AdminLogin => screens::admin_login::handle_key(app, key),
         Screen::K8sSetup => screens::k8s_setup::handle_key(app, key),
         Screen::K8sManage => screens::k8s_manage::handle_key(app, key),
+        Screen::ValidateSecrets => screens::validate_secrets::handle_key(app, key),
     }
 }
 
@@ -883,6 +949,21 @@ fn perform_sync_then_admin_login(app: &mut App) {
                 }
             }
 
+            // Clean legacy keys from local vault, then push to remote
+            {
+                let vault_prefix = resolve_vault_prefix(
+                    &app.active_profile().map(|(n, _)| n.to_string()).unwrap_or_default(),
+                    &profile,
+                );
+                if let Err(e) = remote::sync_vault_file(&app.repo_root, host, user, key, remote_path, &vault_prefix) {
+                    app.set_message(&format!("WARNING: vault push failed: {e}"), MessageKind::Warning);
+                }
+            }
+
+            // Clean up stale local state from remote (.busibox/, state files, pass files)
+            let cleanup_ssh = crate::modules::ssh::SshConnection::new(host, user, key);
+            let _ = remote::cleanup_remote_state(&cleanup_ssh, remote_path);
+
             // Redeploy deploy-api on remote so web install has latest code + secrets
             {
                 let make_args = "install SERVICE=deploy";
@@ -957,7 +1038,14 @@ fn perform_sync_then_admin_login(app: &mut App) {
     app.screen = Screen::AdminLogin;
 }
 
-/// Sync local busibox repo to the remote host (standalone, no follow-up action).
+/// Resolve the vault prefix for a profile. The profile name (key in profiles map)
+/// IS the vault prefix, but `profile.vault_prefix` can override it.
+fn resolve_vault_prefix(profile_name: &str, profile: &crate::modules::profile::Profile) -> String {
+    profile.vault_prefix.clone().unwrap_or_else(|| profile_name.to_string())
+}
+
+/// Sync local busibox repo to the remote host and clean up stale
+/// local state (.busibox/, vault files, pass files) from the remote.
 fn perform_code_sync(app: &mut App) {
     use crate::app::MessageKind;
 
@@ -985,14 +1073,177 @@ fn perform_code_sync(app: &mut App) {
     let key = profile.effective_ssh_key();
     let remote_path = profile.effective_remote_path();
 
-    match remote::sync(&app.repo_root, host, user, key, remote_path) {
-        Ok(()) => {
+    if let Err(e) = remote::sync(&app.repo_root, host, user, key, remote_path) {
+        app.set_message(&format!("Sync failed: {e}"), MessageKind::Error);
+        return;
+    }
+
+    // Push vault file to remote (already validated at profile unlock time)
+    if let Some((name, prof)) = app.active_profile() {
+        let vault_prefix = resolve_vault_prefix(&name.to_string(), prof);
+        if let Err(e) = remote::sync_vault_file(&app.repo_root, host, user, key, remote_path, &vault_prefix) {
+            app.set_message(&format!("WARNING: vault push failed: {e}"), MessageKind::Warning);
+            return;
+        }
+    }
+
+    // Clean up stale local state on remote (.busibox/, state files, vault pass files)
+    let ssh = crate::modules::ssh::SshConnection::new(host, user, key);
+    match remote::cleanup_remote_state(&ssh, remote_path) {
+        Ok(removed) if !removed.is_empty() => {
+            app.set_message(
+                &format!("✓ Synced + cleaned remote: {removed}"),
+                MessageKind::Success,
+            );
+        }
+        Ok(_) => {
             app.set_message("✓ Code synced to remote host", MessageKind::Success);
         }
         Err(e) => {
-            app.set_message(&format!("Sync failed: {e}"), MessageKind::Error);
+            app.set_message(
+                &format!("✓ Synced, but cleanup failed: {e}"),
+                MessageKind::Warning,
+            );
         }
     }
+}
+
+/// Switch to the ValidateSecrets screen and spawn a background worker to
+/// decrypt + parse the local (and optionally remote) vault file.
+fn perform_validate_secrets(app: &mut App) {
+    use crate::app::MessageKind;
+
+    let (profile_name, profile) = match app.active_profile() {
+        Some((name, p)) => (name.to_string(), p.clone()),
+        None => {
+            app.set_message("No active profile", MessageKind::Error);
+            return;
+        }
+    };
+
+    let vault_password = match &app.vault_password {
+        Some(pw) => pw.clone(),
+        None => {
+            app.set_message("Unlock vault first (select profile)", MessageKind::Info);
+            return;
+        }
+    };
+
+    let vault_prefix = resolve_vault_prefix(&profile_name, &profile);
+    let is_remote = profile.remote;
+    let vault_file = format!("vault.{vault_prefix}.yml");
+
+    // Reset screen state
+    app.validate_secrets_results.clear();
+    app.validate_secrets_scroll = 0;
+    app.validate_secrets_loading = true;
+    app.validate_secrets_error = None;
+    app.validate_secrets_vault_file = vault_file;
+    app.validate_secrets_is_remote = is_remote;
+    app.screen = Screen::ValidateSecrets;
+
+    let (tx, rx) = std::sync::mpsc::channel::<app::ValidateSecretsUpdate>();
+    app.validate_secrets_rx = Some(rx);
+
+    let repo_root = app.repo_root.clone();
+    let remote_host = profile.remote_host.clone();
+    let remote_user = profile.remote_user.clone();
+    let remote_key = profile.remote_ssh_key.clone();
+    let remote_busibox_path = profile
+        .remote_busibox_path
+        .clone()
+        .unwrap_or_else(|| "/root/busibox".to_string());
+
+    std::thread::spawn(move || {
+        use crate::modules::remote::{
+            decrypt_local_vault, decrypt_remote_vault, parse_vault_content, KeyState,
+            SecretKeyStatus,
+        };
+
+        // Decrypt local vault
+        let local_content = match decrypt_local_vault(&repo_root, &vault_prefix, &vault_password) {
+            Ok(Some(content)) => content,
+            Ok(None) => {
+                let _ = tx.send(app::ValidateSecretsUpdate::Results {
+                    keys: vec![],
+                    local_error: Some(format!("vault.{vault_prefix}.yml not found")),
+                    remote_error: None,
+                });
+                return;
+            }
+            Err(e) => {
+                let _ = tx.send(app::ValidateSecretsUpdate::Results {
+                    keys: vec![],
+                    local_error: Some(format!("{e}")),
+                    remote_error: None,
+                });
+                return;
+            }
+        };
+
+        let local_keys = parse_vault_content(&local_content);
+
+        // Decrypt remote vault if applicable
+        let (remote_keys, remote_error) = if is_remote {
+            if let (Some(host), Some(key)) = (&remote_host, &remote_key) {
+                let user = remote_user.as_deref().unwrap_or("root");
+                let ssh =
+                    crate::modules::ssh::SshConnection::new(host, user, key);
+                match decrypt_remote_vault(
+                    &ssh,
+                    &remote_busibox_path,
+                    &vault_prefix,
+                    &vault_password,
+                ) {
+                    Ok(content) => {
+                        let keys = parse_vault_content(&content);
+                        (Some(keys), None)
+                    }
+                    Err(e) => (None, Some(format!("{e}"))),
+                }
+            } else {
+                (None, Some("Missing remote host/key config".into()))
+            }
+        } else {
+            (None, None)
+        };
+
+        // Merge local + remote into SecretKeyStatus entries
+        let results: Vec<SecretKeyStatus> = local_keys
+            .iter()
+            .map(|(key_path, local_state)| {
+                let remote_state = if is_remote {
+                    match &remote_keys {
+                        Some(rk) => rk
+                            .iter()
+                            .find(|(k, _)| k == key_path)
+                            .map(|(_, s)| s.clone())
+                            .unwrap_or(KeyState::Missing),
+                        None => KeyState::NotChecked,
+                    }
+                } else {
+                    KeyState::NotChecked
+                };
+
+                let required = crate::modules::remote::REQUIRED_VAULT_KEYS
+                    .iter()
+                    .any(|rk| *rk == key_path);
+
+                SecretKeyStatus {
+                    key_path: key_path.clone(),
+                    required,
+                    local: local_state.clone(),
+                    remote: remote_state,
+                }
+            })
+            .collect();
+
+        let _ = tx.send(app::ValidateSecretsUpdate::Results {
+            keys: results,
+            local_error: None,
+            remote_error,
+        });
+    });
 }
 
 /// Generate admin login credentials by running `make login --json` and parsing output.
@@ -1278,7 +1529,8 @@ fn handle_admin_login(app: &mut App) {
 
 /// Handle vault setup with interactive password prompts.
 /// Called with TUI suspended so rpassword can read from the terminal.
-fn handle_vault_setup(app: &mut App) {
+/// Returns vault upgrade status message to display in TUI after resume.
+fn handle_vault_setup(app: &mut App) -> Option<(String, app::MessageKind)> {
     use modules::vault;
 
     let profile_id = match app.active_profile() {
@@ -1287,7 +1539,7 @@ fn handle_vault_setup(app: &mut App) {
             eprintln!("No active profile — cannot set up vault.");
             eprintln!("Press Enter to continue...");
             let _ = std::io::stdin().read_line(&mut String::new());
-            return;
+            return None;
         }
     };
 
@@ -1325,8 +1577,9 @@ fn handle_vault_setup(app: &mut App) {
                         Ok(enc) => match vault::decrypt_vault_password(&enc, &pw) {
                             Ok(vault_pw) => {
                                 eprintln!("✓ Vault unlocked\n");
+                                let result = run_vault_upgrade(&app.repo_root, &vault_prefix, &vault_pw, true);
                                 app.vault_password = Some(vault_pw);
-                                return;
+                                return result;
                             }
                             Err(_) => {
                                 eprintln!(
@@ -1349,7 +1602,7 @@ fn handle_vault_setup(app: &mut App) {
         eprintln!("Failed to unlock vault. Install will proceed without vault secrets.");
         eprintln!("Press Enter to continue...");
         let _ = std::io::stdin().read_line(&mut String::new());
-        return;
+        return None;
     }
 
     // Check for legacy plaintext password file — offer migration
@@ -1379,7 +1632,7 @@ fn handle_vault_setup(app: &mut App) {
                                             Err(e) => {
                                                 eprintln!("Error: {e}");
                                                 app.vault_password = Some(vault_pw);
-                                                return;
+                                                return None;
                                             }
                                         };
                                     if let Err(e) = vault::save_encrypted_vault(&key_path, &enc) {
@@ -1419,8 +1672,9 @@ fn handle_vault_setup(app: &mut App) {
                         }
                     }
 
+                    let result = run_vault_upgrade(&app.repo_root, &vault_prefix, &vault_pw, true);
                     app.vault_password = Some(vault_pw);
-                    return;
+                    return result;
                 }
             }
             Err(e) => {
@@ -1448,7 +1702,7 @@ fn handle_vault_setup(app: &mut App) {
                         Err(e) => {
                             eprintln!("Error: {e}");
                             app.vault_password = Some(vault_pw);
-                            return;
+                            return None;
                         }
                     };
                     if let Err(e) = vault::save_encrypted_vault(&key_path, &enc) {
@@ -1465,7 +1719,7 @@ fn handle_vault_setup(app: &mut App) {
         Err(e) => {
             eprintln!("Error: {e}");
             app.vault_password = Some(vault_pw);
-            return;
+            return None;
         }
     }
 
@@ -1475,9 +1729,76 @@ fn handle_vault_setup(app: &mut App) {
     // Create the Ansible vault file on the target
     create_ansible_vault(app, &vault_pw, &vault_prefix);
 
+    let result = run_vault_upgrade(&app.repo_root, &vault_prefix, &vault_pw, true);
     app.vault_password = Some(vault_pw);
     eprintln!("\n✓ Vault setup complete. Starting installation...\n");
     std::thread::sleep(std::time::Duration::from_secs(1));
+    result
+}
+
+/// Run vault auto-upgrade after vault password becomes available.
+/// Prints results to stderr (for use when TUI is suspended) or returns
+/// a status message for use in the TUI.
+fn run_vault_upgrade(repo_root: &std::path::Path, vault_prefix: &str, vault_pw: &str, print_to_stderr: bool) -> Option<(String, app::MessageKind)> {
+    use modules::remote::VaultUpgradeResult;
+
+    match modules::remote::validate_and_upgrade_vault(repo_root, vault_prefix, vault_pw) {
+        Ok(VaultUpgradeResult::Clean) => {
+            if print_to_stderr {
+                eprintln!("✓ Vault file validated — all keys present\n");
+            }
+            Some(("Vault validated — all keys present".into(), app::MessageKind::Success))
+        }
+        Ok(VaultUpgradeResult::Created { added }) => {
+            let msg = format!("Vault created with {} keys", added.len());
+            if print_to_stderr {
+                eprintln!("✓ {msg}");
+                if added.len() <= 10 {
+                    for k in &added {
+                        eprintln!("  + {k}");
+                    }
+                }
+                eprintln!();
+            }
+            Some((msg, app::MessageKind::Success))
+        }
+        Ok(VaultUpgradeResult::Upgraded { added, removed, copied }) => {
+            let parts: Vec<String> = [
+                if added.is_empty() { None } else { Some(format!("{} added", added.len())) },
+                if removed.is_empty() { None } else { Some(format!("{} removed", removed.len())) },
+                if copied.is_empty() { None } else { Some(format!("{} copied", copied.len())) },
+            ].into_iter().flatten().collect();
+            let msg = format!("Vault upgraded: {}", parts.join(", "));
+            if print_to_stderr {
+                eprintln!("✓ {msg}");
+                for k in &added {
+                    eprintln!("  + {k}");
+                }
+                for k in &removed {
+                    eprintln!("  - {k}");
+                }
+                for k in &copied {
+                    eprintln!("  ~ {k}");
+                }
+                eprintln!();
+            }
+            Some((msg, app::MessageKind::Success))
+        }
+        Ok(VaultUpgradeResult::Issues { message }) => {
+            let msg = format!("Vault issues: {message}");
+            if print_to_stderr {
+                eprintln!("⚠ {msg}\n");
+            }
+            Some((msg, app::MessageKind::Warning))
+        }
+        Err(e) => {
+            let msg = format!("Vault upgrade error: {e}");
+            if print_to_stderr {
+                eprintln!("⚠ {msg}\n");
+            }
+            Some((msg, app::MessageKind::Warning))
+        }
+    }
 }
 
 /// Offer to set up a separate master password for the remote user.

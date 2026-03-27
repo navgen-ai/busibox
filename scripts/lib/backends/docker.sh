@@ -393,6 +393,7 @@ backend_service_action() {
             export CONTAINER_PREFIX="$prefix"
             export COMPOSE_PROJECT_NAME="${prefix}-busibox"
             export BUSIBOX_ENV="$env"
+
             # Ensure LLM backend context is available to Ansible/docker compose.
             # Use explicit env first, then fall back to persisted install/profile state.
             local llm_backend llm_tier env_file
@@ -443,28 +444,42 @@ backend_service_action() {
             fi
 
             local cmd="ansible-playbook -i ${inventory} ${playbook} --tags ${tag} -e docker_force_recreate=true"
+            cmd="${cmd} -e vault_prefix=${VAULT_PREFIX:-$prefix}"
+            cmd="${cmd} -e deployment_environment=${VAULT_PREFIX:-$prefix}"
             if [[ "$service" == "core-apps" ]]; then
                 cmd="${cmd} -e enabled_apps=all"
             fi
 
             local _vpd="${BUSIBOX_VAULT_PASS_DIR:-${HOME}}"
-            local vault_pass_file="${_vpd}/.busibox-vault-pass-${prefix}"
-            if [[ ! -f "$vault_pass_file" ]]; then
-                vault_pass_file="$HOME/.busibox-vault-pass-${prefix}"
-            fi
+            local _vault_pass_prefix="${VAULT_PREFIX:-$prefix}"
+            local vault_pass_file=""
+            # Try profile-named pass file, then legacy name
+            for _try_prefix in "$_vault_pass_prefix" "$prefix"; do
+                if [[ -f "${_vpd}/.busibox-vault-pass-${_try_prefix}" ]]; then
+                    vault_pass_file="${_vpd}/.busibox-vault-pass-${_try_prefix}"
+                    break
+                elif [[ -f "$HOME/.busibox-vault-pass-${_try_prefix}" ]]; then
+                    vault_pass_file="$HOME/.busibox-vault-pass-${_try_prefix}"
+                    break
+                fi
+            done
 
-            # Prefer env-injected vault password (used by CLI/TUI manage flows).
-            # This avoids requiring plaintext vault password files on disk.
+            # Provide vault password sources to Ansible. Ansible tries each
+            # --vault-password-file in order until one succeeds at decryption.
             local env_script="${REPO_ROOT}/scripts/lib/vault-pass-from-env.sh"
+            local _added_vault_pass=false
             if [[ -n "${ANSIBLE_VAULT_PASSWORD:-}" && -f "$env_script" ]]; then
                 [[ -x "$env_script" ]] || chmod +x "$env_script"
                 cmd="${cmd} --vault-password-file ${env_script}"
-            elif [[ -f "$vault_pass_file" ]]; then
+                _added_vault_pass=true
+            fi
+            if [[ -n "$vault_pass_file" ]]; then
                 cmd="${cmd} --vault-password-file ${vault_pass_file}"
-            elif [[ -f "$HOME/.vault_pass" ]]; then
-                cmd="${cmd} --vault-password-file $HOME/.vault_pass"
-            else
-                warn "No vault password file found at ${vault_pass_file}"
+                _added_vault_pass=true
+            fi
+            if [[ "$_added_vault_pass" != "true" ]]; then
+                error "No vault password available (need ANSIBLE_VAULT_PASSWORD or ~/.busibox-vault-pass-${_vault_pass_prefix})"
+                return 1
             fi
 
             echo "Running: ${cmd}"

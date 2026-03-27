@@ -13,4 +13,5 @@ pub mod profile_select;
 pub mod setup_mode;
 pub mod ssh_setup;
 pub mod tailscale_setup;
+pub mod validate_secrets;
 pub mod welcome;

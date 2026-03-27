@@ -34,7 +34,6 @@ endif
 #   ~/.busibox-vault-pass-staging for staging
 #   ~/.busibox-vault-pass-demo for demo
 #   ~/.busibox-vault-pass-dev for development
-# Fallback: ~/.vault_pass (legacy)
 ENV_NAME=$(shell basename $(INV))
 ifeq ($(ENV_NAME),production)
   VAULT_PASS_FILE=~/.busibox-vault-pass-prod
@@ -46,17 +45,14 @@ else
   VAULT_PASS_FILE=~/.busibox-vault-pass-dev
 endif
 
-# Check if vault password file exists, fallback to legacy location
-# Priority: ANSIBLE_VAULT_PASSWORD env var > per-env file > legacy file
+# Priority: ANSIBLE_VAULT_PASSWORD env var > per-env vault pass file
 VAULT_FLAGS=$(shell \
   if [ -n "$$ANSIBLE_VAULT_PASSWORD" ]; then \
     echo "--vault-password-file $(CURDIR)/../../scripts/lib/vault-pass-from-env.sh"; \
   elif [ -f $(VAULT_PASS_FILE) ]; then \
     echo "--vault-password-file $(VAULT_PASS_FILE)"; \
-  elif [ -f ~/.vault_pass ]; then \
-    echo "--vault-password-file ~/.vault_pass"; \
   else \
-    echo "ERROR: Vault password file not found at $(VAULT_PASS_FILE) or ~/.vault_pass" >&2; \
+    echo "ERROR: No vault password (need ANSIBLE_VAULT_PASSWORD or $(VAULT_PASS_FILE))" >&2; \
     echo "--vault-password-file $(VAULT_PASS_FILE)"; \
   fi \
 )
@@ -85,12 +81,8 @@ DEPLOY_ENV=$(shell \
     echo "$$vp"; \
   elif [ -f "$(SECRETS_DIR)/vault.$(_INV_VAULT_PREFIX).yml" ]; then \
     echo "$(_INV_VAULT_PREFIX)"; \
-  elif [ -f "$(SECRETS_DIR)/vault.prod.yml" ]; then \
-    echo "prod"; \
-  elif [ -f "$(SECRETS_DIR)/vault.dev.yml" ]; then \
-    echo "dev"; \
   else \
-    echo "$(_INV_VAULT_PREFIX)"; \
+    echo "$${vp:-$(_INV_VAULT_PREFIX)}"; \
   fi \
 )
 
@@ -1080,16 +1072,10 @@ DOCKER_VAULT_FLAGS = $(shell \
 # Container prefix (default: dev)
 CONTAINER_PREFIX ?= dev
 
-# Docker vault prefix: VAULT_PREFIX > CONTAINER_PREFIX > dev
+# Docker vault prefix: VAULT_PREFIX > CONTAINER_PREFIX
 DOCKER_DEPLOY_ENV=$(shell \
   vp="$${VAULT_PREFIX:-$(CONTAINER_PREFIX)}"; \
-  if [ -n "$$vp" ] && [ -f "$(SECRETS_DIR)/vault.$${vp}.yml" ]; then \
-    echo "$$vp"; \
-  elif [ -f "$(SECRETS_DIR)/vault.dev.yml" ]; then \
-    echo "dev"; \
-  else \
-    echo "$$vp"; \
-  fi \
+  echo "$$vp" \
 )
 
 # Docker deployment variables

@@ -89,13 +89,17 @@ profile_init
 # Profile-aware: creates or uses existing profile for this installation
 _update_state_file_for_env() {
     local prefix
-    case "$ENVIRONMENT" in
-        demo) prefix="demo" ;;
-        development) prefix="dev" ;;
-        staging) prefix="staging" ;;
-        production) prefix="prod" ;;
-        *) prefix="dev" ;;
-    esac
+    if [[ -n "${VAULT_PREFIX:-}" ]]; then
+        prefix="$VAULT_PREFIX"
+    else
+        case "$ENVIRONMENT" in
+            demo) prefix="demo" ;;
+            development) prefix="dev" ;;
+            staging) prefix="staging" ;;
+            production) prefix="prod" ;;
+            *) prefix="dev" ;;
+        esac
+    fi
     
     # Check if we have an active profile that matches this environment/platform
     local active_profile
@@ -1970,10 +1974,11 @@ bootstrap_docker_ansible() {
     # Check for vault password file
     local vault_args=""
     local _vpd="${BUSIBOX_VAULT_PASS_DIR:-${HOME}}"
-    if [[ -f "${_vpd}/.busibox-vault-pass-${container_prefix}" ]]; then
-        vault_args="--vault-password-file=${_vpd}/.busibox-vault-pass-${container_prefix}"
-    elif [[ -f "${HOME}/.busibox-vault-pass-${container_prefix}" ]]; then
-        vault_args="--vault-password-file=${HOME}/.busibox-vault-pass-${container_prefix}"
+    local _vault_pass_prefix="${VAULT_PREFIX:-${container_prefix}}"
+    if [[ -f "${_vpd}/.busibox-vault-pass-${_vault_pass_prefix}" ]]; then
+        vault_args="--vault-password-file=${_vpd}/.busibox-vault-pass-${_vault_pass_prefix}"
+    elif [[ -f "${HOME}/.busibox-vault-pass-${_vault_pass_prefix}" ]]; then
+        vault_args="--vault-password-file=${HOME}/.busibox-vault-pass-${_vault_pass_prefix}"
     elif [[ -f "${HOME}/.vault_pass" ]]; then
         vault_args="--vault-password-file=${HOME}/.vault_pass"
     fi
@@ -1982,6 +1987,7 @@ bootstrap_docker_ansible() {
     local playbook_cmd="ansible-playbook -i inventory/docker docker.yml"
     playbook_cmd+=" -e container_prefix=${container_prefix}"
     playbook_cmd+=" -e busibox_env=${ENVIRONMENT:-development}"
+    playbook_cmd+=" -e vault_prefix=${VAULT_PREFIX:-${container_prefix}}"
     playbook_cmd+=" -e deployment_environment=${VAULT_PREFIX:-${container_prefix}}"
     playbook_cmd+=" -e github_token=${GITHUB_AUTH_TOKEN:-}"
     playbook_cmd+=" -e admin_email=${ADMIN_EMAIL:-}"
@@ -2459,16 +2465,21 @@ bootstrap_proxmox_ansible() {
         sleep 3
     fi
     
-    # Check for vault password file (environment-specific, then legacy fallbacks)
+    # Check for vault password file
+    # Prefer profile-based vault_prefix (from VAULT_PREFIX), fall back to legacy env prefix
     local vault_args=""
     local vault_prefix
-    case "$ENVIRONMENT" in
-        production) vault_prefix="prod" ;;
-        staging) vault_prefix="staging" ;;
-        development) vault_prefix="dev" ;;
-        demo) vault_prefix="demo" ;;
-        *) vault_prefix="dev" ;;
-    esac
+    if [[ -n "${VAULT_PREFIX:-}" ]]; then
+        vault_prefix="$VAULT_PREFIX"
+    else
+        case "$ENVIRONMENT" in
+            production) vault_prefix="prod" ;;
+            staging) vault_prefix="staging" ;;
+            development) vault_prefix="dev" ;;
+            demo) vault_prefix="demo" ;;
+            *) vault_prefix="dev" ;;
+        esac
+    fi
     local _vpd="${BUSIBOX_VAULT_PASS_DIR:-${HOME}}"
     if [[ -f "${_vpd}/.busibox-vault-pass-${vault_prefix}" ]]; then
         vault_args="--vault-password-file=${_vpd}/.busibox-vault-pass-${vault_prefix}"
@@ -2485,7 +2496,8 @@ bootstrap_proxmox_ansible() {
     # Build ansible-playbook command
     local playbook_cmd="ansible-playbook -i inventory/${inventory_name} site.yml"
     playbook_cmd+=" -e busibox_env=${ENVIRONMENT}"
-    playbook_cmd+=" -e deployment_environment=${VAULT_PREFIX:-${vault_prefix}}"
+    playbook_cmd+=" -e vault_prefix=${vault_prefix}"
+    playbook_cmd+=" -e deployment_environment=${vault_prefix}"
     playbook_cmd+=" -e github_token=${GITHUB_AUTH_TOKEN:-}"
     playbook_cmd+=" -e admin_email=${ADMIN_EMAIL:-}"
     

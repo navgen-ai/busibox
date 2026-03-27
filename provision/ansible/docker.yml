@@ -58,44 +58,102 @@
           ═══════════════════════════════════════════════════════════════════
       tags: always
 
-    # Multi-vault architecture: Load environment-specific vault file
-    # Priority: vault.{prefix}.yml > vault.yml (legacy fallback)
-    - name: Check for environment-specific vault file
+    # Vault file: vault.{vault_prefix}.yml (no legacy fallbacks)
+    - name: Check for vault file
       ansible.builtin.stat:
         path: "{{ playbook_dir }}/roles/secrets/vars/vault.{{ vault_prefix | default(container_prefix) | default('dev') }}.yml"
       register: env_vault_file
       tags: always
 
-    - name: Load secrets from environment-specific vault
+    - name: Fail if vault file missing
+      ansible.builtin.fail:
+        msg: |
+          ❌ VAULT FILE NOT FOUND
+
+          Expected: roles/secrets/vars/vault.{{ vault_prefix | default(container_prefix) | default('dev') }}.yml
+          Full path: {{ playbook_dir }}/roles/secrets/vars/vault.{{ vault_prefix | default(container_prefix) | default('dev') }}.yml
+
+          The vault file must exist. Run 'busibox install' to generate it,
+          or ensure VAULT_PREFIX matches an existing vault file.
+      when: not env_vault_file.stat.exists
+      tags: always
+
+    - name: Load secrets from vault
       ansible.builtin.include_vars:
         file: "roles/secrets/vars/vault.{{ vault_prefix | default(container_prefix) | default('dev') }}.yml"
-      when: env_vault_file.stat.exists
       no_log: false
       tags: always
 
-    - name: Load secrets from legacy vault (fallback)
-      ansible.builtin.include_vars:
-        file: roles/secrets/vars/vault.yml
-      when: not env_vault_file.stat.exists
-      no_log: false
-      ignore_errors: true
-      tags: always
-    
-    - name: Warn if no vault loaded
-      ansible.builtin.debug:
-        msg: |
-          ⚠️  WARNING: No vault file loaded!
-          
-          Expected vault file: roles/secrets/vars/vault.{{ vault_prefix | default(container_prefix) | default('dev') }}.yml
-          Fallback vault file: roles/secrets/vars/vault.yml
-          
-          Secrets may not be available. Deployment may fail.
-      when: not env_vault_file.stat.exists
+    - name: Assert vault secrets loaded successfully
+      ansible.builtin.assert:
+        that:
+          - secrets is defined
+          - secrets is mapping
+        fail_msg: |
+          ❌ VAULT SECRETS NOT AVAILABLE
+
+          The vault file was loaded but 'secrets' is not available as a mapping.
+          The vault should have been validated and upgraded at profile unlock time.
+          Run 'busibox' and re-select your profile to trigger vault auto-upgrade.
+        success_msg: "✓ Vault secrets loaded ({{ secrets.keys() | list | length }} top-level keys)"
       tags: always
 
     - name: Load shared secrets mapping
       ansible.builtin.include_vars:
         file: "{{ playbook_dir }}/roles/secrets/vars/shared_secrets.yml"
+      tags: always
+
+    - name: Validate required secrets are available
+      ansible.builtin.assert:
+        that:
+          - busibox_secrets.POSTGRES_PASSWORD | default('') | length > 0
+          - busibox_secrets.MINIO_ROOT_USER | default('') | length > 0
+          - busibox_secrets.MINIO_ROOT_PASSWORD | default('') | length > 0
+          - busibox_secrets.AUTHZ_MASTER_KEY | default('') | length > 0
+          - busibox_secrets.SSO_JWT_SECRET | default('') | length > 0
+          - busibox_secrets.LITELLM_MASTER_KEY | default('') | length > 0
+        fail_msg: |
+          ❌ REQUIRED SECRETS MISSING
+
+          One or more required secrets are empty or not loaded from the vault.
+          This usually means the vault file could not be decrypted or has placeholder values.
+
+          Vault prefix: {{ vault_prefix | default(container_prefix) | default('dev') }}
+          Expected file: roles/secrets/vars/vault.{{ vault_prefix | default(container_prefix) | default('dev') }}.yml
+
+          Values found:
+            POSTGRES_PASSWORD:  {{ '✓' if (busibox_secrets.POSTGRES_PASSWORD | default('') | length > 0) else '✗ MISSING' }}
+            MINIO_ROOT_USER:    {{ '✓' if (busibox_secrets.MINIO_ROOT_USER | default('') | length > 0) else '✗ MISSING' }}
+            MINIO_ROOT_PASSWORD:{{ '✓' if (busibox_secrets.MINIO_ROOT_PASSWORD | default('') | length > 0) else '✗ MISSING' }}
+            AUTHZ_MASTER_KEY:   {{ '✓' if (busibox_secrets.AUTHZ_MASTER_KEY | default('') | length > 0) else '✗ MISSING' }}
+            SSO_JWT_SECRET:     {{ '✓' if (busibox_secrets.SSO_JWT_SECRET | default('') | length > 0) else '✗ MISSING' }}
+            LITELLM_MASTER_KEY: {{ '✓' if (busibox_secrets.LITELLM_MASTER_KEY | default('') | length > 0) else '✗ MISSING' }}
+
+          Check that:
+            1. The vault file exists and can be decrypted with the current vault password
+            2. Secret values are not CHANGE_ME placeholders
+            3. ANSIBLE_VAULT_PASSWORD is set correctly
+        success_msg: "✓ All required secrets validated"
+      tags: always
+
+    - name: Warn about placeholder secrets
+      ansible.builtin.debug:
+        msg: |
+          ⚠️  WARNING: Some secrets appear to be placeholder values (CHANGE_ME).
+          These should be replaced with real values before production use.
+
+          Placeholder values found in:
+          {% if 'CHANGE_ME' in (busibox_secrets.POSTGRES_PASSWORD | default('')) %}  - POSTGRES_PASSWORD{% endif %}
+          {% if 'CHANGE_ME' in (busibox_secrets.MINIO_ROOT_USER | default('')) %}  - MINIO_ROOT_USER{% endif %}
+          {% if 'CHANGE_ME' in (busibox_secrets.MINIO_ROOT_PASSWORD | default('')) %}  - MINIO_ROOT_PASSWORD{% endif %}
+          {% if 'CHANGE_ME' in (busibox_secrets.AUTHZ_MASTER_KEY | default('')) %}  - AUTHZ_MASTER_KEY{% endif %}
+          {% if 'CHANGE_ME' in (busibox_secrets.SSO_JWT_SECRET | default('')) %}  - SSO_JWT_SECRET{% endif %}
+      when: >
+        'CHANGE_ME' in (busibox_secrets.POSTGRES_PASSWORD | default(''))
+        or 'CHANGE_ME' in (busibox_secrets.MINIO_ROOT_USER | default(''))
+        or 'CHANGE_ME' in (busibox_secrets.MINIO_ROOT_PASSWORD | default(''))
+        or 'CHANGE_ME' in (busibox_secrets.AUTHZ_MASTER_KEY | default(''))
+        or 'CHANGE_ME' in (busibox_secrets.SSO_JWT_SECRET | default(''))
       tags: always
 
     - name: Initialize Docker common

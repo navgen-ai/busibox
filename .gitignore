@@ -56,6 +56,7 @@ provision/ansible/roles/secrets/vars/vault.yml
 provision/ansible/roles/secrets/vars/vault.*.yml
 !provision/ansible/roles/secrets/vars/vault.example.yml
 provision/ansible/roles/secrets/vars/backups/
+*.yml.bak
 ssl
 
 # Local installation config (generated from state file, contains network octets)

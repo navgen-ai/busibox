@@ -35,9 +35,10 @@ const FIELD_LABELS: &[&str] = &[
     "K8s Overlay",
     "Spot Token",
     "Dev Apps Dir",
+    "HuggingFace Token",
 ];
 
-const FIELD_COUNT: usize = 24;
+const FIELD_COUNT: usize = 25;
 
 const FIELD_LABEL: usize = 0;
 const FIELD_ENVIRONMENT: usize = 1;
@@ -63,6 +64,7 @@ const FIELD_KUBECONFIG: usize = 20;
 const FIELD_K8S_OVERLAY: usize = 21;
 const FIELD_SPOT_TOKEN: usize = 22;
 const FIELD_DEV_APPS_DIR: usize = 23;
+const FIELD_HF_TOKEN: usize = 24;
 
 fn visible_fields(profile: &profile::Profile) -> Vec<usize> {
     let mut fields: Vec<usize> = (0..FIELD_COUNT).collect();
@@ -541,6 +543,11 @@ fn handle_nav_mode(app: &mut App, key: KeyEvent) {
                 app.profile_edit_buffer = profile.spot_token.clone().unwrap_or_default();
                 app.profile_editing = true;
                 app.input_mode = InputMode::Editing;
+            } else if app.profile_edit_field == FIELD_HF_TOKEN {
+                let profile = get_editing_profile(app);
+                app.profile_edit_buffer = profile.huggingface_token.clone().unwrap_or_default();
+                app.profile_editing = true;
+                app.input_mode = InputMode::Editing;
             } else {
                 let profile = get_editing_profile(app);
                 app.profile_edit_buffer = field_value(&profile, app.profile_edit_field);
@@ -726,6 +733,7 @@ fn default_profile() -> profile::Profile {
         k8s_overlay: None,
         spot_token: None,
         dev_apps_dir: None,
+        huggingface_token: None,
     }
 }
 
@@ -811,6 +819,17 @@ fn field_value(profile: &profile::Profile, field: usize) -> String {
             })
             .unwrap_or_default(),
         FIELD_DEV_APPS_DIR => profile.dev_apps_dir.clone().unwrap_or_default(),
+        FIELD_HF_TOKEN => profile
+            .huggingface_token
+            .as_ref()
+            .map(|t| {
+                if t.len() > 8 {
+                    format!("{}...{}", &t[..4], &t[t.len() - 4..])
+                } else {
+                    t.clone()
+                }
+            })
+            .unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -849,6 +868,7 @@ fn field_hint(field: usize, profile: &profile::Profile) -> String {
         FIELD_K8S_OVERLAY => "Kustomize overlay name".into(),
         FIELD_SPOT_TOKEN => "Rackspace Spot API token for node management".into(),
         FIELD_DEV_APPS_DIR => "Host path to local app source trees (e.g. /Users/you/Code)".into(),
+        FIELD_HF_TOKEN => "HuggingFace API token (huggingface.co/settings/tokens)".into(),
         _ => String::new(),
     }
 }
@@ -1082,6 +1102,15 @@ fn apply_field(app: &mut App, field: usize, value: &str) {
             } else {
                 Some(value.to_string())
             };
+        }
+        FIELD_HF_TOKEN => {
+            if !value.contains("...") {
+                profile.huggingface_token = if value.is_empty() {
+                    None
+                } else {
+                    Some(value.to_string())
+                };
+            }
         }
         _ => {}
     }

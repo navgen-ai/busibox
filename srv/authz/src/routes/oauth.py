@@ -339,6 +339,62 @@ async def _ensure_bootstrap_admin_users() -> None:
             logger.info("Assigned Admin role to user", email=email_lower, user_id=user_id)
 
 
+CORE_APP_IDS = [
+    "busibox-agents",
+    "busibox-appbuilder",
+    "busibox-media",
+    "busibox-chat",
+    "busibox-documents",
+    "busibox-admin",
+]
+
+
+async def _ensure_bootstrap_core_app_bindings_in_db(pg_service, db_name: str = "production") -> None:
+    """
+    Ensure Admin and User roles have RBAC bindings to all core built-in apps.
+
+    Without these bindings, users with the Admin/User role cannot exchange
+    tokens for app-scoped access (the token exchange checks
+    ``user_can_access_resource``).  This is idempotent via ON CONFLICT.
+    """
+    admin_role = await pg_service.get_role_by_name("Admin")
+    user_role = await pg_service.get_role_by_name("User")
+
+    if not admin_role:
+        logger.warning(f"Admin role not found in {db_name} — skipping core app binding bootstrap")
+        return
+
+    roles_to_bind = [admin_role]
+    if user_role:
+        roles_to_bind.append(user_role)
+
+    async with pg_service.acquire(None, None) as conn:
+        for role in roles_to_bind:
+            for app_id in CORE_APP_IDS:
+                await conn.execute(
+                    """
+                    INSERT INTO authz_role_bindings (role_id, resource_type, resource_id)
+                    VALUES ($1, 'app', $2)
+                    ON CONFLICT (role_id, resource_type, resource_id) DO NOTHING
+                    """,
+                    uuid.UUID(role["id"]),
+                    app_id,
+                )
+        logger.info(
+            "Ensured core app bindings",
+            db=db_name,
+            roles=[r["name"] for r in roles_to_bind],
+            apps=CORE_APP_IDS,
+        )
+
+
+async def _ensure_bootstrap_core_app_bindings() -> None:
+    """Bootstrap core app RBAC bindings in production and (if enabled) test databases."""
+    await _ensure_bootstrap_core_app_bindings_in_db(_pg, "production")
+    if _pg_test:
+        await _ensure_bootstrap_core_app_bindings_in_db(_pg_test, "test")
+
+
 _bootstrap_done = False
 
 
@@ -414,7 +470,10 @@ async def _ensure_bootstrap(force: bool = False) -> None:
     # 6) bootstrap admin users from ADMIN_EMAILS config
     await _ensure_bootstrap_admin_users()
 
-    # 7) ensure test database has a signing key in test mode
+    # 7) ensure Admin and User roles have bindings to core built-in apps
+    await _ensure_bootstrap_core_app_bindings()
+
+    # 8) ensure test database has a signing key in test mode
     if _pg_test:
         test_active_key = await _pg_test.get_active_signing_key()
         if not test_active_key:

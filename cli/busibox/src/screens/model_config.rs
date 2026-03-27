@@ -750,6 +750,7 @@ fn save_profile_and_continue(app: &mut App) {
             None
         },
         dev_apps_dir: None,
+        huggingface_token: None,
     };
 
     match profile::create_profile(&app.repo_root, &profile_id, profile, true) {

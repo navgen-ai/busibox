@@ -500,9 +500,12 @@ pub fn check_service_pub(
 /// Run all health checks, sending results through the channel as they complete.
 ///
 /// For Proxmox: builds a single batched SSH command that runs all curl/ping checks
-/// in one round-trip, then parses the results. This avoids flaky parallel SSH issues.
+/// in one round-trip, then parses the results.
 ///
-/// For Docker (local or remote-docker): runs checks in parallel threads since each
+/// For remote Docker: also batches all checks into a single SSH command to avoid
+/// connection stampede (SSH MaxSessions limits cause random failures with 25+ threads).
+///
+/// For local Docker: runs checks in parallel threads since each
 /// check is a local subprocess or a single SSH call with no contention.
 ///
 /// `vllm_network_base`: when staging uses production vLLM, this points vLLM health
@@ -520,8 +523,10 @@ pub fn run_health_checks(
     std::thread::spawn(move || {
         if is_proxmox {
             run_health_checks_proxmox_batched(&defs, &ssh_details, &network_base, &vllm_network_base, &tx);
+        } else if let Some(ref details) = ssh_details {
+            run_health_checks_remote_batched(&defs, &host, &prefix, details, &tx);
         } else {
-            run_health_checks_parallel(&defs, &host, &prefix, &ssh_details, &network_base, &tx);
+            run_health_checks_local_parallel(&defs, &host, &prefix, &tx);
         }
         let _ = tx.send(HealthUpdate::Complete);
     });
@@ -568,14 +573,14 @@ fn run_health_checks_proxmox_batched(
             CheckMethod::Http { path, port } => {
                 let url = format!("http://{ip}:{port}{path}");
                 format!(
-                    "echo -n '{marker}:'; curl -s -o /dev/null -w '%{{http_code}}' --max-time 5 --connect-timeout 3 '{url}' 2>/dev/null || echo 000"
+                    "echo \"{marker}:$(curl -s -o /dev/null -w '%{{http_code}}' --max-time 5 --connect-timeout 3 '{url}' 2>/dev/null || echo 000)\""
                 )
             }
             CheckMethod::Cli { .. } => {
                 if let Some((port, path)) = def.proxmox_health {
                     let url = format!("http://{ip}:{port}{path}");
                     format!(
-                        "echo -n '{marker}:'; curl -s -o /dev/null -w '%{{http_code}}' --max-time 5 --connect-timeout 3 '{url}' 2>/dev/null || echo 000"
+                        "echo \"{marker}:$(curl -s -o /dev/null -w '%{{http_code}}' --max-time 5 --connect-timeout 3 '{url}' 2>/dev/null || echo 000)\""
                     )
                 } else {
                     format!(
@@ -587,7 +592,7 @@ fn run_health_checks_proxmox_batched(
         commands.push(check_cmd);
     }
 
-    let batch = commands.join("; ");
+    let batch = format!("{}; true", commands.join("; "));
     let full_cmd = format!("{}{batch}", remote::SHELL_PATH_PREAMBLE);
 
     let output = ssh.run(&full_cmd).unwrap_or_default();
@@ -617,13 +622,11 @@ fn run_health_checks_proxmox_batched(
     }
 }
 
-/// Non-Proxmox parallel health checks (Docker local/remote).
-fn run_health_checks_parallel(
+/// Docker local: parallel health checks using threads (no SSH overhead).
+fn run_health_checks_local_parallel(
     defs: &[ServiceHealthDef],
     host: &str,
     prefix: &str,
-    ssh_details: &Option<(String, String, String)>,
-    network_base: &str,
     tx: &mpsc::Sender<HealthUpdate>,
 ) {
     let mut handles = Vec::new();
@@ -632,22 +635,16 @@ fn run_health_checks_parallel(
         let def = def.clone();
         let host = host.to_string();
         let prefix = prefix.to_string();
-        let ssh_details = ssh_details.clone();
-        let network_base = network_base.to_string();
         let tx = tx.clone();
 
         let handle = std::thread::spawn(move || {
-            let ssh = ssh_details.as_ref().map(|(h, u, k)| {
-                SshConnection::new(h, u, k)
-            });
-
             let status = check_service(
                 &def,
                 &host,
                 &prefix,
-                ssh.as_ref(),
+                None,
                 false,
-                &network_base,
+                "",
             );
 
             let _ = tx.send(HealthUpdate::ServiceResult(ServiceHealthResult {
@@ -661,6 +658,82 @@ fn run_health_checks_parallel(
 
     for handle in handles {
         let _ = handle.join();
+    }
+}
+
+/// Docker remote: batch all checks into a single SSH command to avoid
+/// connection stampede (SSH MaxSessions/MaxStartups limits cause random
+/// failures when ~25 threads each open their own connection).
+///
+/// Each check emits a marker-delimited line so we can parse results reliably.
+/// The batch ends with `; true` to force exit code 0 — without this,
+/// `ssh.run()` returns Err when the last check fails, discarding ALL output.
+fn run_health_checks_remote_batched(
+    defs: &[ServiceHealthDef],
+    host: &str,
+    prefix: &str,
+    ssh_details: &(String, String, String),
+    tx: &mpsc::Sender<HealthUpdate>,
+) {
+    let (h, u, k) = ssh_details;
+    let ssh = SshConnection::new(h, u, k);
+
+    let marker = "___BUSIBOX_SEP___";
+    let mut commands: Vec<String> = Vec::new();
+
+    for def in defs {
+        let check_cmd = match &def.check {
+            CheckMethod::Http { path, port } => {
+                let url = format!("http://{host}:{port}{path}");
+                // Emit marker + HTTP status code in one atomic echo.
+                // `|| true` ensures a curl connection failure doesn't break the chain.
+                format!(
+                    "echo \"{marker}:$(curl -s -o /dev/null -w '%{{http_code}}' --max-time 3 --connect-timeout 2 '{url}' 2>/dev/null || echo 000)\""
+                )
+            }
+            CheckMethod::Cli { command } => {
+                let cmd = command.replace("{PREFIX}", prefix);
+                // Capture exit code; suppress all stdout/stderr from the check itself.
+                format!(
+                    "{cmd} >/dev/null 2>&1 && echo '{marker}:CLI_OK' || echo '{marker}:CLI_FAIL'"
+                )
+            }
+        };
+        commands.push(check_cmd);
+    }
+
+    // `; true` forces exit 0 so ssh.run() always returns Ok with the full output
+    let batch = format!("{}; true", commands.join("; "));
+    let full_cmd = format!("{}{batch}", remote::SHELL_PATH_PREAMBLE);
+
+    let output = ssh.run(&full_cmd).unwrap_or_default();
+    let results: Vec<&str> = output.split(marker).filter(|s| !s.is_empty()).collect();
+
+    for (i, def) in defs.iter().enumerate() {
+        let status = if let Some(result) = results.get(i) {
+            let trimmed = result.trim().trim_start_matches(':');
+            if trimmed == "CLI_OK" {
+                HealthStatus::Healthy
+            } else if trimmed == "CLI_FAIL" {
+                HealthStatus::Down
+            } else {
+                let code = trimmed.parse::<u16>().unwrap_or(0);
+                match code {
+                    0 => HealthStatus::Down,
+                    200..=299 | 301 | 302 | 401 | 403 => HealthStatus::Healthy,
+                    500..=599 => HealthStatus::Unhealthy,
+                    _ => HealthStatus::Unhealthy,
+                }
+            }
+        } else {
+            HealthStatus::Down
+        };
+
+        let _ = tx.send(HealthUpdate::ServiceResult(ServiceHealthResult {
+            name: def.name.to_string(),
+            group: def.group.to_string(),
+            status,
+        }));
     }
 }
 
@@ -710,6 +783,11 @@ pub fn aggregate_groups(results: &[ServiceHealthResult]) -> Vec<GroupHealth> {
 }
 
 /// Determine deployment state from health results (replaces docker ps parsing).
+///
+/// To avoid the action menu flickering between states as results stream in,
+/// we only commit to a "lesser" state (Partial/None) once ALL checks have
+/// finished. However, we can promote to BootstrapComplete or Complete as soon
+/// as the relevant services report healthy — no need to wait for stragglers.
 pub fn deployment_state_from_health(results: &[ServiceHealthResult]) -> crate::app::DeploymentState {
     use crate::app::DeploymentState;
 
@@ -717,26 +795,21 @@ pub fn deployment_state_from_health(results: &[ServiceHealthResult]) -> crate::a
         return DeploymentState::Checking;
     }
 
+    let any_checking = results.iter().any(|r| r.status == HealthStatus::Checking);
+
     let is_up = |name: &str| -> bool {
         results
             .iter()
             .any(|r| r.name == name && r.status == HealthStatus::Healthy)
     };
 
-    let total_healthy = results
-        .iter()
-        .filter(|r| r.status == HealthStatus::Healthy)
-        .count();
-
-    if total_healthy == 0 {
-        return DeploymentState::None;
-    }
-
     let bootstrap_done = is_up("postgres")
         && is_up("authz")
+        && is_up("config")
         && is_up("deploy")
         && is_up("proxy")
-        && is_up("portal");
+        && is_up("portal")
+        && is_up("admin");
 
     let full_platform = bootstrap_done && is_up("agent") && is_up("litellm");
 
@@ -744,8 +817,18 @@ pub fn deployment_state_from_health(results: &[ServiceHealthResult]) -> crate::a
         DeploymentState::Complete
     } else if bootstrap_done {
         DeploymentState::BootstrapComplete
+    } else if any_checking {
+        DeploymentState::Checking
     } else {
-        DeploymentState::Partial(total_healthy)
+        let total_healthy = results
+            .iter()
+            .filter(|r| r.status == HealthStatus::Healthy)
+            .count();
+        if total_healthy == 0 {
+            DeploymentState::None
+        } else {
+            DeploymentState::Partial(total_healthy)
+        }
     }
 }
 

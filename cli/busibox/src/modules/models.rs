@@ -119,6 +119,16 @@ pub enum DeployedModelUpdate {
     Complete,
 }
 
+// --- Background model download types ---
+
+#[derive(Debug, Clone)]
+pub enum ModelDownloadUpdate {
+    Started { model_name: String, role: String },
+    Complete { model_name: String },
+    Failed { model_name: String, error: String },
+    AllDone,
+}
+
 #[derive(Debug, Deserialize)]
 struct ModelConfigFile {
     models: Option<HashMap<String, ModelConfigEntry>>,
@@ -1079,4 +1089,136 @@ fn estimate_model_size(name: &str) -> f64 {
     } else {
         2.0
     }
+}
+
+// --- Background model downloads ---
+
+/// Priority order for download roles. Lower index = higher priority.
+const DOWNLOAD_PRIORITY: &[&str] = &["embed", "fast", "agent", "voice", "transcribe", "image"];
+
+fn role_priority(role: &str) -> usize {
+    DOWNLOAD_PRIORITY
+        .iter()
+        .position(|&r| role.contains(r))
+        .unwrap_or(DOWNLOAD_PRIORITY.len())
+}
+
+/// Spawn a background thread that downloads missing models sequentially,
+/// prioritized by install criticality (embed/fast/agent first).
+///
+/// For remote profiles, runs `scripts/llm/download-models.sh <role>` via SSH.
+/// For local profiles, runs the script directly.
+pub fn start_background_downloads(
+    missing_models: Vec<(String, String)>, // (model_name, role)
+    repo_root: std::path::PathBuf,
+    is_remote: bool,
+    ssh_details: Option<(String, String, String)>, // (host, user, key_path)
+    remote_path: String,
+) -> mpsc::Receiver<ModelDownloadUpdate> {
+    let (tx, rx) = mpsc::channel();
+
+    std::thread::spawn(move || {
+        let mut sorted = missing_models;
+        sorted.sort_by_key(|(_, role)| role_priority(role));
+
+        for (model_name, role) in &sorted {
+            let _ = tx.send(ModelDownloadUpdate::Started {
+                model_name: model_name.clone(),
+                role: role.clone(),
+            });
+
+            let result = if is_remote {
+                download_model_remote(&ssh_details, &remote_path, &role)
+            } else {
+                download_model_local(&repo_root, &role, model_name)
+            };
+
+            match result {
+                Ok(0) => {
+                    let _ = tx.send(ModelDownloadUpdate::Complete {
+                        model_name: model_name.clone(),
+                    });
+                }
+                Ok(code) => {
+                    let _ = tx.send(ModelDownloadUpdate::Failed {
+                        model_name: model_name.clone(),
+                        error: format!("exit code {code}"),
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(ModelDownloadUpdate::Failed {
+                        model_name: model_name.clone(),
+                        error: e.to_string(),
+                    });
+                }
+            }
+        }
+
+        let _ = tx.send(ModelDownloadUpdate::AllDone);
+    });
+
+    rx
+}
+
+fn download_model_remote(
+    ssh_details: &Option<(String, String, String)>,
+    remote_path: &str,
+    role: &str,
+) -> std::result::Result<i32, color_eyre::eyre::Error> {
+    let (host, user, key) = match ssh_details {
+        Some(d) => d,
+        None => return Err(color_eyre::eyre::eyre!("No SSH connection")),
+    };
+    let ssh = crate::modules::ssh::SshConnection::new(host, user, key);
+    let cmd = format!(
+        "cd {} && bash scripts/llm/download-models.sh {} 2>&1",
+        remote_path, role
+    );
+    let full_cmd = format!(
+        "{}{}",
+        crate::modules::remote::SHELL_PATH_PREAMBLE,
+        cmd,
+    );
+    match ssh.run(&full_cmd) {
+        Ok(_output) => Ok(0),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn download_model_local(
+    repo_root: &std::path::Path,
+    role: &str,
+    _model_name: &str,
+) -> std::result::Result<i32, color_eyre::eyre::Error> {
+    let script = repo_root.join("scripts/llm/download-models.sh");
+    if !script.exists() {
+        return Err(color_eyre::eyre::eyre!(
+            "download-models.sh not found at {}",
+            script.display()
+        ));
+    }
+
+    let status = std::process::Command::new("bash")
+        .args([script.to_str().unwrap(), role])
+        .current_dir(repo_root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+
+    Ok(status.code().unwrap_or(1))
+}
+
+/// Returns true if any of the critical roles (embed, fast, agent) are still
+/// downloading or pending.
+#[allow(dead_code)]
+pub fn has_critical_downloads_pending(
+    cache_status: &[crate::app::ModelCacheEntry],
+) -> bool {
+    cache_status.iter().any(|e| {
+        !e.cached
+            && (e.role.contains("embed")
+                || e.role.contains("fast")
+                || e.role.contains("agent"))
+    })
 }

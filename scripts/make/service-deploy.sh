@@ -332,8 +332,8 @@ deploy_service() {
         cmd="${cmd} --vault-password-file ${env_script}"
     elif [[ -n "${VAULT_PASS_FILE:-}" && -f "${VAULT_PASS_FILE}" ]]; then
         cmd="${cmd} --vault-password-file ${VAULT_PASS_FILE}"
-    elif [[ -f "$HOME/.vault_pass" ]]; then
-        cmd="${cmd} --vault-password-file $HOME/.vault_pass"
+    else
+        warn "No vault password available (need ANSIBLE_VAULT_PASSWORD or VAULT_PASS_FILE)"
     fi
     
     # Add environment variables for Docker

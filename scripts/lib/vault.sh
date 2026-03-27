@@ -72,6 +72,15 @@ set_vault_environment() {
         env_pass_file="$HOME/.busibox-vault-pass-${env_prefix}"
     fi
     
+    # --- Legacy vault file migration ---
+    # Pre-profile installations used vault.prod.yml / vault.staging.yml / vault.dev.yml.
+    # Profile-based installs use vault.<profilename>.yml. If the profile vault doesn't
+    # exist but a legacy env vault does, rename it (and the vault pass file) so that
+    # all future operations use the profile name consistently.
+    if [[ ! -f "$env_vault" ]]; then
+        _migrate_legacy_vault_files "$env_prefix"
+    fi
+    
     # Environment-specific vault MUST exist - no fallback to vault.yml
     if [[ -f "$env_vault" ]]; then
         VAULT_FILE="$env_vault"
@@ -88,6 +97,51 @@ set_vault_environment() {
     _vault_warn "Environment vault not found: vault.${env_prefix}.yml"
     _vault_warn "Create it from example: cp vault.example.yml vault.${env_prefix}.yml"
     return 0
+}
+
+# Migrate legacy vault files (vault.prod.yml, vault.staging.yml, vault.dev.yml)
+# to profile-based naming (vault.<profilename>.yml).
+# Only migrates if the profile vault doesn't exist and exactly one legacy vault
+# matches the current environment.
+_migrate_legacy_vault_files() {
+    local profile_prefix="$1"
+    
+    # If the prefix is already a legacy name, nothing to migrate
+    case "$profile_prefix" in
+        prod|staging|dev|demo) return 0 ;;
+    esac
+    
+    # Determine legacy prefix from ENVIRONMENT or BUSIBOX_ENV
+    local env_name="${ENVIRONMENT:-${BUSIBOX_ENV:-}}"
+    local legacy_prefix=""
+    case "$env_name" in
+        production) legacy_prefix="prod" ;;
+        staging)    legacy_prefix="staging" ;;
+        development) legacy_prefix="dev" ;;
+        demo)       legacy_prefix="demo" ;;
+    esac
+    
+    if [[ -z "$legacy_prefix" ]]; then
+        return 0
+    fi
+    
+    local legacy_vault="${_VAULT_BASE_DIR}/vault.${legacy_prefix}.yml"
+    local profile_vault="${_VAULT_BASE_DIR}/vault.${profile_prefix}.yml"
+    
+    if [[ -f "$legacy_vault" && ! -f "$profile_vault" ]]; then
+        _vault_info "Migrating legacy vault: vault.${legacy_prefix}.yml → vault.${profile_prefix}.yml"
+        mv "$legacy_vault" "$profile_vault"
+        
+        # Also migrate vault password file if it exists
+        for pass_dir in "${BUSIBOX_VAULT_PASS_DIR}" "$HOME"; do
+            local legacy_pass="${pass_dir}/.busibox-vault-pass-${legacy_prefix}"
+            local profile_pass="${pass_dir}/.busibox-vault-pass-${profile_prefix}"
+            if [[ -f "$legacy_pass" && ! -f "$profile_pass" ]]; then
+                _vault_info "Migrating vault pass: .busibox-vault-pass-${legacy_prefix} → .busibox-vault-pass-${profile_prefix}"
+                mv "$legacy_pass" "$profile_pass"
+            fi
+        done
+    fi
 }
 
 # Get the vault file path for an environment (without setting it)

@@ -1297,7 +1297,8 @@ services:
   # (generate-model-config.sh -> model_config.yml -> Ansible role).
   vllm:
     profiles: ["vllm"]
-    image: vllm/vllm-openai:latest
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:cu130-nightly}
+    runtime: nvidia
     container_name: ${CONTAINER_PREFIX:-dev}-vllm
     hostname: vllm
     environment:
@@ -1313,21 +1314,16 @@ services:
       VLLM_CPU_OFFLOAD_GB: ${VLLM_CPU_OFFLOAD_GB:-0}
       VLLM_PORT: ${VLLM_PORT:-8000}
       VLLM_EXTRA_ARGS: ${VLLM_EXTRA_ARGS:-}
-      CUDA_VISIBLE_DEVICES: ${VLLM_CUDA_VISIBLE_DEVICES:-}
+      NVIDIA_VISIBLE_DEVICES: ${VLLM_CUDA_VISIBLE_DEVICES:-all}
       HF_HOME: /root/.cache/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
     volumes:
       - ${HF_HOST_CACHE:-vllm_cache}:/root/.cache/huggingface
       - ./provision/docker/vllm-entrypoint.sh:/entrypoint.sh:ro
     entrypoint: ["/bin/bash", "/entrypoint.sh"]
     ports:
       - "${VLLM_HOST_PORT:-8080}:${VLLM_PORT:-8000}"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT:-8000}/health"]
       interval: 10s

@@ -97,6 +97,9 @@ pub struct Profile {
     /// Only relevant for Docker backend. Mounted into deploy-api and user-apps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dev_apps_dir: Option<String>,
+    /// HuggingFace API token for authenticated model access and higher rate limits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub huggingface_token: Option<String>,
 }
 
 impl Profile {

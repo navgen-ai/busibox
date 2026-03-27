@@ -899,6 +899,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.screen = Screen::Welcome;
             app.menu_selected = 0;
+            crate::screens::welcome::trigger_health_checks(app);
         }
         KeyCode::Char('l') => {
             app.install_log_visible = true;
@@ -1188,6 +1189,17 @@ fn spawn_install_worker(app: &mut App) {
                 .filter(|t| !t.is_empty())
         });
 
+    let profile_hf_token: Option<String> = app
+        .active_profile()
+        .and_then(|(_, p)| p.huggingface_token.clone())
+        .or_else(|| {
+            app.profiles
+                .as_ref()
+                .and_then(|pf| pf.defaults.as_ref())
+                .and_then(|d| d.huggingface_token.clone())
+        })
+        .filter(|t| !t.is_empty());
+
     let profile_dev_apps_dir: Option<String> = app
         .active_profile()
         .and_then(|(_, p)| p.dev_apps_dir.clone());
@@ -1213,6 +1225,11 @@ fn spawn_install_worker(app: &mut App) {
         .filter(|s| matches!(s.status, InstallStatus::Healthy))
         .map(|s| s.name.clone())
         .collect();
+
+    // Take the background model download receiver so the install thread can
+    // wait for any in-progress downloads started by the welcome screen.
+    let bg_download_rx = app.model_bg_download_rx.take();
+    let bg_download_active = app.model_bg_download_active;
 
     std::thread::spawn(move || {
         use crate::app::InstallUpdate;
@@ -1260,6 +1277,24 @@ fn spawn_install_worker(app: &mut App) {
                     return;
                 }
                 let _ = tx.send(InstallUpdate::Log("✓ Files synced".into()));
+
+                // Push vault file to remote (already validated at profile unlock time)
+                if let Err(e) = remote::sync_vault_file(
+                    &repo_root, display_host, user, key, &remote_path, &vault_prefix,
+                ) {
+                    let _ = tx.send(InstallUpdate::Log(format!("WARNING: vault push failed: {e}")));
+                }
+
+                // Clean up stale local state from remote (.busibox/, state files, pass files)
+                match remote::cleanup_remote_state(&ssh, &remote_path) {
+                    Ok(removed) if !removed.is_empty() => {
+                        let _ = tx.send(InstallUpdate::Log(format!("✓ Cleaned remote: {removed}")));
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        let _ = tx.send(InstallUpdate::Log(format!("WARNING: remote cleanup failed: {e}")));
+                    }
+                }
             }
         }
 
@@ -2114,6 +2149,14 @@ fi
 
                     BUSIBOX_VENV="$HOME/.busibox/venv"
 
+                    # Validate existing venv - shebangs may point to a different user's home
+                    if [ -d "$BUSIBOX_VENV" ]; then
+                        if ! "$BUSIBOX_VENV/bin/python3" --version &>/dev/null 2>&1; then
+                            echo "Stale virtualenv detected (broken interpreter) — recreating..."
+                            rm -rf "$BUSIBOX_VENV"
+                        fi
+                    fi
+
                     # Activate busibox venv if it exists
                     if [ -x "$BUSIBOX_VENV/bin/ansible-vault" ]; then
                         export PATH="$BUSIBOX_VENV/bin:$PATH"
@@ -2302,26 +2345,57 @@ fi
                             echo "Please install Docker Engine: https://docs.docker.com/engine/install/"
                             exit 1
                         fi
-                        if ! docker info &>/dev/null; then
-                            echo "Docker daemon not running — attempting to start..."
-                            if command -v systemctl &>/dev/null; then
-                                sudo systemctl start docker 2>/dev/null || true
-                            elif command -v service &>/dev/null; then
-                                sudo service docker start 2>/dev/null || true
-                            fi
-                            WAITED=0
-                            while ! docker info &>/dev/null; do
-                                sleep 2
-                                WAITED=$((WAITED + 2))
-                                if [ $WAITED -ge 60 ]; then
-                                    echo "ERROR: Docker daemon did not start within 60 seconds"
+                        if ! docker info &>/dev/null 2>&1; then
+                            if [ -S /var/run/docker.sock ]; then
+                                # Socket exists so daemon is likely running — permission issue
+                                # Check if user is in docker group per /etc/group but session hasn't picked it up
+                                if grep -q "docker.*\b$(whoami)\b" /etc/group 2>/dev/null; then
+                                    if sg docker -c 'docker info' &>/dev/null 2>&1; then
+                                        echo ""
+                                        echo "ERROR: Docker is running but this SSH session hasn't picked up"
+                                        echo "the 'docker' group membership for user '$(whoami)'."
+                                        echo ""
+                                        echo "On the remote machine, log out and back in to apply the group change."
+                                        echo "Or if you just added the user, reboot the machine."
+                                        exit 1
+                                    else
+                                        echo ""
+                                        echo "ERROR: Docker is running but user '$(whoami)' cannot access it."
+                                        echo ""
+                                        echo "You are in the 'docker' group but the daemon is not responding."
+                                        echo "Try restarting Docker: sudo systemctl restart docker"
+                                        exit 1
+                                    fi
+                                else
+                                    echo ""
+                                    echo "ERROR: Docker is running but user '$(whoami)' cannot access the socket."
+                                    echo ""
+                                    echo "Add this user to the docker group:"
+                                    echo "  sudo usermod -aG docker $(whoami)"
+                                    echo "Then log out and back in."
                                     exit 1
                                 fi
-                                if [ $((WAITED % 10)) -eq 0 ]; then
-                                    echo "  Still waiting... (${WAITED}s)"
+                            else
+                                echo "Docker daemon not running — attempting to start..."
+                                if command -v systemctl &>/dev/null; then
+                                    sudo systemctl start docker 2>/dev/null || true
+                                elif command -v service &>/dev/null; then
+                                    sudo service docker start 2>/dev/null || true
                                 fi
-                            done
-                            echo "✓ Docker daemon started (took ${WAITED}s)"
+                                WAITED=0
+                                while ! docker info &>/dev/null 2>&1; do
+                                    sleep 2
+                                    WAITED=$((WAITED + 2))
+                                    if [ $WAITED -ge 60 ]; then
+                                        echo "ERROR: Docker daemon did not start within 60 seconds"
+                                        exit 1
+                                    fi
+                                    if [ $((WAITED % 10)) -eq 0 ]; then
+                                        echo "  Still waiting... (${WAITED}s)"
+                                    fi
+                                done
+                                echo "✓ Docker daemon started (took ${WAITED}s)"
+                            fi
                         else
                             echo "✓ Docker daemon running"
                         fi
@@ -2638,262 +2712,104 @@ done
                         let vault_rel = format!(
                             "provision/ansible/roles/secrets/vars/vault.{vault_prefix}.yml"
                         );
-                        let example_rel = format!(
-                            "provision/ansible/roles/secrets/vars/vault.example.yml"
-                        );
+                        let example_rel = "provision/ansible/roles/secrets/vars/vault.example.yml";
 
-                        // Step 1: Create vault from example if it doesn't exist
-                        let create_ok = if is_remote {
-                            if let Some((ref host, ref user, ref key)) = ssh_details {
-                                let ssh = crate::modules::ssh::SshConnection::new(
-                                    profile_host.as_deref().unwrap_or(host), user, key,
-                                );
-                                let create_script = format!(
-                                    "if [ ! -f {vault_rel} ]; then \
-                                       cp {example_rel} {vault_rel} && \
-                                       ansible-vault encrypt {vault_rel} --vault-password-file=\"$ANSIBLE_VAULT_PASSWORD_FILE\" && \
-                                       echo CREATED; \
-                                     else echo EXISTS; fi"
-                                );
-                                match remote::exec_remote_with_vault(&ssh, &remote_path, &create_script, vp) {
-                                    Ok((0, output)) => {
-                                        if output.contains("CREATED") {
-                                            let _ = tx.send(InstallUpdate::Log("  ✓ Vault file created and encrypted".into()));
-                                        } else {
-                                            let _ = tx.send(InstallUpdate::Log("  ✓ Vault file already exists".into()));
-                                        }
-                                        true
-                                    }
-                                    Ok((_, output)) => {
-                                        for line in output.lines() {
-                                            let _ = tx.send(InstallUpdate::Log(format!("  {line}")));
-                                        }
-                                        let _ = tx.send(InstallUpdate::Log("ERROR: Failed to create vault file".into()));
-                                        false
-                                    }
-                                    Err(e) => {
-                                        let _ = tx.send(InstallUpdate::Log(format!("ERROR: {e}")));
-                                        false
-                                    }
-                                }
-                            } else { false }
-                        } else {
-                            let vault_path = repo_root.join(&vault_rel);
-                            let example_path = repo_root.join(&example_rel);
-                            if !vault_path.exists() && example_path.exists() {
+                        // Step 1: Create vault locally from example if it doesn't exist
+                        let vault_path = repo_root.join(&vault_rel);
+                        let example_path = repo_root.join(example_rel);
+                        let mut create_ok = true;
+
+                        if !vault_path.exists() {
+                            if example_path.exists() {
                                 let _ = tx.send(InstallUpdate::Log("  Creating vault file from example...".into()));
                                 if let Err(e) = std::fs::copy(&example_path, &vault_path) {
                                     let _ = tx.send(InstallUpdate::Log(format!("ERROR: {e}")));
-                                    false
+                                    create_ok = false;
                                 } else {
                                     match encrypt_vault_local(&vault_path, vp) {
                                         Ok(true) => {
                                             let _ = tx.send(InstallUpdate::Log("  ✓ Vault file created and encrypted".into()));
-                                            true
                                         }
                                         _ => {
                                             let _ = tx.send(InstallUpdate::Log("ERROR: Failed to encrypt vault".into()));
-                                            false
+                                            create_ok = false;
                                         }
                                     }
                                 }
                             } else {
-                                true
+                                let _ = tx.send(InstallUpdate::Log(format!("ERROR: Example vault not found: {}", example_path.display())));
+                                create_ok = false;
                             }
-                        };
+                        }
 
                         if !create_ok {
                             any_failed = true;
                             break;
                         }
 
-                        // Step 2: Generate secrets (same script as the main vault setup)
-                        let _ = tx.send(InstallUpdate::Log("Generating vault secrets...".into()));
-
-                        let admin_email_sed = admin_email
-                            .as_deref()
-                            .filter(|e| !e.is_empty())
-                            .map(|email| format!("sed -i.bak \"s/CHANGE_ME_ADMIN_EMAILS/{email}/g\" \"$VAULT_FILE\" && rm -f \"${{VAULT_FILE}}.bak\"\n"))
-                            .unwrap_or_default();
-                        let allowed_domains_sed = allowed_email_domains
-                            .as_deref()
-                            .map(|domains| format!("sed -i.bak \"s/CHANGE_ME_ALLOWED_EMAIL_DOMAINS/{domains}/g\" \"$VAULT_FILE\" && rm -f \"${{VAULT_FILE}}.bak\"\n"))
-                            .unwrap_or_else(|| "sed -i.bak \"s/CHANGE_ME_ALLOWED_EMAIL_DOMAINS//g\" \"$VAULT_FILE\" && rm -f \"${VAULT_FILE}.bak\"\n".to_string());
-
-                        let github_token_sed = match github_token.as_deref() {
-                            Some(t) => format!(
-                                "sed -i.bak \"s/CHANGE_ME_GITHUB_PERSONAL_ACCESS_TOKEN/{t}/g\" \"$VAULT_FILE\" && rm -f \"${{VAULT_FILE}}.bak\"\n"
-                            ),
-                            None => concat!(
-                                "if [ -f \"$HOME/.gittoken\" ]; then\n",
-                                "    _GITTOKEN=$(cat \"$HOME/.gittoken\" | tr -d '[:space:]')\n",
-                                "    if [ -n \"$_GITTOKEN\" ]; then\n",
-                                "        sed -i.bak \"s/CHANGE_ME_GITHUB_PERSONAL_ACCESS_TOKEN/$_GITTOKEN/g\" \"$VAULT_FILE\" && rm -f \"${VAULT_FILE}.bak\"\n",
-                                "    fi\n",
-                                "fi\n",
-                            ).to_string(),
-                        };
-
-                        let secrets_script = format!(
-                            r#"set -euo pipefail
-# Activate busibox venv or probe common ansible locations
-[ -x "$HOME/.busibox/venv/bin/ansible-vault" ] && export PATH="$HOME/.busibox/venv/bin:$PATH"
-if ! command -v ansible-vault &>/dev/null; then
-    for _d in "$HOME/.local/bin" /usr/local/bin /opt/homebrew/bin; do
-        [ -x "$_d/ansible-vault" ] && export PATH="$_d:$PATH" && break
-    done
-fi
-VAULT_FILE="{vault_rel}"
-# Use ANSIBLE_VAULT_PASSWORD_FILE env var only (not also --vault-password-file)
-# to avoid "vault-ids default,default" duplicate error in ansible-vault
-# Capture then unset to avoid duplicate vault-ids (env var + CLI flag)
-VPF="$ANSIBLE_VAULT_PASSWORD_FILE"
-unset ANSIBLE_VAULT_PASSWORD_FILE
-
-if [ ! -f "$VAULT_FILE" ]; then
-    echo "ERROR: Vault file not found: $VAULT_FILE"
-    exit 1
-fi
-
-FIRST_LINE=$(head -1 "$VAULT_FILE")
-IS_ENCRYPTED=false
-if [[ "$FIRST_LINE" == *'$ANSIBLE_VAULT'* ]]; then
-    IS_ENCRYPTED=true
-fi
-
-if [ "$IS_ENCRYPTED" = true ]; then
-    CONTENT=$(ansible-vault view "$VAULT_FILE" --vault-password-file="$VPF" 2>&1) || {{
-        echo "ERROR: Cannot decrypt vault file"
-        echo "$CONTENT"
-        exit 1
-    }}
-else
-    CONTENT=$(cat "$VAULT_FILE")
-fi
-
-if ! echo "$CONTENT" | grep -q 'CHANGE_ME'; then
-    echo "✓ All secrets already configured"
-    exit 0
-fi
-
-if [ "$IS_ENCRYPTED" = true ]; then
-    ansible-vault decrypt "$VAULT_FILE" --vault-password-file="$VPF"
-fi
-
-gen() {{ openssl rand -base64 "$1" | tr -d '/+=' | head -c "$1"; }}
-
-PG_PASS=$(gen 24)
-MINIO_USER=$(gen 16)
-MINIO_PASS=$(gen 24)
-JWT=$(gen 32)
-AUTHZ_KEY=$(gen 32)
-LITELLM_API=$(gen 16)
-LITELLM_MASTER=$(openssl rand -hex 16)
-LITELLM_SALT=$(gen 32)
-NEO4J_PASS=$(gen 24)
-CONFIG_ENC_KEY=$(openssl rand -hex 32)
-
-sed -i.bak \
-  -e "s/CHANGE_ME_POSTGRES_PASSWORD/$PG_PASS/g" \
-  -e "s/CHANGE_ME_MINIO_ROOT_USER/$MINIO_USER/g" \
-  -e "s/CHANGE_ME_MINIO_ROOT_PASSWORD/$MINIO_PASS/g" \
-  -e "s/CHANGE_ME_JWT_SECRET_32_BYTES/$JWT/g" \
-  -e "s/CHANGE_ME_SESSION_SECRET_32_BYTES/$JWT/g" \
-  -e "s/CHANGE_ME_AUTHZ_MASTER_KEY_32_BYTES/$AUTHZ_KEY/g" \
-  -e "s/CHANGE_ME_LITELLM_API_KEY/$LITELLM_API/g" \
-  -e "s/CHANGE_ME_LITELLM_MASTER_KEY/$LITELLM_MASTER/g" \
-  -e "s/CHANGE_ME_LITELLM_SALT_KEY/$LITELLM_SALT/g" \
-  -e "s/CHANGE_ME_NEO4J_PASSWORD/$NEO4J_PASS/g" \
-  -e "s/CHANGE_ME_CONFIG_ENCRYPTION_KEY/$CONFIG_ENC_KEY/g" \
-  "$VAULT_FILE"
-rm -f "${{VAULT_FILE}}.bak"
-{admin_email_sed}
-{allowed_domains_sed}
-{github_token_sed}
-REMAINING=$(grep -c 'CHANGE_ME' "$VAULT_FILE" 2>/dev/null || echo 0)
-
-ansible-vault encrypt "$VAULT_FILE" --vault-password-file="$VPF" 2>&1 || {{
-    echo "ERROR: Failed to re-encrypt vault after secret generation"
-    exit 1
-}}
-
-VERIFY_LINE=$(head -1 "$VAULT_FILE")
-if [[ "$VERIFY_LINE" != *'$ANSIBLE_VAULT'* ]]; then
-    echo "ERROR: Vault file not encrypted after re-encryption attempt"
-    exit 1
-fi
-
-echo "✓ Generated 11 bootstrap secrets ($REMAINING optional placeholders remain)"
-"#,
-                            vault_rel = vault_rel,
-                            admin_email_sed = admin_email_sed,
-                            allowed_domains_sed = allowed_domains_sed,
-                            github_token_sed = github_token_sed,
-                        );
-
-                        let gen_result: color_eyre::Result<(i32, String)> = if is_remote {
-                            if let Some((ref host, ref user, ref key)) = ssh_details {
-                                let ssh = crate::modules::ssh::SshConnection::new(
-                                    profile_host.as_deref().unwrap_or(host), user, key,
-                                );
-                                remote::exec_remote_with_vault(&ssh, &remote_path, &secrets_script, vp)
-                            } else {
-                                Err(color_eyre::eyre::eyre!("No SSH connection"))
+                        // Step 2: Run validate_and_upgrade_vault locally (generates random secrets)
+                        let _ = tx.send(InstallUpdate::Log("  Generating vault secrets...".into()));
+                        match remote::validate_and_upgrade_vault(&repo_root, &vault_prefix, vp) {
+                            Ok(remote::VaultUpgradeResult::Clean) => {
+                                let _ = tx.send(InstallUpdate::Log("  ✓ Vault validated — all keys present".into()));
                             }
-                        } else {
-                            let env_script = repo_root.join("scripts/lib/vault-pass-from-env.sh");
-                            match std::process::Command::new("bash")
-                                .arg("-c")
-                                .arg(&secrets_script)
-                                .env("ANSIBLE_VAULT_PASSWORD", vp.as_str())
-                                .env("ANSIBLE_VAULT_PASSWORD_FILE", env_script.to_string_lossy().as_ref())
-                                .current_dir(&repo_root)
-                                .output()
-                            {
-                                Ok(output) => {
-                                    let exit_code = output.status.code().unwrap_or(1);
-                                    let combined = format!(
-                                        "{}{}",
-                                        String::from_utf8_lossy(&output.stdout),
-                                        String::from_utf8_lossy(&output.stderr)
-                                    );
-                                    Ok((exit_code, remote::strip_ansi(&combined)))
-                                }
-                                Err(e) => Err(color_eyre::eyre::eyre!("{e}")),
+                            Ok(remote::VaultUpgradeResult::Created { added }) => {
+                                let _ = tx.send(InstallUpdate::Log(format!("  ✓ Vault created with {} keys", added.len())));
                             }
-                        };
-
-                        match gen_result {
-                            Ok((0, output)) => {
-                                for line in output.lines() {
-                                    let trimmed = line.trim();
-                                    if !trimmed.is_empty() {
-                                        let _ = tx.send(InstallUpdate::Log(format!("  {trimmed}")));
-                                    }
-                                }
+                            Ok(remote::VaultUpgradeResult::Upgraded { added, removed, copied }) => {
+                                let parts: Vec<String> = [
+                                    if added.is_empty() { None } else { Some(format!("{} added", added.len())) },
+                                    if removed.is_empty() { None } else { Some(format!("{} removed", removed.len())) },
+                                    if copied.is_empty() { None } else { Some(format!("{} copied", copied.len())) },
+                                ].into_iter().flatten().collect();
+                                let _ = tx.send(InstallUpdate::Log(format!("  ✓ Vault upgraded: {}", parts.join(", "))));
                             }
-                            Ok((code, output)) => {
-                                for line in output.lines() {
-                                    let trimmed = line.trim();
-                                    if !trimmed.is_empty() {
-                                        let _ = tx.send(InstallUpdate::Log(format!("  {trimmed}")));
-                                    }
-                                }
-                                let _ = tx.send(InstallUpdate::Log(format!(
-                                    "WARNING: Secret generation had issues (exit code {code}) — continuing anyway"
-                                )));
+                            Ok(remote::VaultUpgradeResult::Issues { message }) => {
+                                let _ = tx.send(InstallUpdate::Log(format!("  ⚠ Vault issues: {message}")));
                             }
                             Err(e) => {
-                                let _ = tx.send(InstallUpdate::Log(format!(
-                                    "WARNING: Secret generation failed: {e} — continuing anyway"
-                                )));
+                                let _ = tx.send(InstallUpdate::Log(format!("  WARNING: Vault upgrade error: {e}")));
                             }
                         }
 
-                        // Debug: dump vault contents
-                        let dump_script = format!(
-                            r#"set -euo pipefail
-# Activate busibox venv or probe common ansible locations
+                        // Step 3: Apply user-specific values locally (admin_email, domains, github token)
+                        let mut user_seds: Vec<(String, String)> = Vec::new();
+                        if let Some(ref email) = admin_email {
+                            if !email.is_empty() {
+                                user_seds.push(("CHANGE_ME_ADMIN_EMAILS".into(), email.clone()));
+                            }
+                        }
+                        if let Some(ref domains) = allowed_email_domains {
+                            user_seds.push(("CHANGE_ME_ALLOWED_EMAIL_DOMAINS".into(), domains.clone()));
+                        } else {
+                            user_seds.push(("CHANGE_ME_ALLOWED_EMAIL_DOMAINS".into(), String::new()));
+                        }
+                        let effective_github_token = github_token.clone().or_else(|| {
+                            let gittoken_path = dirs::home_dir()
+                                .map(|h| h.join(".gittoken"));
+                            if let Some(path) = gittoken_path {
+                                std::fs::read_to_string(&path)
+                                    .ok()
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty())
+                            } else {
+                                None
+                            }
+                        });
+                        if let Some(ref token) = effective_github_token {
+                            user_seds.push(("CHANGE_ME_GITHUB_PERSONAL_ACCESS_TOKEN".into(), token.clone()));
+                        }
+
+                        if !user_seds.is_empty() {
+                            let mut sed_args = String::new();
+                            for (placeholder, value) in &user_seds {
+                                sed_args.push_str(&format!(
+                                    "  -e \"s/{placeholder}/{value}/g\" \\\n",
+                                ));
+                            }
+
+                            let user_script = format!(
+                                r#"set -euo pipefail
 [ -x "$HOME/.busibox/venv/bin/ansible-vault" ] && export PATH="$HOME/.busibox/venv/bin:$PATH"
 if ! command -v ansible-vault &>/dev/null; then
     for _d in "$HOME/.local/bin" /usr/local/bin /opt/homebrew/bin; do
@@ -2903,66 +2819,113 @@ fi
 VAULT_FILE="{vault_rel}"
 VPF="$ANSIBLE_VAULT_PASSWORD_FILE"
 unset ANSIBLE_VAULT_PASSWORD_FILE
-if [ -f "$VAULT_FILE" ]; then
-    FIRST_LINE=$(head -1 "$VAULT_FILE")
-    if [[ "$FIRST_LINE" == *'$ANSIBLE_VAULT'* ]]; then
-        echo "=== VAULT CONTENTS (decrypted) ==="
-        ansible-vault view "$VAULT_FILE" --vault-password-file="$VPF" 2>&1 | grep -E '(password|token|key|secret|email|domain)' | sed 's/^\s*/  /'
-        echo "=== END VAULT ==="
-    else
-        echo "=== VAULT CONTENTS (plaintext) ==="
-        grep -E '(password|token|key|secret|email|domain)' "$VAULT_FILE" | sed 's/^\s*/  /'
-        echo "=== END VAULT ==="
-    fi
-else
-    echo "WARNING: Vault file not found at $VAULT_FILE"
+
+FIRST_LINE=$(head -1 "$VAULT_FILE")
+if [[ "$FIRST_LINE" == *'$ANSIBLE_VAULT'* ]]; then
+    ansible-vault decrypt "$VAULT_FILE" --vault-password-file="$VPF"
 fi
+
+sed -i.bak \
+{sed_args}  "$VAULT_FILE"
+rm -f "${{VAULT_FILE}}.bak"
+
+ansible-vault encrypt "$VAULT_FILE" --vault-password-file="$VPF" 2>&1
+echo "✓ User-specific values applied"
 "#,
-                            vault_rel = vault_rel,
-                        );
-                        let dump_result: color_eyre::Result<(i32, String)> = if is_remote {
-                            if let Some((ref host, ref user, ref key)) = ssh_details {
-                                let ssh = crate::modules::ssh::SshConnection::new(
-                                    profile_host.as_deref().unwrap_or(host), user, key,
-                                );
-                                remote::exec_remote_with_vault(&ssh, &remote_path, &dump_script, vp)
-                            } else {
-                                Err(color_eyre::eyre::eyre!("No SSH connection"))
-                            }
-                        } else {
+                                vault_rel = vault_rel,
+                                sed_args = sed_args,
+                            );
+
                             let env_script = repo_root.join("scripts/lib/vault-pass-from-env.sh");
                             match std::process::Command::new("bash")
                                 .arg("-c")
-                                .arg(&dump_script)
+                                .arg(&user_script)
                                 .env("ANSIBLE_VAULT_PASSWORD", vp.as_str())
                                 .env("ANSIBLE_VAULT_PASSWORD_FILE", env_script.to_string_lossy().as_ref())
                                 .current_dir(&repo_root)
                                 .output()
                             {
                                 Ok(output) => {
-                                    let exit_code = output.status.code().unwrap_or(1);
                                     let combined = format!(
                                         "{}{}",
                                         String::from_utf8_lossy(&output.stdout),
                                         String::from_utf8_lossy(&output.stderr)
                                     );
-                                    Ok((exit_code, remote::strip_ansi(&combined)))
+                                    for line in combined.lines() {
+                                        let trimmed = line.trim();
+                                        if !trimmed.is_empty() {
+                                            let _ = tx.send(InstallUpdate::Log(format!("  {trimmed}")));
+                                        }
+                                    }
                                 }
-                                Err(e) => Err(color_eyre::eyre::eyre!("{e}")),
-                            }
-                        };
-                        match dump_result {
-                            Ok((_, output)) => {
-                                for line in output.lines() {
-                                    let _ = tx.send(InstallUpdate::Log(format!("  {}", line)));
+                                Err(e) => {
+                                    let _ = tx.send(InstallUpdate::Log(format!("  WARNING: User value substitution failed: {e}")));
                                 }
                             }
-                            Err(e) => {
-                                let _ = tx.send(InstallUpdate::Log(format!("  Vault dump failed: {e}")));
+                        }
+
+                        // Step 4: Sync vault to remote if needed
+                        if is_remote {
+                            if let Some((ref host, ref user, ref key)) = ssh_details {
+                                let _ = tx.send(InstallUpdate::Log("  Syncing vault to remote...".into()));
+                                let actual_host = profile_host.as_deref().unwrap_or(host);
+                                match remote::sync_vault_file(&repo_root, actual_host, user, key, &remote_path, &vault_prefix) {
+                                    Ok(()) => {
+                                        let _ = tx.send(InstallUpdate::Log("  ✓ Vault synced to remote".into()));
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(InstallUpdate::Log(format!("  WARNING: Vault sync failed: {e}")));
+                                    }
+                                }
                             }
                         }
 
                         vault_setup_done = true;
+                    }
+                }
+
+                // Wait for any background downloads started by the welcome screen
+                if bg_download_active {
+                    if let Some(ref bg_rx) = bg_download_rx {
+                        let _ = tx.send(InstallUpdate::Log(
+                            "Waiting for background model downloads to finish...".into(),
+                        ));
+                        loop {
+                            match bg_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                                Ok(crate::modules::models::ModelDownloadUpdate::Complete { model_name }) => {
+                                    let _ = tx.send(InstallUpdate::Log(
+                                        format!("  ✓ Model cached: {model_name}")
+                                    ));
+                                }
+                                Ok(crate::modules::models::ModelDownloadUpdate::Started { model_name, role }) => {
+                                    let _ = tx.send(InstallUpdate::Log(
+                                        format!("  ↓ Downloading {role}: {model_name}")
+                                    ));
+                                }
+                                Ok(crate::modules::models::ModelDownloadUpdate::Failed { model_name, error }) => {
+                                    let _ = tx.send(InstallUpdate::Log(
+                                        format!("  ✗ Download failed: {model_name} ({error})")
+                                    ));
+                                }
+                                Ok(crate::modules::models::ModelDownloadUpdate::AllDone) => {
+                                    let _ = tx.send(InstallUpdate::Log(
+                                        "✓ Background model downloads complete".into(),
+                                    ));
+                                    break;
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                    let _ = tx.send(InstallUpdate::Log(
+                                        "  ... still downloading models ...".into(),
+                                    ));
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                    let _ = tx.send(InstallUpdate::Log(
+                                        "Background model downloads finished (channel closed)".into(),
+                                    ));
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -3496,7 +3459,7 @@ fi
                     });
                 }
 
-                let make_args = format!("BUSIBOX_ENV={profile_environment} BUSIBOX_BACKEND={profile_backend} validate-env");
+                let make_args = format!("BUSIBOX_ENV={profile_environment} BUSIBOX_BACKEND={profile_backend} VAULT_PREFIX={vault_prefix} CONTAINER_PREFIX={container_prefix} validate-env");
                 let tx_stream = tx.clone();
                 let on_line = |line: &str| {
                     let _ = tx_stream.send(InstallUpdate::Log(format!("  {line}")));
@@ -3673,14 +3636,23 @@ fi
                 .unwrap_or_default()
                 .display()
                 .to_string();
+            // For remote installs, use $HOME so cache paths resolve on the
+            // remote machine rather than baking in the local Mac path.
+            let cache_home = if is_remote {
+                "$HOME".to_string()
+            } else {
+                home.clone()
+            };
             let mut ref_exports = format!(
                 "BUSIBOX_ENV={profile_environment} \
                  BUSIBOX_BACKEND={profile_backend} \
+                 CONTAINER_PREFIX={container_prefix} \
+                 VAULT_PREFIX={vault_prefix} \
                  BUSIBOX_FRONTEND_GITHUB_REF={ref_val} \
                  SITE_DOMAIN={site_domain} \
-                 MODEL_HOST_CACHE={home}/.cache \
-                 HF_HOST_CACHE={home}/.cache/huggingface \
-                 FASTEMBED_HOST_CACHE={home}/.cache/fastembed "
+                 MODEL_HOST_CACHE={cache_home}/.cache \
+                 HF_HOST_CACHE={cache_home}/.cache/huggingface \
+                 FASTEMBED_HOST_CACHE={cache_home}/.cache/fastembed "
             );
             if let Some(ref backend) = profile_llm_backend {
                 ref_exports.push_str(&format!("LLM_BACKEND={backend} "));
@@ -3698,6 +3670,9 @@ fi
             }
             if let Some(ref token) = github_token {
                 ref_exports.push_str(&format!("GITHUB_AUTH_TOKEN={token} "));
+            }
+            if let Some(ref hf_tok) = profile_hf_token {
+                ref_exports.push_str(&format!("HF_TOKEN={} ", shell_escape(hf_tok)));
             }
             if service_list.contains("core-apps") {
                 ref_exports.push_str("ENABLED_APPS=all ");

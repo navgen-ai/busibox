@@ -151,6 +151,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             app.ssh_tunnel_process = None;
             app.screen = Screen::Welcome;
             app.menu_selected = 0;
+            crate::screens::welcome::trigger_health_checks(app);
         }
         KeyCode::Char('o') => {
             if let Some(link) = &app.admin_login_magic_link {

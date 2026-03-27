@@ -458,6 +458,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.screen = Screen::Welcome;
             app.menu_selected = 0;
+            crate::screens::welcome::trigger_health_checks(app);
         }
         KeyCode::Up | KeyCode::Char('k') => {
             if app.manage_selected > 0 {
@@ -1253,6 +1254,9 @@ fn spawn_action_worker(app: &mut App, service_name: &str, action: &str) {
         .active_profile()
         .and_then(|(_, p)| p.site_domain.clone())
         .filter(|v| !v.trim().is_empty());
+    let profile_vault_prefix: Option<String> = app
+        .active_profile()
+        .and_then(|(id, p)| p.vault_prefix.clone().or(Some(id.to_string())));
 
     std::thread::spawn(move || {
         let remote_path = profile_remote_path
@@ -1294,6 +1298,20 @@ fn spawn_action_worker(app: &mut App, service_name: &str, action: &str) {
                     return;
                 }
                 let _ = tx.send(ManageUpdate::Log("✓ Files synced".into()));
+
+                // Push vault file to remote (already validated at profile unlock time)
+                if let Some(ref vp) = profile_vault_prefix {
+                    if let Err(e) = remote::sync_vault_file(
+                        &repo_root, display_host, user, key, &remote_path, vp,
+                    ) {
+                        let _ = tx.send(ManageUpdate::Log(format!(
+                            "WARNING: vault push failed: {e}"
+                        )));
+                    }
+                }
+
+                // Clean up stale local state from remote
+                let _ = remote::cleanup_remote_state(&ssh, &remote_path);
             }
         }
 
@@ -1324,8 +1342,12 @@ fn spawn_action_worker(app: &mut App, service_name: &str, action: &str) {
             .as_deref()
             .map(|b| format!("LLM_BACKEND={b} "))
             .unwrap_or_default();
+        let vault_prefix_export = profile_vault_prefix
+            .as_deref()
+            .map(|vp| format!("VAULT_PREFIX={vp} "))
+            .unwrap_or_default();
         let make_args = format!(
-            "{site_domain_export}{llm_backend_export}manage SERVICE={service} ACTION={action} BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
+            "{site_domain_export}{llm_backend_export}{vault_prefix_export}manage SERVICE={service} ACTION={action} BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
         );
         let _ = tx.send(ManageUpdate::Log(format!("Running: make {make_args}")));
 
@@ -1383,8 +1405,12 @@ fn spawn_action_worker(app: &mut App, service_name: &str, action: &str) {
                             .as_deref()
                             .map(|b| format!("LLM_BACKEND={b} "))
                             .unwrap_or_default();
+                        let vp_export = profile_vault_prefix
+                            .as_deref()
+                            .map(|vp| format!("VAULT_PREFIX={vp} "))
+                            .unwrap_or_default();
                         let vllm_args = format!(
-                            "{sd}{lb}manage SERVICE=vllm ACTION=redeploy BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
+                            "{sd}{lb}{vp_export}manage SERVICE=vllm ACTION=redeploy BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
                         );
                         let _ = tx.send(ManageUpdate::Log(format!("Running: make {vllm_args}")));
 
@@ -1760,6 +1786,9 @@ pub fn spawn_install_with_env(app: &mut App, services: &str, extra_env: &str) {
     let profile_host: Option<String> = app
         .active_profile()
         .and_then(|(_, p)| p.effective_host().map(|s| s.to_string()));
+    let install_vault_prefix: Option<String> = app
+        .active_profile()
+        .and_then(|(id, p)| p.vault_prefix.clone().or(Some(id.to_string())));
 
     std::thread::spawn(move || {
         let remote_path = profile_remote_path
@@ -1789,6 +1818,20 @@ pub fn spawn_install_with_env(app: &mut App, services: &str, extra_env: &str) {
                     return;
                 }
                 let _ = tx.send(ManageUpdate::Log("✓ Files synced".into()));
+
+                // Push vault file to remote (already validated at profile unlock time)
+                if let Some(ref vp) = install_vault_prefix {
+                    if let Err(e) = remote::sync_vault_file(
+                        &repo_root, display_host, user, key, &remote_path, vp,
+                    ) {
+                        let _ = tx.send(ManageUpdate::Log(format!(
+                            "WARNING: vault push failed: {e}"
+                        )));
+                    }
+                }
+
+                // Clean up stale local state from remote
+                let _ = remote::cleanup_remote_state(&ssh, &remote_path);
             }
         }
 

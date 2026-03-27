@@ -25,5 +25,14 @@ else
 fi
 
 cd "${REPO_ROOT}/provision/ansible"
+
+# Resolve vault prefix: prefer explicit VAULT_PREFIX, fall back to CONTAINER_PREFIX or 'dev'
+_vp="${VAULT_PREFIX:-${CONTAINER_PREFIX:-dev}}"
+_cp="${CONTAINER_PREFIX:-${_vp}}"
+
 # shellcheck disable=SC2086
-ansible-playbook -i inventory/docker docker.yml --tags validate_env ${VAULT_PASS_ARG}
+ansible-playbook -i inventory/docker docker.yml --tags validate_env \
+    -e "vault_prefix=${_vp}" \
+    -e "container_prefix=${_cp}" \
+    -e "deployment_environment=${_vp}" \
+    ${VAULT_PASS_ARG}

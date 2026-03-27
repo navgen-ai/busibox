@@ -19,28 +19,27 @@
   when: not _vllm_model_config.stat.exists
 
 - name: Read primary vLLM model from model_config.yml
-  ansible.builtin.command:
-    cmd: >
-      python3 -c "
-      import yaml, sys, json
-      with open(sys.argv[1]) as f:
-          data = yaml.safe_load(f) or {}
-      models = data.get('models', {}) or {}
-      best = None
-      for key, cfg in models.items():
-          if cfg.get('provider', '').lower() != 'vllm':
-              continue
-          if not cfg.get('assigned'):
-              continue
-          port = cfg.get('port', 9999)
-          if best is None or port < best.get('port', 9999):
-              best = dict(cfg)
-              best['_key'] = key
-      if best is None:
-          print(json.dumps({}))
-      else:
-          print(json.dumps(best))
-      " "{{ playbook_dir }}/group_vars/all/model_config.yml"
+  ansible.builtin.shell: |
+    python3 -c "
+    import yaml, sys, json
+    with open(sys.argv[1]) as f:
+        data = yaml.safe_load(f) or {}
+    models = data.get('models', {}) or {}
+    best = None
+    for key, cfg in models.items():
+        if cfg.get('provider', '').lower() != 'vllm':
+            continue
+        if not cfg.get('assigned'):
+            continue
+        port = cfg.get('port', 9999)
+        if best is None or port < best.get('port', 9999):
+            best = dict(cfg)
+            best['_key'] = key
+    if best is None:
+        print(json.dumps({}))
+    else:
+        print(json.dumps(best))
+    " "{{ playbook_dir }}/group_vars/all/model_config.yml"
   register: _vllm_model_json
   delegate_to: localhost
   changed_when: false
@@ -81,6 +80,20 @@
   register: _vllm_env_file
   when: _vllm_model is defined and _vllm_model | length > 0
 
+- name: Stop and remove any container using vLLM port
+  ansible.builtin.shell: |
+    target_port="{{ _vllm_model.port | default(8000) }}"
+    # Remove the expected container name first
+    docker rm -f {{ _vllm_prefix }}-vllm 2>/dev/null || true
+    # Also check for any other container binding to the target port
+    blocking=$(docker ps -q --filter "publish=${target_port}" 2>/dev/null)
+    if [ -n "$blocking" ]; then
+      echo "Stopping container(s) blocking port ${target_port}: $blocking"
+      docker rm -f $blocking 2>/dev/null || true
+    fi
+  changed_when: false
+  when: _vllm_model is defined and _vllm_model | length > 0
+
 - name: Start vLLM container
   ansible.builtin.shell: |
     cd {{ _vllm_compose_dir }}
@@ -88,16 +101,35 @@
       -f docker-compose.yml -f docker-compose.local-dev.yml \
       {{ '--env-file .env.' ~ _vllm_prefix if _vllm_env_file.stat.exists else '' }} \
       --profile vllm \
-      up -d --no-deps vllm 2>&1
+      up -d --no-deps --force-recreate vllm 2>&1
   args:
     chdir: "{{ _vllm_compose_dir }}"
   environment:
-    COMPOSE_PROJECT_NAME: "{{ _vllm_prefix }}"
+    COMPOSE_PROJECT_NAME: "{{ _vllm_prefix }}-busibox"
     CONTAINER_PREFIX: "{{ _vllm_prefix }}"
     BUSIBOX_HOST_PATH: "{{ _vllm_compose_dir }}"
     BUSIBOX_REPO_ROOT: "{{ _vllm_compose_dir }}"
     LLM_BACKEND: "vllm"
     HF_HOST_CACHE: "{{ lookup('env', 'HF_HOST_CACHE') | default('vllm_cache', true) }}"
+    HF_TOKEN: "{{ lookup('env', 'HF_TOKEN') | default('', true) }}"
+    HF_HUB_OFFLINE: "{{ lookup('env', 'HF_HUB_OFFLINE') | default('1', true) }}"
+    # Vault secrets required by docker compose even for unrelated services
+    POSTGRES_PASSWORD: "{{ busibox_secrets.POSTGRES_PASSWORD }}"
+    MINIO_ROOT_USER: "{{ busibox_secrets.MINIO_ROOT_USER }}"
+    MINIO_ROOT_PASSWORD: "{{ busibox_secrets.MINIO_ROOT_PASSWORD }}"
+    MINIO_ACCESS_KEY: "{{ busibox_secrets.MINIO_ROOT_USER }}"
+    MINIO_SECRET_KEY: "{{ busibox_secrets.MINIO_ROOT_PASSWORD }}"
+    SSO_JWT_SECRET: "{{ busibox_secrets.SSO_JWT_SECRET }}"
+    AUTHZ_MASTER_KEY: "{{ busibox_secrets.AUTHZ_MASTER_KEY }}"
+    LITELLM_API_KEY: "{{ busibox_secrets.LITELLM_MASTER_KEY }}"
+    LITELLM_MASTER_KEY: "{{ busibox_secrets.LITELLM_MASTER_KEY }}"
+    LITELLM_SALT_KEY: "{{ busibox_secrets.LITELLM_SALT_KEY }}"
+    NEO4J_PASSWORD: "{{ busibox_secrets.NEO4J_PASSWORD }}"
+    CONFIG_ENCRYPTION_KEY: "{{ busibox_secrets.CONFIG_ENCRYPTION_KEY }}"
+    GITHUB_AUTH_TOKEN: "{{ busibox_secrets.GITHUB_AUTH_TOKEN }}"
+    ADMIN_EMAIL: "{{ busibox_secrets.ADMIN_EMAILS }}"
+    ALLOWED_EMAIL_DOMAINS: "{{ busibox_secrets.ALLOWED_EMAIL_DOMAINS }}"
+    # vLLM-specific config
     VLLM_MODEL: "{{ _vllm_model.model_name }}"
     VLLM_SERVED_MODEL_NAME: "{{ _vllm_model.served_model_name | default('') }}"
     VLLM_MAX_MODEL_LEN: "{{ _vllm_model.max_model_len | default(8192) | string }}"
