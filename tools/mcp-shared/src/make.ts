@@ -107,31 +107,10 @@ export const MAIN_MAKEFILE_TARGETS: Record<string, MainMakefileTarget> = {
     category: 'test',
     examples: ['make test-security'],
   },
-  'docker-up': {
-    description: 'Start Docker services',
-    category: 'docker',
-    variables: { SERVICE: 'Optional: specific service to start' },
-    examples: ['make docker-up', 'make docker-up SERVICE=authz-api'],
-  },
   'docker-down': {
     description: 'Stop all Docker services',
     category: 'docker',
     examples: ['make docker-down'],
-  },
-  'docker-restart': {
-    description: 'Restart Docker services',
-    category: 'docker',
-    variables: { SERVICE: 'Optional: specific service to restart' },
-    examples: ['make docker-restart', 'make docker-restart SERVICE=authz-api'],
-  },
-  'docker-build': {
-    description: 'Build Docker images',
-    category: 'docker',
-    variables: {
-      SERVICE: 'Optional: specific service to build',
-      NO_CACHE: 'Set to 1 to rebuild without cache',
-    },
-    examples: ['make docker-build', 'make docker-build SERVICE=authz-api', 'make docker-build NO_CACHE=1'],
   },
   'docker-ps': {
     description: 'Show Docker service status',

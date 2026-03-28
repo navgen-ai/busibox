@@ -1,0 +1,20 @@
+[package]
+name = "busibox-core"
+description = "Core library for Busibox CLI — profiles, vault, health, services, SSH"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+color-eyre = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dirs = { workspace = true }
+which = { workspace = true }
+aes-gcm = { workspace = true }
+argon2 = { workspace = true }
+base64 = { workspace = true }
+rpassword = { workspace = true }
+rand = { workspace = true }
+libc = { workspace = true }
+sysinfo = { workspace = true }
+regex = { workspace = true }

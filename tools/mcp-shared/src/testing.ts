@@ -26,7 +26,7 @@ export const TESTING_GUIDES: Record<string, string> = {
 
 \`\`\`bash
 # Start Docker services
-make docker-up
+make install SERVICE=all
 
 # Initialize test databases (first time)
 make test-db-init
@@ -42,7 +42,7 @@ make test-docker SERVICE=all
 
 ## Prerequisites
 1. Docker Desktop running
-2. Services started: \`make docker-up\`
+2. Services started: \`make install SERVICE=all\`
 3. Test DBs initialized: \`make test-db-init\`
 
 ## Commands

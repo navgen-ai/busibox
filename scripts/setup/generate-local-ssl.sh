@@ -165,4 +165,4 @@ else
     echo "  brew install mkcert && rm ${SSL_DIR}/localhost.* && bash $0"
 fi
 
-echo "Restart nginx to apply: make docker-restart SERVICE=nginx"
+echo "Restart nginx to apply: make manage SERVICE=nginx ACTION=restart"

@@ -94,15 +94,13 @@ make vault-generate-env
 
 ```bash
 # Before starting Docker
-make vault-generate-env
-make docker-up
+make install SERVICE=all
 
 # To change secrets
 cd provision/ansible
 ansible-vault edit --vault-password-file ~/.vault_pass roles/secrets/vars/vault.yml
 cd ../..
-make vault-generate-env
-make docker-restart
+make install SERVICE=all  # Re-deploy to pick up new secrets
 ```
 
 ## Vault Password
@@ -172,9 +170,8 @@ pip3 install --user --break-system-packages pyyaml
 ### ".env.local is stale"
 
 ```bash
-# Regenerate from vault
-make vault-generate-env
-make docker-restart
+# Re-deploy to pick up fresh secrets from vault
+make manage SERVICE=all ACTION=redeploy
 ```
 
 ### "Vault file not found"

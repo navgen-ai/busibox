@@ -568,7 +568,7 @@ manage_service() {
                 set_core_apps_mode "$new_mode"
                 cd "$REPO_ROOT"
                 export CORE_APPS_MODE="$new_mode"
-                make docker-up SERVICE="core-apps"
+                make install SERVICE=core-apps
                 echo ""
                 if [[ "$new_mode" == "dev" ]]; then
                     success "Core Developer Mode ENABLED (hot-reload active)"

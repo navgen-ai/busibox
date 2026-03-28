@@ -205,6 +205,12 @@ This project uses structured rules to ensure consistency. **All rules are in `.c
 ```
 busibox/
 ├── .cursor/rules/          # AI agent rules (READ THESE!)
+├── cli/                    # Rust CLI workspace (Cargo workspace)
+│   ├── Cargo.toml          # Workspace root
+│   ├── busibox-core/       # Shared library: profiles, vault, hardware, services
+│   ├── busibox-providers/  # Backend/GPU/Executor trait implementations
+│   ├── busibox/            # Full interactive TUI binary (ratatui)
+│   └── busibox-quick/      # Simple single-machine quick installer binary
 ├── docs/                   # All documentation (organized by audience)
 │   ├── administrators/    # Deployment, configuration, troubleshooting
 │   ├── developers/        # Architecture, API guides, reference
@@ -223,6 +229,32 @@ busibox/
 │   └── deploy/           # Deploy API
 ├── specs/                 # Project specifications
 └── tools/                 # Utility tools
+```
+
+### CLI Workspace Architecture
+
+The Busibox CLI is a **Cargo workspace** with four crates:
+
+| Crate | Type | Purpose |
+|-------|------|---------|
+| `busibox-core` | Library | Shared logic: profiles, vault crypto, hardware detection, service registry, deploy context |
+| `busibox-providers` | Library | `Backend` trait + implementations (Docker, Proxmox, K8s), `GpuProvider`, `Executor` |
+| `busibox` | Binary | Full interactive TUI with ratatui (multi-profile, remote, all backends) |
+| `busibox-quick` | Binary | Simple sequential installer for local Docker quick-start |
+
+**Key traits** (in `busibox-providers`):
+- `Backend` — deploy services, manage lifecycle, check prerequisites (Docker/Proxmox/K8s)
+- `GpuProvider` — GPU detection and health (MLX/CUDA/Cloud)
+- `Executor` — run commands locally or via SSH
+
+**`DeployContext`** (in `busibox-core`) aggregates all deployment state from a `Profile`, replacing scattered variable extraction. Both binaries construct it the same way.
+
+```bash
+# Build the CLI workspace
+cd cli && cargo build
+
+# Run tests (54 unit tests across core + providers)
+cd cli && cargo test
 ```
 
 ### Manager Container

@@ -494,7 +494,7 @@ async def start_service(
                 logger.error("BUSIBOX_HOST_PATH not set - cannot start services with volume mounts")
                 raise HTTPException(
                     status_code=500,
-                    detail="BUSIBOX_HOST_PATH environment variable not set. Restart with 'make docker-up' or set BUSIBOX_HOST_PATH."
+                    detail="BUSIBOX_HOST_PATH environment variable not set. Restart deploy-api with 'make manage SERVICE=deploy ACTION=restart' or set BUSIBOX_HOST_PATH."
                 )
             
             # Use explicit file paths with host path - busibox is mounted at BUSIBOX_HOST_PATH
@@ -1339,7 +1339,7 @@ async def start_service_sse(
                 # This allows buildx to find files and Docker to mount volumes correctly
                 busibox_host_path = os.getenv('BUSIBOX_HOST_PATH')
                 if not busibox_host_path:
-                    yield f"data: {json.dumps({'type': 'error', 'message': 'BUSIBOX_HOST_PATH not set. Restart deploy-api with make docker-up.', 'done': True})}\n\n"
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'BUSIBOX_HOST_PATH not set. Restart deploy-api with make manage SERVICE=deploy ACTION=restart.', 'done': True})}\n\n"
                     return
                 
                 # Use explicit file paths - busibox is mounted at BUSIBOX_HOST_PATH inside container

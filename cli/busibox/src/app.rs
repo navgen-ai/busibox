@@ -433,15 +433,7 @@ pub struct ServiceInstallState {
     pub status: InstallStatus,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum DeploymentState {
-    Unknown,
-    Checking,
-    None,
-    Partial(usize),       // some containers running, bootstrap not done
-    BootstrapComplete,    // bootstrap services healthy (postgres, authz, deploy, proxy, core-apps)
-    Complete,             // full platform deployed (agent, litellm, data, etc.)
-}
+pub use busibox_core::deploy::DeploymentState;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InstallStatus {

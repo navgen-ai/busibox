@@ -453,7 +453,7 @@ run_docker_container_tests() {
     # Check if container is running
     if ! docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
         error "Container not running: $container_name"
-        info "Start Docker services first: make docker-up"
+        info "Start Docker services first: make install SERVICE=all"
         return 1
     fi
     
@@ -596,7 +596,7 @@ run_nodejs_app_tests() {
     # Check if container is running
     if ! docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
         error "Container not running: $container_name"
-        info "Start Docker services first: make docker-up"
+        info "Start Docker services first: make install SERVICE=all"
         return 1
     fi
     

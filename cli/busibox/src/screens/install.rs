@@ -8,22 +8,7 @@ use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState, *};
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// Map environment name to container/vault prefix.
-/// Must match scripts/make/service-deploy.sh get_container_prefix().
-/// Map environment name to container/vault prefix.
-/// Must match scripts/make/service-deploy.sh get_container_prefix().
-/// Docker can be: development, staging, production, demo
-/// Proxmox can be: staging, production
-pub fn env_to_prefix(environment: &str) -> String {
-    match environment {
-        "demo" => "demo",
-        "development" => "dev",
-        "staging" => "staging",
-        "production" => "prod",
-        _ => "dev", // default same as service-deploy.sh
-    }
-    .to_string()
-}
+pub use busibox_core::deploy::env_to_prefix;
 
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))

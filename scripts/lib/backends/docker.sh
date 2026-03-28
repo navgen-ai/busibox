@@ -246,9 +246,10 @@ backend_service_action() {
             else
                 info "Starting ${service}..."
                 docker start "$container" 2>/dev/null || {
-                    warn "Container not found, trying to bring up..."
-                    cd "$REPO_ROOT"
-                    make docker-up SERVICE="${svc_container}" ENV="$env"
+                    warn "Container not found, deploying via Ansible..."
+                    local tag
+                    tag=$(get_ansible_tag "$service")
+                    _run_ansible_docker "$tag"
                 }
                 success "Service started"
             fi
@@ -275,18 +276,18 @@ backend_service_action() {
                 success "${app_short} restarted"
             elif [[ "$svc_container" == "core-apps" && ( -n "${CORE_APPS_MODE:-}" || -n "${CORE_APPS_SOURCE:-}" ) ]]; then
                 info "Restarting core-apps (mode=${CORE_APPS_MODE:-auto}, source=${CORE_APPS_SOURCE:-auto})..."
-                cd "$REPO_ROOT"
                 export CORE_APPS_MODE
                 export CORE_APPS_SOURCE
-                make docker-up SERVICE="core-apps" ENV="$env"
+                _run_ansible_docker "core-apps" "docker_force_recreate=true"
                 success "core-apps restarted"
                 return $?
             else
                 info "Restarting ${service}..."
                 docker restart "$container" 2>/dev/null || {
-                    warn "Container not found, trying to bring up..."
-                    cd "$REPO_ROOT"
-                    make docker-up SERVICE="${svc_container}" ENV="$env"
+                    warn "Container not found, deploying via Ansible..."
+                    local tag
+                    tag=$(get_ansible_tag "$service")
+                    _run_ansible_docker "$tag"
                 }
                 success "Service restarted"
             fi
@@ -332,11 +333,30 @@ backend_service_action() {
                     error "core-apps container (${container}) is not running"
                     return 1
                 fi
-                if docker exec "$container" /usr/local/bin/entrypoint.sh deploy "${app_short_name}"; then
-                    success "${app_short_name} redeployed"
+
+                # Detect which process manager is running inside the container:
+                # - Runtime image has /usr/local/bin/entrypoint.sh + supervisord
+                # - Dev image has /usr/local/bin/core-apps-entrypoint.sh + app-manager.js on :9999
+                if docker exec "$container" test -f /usr/local/bin/entrypoint.sh 2>/dev/null; then
+                    # Runtime mode: use supervisord-based entrypoint
+                    if docker exec "$container" /usr/local/bin/entrypoint.sh deploy "${app_short_name}"; then
+                        success "${app_short_name} redeployed"
+                    else
+                        error "Failed to redeploy ${app_short_name}"
+                        return 1
+                    fi
                 else
-                    error "Failed to redeploy ${app_short_name}"
-                    return 1
+                    # Dev mode: use app-manager control API (port 9999)
+                    info "Dev mode detected, using app-manager API to restart ${app_short_name}..."
+                    local restart_response
+                    restart_response=$(docker exec "$container" \
+                        curl -sf -X POST http://localhost:9999/restart \
+                        -H 'Content-Type: application/json' \
+                        -d "{\"app\":\"${app_short_name}\"}" 2>&1) || {
+                        error "Failed to restart ${app_short_name} via app-manager: ${restart_response}"
+                        return 1
+                    }
+                    success "${app_short_name} restarted via app-manager"
                 fi
                 return 0
             fi
@@ -377,9 +397,29 @@ backend_service_action() {
                         info "No attached .next/node_modules cache volumes found on ${container}"
                     fi
                 fi
-                make docker-build SERVICE="core-apps" ENV="$env" && make docker-up SERVICE="core-apps" ENV="$env"
-                success "core-apps redeployed"
-                return $?
+                _run_ansible_docker "core-apps" "docker_force_recreate=true" "enabled_apps=all"
+                local build_rc=$?
+                if [[ $build_rc -ne 0 ]]; then
+                    error "core-apps redeploy failed (ansible exit code: $build_rc)"
+                    return $build_rc
+                fi
+
+                # Wait for the container to start and become reachable.
+                # The entrypoint runs pnpm install + builds before apps are ready.
+                info "Waiting for core-apps to start (this may take a minute)..."
+                local wait_max=120 wait_elapsed=0
+                while [[ $wait_elapsed -lt $wait_max ]]; do
+                    if docker exec "$container" curl -sf http://localhost:9999/status >/dev/null 2>&1; then
+                        success "core-apps redeployed and app-manager is running"
+                        return 0
+                    fi
+                    sleep 5
+                    wait_elapsed=$((wait_elapsed + 5))
+                    info "  Still starting... (${wait_elapsed}s)"
+                done
+                warn "core-apps container started but app-manager not reachable after ${wait_max}s"
+                warn "Check logs: make manage SERVICE=core-apps ACTION=logs"
+                return 0
             fi
 
             info "Redeploying ${service}..."
@@ -494,27 +534,84 @@ backend_service_action() {
 }
 
 # ============================================================================
+# Ansible Helper
+# ============================================================================
+
+# Build and run an ansible-playbook command for the Docker backend.
+# Usage: _run_ansible_docker [TAG] [EXTRA_VARS...]
+# TAG defaults to "all"; each EXTRA_VAR is passed with -e.
+_run_ansible_docker() {
+    local tag="${1:-all}"
+    shift || true
+    local prefix="${CONTAINER_PREFIX:-dev}"
+
+    cd "${REPO_ROOT}/provision/ansible"
+
+    local cmd="ansible-playbook -i inventory/docker docker.yml --tags ${tag}"
+    cmd="${cmd} -e vault_prefix=${VAULT_PREFIX:-$prefix}"
+    cmd="${cmd} -e deployment_environment=${VAULT_PREFIX:-$prefix}"
+    cmd="${cmd} -e docker_force_recreate=true"
+
+    for extra in "$@"; do
+        cmd="${cmd} -e ${extra}"
+    done
+
+    local _vpd="${BUSIBOX_VAULT_PASS_DIR:-${HOME}}"
+    local _vault_pass_prefix="${VAULT_PREFIX:-$prefix}"
+    local vault_pass_file=""
+    for _try_prefix in "$_vault_pass_prefix" "$prefix"; do
+        if [[ -f "${_vpd}/.busibox-vault-pass-${_try_prefix}" ]]; then
+            vault_pass_file="${_vpd}/.busibox-vault-pass-${_try_prefix}"
+            break
+        elif [[ -f "$HOME/.busibox-vault-pass-${_try_prefix}" ]]; then
+            vault_pass_file="$HOME/.busibox-vault-pass-${_try_prefix}"
+            break
+        fi
+    done
+
+    local env_script="${REPO_ROOT}/scripts/lib/vault-pass-from-env.sh"
+    local _added_vault_pass=false
+    if [[ -n "${ANSIBLE_VAULT_PASSWORD:-}" && -f "$env_script" ]]; then
+        [[ -x "$env_script" ]] || chmod +x "$env_script"
+        cmd="${cmd} --vault-password-file ${env_script}"
+        _added_vault_pass=true
+    fi
+    if [[ -n "$vault_pass_file" ]]; then
+        cmd="${cmd} --vault-password-file ${vault_pass_file}"
+        _added_vault_pass=true
+    fi
+    if [[ "$_added_vault_pass" != "true" ]]; then
+        error "No vault password available (need ANSIBLE_VAULT_PASSWORD or ~/.busibox-vault-pass-${_vault_pass_prefix})"
+        return 1
+    fi
+
+    echo "Running: ${cmd}"
+    eval "$cmd"
+}
+
+# ============================================================================
 # Bulk Actions
 # ============================================================================
 
 backend_start_all() {
     info "Starting all services..."
-    cd "$REPO_ROOT"
-    make docker-up
+    _run_ansible_docker "all"
     success "Services started"
 }
 
 backend_stop_all() {
     info "Stopping all services..."
+    local prefix="${CONTAINER_PREFIX:-dev}"
+    local compose_project="${prefix}-busibox"
     cd "$REPO_ROOT"
-    make docker-down
+    COMPOSE_PROJECT_NAME="${compose_project}" docker compose -f docker-compose.yml down
     success "Services stopped"
 }
 
 backend_restart_all() {
     info "Restarting all services..."
-    cd "$REPO_ROOT"
-    make docker-restart
+    backend_stop_all
+    _run_ansible_docker "all"
     success "Services restarted"
 }
 

@@ -99,6 +99,10 @@ ENV_PREFIX = $(if $(filter demo,$(ENV)),demo,$(if $(filter development,$(ENV)),d
 ENV_FILE := .env.$(ENV_PREFIX)
 STATE_FILE := .busibox-state-$(ENV_PREFIX)
 
+# Vault prefix: CLI profiles use descriptive names (e.g. "local-development-docker")
+# which don't match ENV_PREFIX ("dev"). VAULT_PREFIX overrides ENV_PREFIX for vault lookups.
+VAULT_ENV_PREFIX = $(if $(VAULT_PREFIX),$(VAULT_PREFIX),$(ENV_PREFIX))
+
 # Read DEV_APPS_DIR from state file if it exists
 # This is set via: make configure -> Docker Configuration -> Configure Dev Apps Directory
 DEV_APPS_DIR := $(shell grep -s '^DEV_APPS_DIR=' $(STATE_FILE) 2>/dev/null | cut -d'=' -f2- | tr -d '"' || echo "")
@@ -517,80 +521,32 @@ _ensure-env:
 # ENV=demo/staging/production -> prod overlay (apps built from GitHub)
 # Requires valid GitHub token for private repos
 docker-up:
-	@echo "Starting Docker services (ENV=$(ENV), overlay=$(notdir $(COMPOSE_OVERLAY)))..."
-	@existing_id=$$(docker inspect -f '{{.Id}}' "$(CONTAINER_PREFIX)-user-apps" 2>/dev/null || true); \
-	if [ -n "$$existing_id" ]; then \
-		existing_status=$$(docker inspect -f '{{.State.Status}}' "$(CONTAINER_PREFIX)-user-apps" 2>/dev/null || echo "unknown"); \
-		existing_project=$$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$(CONTAINER_PREFIX)-user-apps" 2>/dev/null || echo ""); \
-		if [ "$$existing_status" != "running" ] || [ -n "$$existing_project" -a "$$existing_project" != "$(COMPOSE_PROJECT)" ]; then \
-			echo "[WARN] Removing stale container $(CONTAINER_PREFIX)-user-apps (status=$$existing_status, project=$$existing_project, expected=$(COMPOSE_PROJECT))"; \
-			docker rm -f "$(CONTAINER_PREFIX)-user-apps" >/dev/null 2>&1 || true; \
-		fi; \
-	fi
-	$(eval GITHUB_AUTH_TOKEN := $(or $(GITHUB_AUTH_TOKEN),$(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.github.personal_access_token 2>/dev/null || echo ""')))
-	$(eval POSTGRES_PASSWORD := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.postgresql.password 2>/dev/null || (echo "FATAL: Cannot read POSTGRES_PASSWORD from vault" >&2 && exit 1)'))
-	$(eval MINIO_ACCESS_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.minio.root_user 2>/dev/null || (echo "FATAL: Cannot read MINIO_ROOT_USER from vault" >&2 && exit 1)'))
-	$(eval MINIO_SECRET_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.minio.root_password 2>/dev/null || (echo "FATAL: Cannot read MINIO_ROOT_PASSWORD from vault" >&2 && exit 1)'))
-	$(eval AUTHZ_MASTER_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.authz_master_key 2>/dev/null || (echo "FATAL: Cannot read AUTHZ_MASTER_KEY from vault" >&2 && exit 1)'))
-	$(eval LITELLM_API_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.litellm_api_key 2>/dev/null || echo ""'))
-	$(eval LITELLM_MASTER_KEY := $(or $(LITELLM_API_KEY),$(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.litellm_master_key 2>/dev/null || echo ""')))
-	$(eval LITELLM_SALT_KEY := $(or $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.litellm_salt_key 2>/dev/null || echo ""'),$(LITELLM_MASTER_KEY)))
-	$(eval NEO4J_PASSWORD := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.neo4j.password 2>/dev/null || echo ""'))
-	@if [ -z "$(GITHUB_AUTH_TOKEN)" ]; then \
-		echo "[WARN] No GitHub token found (repos are public, continuing without it)"; \
-	fi
-ifneq ($(DEV_APPS_DIR),)
-	@echo "Dev Apps Directory: $(DEV_APPS_DIR)"
-endif
-ifdef SERVICE
-	GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)" DEV_APPS_DIR="$(DEV_APPS_DIR)" BUSIBOX_HOST_PATH="$(BUSIBOX_HOST_PATH)" CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" LITELLM_SALT_KEY="$(LITELLM_SALT_KEY)" NEO4J_PASSWORD="$(NEO4J_PASSWORD)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) up -d $(SERVICE)
-else
-	@echo "Phase 1/3: starting infrastructure prerequisites..."
-	GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)" DEV_APPS_DIR="$(DEV_APPS_DIR)" BUSIBOX_HOST_PATH="$(BUSIBOX_HOST_PATH)" CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" LITELLM_SALT_KEY="$(LITELLM_SALT_KEY)" NEO4J_PASSWORD="$(NEO4J_PASSWORD)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) up -d postgres redis minio etcd milvus neo4j
-	@echo "Phase 2/3: running one-time init services..."
-	GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)" DEV_APPS_DIR="$(DEV_APPS_DIR)" BUSIBOX_HOST_PATH="$(BUSIBOX_HOST_PATH)" CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" LITELLM_SALT_KEY="$(LITELLM_SALT_KEY)" NEO4J_PASSWORD="$(NEO4J_PASSWORD)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) up -d minio-init milvus-init
-	@echo "Phase 3/3: starting remaining services..."
-	GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)" DEV_APPS_DIR="$(DEV_APPS_DIR)" BUSIBOX_HOST_PATH="$(BUSIBOX_HOST_PATH)" CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" LITELLM_SALT_KEY="$(LITELLM_SALT_KEY)" NEO4J_PASSWORD="$(NEO4J_PASSWORD)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) up -d
-endif
 	@echo ""
-ifeq ($(ENV),development)
-	@echo "Development mode started. Use 'make docker-ps' to check status."
-	@echo "Core apps: busibox-frontend monorepo (7 apps)"
-else
-	@echo "$(ENV) mode started. Use 'make docker-ps' to check status."
-	@echo "Next.js apps built from GitHub with npm-published busibox-app."
-endif
+	@echo "[DEPRECATED] 'make docker-up' is deprecated and will be removed."
+	@echo ""
+	@echo "Use instead:"
+	@echo "  make install SERVICE=all          # Deploy all services via Ansible"
+	@echo "  make install SERVICE=authz        # Deploy a single service"
+	@echo "  busibox                           # Interactive CLI"
+	@echo ""
+	@exit 1
 
 # Legacy alias for explicit prod mode
-docker-up-prod: _ensure-env
-	$(MAKE) docker-up ENV=demo
+docker-up-prod:
+	@echo "[DEPRECATED] Use 'make install SERVICE=all' instead."
+	@exit 1
 
 # Start Docker services without rebuilding (fast start)
 docker-start:
-	@existing_id=$$(docker inspect -f '{{.Id}}' "$(CONTAINER_PREFIX)-user-apps" 2>/dev/null || true); \
-	if [ -n "$$existing_id" ]; then \
-		existing_status=$$(docker inspect -f '{{.State.Status}}' "$(CONTAINER_PREFIX)-user-apps" 2>/dev/null || echo "unknown"); \
-		existing_project=$$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$(CONTAINER_PREFIX)-user-apps" 2>/dev/null || echo ""); \
-		if [ "$$existing_status" != "running" ] || [ -n "$$existing_project" -a "$$existing_project" != "$(COMPOSE_PROJECT)" ]; then \
-			echo "[WARN] Removing stale container $(CONTAINER_PREFIX)-user-apps (status=$$existing_status, project=$$existing_project, expected=$(COMPOSE_PROJECT))"; \
-			docker rm -f "$(CONTAINER_PREFIX)-user-apps" >/dev/null 2>&1 || true; \
-		fi; \
-	fi
-	$(eval POSTGRES_PASSWORD := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.postgresql.password 2>/dev/null || (echo "FATAL: Cannot read POSTGRES_PASSWORD from vault" >&2 && exit 1)'))
-	$(eval MINIO_ACCESS_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.minio.root_user 2>/dev/null || (echo "FATAL: Cannot read MINIO_ROOT_USER from vault" >&2 && exit 1)'))
-	$(eval MINIO_SECRET_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.minio.root_password 2>/dev/null || (echo "FATAL: Cannot read MINIO_ROOT_PASSWORD from vault" >&2 && exit 1)'))
-	$(eval AUTHZ_MASTER_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.authz_master_key 2>/dev/null || (echo "FATAL: Cannot read AUTHZ_MASTER_KEY from vault" >&2 && exit 1)'))
-	$(eval LITELLM_API_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.litellm_api_key 2>/dev/null || echo ""'))
-	$(eval LITELLM_MASTER_KEY := $(or $(LITELLM_API_KEY),$(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.litellm_master_key 2>/dev/null || echo ""')))
-	$(eval LITELLM_SALT_KEY := $(or $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.litellm_salt_key 2>/dev/null || echo ""'),$(LITELLM_MASTER_KEY)))
-	$(eval NEO4J_PASSWORD := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.neo4j.password 2>/dev/null || echo ""'))
-ifdef SERVICE
-	DEV_APPS_DIR="$(DEV_APPS_DIR)" BUSIBOX_HOST_PATH="$(BUSIBOX_HOST_PATH)" CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" LITELLM_SALT_KEY="$(LITELLM_SALT_KEY)" NEO4J_PASSWORD="$(NEO4J_PASSWORD)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) up -d --no-build $(SERVICE)
-else
-	DEV_APPS_DIR="$(DEV_APPS_DIR)" BUSIBOX_HOST_PATH="$(BUSIBOX_HOST_PATH)" CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" LITELLM_SALT_KEY="$(LITELLM_SALT_KEY)" NEO4J_PASSWORD="$(NEO4J_PASSWORD)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) up -d --no-build
-endif
 	@echo ""
-	@echo "Services started ($(ENV) mode). Use 'make docker-ps' to check status."
+	@echo "[DEPRECATED] 'make docker-start' is deprecated and will be removed."
+	@echo ""
+	@echo "Use instead:"
+	@echo "  make install SERVICE=all          # Deploy all services via Ansible"
+	@echo "  make manage SERVICE=X ACTION=start  # Start a single service"
+	@echo "  busibox                           # Interactive CLI"
+	@echo ""
+	@exit 1
 
 # Stop Docker services
 # Uses COMPOSE_PROJECT_NAME to stop the correct environment's containers
@@ -611,20 +567,15 @@ docker-down-all:
 
 # Restart Docker services (simple restart, no recreation)
 docker-restart:
-	$(eval GITHUB_AUTH_TOKEN := $(or $(GITHUB_AUTH_TOKEN),$(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.github.personal_access_token 2>/dev/null || echo ""')))
-	$(eval POSTGRES_PASSWORD := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.postgresql.password 2>/dev/null || (echo "FATAL: Cannot read POSTGRES_PASSWORD from vault" >&2 && exit 1)'))
-	$(eval MINIO_ACCESS_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.minio.root_user 2>/dev/null || (echo "FATAL: Cannot read MINIO_ROOT_USER from vault" >&2 && exit 1)'))
-	$(eval MINIO_SECRET_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.minio.root_password 2>/dev/null || (echo "FATAL: Cannot read MINIO_ROOT_PASSWORD from vault" >&2 && exit 1)'))
-	$(eval AUTHZ_MASTER_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.authz_master_key 2>/dev/null || (echo "FATAL: Cannot read AUTHZ_MASTER_KEY from vault" >&2 && exit 1)'))
-	$(eval LITELLM_API_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.litellm_api_key 2>/dev/null || echo ""'))
-	$(eval LITELLM_MASTER_KEY := $(or $(LITELLM_API_KEY),$(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.litellm_master_key 2>/dev/null || echo ""')))
-	$(eval LITELLM_SALT_KEY := $(or $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.litellm_salt_key 2>/dev/null || echo ""'),$(LITELLM_MASTER_KEY)))
-	$(eval NEO4J_PASSWORD := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.neo4j.password 2>/dev/null || echo ""'))
-ifdef SERVICE
-	GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)" DEV_APPS_DIR="$(DEV_APPS_DIR)" CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" LITELLM_SALT_KEY="$(LITELLM_SALT_KEY)" NEO4J_PASSWORD="$(NEO4J_PASSWORD)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) restart $(SERVICE)
-else
-	GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)" DEV_APPS_DIR="$(DEV_APPS_DIR)" CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" LITELLM_SALT_KEY="$(LITELLM_SALT_KEY)" NEO4J_PASSWORD="$(NEO4J_PASSWORD)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) restart
-endif
+	@echo ""
+	@echo "[DEPRECATED] 'make docker-restart' is deprecated and will be removed."
+	@echo ""
+	@echo "Use instead:"
+	@echo "  make manage SERVICE=X ACTION=restart    # Restart a service"
+	@echo "  make manage SERVICE=X ACTION=redeploy   # Full rebuild + restart"
+	@echo "  busibox                                 # Interactive CLI"
+	@echo ""
+	@exit 1
 
 # Restart only API services (fast, preserves infrastructure like embedding-api, milvus, postgres)
 # Use this when developing - embedding model stays loaded, so restarts are fast
@@ -647,7 +598,7 @@ ssl-check:
 # Check GitHub token is available and valid
 github-check:
 	@bash scripts/lib/github.sh check
-	$(eval GITHUB_AUTH_TOKEN := $(or $(GITHUB_AUTH_TOKEN),$(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.github.personal_access_token 2>/dev/null || echo ""')))
+	$(eval GITHUB_AUTH_TOKEN := $(or $(GITHUB_AUTH_TOKEN),$(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(VAULT_ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.github.personal_access_token 2>/dev/null || echo ""')))
 	@if [ -n "$(GITHUB_AUTH_TOKEN)" ]; then \
 		export GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)"; \
 	fi
@@ -655,46 +606,22 @@ github-check:
 # Ensure GitHub token is available (interactive prompt if needed)
 github-ensure:
 	@bash scripts/lib/github.sh ensure
-	$(eval GITHUB_AUTH_TOKEN := $(or $(GITHUB_AUTH_TOKEN),$(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.github.personal_access_token 2>/dev/null || echo ""')))
+	$(eval GITHUB_AUTH_TOKEN := $(or $(GITHUB_AUTH_TOKEN),$(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(VAULT_ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.github.personal_access_token 2>/dev/null || echo ""')))
 	@if [ -n "$(GITHUB_AUTH_TOKEN)" ]; then \
 		export GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)"; \
 	fi
 
 # Build Docker images based on environment
-# ENV=development -> dev overlay, ENV=demo/staging/production -> prod overlay
-# Requires valid GitHub token for private repos
-docker-build: ssl-check
-	$(eval GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown"))
-	$(eval GITHUB_AUTH_TOKEN := $(or $(GITHUB_AUTH_TOKEN),$(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.github.personal_access_token 2>/dev/null || echo ""')))
-	$(eval POSTGRES_PASSWORD := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.postgresql.password 2>/dev/null || (echo "FATAL: Cannot read POSTGRES_PASSWORD from vault" >&2 && exit 1)'))
-	$(eval MINIO_ACCESS_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.minio.root_user 2>/dev/null || (echo "FATAL: Cannot read MINIO_ROOT_USER from vault" >&2 && exit 1)'))
-	$(eval MINIO_SECRET_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.minio.root_password 2>/dev/null || (echo "FATAL: Cannot read MINIO_ROOT_PASSWORD from vault" >&2 && exit 1)'))
-	$(eval AUTHZ_MASTER_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.authz_master_key 2>/dev/null || (echo "FATAL: Cannot read AUTHZ_MASTER_KEY from vault" >&2 && exit 1)'))
-	$(eval LITELLM_API_KEY := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.litellm_api_key 2>/dev/null || echo ""'))
-	$(eval LITELLM_MASTER_KEY := $(or $(LITELLM_API_KEY),$(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.litellm_master_key 2>/dev/null || echo ""')))
-	$(eval LITELLM_SALT_KEY := $(or $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.litellm_salt_key 2>/dev/null || echo ""'),$(LITELLM_MASTER_KEY)))
-	$(eval NEO4J_PASSWORD := $(shell bash -c 'source scripts/lib/vault.sh >/dev/null 2>&1 && set_vault_environment $(ENV_PREFIX) >/dev/null 2>&1 && ensure_vault_access >/dev/null 2>&1 && get_vault_secret secrets.neo4j.password 2>/dev/null || echo ""'))
-	@if [ -z "$(GITHUB_AUTH_TOKEN)" ]; then \
-		echo "[WARN] No GitHub token found (repos are public, continuing without it)"; \
-	fi
-	@echo "Building with version: $(GIT_COMMIT) (ENV=$(ENV), overlay=$(notdir $(COMPOSE_OVERLAY)))"
-ifdef SERVICE
-ifdef NO_CACHE
-	GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)" GIT_COMMIT=$(GIT_COMMIT) CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" LITELLM_SALT_KEY="$(LITELLM_SALT_KEY)" NEO4J_PASSWORD="$(NEO4J_PASSWORD)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) build --no-cache $(SERVICE)
-else
-	GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)" GIT_COMMIT=$(GIT_COMMIT) CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" LITELLM_SALT_KEY="$(LITELLM_SALT_KEY)" NEO4J_PASSWORD="$(NEO4J_PASSWORD)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) build $(SERVICE)
-endif
-	@echo "Recreating container to apply new image..."
-	GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)" GIT_COMMIT=$(GIT_COMMIT) BUSIBOX_HOST_PATH="$(BUSIBOX_HOST_PATH)" CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" LITELLM_SALT_KEY="$(LITELLM_SALT_KEY)" NEO4J_PASSWORD="$(NEO4J_PASSWORD)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) up -d --no-deps $(SERVICE)
-else
-ifdef NO_CACHE
-	GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)" GIT_COMMIT=$(GIT_COMMIT) CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" LITELLM_SALT_KEY="$(LITELLM_SALT_KEY)" NEO4J_PASSWORD="$(NEO4J_PASSWORD)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) build --no-cache
-else
-	GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)" GIT_COMMIT=$(GIT_COMMIT) CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" LITELLM_SALT_KEY="$(LITELLM_SALT_KEY)" NEO4J_PASSWORD="$(NEO4J_PASSWORD)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) build
-endif
-	@echo "Recreating containers to apply new images..."
-	GITHUB_AUTH_TOKEN="$(GITHUB_AUTH_TOKEN)" GIT_COMMIT=$(GIT_COMMIT) BUSIBOX_HOST_PATH="$(BUSIBOX_HOST_PATH)" CONTAINER_PREFIX=$(CONTAINER_PREFIX) COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT) POSTGRES_PASSWORD="$(POSTGRES_PASSWORD)" MINIO_ACCESS_KEY="$(MINIO_ACCESS_KEY)" MINIO_SECRET_KEY="$(MINIO_SECRET_KEY)" AUTHZ_MASTER_KEY="$(AUTHZ_MASTER_KEY)" LITELLM_API_KEY="$(LITELLM_API_KEY)" LITELLM_MASTER_KEY="$(LITELLM_MASTER_KEY)" docker compose -f $(COMPOSE_FILE) -f $(COMPOSE_OVERLAY) up -d
-endif
+docker-build:
+	@echo ""
+	@echo "[DEPRECATED] 'make docker-build' is deprecated and will be removed."
+	@echo ""
+	@echo "Use instead:"
+	@echo "  make install SERVICE=X              # Build + deploy a service via Ansible"
+	@echo "  make manage SERVICE=X ACTION=redeploy  # Rebuild + restart"
+	@echo "  busibox                             # Interactive CLI"
+	@echo ""
+	@exit 1
 
 # View Docker logs (uses environment-based overlay)
 docker-logs:

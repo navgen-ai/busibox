@@ -338,7 +338,7 @@ main() {
     echo -e "     ${CYAN}cat .env.local${NC}"
     echo ""
     echo "  2. Start Docker services:"
-    echo -e "     ${CYAN}make docker-up${NC}"
+    echo -e "     ${CYAN}make install SERVICE=all${NC}"
     echo ""
     echo -e "  ${DIM}Note: This file is auto-generated. Edit the vault instead:${NC}"
     echo -e "  ${DIM}ansible-vault edit provision/ansible/roles/secrets/vars/vault.yml${NC}"

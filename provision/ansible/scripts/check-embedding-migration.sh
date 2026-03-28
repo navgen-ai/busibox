@@ -168,7 +168,7 @@ if [ "$USE_DOCKER" = true ]; then
     if ! docker ps --format '{{.Names}}' | grep -q "^${DATA_CONTAINER}$"; then
         echo -e "${YELLOW}WARNING: Docker container '$DATA_CONTAINER' is not running${NC}"
         echo "Make sure:"
-        echo "  1. Docker containers are running (make docker-up)"
+        echo "  1. Docker containers are running (make install SERVICE=all)"
         echo "  2. Container name is correct"
         echo ""
         echo "Running containers:"

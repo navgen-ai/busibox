@@ -292,7 +292,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const fast = a.fast !== false;
       const ar = String(a.pytest_args || '');
       const cmd = `make test-docker SERVICE=${svc} ${fast ? 'FAST=1' : 'FAST=0'} ${ar ? `ARGS='${ar}'` : ''}`.trim();
-      return text(JSON.stringify({ note: 'Run locally', command: cmd, prerequisites: ['make docker-up', 'make test-db-init'] }, null, 2));
+      return text(JSON.stringify({ note: 'Run locally', command: cmd, prerequisites: ['make install SERVICE=all', 'make test-db-init'] }, null, 2));
     }
 
     case 'run_remote_tests': {
@@ -321,14 +321,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     case 'docker_control': {
       const action = String(a.action || 'ps');
-      const svc = a.service ? ` SERVICE=${a.service}` : '';
-      const noCache = a.no_cache && action === 'build' ? ' NO_CACHE=1' : '';
-      const cmd = `make docker-${action}${svc}${noCache}`.trim();
+      const svc = a.service?.trim();
+      const noCache = Boolean(a.no_cache && action === 'build');
+      let cmd: string;
+      if (action === 'up' || action === 'start') {
+        cmd = svc ? `make install SERVICE=${svc}` : 'make install SERVICE=all';
+      } else if (action === 'build') {
+        cmd = noCache
+          ? (svc ? `make manage SERVICE=${svc} ACTION=redeploy` : 'make manage SERVICE=all ACTION=redeploy')
+          : (svc ? `make install SERVICE=${svc}` : 'make install SERVICE=all');
+      } else if (action === 'restart') {
+        cmd = svc ? `make manage SERVICE=${svc} ACTION=restart` : 'make manage SERVICE=all ACTION=restart';
+      } else {
+        cmd = `make docker-${action}${svc ? ` SERVICE=${svc}` : ''}${noCache && action === 'build' ? ' NO_CACHE=1' : ''}`.trim();
+      }
       return text(JSON.stringify({ note: 'Run locally', command: cmd }, null, 2));
     }
 
     case 'init_test_databases':
-      return text(JSON.stringify({ command: 'make test-db-init', description: 'Bootstrap test databases', prerequisites: ['make docker-up'] }, null, 2));
+      return text(JSON.stringify({ command: 'make test-db-init', description: 'Bootstrap test databases', prerequisites: ['make install SERVICE=all'] }, null, 2));
 
     case 'check_test_databases':
       return text(JSON.stringify({ command: 'make test-db-check', description: 'Check test DB readiness' }, null, 2));
@@ -368,9 +379,9 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
     case 'run_tests':
       return msg(`How do I run tests for ${a.service || 'all'}?`, `Use make test-docker SERVICE=${a.service || 'all'} for Docker, or make test-local SERVICE=${a.service || 'all'} INV=staging for remote. First run make test-db-init.`);
     case 'testing_workflow':
-      return msg(`Testing workflow for ${a.environment || 'docker'}`, a.environment === 'docker' ? 'make docker-up && make test-db-init && make test-docker SERVICE=' + (a.service || 'agent') : `make test-local SERVICE=${a.service || 'agent'} INV=${a.environment}`);
+      return msg(`Testing workflow for ${a.environment || 'docker'}`, a.environment === 'docker' ? 'make install SERVICE=all && make test-db-init && make test-docker SERVICE=' + (a.service || 'agent') : `make test-local SERVICE=${a.service || 'agent'} INV=${a.environment}`);
     case 'docker_development':
-      return msg('Docker dev setup?', 'make docker-up, make test-db-init, make docker-ps. Use make docker-logs SERVICE=x for logs.');
+      return msg('Docker dev setup?', 'make install SERVICE=all, make test-db-init, make docker-ps. Use make docker-logs SERVICE=x for logs.');
     case 'troubleshoot_issue':
       return msg(`Troubleshoot ${a.issue_type}`, 'Use get_container_logs, get_container_service_status. Check docs with search_docs.');
     case 'add_service':
