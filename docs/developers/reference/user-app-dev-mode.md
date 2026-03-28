@@ -40,7 +40,7 @@ ln -s ~/Code/busibox-analysis ./busibox-analysis
 
 ```bash
 cd /path/to/busibox
-make docker-up  # Uses dev mode by default
+make install SERVICE=all  # Deploy all services via Ansible
 ```
 
 ### 3. Register App in Busibox Portal

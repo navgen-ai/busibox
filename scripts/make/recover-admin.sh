@@ -109,7 +109,7 @@ main() {
         # Check for any busibox-portal container (any prefix: demo-, dev-, staging-, prod-)
         if ! docker ps --format '{{.Names}}' | grep -q "busibox-portal"; then
             warn "Busibox Portal container is not running"
-            info "Start services with: make docker-up"
+            info "Start services with: make install SERVICE=all"
         fi
     fi
 }

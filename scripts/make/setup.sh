@@ -74,7 +74,7 @@ setup_docker() {
             bash "${REPO_ROOT}/scripts/setup/generate-local-ssl.sh"
             success "SSL certificates generated"
         else
-            warn "SSL generation script not found - will be created on docker-build"
+            warn "SSL generation script not found - will be created on first make install"
         fi
     else
         success "SSL certificates already exist"
@@ -87,7 +87,7 @@ setup_docker() {
         (cd "$REPO_ROOT" && docker compose -f docker-compose.yml --env-file .env.local build)
         success "Docker images built successfully"
     else
-        info "Skipping image build. Run 'make docker-build' when ready."
+        info "Skipping image build. Run 'make install SERVICE=all' when ready."
     fi
     
     # Step 5: Start services (optional)
@@ -100,7 +100,7 @@ setup_docker() {
         info "Check status with: make docker-ps"
         info "View logs with: make docker-logs"
     else
-        info "Skipping service start. Run 'make docker-up' when ready."
+        info "Skipping service start. Run 'make install SERVICE=all' when ready."
     fi
     
     # Update state
@@ -116,7 +116,7 @@ setup_docker() {
     echo ""
     info "Next steps:"
     echo "  1. Edit .env.local with your API keys"
-    echo "  2. Run 'make docker-up' to start services"
+    echo "  2. Run 'make install SERVICE=all' to start services"
     echo "  3. Run 'make test-docker SERVICE=authz' to verify"
     echo ""
 }

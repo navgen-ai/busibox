@@ -750,7 +750,7 @@ show_help() {
     box_line "    ${CYAN}make mcp${NC}      Build MCP servers and write .cursor config"
     box_empty
     box_line "  ${BOLD}Docker Commands${NC}"
-    box_line "    ${DIM}make docker-up${NC}       Start Docker services"
+    box_line "    ${DIM}make install SERVICE=all${NC}  Deploy all services"
     box_line "    ${DIM}make docker-down${NC}     Stop Docker services"
     box_line "    ${DIM}make docker-logs${NC}     View Docker logs"
     box_line "    ${DIM}make docker-ps${NC}       List containers"

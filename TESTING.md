@@ -15,6 +15,29 @@ For comprehensive testing documentation, see:
 
 ## Quick Reference
 
+### CLI (Rust) Testing
+
+```bash
+# Run all CLI unit tests (from repo root)
+cd cli && cargo test
+
+# Run tests for a specific crate
+cd cli && cargo test -p busibox-core
+cd cli && cargo test -p busibox-providers
+
+# Run a specific test module
+cd cli && cargo test -p busibox-core services::tests
+cd cli && cargo test -p busibox-core deploy::tests
+cd cli && cargo test -p busibox-core vault::tests
+
+# Run a single test by name
+cd cli && cargo test -p busibox-core vault::tests::encrypt_decrypt_round_trip
+```
+
+The CLI workspace has unit tests covering:
+- **`busibox-core`**: Service registry, deploy context, vault crypto, env-to-prefix mapping
+- **`busibox-providers`**: Backend factory, supported services per backend
+
 ### Docker Testing (Local Development)
 
 ```bash

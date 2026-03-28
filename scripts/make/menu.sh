@@ -460,11 +460,8 @@ handle_start_busibox() {
     info "Starting Busibox services (ENV=$env)..."
     echo ""
     
-    # Use docker-start (--no-build) to start existing containers quickly
-    # If images don't exist, use docker-up which will build them
-    # Pass ENV to select the correct compose overlay
-    save_last_command "make docker-start ENV=$env"
-    (cd "$REPO_ROOT" && make docker-start ENV="$env")
+    save_last_command "make install SERVICE=all"
+    (cd "$REPO_ROOT" && make install SERVICE=all)
     
     # Re-run health check to update status
     run_quick_health_check "$env" "$backend"
@@ -745,8 +742,8 @@ handle_install() {
                 2)
                     echo ""
                     if confirm "Rebuild all Docker images (this may take a while)?"; then
-                        save_last_command "make docker-build"
-                        (cd "$REPO_ROOT" && make docker-build)
+                        save_last_command "make install SERVICE=all"
+                        (cd "$REPO_ROOT" && make install SERVICE=all)
                     fi
                     pause
                     ;;
@@ -1250,8 +1247,8 @@ services_start_with_deps() {
     echo ""
     if [[ -z "$services" ]]; then
         info "Starting all services with dependencies..."
-        save_last_command "make docker-up ENV=$env"
-        (cd "$REPO_ROOT" && make docker-up ENV="$env")
+        save_last_command "make install SERVICE=all"
+        (cd "$REPO_ROOT" && make install SERVICE=all)
     else
         # Translate logical service names to docker-compose service names
         local docker_services
@@ -1399,8 +1396,8 @@ services_restart_with_deps() {
     echo ""
     if [[ -z "$services" ]]; then
         info "Restarting all services..."
-        save_last_command "make docker-restart ENV=$env"
-        (cd "$REPO_ROOT" && make docker-down && make docker-up ENV="$env")
+        save_last_command "make docker-down && make install SERVICE=all"
+        (cd "$REPO_ROOT" && make docker-down && make install SERVICE=all)
     else
         # Separate core-apps sub-services from regular docker services
         local app_manager_names=""
@@ -1503,13 +1500,8 @@ services_rebuild_group() {
     if [[ -z "$services" ]]; then
         # Build all images
         info "Building all Docker images..."
-        if [[ "$no_cache" == "no-cache" ]]; then
-            save_last_command "make docker-build ENV=$env NO_CACHE=1"
-            (cd "$REPO_ROOT" && make docker-build ENV="$env" NO_CACHE=1)
-        else
-            save_last_command "make docker-build ENV=$env"
-            (cd "$REPO_ROOT" && make docker-build ENV="$env")
-        fi
+        save_last_command "make install SERVICE=all"
+        (cd "$REPO_ROOT" && make install SERVICE=all)
     else
         # Check if ALL services are core-apps sub-services (use app-manager API)
         local app_manager_names=""
@@ -1556,11 +1548,7 @@ services_rebuild_group() {
             info "Building services: $docker_services"
             for svc in $docker_services; do
                 info "Building $svc..."
-                if [[ "$no_cache" == "no-cache" ]]; then
-                    (cd "$REPO_ROOT" && make docker-build SERVICE="$svc" ENV="$env" NO_CACHE=1)
-                else
-                    (cd "$REPO_ROOT" && make docker-build SERVICE="$svc" ENV="$env")
-                fi
+                (cd "$REPO_ROOT" && make install SERVICE="$svc")
             done
         fi
         success "$group_name rebuilt"
@@ -2167,7 +2155,7 @@ handle_databases() {
         fi
         if ! python3 -c "import asyncpg" 2>/dev/null; then
             error "asyncpg is not installed. Start Docker containers to run migration."
-            info "Run: make docker-up"
+            info "Run: make install SERVICE=all"
             pause
             return 1
         fi
@@ -3837,16 +3825,14 @@ show_help() {
     echo ""
     echo -e "${BOLD}Docker Commands (make targets)${NC}"
     echo ""
-    echo "  ${CYAN}Build:${NC}"
-    echo "    make docker-build              # Build all images"
-    echo "    make docker-build SERVICE=X    # Build specific service"
-    echo "    make docker-build ENV=demo     # Build with prod overlay"
+    echo "  ${CYAN}Deploy:${NC}"
+    echo "    make install SERVICE=all       # Deploy all services via Ansible"
+    echo "    make install SERVICE=authz     # Deploy a single service"
     echo ""
-    echo "  ${CYAN}Services:${NC}"
-    echo "    make docker-up                 # Start all (development mode)"
-    echo "    make docker-up ENV=demo        # Start all (demo/prod mode)"
+    echo "  ${CYAN}Manage:${NC}"
+    echo "    make manage SERVICE=X ACTION=restart   # Restart a service"
+    echo "    make manage SERVICE=X ACTION=redeploy  # Rebuild + restart"
     echo "    make docker-down               # Stop all services"
-    echo "    make docker-restart            # Restart all services"
     echo "    make docker-ps                 # Show service status"
     echo "    make docker-logs               # View all logs"
     echo "    make docker-logs SERVICE=X     # View specific logs"

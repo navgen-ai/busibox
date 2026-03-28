@@ -364,7 +364,7 @@ main() {
     echo ""
     echo "  2. Test with Docker Compose:"
     echo -e "     ${CYAN}make docker-down${NC}"
-    echo -e "     ${CYAN}make docker-up${NC}"
+    echo -e "     ${CYAN}make install SERVICE=all${NC}"
     echo ""
     echo "  3. After verification, you can delete .env.local:"
     echo -e "     ${CYAN}rm .env.local${NC}"

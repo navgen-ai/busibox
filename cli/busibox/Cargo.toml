@@ -1,34 +1,32 @@
 [package]
 name = "busibox-cli"
-version = "0.1.0"
-edition = "2021"
 description = "Busibox infrastructure CLI with TUI"
+edition.workspace = true
+version.workspace = true
 
 [[bin]]
 name = "busibox"
 path = "src/main.rs"
 
 [dependencies]
+busibox-core = { workspace = true }
+busibox-providers = { workspace = true }
 ctrlc = "3"
 ratatui = "0.29"
 crossterm = "0.28"
 tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml = "0.9"
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 clap = { version = "4", features = ["derive"] }
-color-eyre = "0.6"
-dirs = "6"
-which = "7"
-sysinfo = "0.33"
-regex = "1"
-aes-gcm = "0.10"
-argon2 = "0.5"
-base64 = "0.22"
-rpassword = "7"
-rand = "0.8"
-libc = "0.2"
-
-[profile.release]
-strip = true
-lto = true
+color-eyre = { workspace = true }
+dirs = { workspace = true }
+which = { workspace = true }
+sysinfo = { workspace = true }
+regex = { workspace = true }
+aes-gcm = { workspace = true }
+argon2 = { workspace = true }
+base64 = { workspace = true }
+rpassword = { workspace = true }
+rand = { workspace = true }
+libc = { workspace = true }

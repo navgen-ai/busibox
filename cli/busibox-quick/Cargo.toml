@@ -1,0 +1,16 @@
+[package]
+name = "busibox-quick"
+description = "Busibox quick installer — simple single-machine setup"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "busibox-quick"
+path = "src/main.rs"
+
+[dependencies]
+busibox-core = { workspace = true }
+busibox-providers = { workspace = true }
+color-eyre = { workspace = true }
+dirs = { workspace = true }
+rpassword = { workspace = true }

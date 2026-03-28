@@ -892,7 +892,7 @@ configure_dev_apps_dir() {
             echo "  - Env file: $(basename "$env_file")"
             echo ""
             info "To apply this setting, recreate the deploy-api container:"
-            echo "  make docker-down SERVICE=deploy-api && make docker-up SERVICE=deploy-api"
+            echo "  make manage SERVICE=deploy ACTION=redeploy"
             ;;
         2)
             set_dev_apps_dir ""
@@ -986,7 +986,7 @@ configure_github_token() {
                 
                 echo ""
                 success "Token saved to state and ${env_file}"
-                info "Restart Docker services to apply: make docker-down && make docker-up"
+                info "Restart Docker services to apply: make manage SERVICE=all ACTION=redeploy"
             fi
             ;;
         2)

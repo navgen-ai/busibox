@@ -8,22 +8,7 @@ use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState, *};
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// Map environment name to container/vault prefix.
-/// Must match scripts/make/service-deploy.sh get_container_prefix().
-/// Map environment name to container/vault prefix.
-/// Must match scripts/make/service-deploy.sh get_container_prefix().
-/// Docker can be: development, staging, production, demo
-/// Proxmox can be: staging, production
-pub fn env_to_prefix(environment: &str) -> String {
-    match environment {
-        "demo" => "demo",
-        "development" => "dev",
-        "staging" => "staging",
-        "production" => "prod",
-        _ => "dev", // default same as service-deploy.sh
-    }
-    .to_string()
-}
+pub use busibox_core::deploy::env_to_prefix;
 
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -1143,6 +1128,9 @@ fn spawn_install_worker(app: &mut App) {
         .active_profile()
         .and_then(|(_, p)| p.ssl_cert_name.clone())
         .filter(|c| !c.trim().is_empty());
+    let profile_direct_access: Option<bool> = app
+        .active_profile()
+        .and_then(|(_, p)| p.direct_access);
     let profile_model_tier: Option<String> = app
         .active_profile()
         .and_then(|(_, p)| p.effective_model_tier().map(|t| t.name().to_string()));
@@ -1302,6 +1290,57 @@ fn spawn_install_worker(app: &mut App) {
             let _ = tx.send(InstallUpdate::Log(format!(
                 "WARNING: SSL certificate preparation skipped: {e}"
             )));
+        }
+
+        // For remote installs with direct access, generate trusted TLS certs via mkcert
+        // if no SSL cert is already configured.
+        if is_remote && ssl_cert_name.is_none() {
+            let direct_host_for_cert = match profile_direct_access {
+                Some(true) => profile_host.clone(),
+                Some(false) => None,
+                None => {
+                    if let Some(ref host) = profile_host {
+                        if crate::modules::profile::is_host_reachable(host, 443, 2000) {
+                            Some(host.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            if let Some(ref host) = direct_host_for_cert {
+                let ssl_dir = repo_root.join("ssl");
+                let cert_file = ssl_dir.join(format!("{site_domain}.crt"));
+                if !cert_file.exists() {
+                    let _ = tx.send(InstallUpdate::Log(
+                        "Generating trusted TLS certificates with mkcert...".into(),
+                    ));
+                    let mut domains: Vec<&str> = vec![host.as_str()];
+                    if site_domain != *host {
+                        domains.push(&site_domain);
+                    }
+                    domains.push("localhost");
+                    match crate::modules::mkcert::ensure_certs(&domains, &ssl_dir, &site_domain) {
+                        Ok(_) => {
+                            let _ = tx.send(InstallUpdate::Log(format!(
+                                "✓ TLS certificates generated for {}",
+                                domains.join(", ")
+                            )));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(InstallUpdate::Log(format!(
+                                "WARNING: mkcert certificate generation failed: {e}"
+                            )));
+                            let _ = tx.send(InstallUpdate::Log(
+                                "  You can install mkcert manually and re-run the install.".into(),
+                            ));
+                        }
+                    }
+                }
+            }
         }
 
         // Propagate DEV_APPS_DIR to state/env files so Docker Compose picks it up
@@ -3796,7 +3835,26 @@ echo "✓ User-specific values applied"
                 "✓ Bootstrap installation complete".into(),
             ));
             let portal_url = if is_remote {
-                format!("https://{site_domain}/portal/setup")
+                // Determine access method: direct (Tailscale/LAN) or SSH tunnel
+                let use_direct = match profile_direct_access {
+                    Some(val) => val,
+                    None => {
+                        if let Some(ref host) = profile_host {
+                            crate::modules::profile::is_host_reachable(host, 443, 2000)
+                        } else {
+                            false
+                        }
+                    }
+                };
+                if use_direct {
+                    if let Some(ref host) = profile_host {
+                        format!("https://{host}/portal/setup")
+                    } else {
+                        format!("https://{site_domain}/portal/setup")
+                    }
+                } else {
+                    "https://localhost:4443/portal/setup".to_string()
+                }
             } else {
                 format!("https://{site_domain}/portal/setup")
             };

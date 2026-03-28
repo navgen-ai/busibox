@@ -355,10 +355,10 @@ const MAIN_MAKEFILE_TARGETS: Record<string, {
   
   // Docker development
   'docker-up': {
-    description: 'Start Docker services',
+    description: 'Start Docker services (prefer: make install SERVICE=all or make install SERVICE=<name>)',
     category: 'docker',
     variables: { SERVICE: 'Optional: specific service to start' },
-    examples: ['make docker-up', 'make docker-up SERVICE=authz-api'],
+    examples: ['make install SERVICE=all', 'make install SERVICE=authz'],
   },
   'docker-down': {
     description: 'Stop all Docker services',
@@ -366,22 +366,22 @@ const MAIN_MAKEFILE_TARGETS: Record<string, {
     examples: ['make docker-down'],
   },
   'docker-restart': {
-    description: 'Restart Docker services',
+    description: 'Restart Docker services (prefer: make manage SERVICE=<name> ACTION=restart)',
     category: 'docker',
     variables: { SERVICE: 'Optional: specific service to restart' },
-    examples: ['make docker-restart', 'make docker-restart SERVICE=authz-api'],
+    examples: ['make manage SERVICE=all ACTION=restart', 'make manage SERVICE=authz ACTION=restart'],
   },
   'docker-build': {
-    description: 'Build Docker images',
+    description: 'Build/deploy Docker images (prefer: make install SERVICE=...; NO_CACHE-style rebuild: make manage ... ACTION=redeploy)',
     category: 'docker',
     variables: {
       SERVICE: 'Optional: specific service to build',
       NO_CACHE: 'Set to 1 to rebuild without cache',
     },
     examples: [
-      'make docker-build',
-      'make docker-build SERVICE=authz-api',
-      'make docker-build NO_CACHE=1',
+      'make install SERVICE=all',
+      'make install SERVICE=authz',
+      'make manage SERVICE=authz ACTION=redeploy',
     ],
   },
   'docker-ps': {
@@ -2343,7 +2343,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               command: `make test-docker SERVICE=${service} ${fastFlag} ${argsFlag}`.trim(),
               description: `Run ${service} tests against local Docker services`,
               prerequisites: [
-                'Docker services must be running: make docker-up',
+                'Docker services must be running: make install SERVICE=all',
                 'Test databases must be initialized: make test-db-init',
               ],
               examples: [
@@ -2457,11 +2457,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         service?: string;
         no_cache?: boolean;
       };
-      
-      let cmd = `make docker-${action}`;
-      if (service) cmd += ` SERVICE=${service}`;
-      if (no_cache && action === 'build') cmd += ' NO_CACHE=1';
-      
+
+      const svc = service?.trim();
+      const noCache = Boolean(no_cache && action === 'build');
+      let cmd: string;
+      if (action === 'up' || action === 'start') {
+        cmd = svc ? `make install SERVICE=${svc}` : 'make install SERVICE=all';
+      } else if (action === 'build') {
+        cmd = noCache
+          ? (svc ? `make manage SERVICE=${svc} ACTION=redeploy` : 'make manage SERVICE=all ACTION=redeploy')
+          : (svc ? `make install SERVICE=${svc}` : 'make install SERVICE=all');
+      } else if (action === 'restart') {
+        cmd = svc ? `make manage SERVICE=${svc} ACTION=restart` : 'make manage SERVICE=all ACTION=restart';
+      } else {
+        cmd = `make docker-${action}${svc ? ` SERVICE=${svc}` : ''}${noCache && action === 'build' ? ' NO_CACHE=1' : ''}`.trim();
+      }
+
       return {
         content: [
           {
@@ -2471,12 +2482,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               command: cmd,
               description: `${action} Docker services${service ? ` (${service})` : ''}`,
               alternatives: {
-                'up': 'make docker-up - Start services',
+                'up': 'make install SERVICE=all - Start services',
                 'down': 'make docker-down - Stop services',
-                'restart': 'make docker-restart - Restart services',
+                'restart': 'make manage SERVICE=<service> ACTION=restart - Restart services',
                 'ps': 'make docker-ps - Show status',
                 'logs': 'make docker-logs - View logs',
-                'build': 'make docker-build - Build images',
+                'build': 'make install SERVICE=<service> - Deploy/build images',
                 'clean': 'make docker-clean - Remove all containers/volumes',
               },
             }, null, 2),
@@ -2497,7 +2508,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               databases: ['test_authz', 'test_data', 'test_agent'],
               user: 'busibox_test_user',
               prerequisites: [
-                'Docker services must be running: make docker-up',
+                'Docker services must be running: make install SERVICE=all',
                 'PostgreSQL must be healthy',
               ],
             }, null, 2),
@@ -2553,7 +2564,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 \`\`\`bash
 # Start Docker services
-make docker-up
+make install SERVICE=all
 
 # Initialize test databases (first time)
 make test-db-init
@@ -2569,7 +2580,7 @@ make test-docker SERVICE=all
 
 ## Prerequisites
 1. Docker Desktop running
-2. Services started: \`make docker-up\`
+2. Services started: \`make install SERVICE=all\`
 3. Test DBs initialized: \`make test-db-init\`
 
 ## Commands
@@ -2668,7 +2679,7 @@ make test-db-init
 make docker-ps
 
 # Restart services
-make docker-restart
+make manage SERVICE=all ACTION=restart
 \`\`\`
 
 ### "Network unreachable" for remote tests
@@ -3249,7 +3260,7 @@ ${environment === 'staging'
 
 1. **Start Docker services**:
    \`\`\`bash
-   make docker-up
+   make install SERVICE=all
    \`\`\`
 
 2. **Initialize test databases** (first time only):
@@ -3293,7 +3304,7 @@ make test-docker SERVICE=${service} ARGS='-v --tb=short'
 If tests fail with "connection refused":
 \`\`\`bash
 make docker-ps   # Check if services are running
-make docker-restart  # Restart services
+make manage SERVICE=all ACTION=restart  # Restart services
 \`\`\`
 
 If tests fail with "database not initialized":
@@ -3516,17 +3527,12 @@ curl -s http://${networkBase}.206:8000/health  # Ingest
    make ssl-check
    \`\`\`
 
-3. **Build images**:
+3. **Build and start services**:
    \`\`\`bash
-   make docker-build
+   make install SERVICE=all
    \`\`\`
 
-4. **Start services**:
-   \`\`\`bash
-   make docker-up
-   \`\`\`
-
-5. **Initialize test databases**:
+4. **Initialize test databases**:
    \`\`\`bash
    make test-db-init
    \`\`\`
@@ -3535,7 +3541,7 @@ curl -s http://${networkBase}.206:8000/health  # Ingest
 
 \`\`\`bash
 # Start your day
-make docker-up
+make install SERVICE=all
 
 # Check what's running
 make docker-ps
@@ -3545,8 +3551,8 @@ make docker-logs              # All services
 make docker-logs SERVICE=agent-api  # Specific service
 
 # After code changes, rebuild
-make docker-build SERVICE=agent-api
-make docker-restart SERVICE=agent-api
+make install SERVICE=agent
+make manage SERVICE=agent ACTION=restart
 
 # Run tests
 make test-docker SERVICE=agent
@@ -3572,13 +3578,13 @@ make docker-down
 
 | Command | Description |
 |---------|-------------|
-| \`make docker-up\` | Start all services |
+| \`make install SERVICE=all\` | Start/deploy all services |
 | \`make docker-down\` | Stop all services |
-| \`make docker-restart\` | Restart services |
+| \`make manage SERVICE=<service> ACTION=restart\` | Restart services |
 | \`make docker-ps\` | Show status |
 | \`make docker-logs\` | View logs |
-| \`make docker-build\` | Build images |
-| \`make docker-build NO_CACHE=1\` | Rebuild without cache |
+| \`make install SERVICE=<service>\` | Build/deploy a service |
+| \`make manage SERVICE=<service> ACTION=redeploy\` | Rebuild without cache |
 | \`make docker-clean\` | Remove everything |
 
 ## Troubleshooting
@@ -3586,8 +3592,8 @@ make docker-down
 ### Service won't start
 \`\`\`bash
 make docker-logs SERVICE=<service>  # Check logs
-make docker-build SERVICE=<service>  # Rebuild
-make docker-restart SERVICE=<service>  # Restart
+make install SERVICE=<service>  # Rebuild/deploy
+make manage SERVICE=<service> ACTION=restart  # Restart
 \`\`\`
 
 ### Port already in use
@@ -3606,8 +3612,7 @@ make test-db-init   # Reinitialize
 ### Complete reset
 \`\`\`bash
 make docker-clean   # WARNING: Removes all data
-make docker-build
-make docker-up
+make install SERVICE=all
 make test-db-init
 \`\`\`
 
