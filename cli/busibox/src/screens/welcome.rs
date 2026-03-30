@@ -1427,16 +1427,38 @@ pub fn load_active_tier_models(app: &mut App) {
         .map(|t| t.eq_ignore_ascii_case("custom"))
         .unwrap_or(false);
 
-    app.active_tier_models = if explicit_custom
-        && deployed_model_config_path.exists()
-        && config_path.exists()
-    {
-        TierModelSet::from_deployed_config(
-            &deployed_model_config_path,
-            &config_path,
-            backend,
-        )
-        .ok()
+    app.active_tier_models = if explicit_custom && config_path.exists() {
+        if profile.remote {
+            // For remote profiles, SSH-read model_config.yml from the remote host
+            let mc_yaml = profile.effective_host().and_then(|host| {
+                let ssh = crate::modules::ssh::SshConnection::new(
+                    host,
+                    profile.effective_user(),
+                    profile.effective_ssh_key(),
+                );
+                let remote_file = format!(
+                    "{}/provision/ansible/group_vars/all/model_config.yml",
+                    profile.effective_remote_path().trim_end_matches('/')
+                );
+                let result = ssh.run(&format!("cat {} 2>/dev/null", remote_file));
+                result.ok().filter(|s| !s.trim().is_empty())
+            });
+            if let Some(ref mc_contents) = mc_yaml {
+                let reg_contents = std::fs::read_to_string(&config_path).unwrap_or_default();
+                TierModelSet::from_deployed_config_str(mc_contents, &reg_contents, backend).ok()
+            } else {
+                TierModelSet::from_config(&config_path, tier, backend).ok()
+            }
+        } else if deployed_model_config_path.exists() {
+            TierModelSet::from_deployed_config(
+                &deployed_model_config_path,
+                &config_path,
+                backend,
+            )
+            .ok()
+        } else {
+            TierModelSet::from_config(&config_path, tier, backend).ok()
+        }
     } else {
         TierModelSet::from_config(&config_path, tier, backend).ok()
     };

@@ -160,23 +160,30 @@ impl DeployedModelSet {
         let models_map = file.models.unwrap_or_default();
         let mut models: Vec<DeployedModel> = models_map
             .into_iter()
-            .map(|(model_name, entry)| {
+            .filter_map(|(model_name, entry)| {
+                let provider = entry.provider.clone().unwrap_or_default();
+                // Only include LLM inference models (vllm, mlx).
+                // Skip service/infrastructure models (fastembed, local, gpu)
+                // which are displayed separately.
+                if !matches!(provider.as_str(), "vllm" | "mlx") {
+                    return None;
+                }
                 let gpu = match &entry.gpu {
                     Some(serde_yaml::Value::Number(n)) => n.to_string(),
                     Some(serde_yaml::Value::String(s)) => s.clone(),
                     _ => String::new(),
                 };
-                DeployedModel {
+                Some(DeployedModel {
                     model_name,
                     model_key: entry.model_key.unwrap_or_default(),
-                    provider: entry.provider.unwrap_or_default(),
+                    provider,
                     gpu,
                     port: entry.port.unwrap_or(0),
                     tensor_parallel: entry.tensor_parallel.unwrap_or(1),
                     assigned: entry.assigned.unwrap_or(false),
                     live_status: LiveStatus::Unknown,
                     served_model_name: entry.served_model_name.unwrap_or_default(),
-                }
+                })
             })
             .collect();
 
@@ -662,9 +669,20 @@ impl TierModelSet {
         let mut models: Vec<TierModel> = Vec::new();
         let mut seen_keys: Vec<String> = Vec::new();
 
+        let backend_provider = match backend {
+            LlmBackend::Vllm => "vllm",
+            LlmBackend::Mlx => "mlx",
+            LlmBackend::Cloud => "cloud",
+        };
+
         for (model_name, entry) in &mc_models {
             let provider = entry.provider.clone().unwrap_or_default();
             if !entry.assigned.unwrap_or(false) {
+                continue;
+            }
+            // Only include models matching the active LLM backend's provider.
+            // Service models (fastembed, local, gpu) are handled separately.
+            if provider.to_lowercase() != backend_provider {
                 continue;
             }
             let model_key = entry.model_key.clone().unwrap_or_default();

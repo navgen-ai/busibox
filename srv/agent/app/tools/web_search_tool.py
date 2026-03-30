@@ -505,8 +505,9 @@ async def search_web(
     Returns:
         WebSearchOutput with merged, deduplicated results from all providers
     """
-    # Get provider config
-    config = providers or get_provider_config()
+    # Get provider config — merge DB-saved settings (from the UI) with
+    # environment defaults so config survives agent-api redeploys.
+    config = providers or await get_provider_config_for_context()
     
     # Determine which provider types are enabled
     has_keyword_providers = (
