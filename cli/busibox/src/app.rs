@@ -107,6 +107,8 @@ pub struct App {
     pub models_manage_log_autoscroll: bool,
     pub models_manage_action_running: bool,
     pub models_manage_action_complete: bool,
+    /// True when staging shares production vLLM — show config read-only, block deploy
+    pub models_manage_readonly: bool,
     /// True when the in-memory config has unsaved changes vs model_config.yml
     pub models_manage_config_dirty: bool,
     /// True when awaiting 'y' confirmation to deploy
@@ -681,6 +683,7 @@ impl App {
             models_manage_log_autoscroll: true,
             models_manage_action_running: false,
             models_manage_action_complete: false,
+            models_manage_readonly: false,
             models_manage_config_dirty: false,
             models_manage_deploy_confirm: false,
             models_manage_config_undeployed: false,

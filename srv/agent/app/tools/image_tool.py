@@ -180,9 +180,18 @@ async def generate_image(
         )
     except Exception as e:
         logger.error(f"Image generation failed: {e}", exc_info=True)
+        error_str = str(e)
+        if "APIConnectionError" in error_str or "Connection error" in error_str:
+            user_error = "Image generation is temporarily unavailable (service connection error). Please try again later."
+        elif "RateLimitError" in error_str or "rate_limit" in error_str:
+            user_error = "Image generation rate limit reached. Please wait a moment and try again."
+        elif "AuthenticationError" in error_str:
+            user_error = "Image generation service authentication failed. Please contact an administrator."
+        else:
+            user_error = f"Image generation failed: {error_str.split('{')[0].strip()}" if '{' in error_str else f"Image generation failed: {error_str}"
         return ImageOutput(
             success=False,
-            error=f"Image generation failed: {str(e)}",
+            error=user_error,
         )
 
 

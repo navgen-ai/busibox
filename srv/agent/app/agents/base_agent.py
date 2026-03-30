@@ -22,21 +22,27 @@ import logging
 import os
 import re
 import time
+import warnings
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Type, Union
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Type, Union
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
     AgentStreamEvent,
-    PartStartEvent,
-    PartDeltaEvent,
-    TextPartDelta,
-    ToolCallPartDelta,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+    ToolCallPartDelta,
+    UserPromptPart,
 )
 from pydantic_ai.run import AgentRunResultEvent
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -61,6 +67,7 @@ from app.services.mcp_client import (
 logger = logging.getLogger(__name__)
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+_THINK_TAG_RE = re.compile(r"</?think>", re.DOTALL)
 
 # ---------------------------------------------------------------------------
 # Model capabilities cache – queried from LiteLLM /model/info once per model
@@ -598,6 +605,22 @@ class BaseStreamingAgent(StreamingAgent):
         )
     
     _THINKING_DISABLED_MODELS = {"fast", "test"}
+    _FRONTIER_MODEL_PREFIXES = {"frontier", "claude", "gpt", "o1", "o3", "gemini"}
+    _THINKING_BUDGET_TOKENS: Dict[str, int] = {
+        "default": 512,
+        "chat": 512,
+        "complex": 2048,
+    }
+    _DEFAULT_THINKING_BUDGET = 512
+
+    _FRONTIER_EFFORT_MAP: Dict[str, str] = {
+        "default": "medium",
+        "chat": "medium",
+        "complex": "high",
+        "frontier": "high",
+        "frontier-fast": "medium",
+    }
+    _DEFAULT_FRONTIER_EFFORT = "medium"
 
     def _should_disable_thinking(self) -> bool:
         """Whether to suppress Qwen3-style <think> reasoning for this agent's model."""
@@ -608,12 +631,49 @@ class BaseStreamingAgent(StreamingAgent):
             return True
         return False
 
+    def _is_frontier_model(self) -> bool:
+        """Whether the model routes to a frontier API (Claude, OpenAI, etc.)."""
+        model_name = (self.config.model or "").lower()
+        return any(model_name.startswith(p) for p in self._FRONTIER_MODEL_PREFIXES)
+
     def _inject_thinking_settings(self, model_settings: Dict[str, Any]) -> None:
-        """Mutate *model_settings* to disable thinking when appropriate."""
+        """Mutate *model_settings* to control thinking across all backends.
+
+        - **MLX**: ``extra_body.max_thinking_tokens`` for the custom MLX server's
+          ``ThinkingBudgetProcessor`` logits processor.
+        - **vLLM**: ``extra_body.thinking_token_budget`` for vLLM's native hard-limit
+          logits processor, plus ``extra_body.chat_template_kwargs.enable_thinking``.
+        - **Frontier** (Claude/OpenAI): ``reasoning_effort`` which LiteLLM maps
+          to the provider's native effort/reasoning parameter.
+        """
+        model_name = (self.config.model or "").lower()
+
+        if self._is_frontier_model():
+            logger.info(
+                "Thinking settings [frontier]: model=%s — no thinking limits applied",
+                model_name,
+            )
+            return
+
         if self._should_disable_thinking():
             model_settings.setdefault("extra_body", {}).setdefault(
                 "chat_template_kwargs", {}
             )["enable_thinking"] = False
+            logger.info(
+                "Thinking settings [disabled]: model=%s", model_name,
+            )
+            return
+
+        budget = self._THINKING_BUDGET_TOKENS.get(
+            model_name, self._DEFAULT_THINKING_BUDGET
+        )
+        extra = model_settings.setdefault("extra_body", {})
+        extra["max_thinking_tokens"] = budget
+        extra["thinking_token_budget"] = budget
+        logger.info(
+            "Thinking settings [local]: model=%s budget=%d tokens",
+            model_name, budget,
+        )
 
     def pipeline_steps(self, query: str, context: AgentContext) -> List[PipelineStep]:
         """
@@ -1404,10 +1464,8 @@ class BaseStreamingAgent(StreamingAgent):
         Execute tools with LLM deciding which tools to call.
         
         For LLM_DRIVEN strategy, we use PydanticAI's native tool calling.
-        Conversation history is included in the message list for context.
+        Conversation history is passed via message_history for proper multi-turn context.
         """
-        from pydantic_ai import Agent
-        from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, UserPromptPart, TextPart
         
         # For deterministic workflow/programmatic calls, disable tool usage and
         # force structured output via response_schema.
@@ -1462,6 +1520,8 @@ class BaseStreamingAgent(StreamingAgent):
                             ))
                             raise
 
+                    monitored_tool.__name__ = tool_name
+                    monitored_tool.__qualname__ = tool_name
                     monitored_tool.__signature__ = inspect.signature(wrapped_tool)
                     monitored_tool.__annotations__ = getattr(wrapped_tool, "__annotations__", {})
                     tools.append(monitored_tool)
@@ -1469,9 +1529,28 @@ class BaseStreamingAgent(StreamingAgent):
         if not tools:
             # No tools configured - run as conversational agent without tool capabilities
             logger.info(f"No tools configured for {self.name}, running as conversational agent")
-            
-            # Build the prompt with conversation history context
-            prompt_with_context = self._build_llm_driven_prompt(query, context)
+
+            # Build enriched system prompt and multi-turn message history
+            enriched_system_prompt = self._build_enriched_system_prompt(context)
+            msg_history = self._build_message_history(context, enriched_system_prompt)
+
+            # Build plain-dict history for direct-client structured output paths
+            plain_history: Optional[List[Dict[str, str]]] = None
+            if context.recent_messages or context.compressed_history_summary:
+                plain_history = []
+                if context.compressed_history_summary:
+                    plain_history.append({
+                        "role": "user",
+                        "content": f"Summary of earlier conversation:\n{context.compressed_history_summary}",
+                    })
+                    plain_history.append({
+                        "role": "assistant",
+                        "content": "Understood, I have the conversation context.",
+                    })
+                if context.recent_messages:
+                    for m in context.recent_messages:
+                        if m.get("content"):
+                            plain_history.append({"role": m["role"], "content": m["content"]})
 
             # When a response_schema is provided, use PydanticAI NativeOutput
             # with a dynamically-built Pydantic model.  This sends
@@ -1482,8 +1561,10 @@ class BaseStreamingAgent(StreamingAgent):
                 t_struct = time.monotonic()
                 try:
                     structured_output = await self._run_native_structured_output(
-                        query=prompt_with_context,
+                        query=query,
                         context=context,
+                        message_history=plain_history,
+                        system_prompt_override=enriched_system_prompt,
                     )
                     logger.info(
                         f"{self.name} structured output call complete",
@@ -1501,10 +1582,11 @@ class BaseStreamingAgent(StreamingAgent):
                     try:
                         logger.info(f"{self.name} attempting direct OpenAI structured output fallback")
                         structured_output = await self._call_structured_output(
-                            prompt=prompt_with_context,
-                            system_prompt=self.config.instructions,
+                            prompt=query,
+                            system_prompt=enriched_system_prompt,
                             response_schema=context.response_schema,
                             max_tokens=context.max_tokens or self.config.max_tokens,
+                            message_history=plain_history,
                         )
                         context.tool_results["llm_response"] = structured_output
                     except Exception as fallback_err:
@@ -1533,7 +1615,7 @@ class BaseStreamingAgent(StreamingAgent):
             # Create agent without tools for pure conversation
             agent_kwargs: Dict[str, Any] = {
                 "model": self.synthesis_model,
-                "system_prompt": self.config.instructions,
+                "system_prompt": enriched_system_prompt,
                 "model_settings": model_settings if model_settings else None,
             }
             if self.config.output_type is not None:
@@ -1544,8 +1626,9 @@ class BaseStreamingAgent(StreamingAgent):
             try:
                 t_conv = time.monotonic()
                 full_text = await self._stream_llm_events(
-                    agent, prompt_with_context, context, stream, cancel,
+                    agent, query, context, stream, cancel,
                     model_settings=model_settings if model_settings else None,
+                    message_history=msg_history,
                 )
                 logger.info(
                     f"{self.name} conversational LLM streaming complete",
@@ -1579,19 +1662,20 @@ class BaseStreamingAgent(StreamingAgent):
                 "json_schema": context.response_schema,
             }
         
+        # Build enriched system prompt and multi-turn message history
+        enriched_system_prompt = self._build_enriched_system_prompt(context)
+        msg_history = self._build_message_history(context, enriched_system_prompt)
+
         # Create agent with tools
         agent_kwargs: Dict[str, Any] = {
             "model": self.synthesis_model,
             "tools": tools,
-            "system_prompt": self.config.instructions,
+            "system_prompt": enriched_system_prompt,
             "model_settings": model_settings if model_settings else None,
         }
         if self.config.output_type is not None and not context.response_schema:
             agent_kwargs["output_type"] = self.config.output_type
         agent = Agent(**agent_kwargs)
-        
-        # Build the prompt with conversation history context
-        prompt_with_context = self._build_llm_driven_prompt(query, context)
         
         logger.info(
             f"{self.name} LLM-driven execution starting",
@@ -1599,7 +1683,7 @@ class BaseStreamingAgent(StreamingAgent):
                 "insights_count": len(context.relevant_insights),
                 "has_summary": context.compressed_history_summary is not None,
                 "recent_messages_count": len(context.recent_messages),
-                "prompt_length": len(prompt_with_context),
+                "history_messages": len(msg_history) if msg_history else 0,
                 "tool_count": len(tools),
                 "tool_names": [getattr(t, "__name__", str(t)) for t in tools],
             }
@@ -1610,8 +1694,9 @@ class BaseStreamingAgent(StreamingAgent):
         try:
             t_llm = time.monotonic()
             full_text = await self._stream_llm_events(
-                agent, prompt_with_context, context, stream, cancel,
+                agent, query, context, stream, cancel,
                 model_settings=model_settings if model_settings else None,
+                message_history=msg_history,
             )
             logger.info(
                 f"{self.name} LLM streaming execution complete",
@@ -1639,23 +1724,152 @@ class BaseStreamingAgent(StreamingAgent):
         cancel: asyncio.Event,
         *,
         model_settings: Optional[Dict[str, Any]] = None,
+        message_history: Optional[List[ModelMessage]] = None,
     ) -> str:
         """Stream LLM execution events in real-time via run_stream_events().
 
         Handles thinking blocks (<think> tags), tool calls, and content deltas
         as they arrive from the model rather than waiting for full completion.
 
+        When *message_history* is provided it is forwarded to pydantic-ai so
+        the LLM receives proper multi-turn user/assistant messages instead of a
+        flattened context string.
+
         Returns the final text output (with think tags stripped).
         """
         full_text = ""
-        think_buffer = ""
-        in_think = False
         has_output_type = self.config.output_type is not None
+
+        # Qwen3.5 chat template injects <think>\n into the prompt when
+        # enable_thinking=True, so the model starts generating thinking
+        # content immediately without emitting an opening <think> tag.
+        # Frontier models (Claude, OpenAI) don't use <think> tags.
+        starts_in_think = (
+            not self._should_disable_thinking()
+            and not self._is_frontier_model()
+        )
+
+        # State machine for think-tag parsing across streaming chunks.
+        in_think = starts_in_think
+        # Pending buffer holds un-dispatched text that might contain a
+        # partial tag (e.g. "</thi" waiting for "nk>").
+        pending = ""
+        think_chars_streamed = 0
+
+        OPEN_TAG = "<think>"
+        CLOSE_TAG = "</think>"
+        THINK_STREAM_INTERVAL = 80
+
+        async def _process_chunk(chunk: str, final: bool = False):
+            """Process a text chunk, emitting thought or content events."""
+            nonlocal in_think, pending, full_text, think_chars_streamed
+
+            pending += chunk
+
+            while pending:
+                if in_think:
+                    close_idx = pending.find(CLOSE_TAG)
+                    if close_idx != -1:
+                        think_content = pending[:close_idx].strip()
+                        if think_content:
+                            await stream(thought(
+                                source=self.name,
+                                message=think_content,
+                                data={"phase": "model_reasoning", "streaming": True},
+                            ))
+                        pending = pending[close_idx + len(CLOSE_TAG):]
+                        in_think = False
+                        think_chars_streamed = 0
+                        continue
+                    else:
+                        # No close tag yet — check for partial tag at end
+                        safe_len = len(pending)
+                        if not final:
+                            for k in range(1, len(CLOSE_TAG)):
+                                if pending.endswith(CLOSE_TAG[:k]):
+                                    safe_len = len(pending) - k
+                                    break
+
+                        streamable = pending[:safe_len]
+                        if streamable and (
+                            len(streamable) - think_chars_streamed >= THINK_STREAM_INTERVAL
+                            or final
+                        ):
+                            await stream(thought(
+                                source=self.name,
+                                message=streamable,
+                                data={
+                                    "phase": "model_reasoning",
+                                    "streaming": True,
+                                    "partial": not final,
+                                },
+                            ))
+                            think_chars_streamed = len(streamable)
+
+                        if safe_len < len(pending):
+                            pending = pending[safe_len:]
+                        else:
+                            pending = "" if final else pending
+                        break
+                else:
+                    # Strip stray </think> tags that leak through when the
+                    # budget processor forces end-of-thinking.
+                    close_stray = pending.find(CLOSE_TAG)
+                    if close_stray != -1:
+                        before = pending[:close_stray]
+                        if before:
+                            full_text += before
+                            if not has_output_type:
+                                await stream(content(
+                                    source=self.name,
+                                    message=before,
+                                    data={"streaming": True, "partial": True},
+                                ))
+                        pending = pending[close_stray + len(CLOSE_TAG):]
+                        continue
+
+                    open_idx = pending.find(OPEN_TAG)
+                    if open_idx != -1:
+                        before = pending[:open_idx]
+                        if before:
+                            full_text += before
+                            if not has_output_type:
+                                await stream(content(
+                                    source=self.name,
+                                    message=before,
+                                    data={"streaming": True, "partial": True},
+                                ))
+                        pending = pending[open_idx + len(OPEN_TAG):]
+                        in_think = True
+                        think_chars_streamed = 0
+                        continue
+                    else:
+                        # No tags — check for partial tag at end
+                        safe_len = len(pending)
+                        if not final:
+                            for k in range(1, max(len(OPEN_TAG), len(CLOSE_TAG))):
+                                if pending.endswith(OPEN_TAG[:k]) or pending.endswith(CLOSE_TAG[:k]):
+                                    safe_len = len(pending) - k
+                                    break
+
+                        text = pending[:safe_len]
+                        if text:
+                            full_text += text
+                            if not has_output_type:
+                                await stream(content(
+                                    source=self.name,
+                                    message=text,
+                                    data={"streaming": True, "partial": True},
+                                ))
+
+                        pending = pending[safe_len:]
+                        break
 
         async for event in agent.run_stream_events(
             prompt,
             deps=context.deps,
             model_settings=model_settings,
+            message_history=message_history,
         ):
             if cancel.is_set():
                 break
@@ -1676,81 +1890,7 @@ class BaseStreamingAgent(StreamingAgent):
                     chunk = delta.content_delta
                     if not chunk:
                         continue
-
-                    # Handle <think> blocks in real-time
-                    combined = (think_buffer if in_think else full_text) + chunk
-
-                    if in_think:
-                        think_buffer += chunk
-                        close_idx = think_buffer.find("</think>")
-                        if close_idx != -1:
-                            think_content = think_buffer[:close_idx].strip()
-                            if think_content:
-                                await stream(thought(
-                                    source=self.name,
-                                    message=think_content,
-                                    data={"phase": "model_reasoning", "streaming": True},
-                                ))
-                            remainder = think_buffer[close_idx + len("</think>"):]
-                            think_buffer = ""
-                            in_think = False
-                            if remainder.strip():
-                                full_text += remainder
-                                await stream(content(
-                                    source=self.name,
-                                    message=remainder,
-                                    data={"streaming": True, "partial": True},
-                                ))
-                        else:
-                            # Still inside think block, stream thought content
-                            # incrementally for UX responsiveness
-                            if len(think_buffer) > 50:
-                                await stream(thought(
-                                    source=self.name,
-                                    message=think_buffer,
-                                    data={"phase": "model_reasoning", "streaming": True, "partial": True},
-                                ))
-                                think_buffer = ""
-                    else:
-                        open_idx = chunk.find("<think>")
-                        if open_idx != -1:
-                            before = chunk[:open_idx]
-                            if before:
-                                full_text += before
-                                await stream(content(
-                                    source=self.name,
-                                    message=before,
-                                    data={"streaming": True, "partial": True},
-                                ))
-                            in_think = True
-                            think_buffer = chunk[open_idx + len("<think>"):]
-                            close_idx = think_buffer.find("</think>")
-                            if close_idx != -1:
-                                think_content = think_buffer[:close_idx].strip()
-                                if think_content:
-                                    await stream(thought(
-                                        source=self.name,
-                                        message=think_content,
-                                        data={"phase": "model_reasoning", "streaming": True},
-                                    ))
-                                remainder = think_buffer[close_idx + len("</think>"):]
-                                think_buffer = ""
-                                in_think = False
-                                if remainder.strip():
-                                    full_text += remainder
-                                    await stream(content(
-                                        source=self.name,
-                                        message=remainder,
-                                        data={"streaming": True, "partial": True},
-                                    ))
-                        else:
-                            full_text += chunk
-                            if not has_output_type:
-                                await stream(content(
-                                    source=self.name,
-                                    message=chunk,
-                                    data={"streaming": True, "partial": True},
-                                ))
+                    await _process_chunk(chunk)
 
             elif isinstance(event, FunctionToolResultEvent):
                 tool_name = getattr(event.tool_call_part, "tool_name", "tool")
@@ -1772,22 +1912,22 @@ class BaseStreamingAgent(StreamingAgent):
                     else:
                         full_text = str(output) if output else ""
 
-        # Flush any remaining think buffer
-        if think_buffer.strip():
-            await stream(thought(
-                source=self.name,
-                message=think_buffer.strip(),
-                data={"phase": "model_reasoning", "streaming": True},
-            ))
+        # Flush any remaining buffered content (including partial tags)
+        if pending:
+            await _process_chunk("", final=True)
 
-        # Clean up any leftover think tags in the final text
-        final = _THINK_RE.sub("", full_text).strip()
+        # Clean up any leftover think tags (paired and bare) in the final text
+        final = _THINK_RE.sub("", full_text)
+        final = _THINK_TAG_RE.sub("", final).strip()
         return final
 
     async def _run_native_structured_output(
         self,
         query: str,
         context: "AgentContext",
+        *,
+        message_history: Optional[List[Dict[str, str]]] = None,
+        system_prompt_override: Optional[str] = None,
     ) -> str:
         """
         Run structured output by sending our exact JSON Schema to the LLM
@@ -1807,9 +1947,10 @@ class BaseStreamingAgent(StreamingAgent):
 
         return await self._call_structured_output(
             prompt=query,
-            system_prompt=self.config.instructions,
+            system_prompt=system_prompt_override or self.config.instructions,
             response_schema=response_schema,
             max_tokens=context.max_tokens or self.config.max_tokens,
+            message_history=message_history,
         )
 
     @staticmethod
@@ -1897,12 +2038,17 @@ class BaseStreamingAgent(StreamingAgent):
         system_prompt: str,
         response_schema: Dict[str, Any],
         max_tokens: Optional[int] = None,
+        message_history: Optional[List[Dict[str, str]]] = None,
     ) -> str:
         """
         Call the LLM directly via the OpenAI client with response_format enforced.
 
         Bypasses PydanticAI so response_format reaches LiteLLM as a first-class
         parameter rather than being tunnelled through extra_body.
+
+        When *message_history* is provided the conversation turns are inserted
+        between the system prompt and the current user prompt so the LLM sees
+        proper multi-turn context.
 
         Prepends ``/no_think`` to suppress Qwen3 reasoning blocks.
         Falls back to ``_extract_json_from_response`` if the raw content
@@ -1931,8 +2077,10 @@ class BaseStreamingAgent(StreamingAgent):
 
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": effective_prompt},
         ]
+        if message_history:
+            messages.extend(message_history)
+        messages.append({"role": "user", "content": effective_prompt})
 
         kwargs: Dict[str, Any] = {
             "model": model_name,
@@ -1973,8 +2121,12 @@ class BaseStreamingAgent(StreamingAgent):
                     extra={"error": last_error, "content_preview": raw_content[:500]},
                 )
                 if attempt < max_attempts:
-                    kwargs["messages"] = [
+                    retry_messages: List[Dict[str, Any]] = [
                         {"role": "system", "content": system_prompt},
+                    ]
+                    if message_history:
+                        retry_messages.extend(message_history)
+                    retry_messages.extend([
                         {"role": "user", "content": effective_prompt},
                         {"role": "assistant", "content": raw_content},
                         {"role": "user", "content": (
@@ -1982,7 +2134,8 @@ class BaseStreamingAgent(StreamingAgent):
                             f"Your response was not valid JSON. Error: {last_error}\n"
                             "Please try again and return ONLY valid JSON matching the required schema."
                         )},
-                    ]
+                    ])
+                    kwargs["messages"] = retry_messages
                     continue
                 raise ValueError(f"Structured output failed after {max_attempts} attempts: {last_error}")
 
@@ -1998,8 +2151,12 @@ class BaseStreamingAgent(StreamingAgent):
                     extra={"error": last_error, "schema_name": schema_name},
                 )
                 if attempt < max_attempts:
-                    kwargs["messages"] = [
+                    retry_messages = [
                         {"role": "system", "content": system_prompt},
+                    ]
+                    if message_history:
+                        retry_messages.extend(message_history)
+                    retry_messages.extend([
                         {"role": "user", "content": effective_prompt},
                         {"role": "assistant", "content": content},
                         {"role": "user", "content": (
@@ -2007,7 +2164,8 @@ class BaseStreamingAgent(StreamingAgent):
                             f"Your response did not match the required schema. Validation error: {last_error}\n"
                             "Please try again and return JSON that strictly conforms to the schema."
                         )},
-                    ]
+                    ])
+                    kwargs["messages"] = retry_messages
                     continue
                 raise ValueError(f"Structured output failed after {max_attempts} attempts: {last_error}")
 
@@ -2017,18 +2175,148 @@ class BaseStreamingAgent(StreamingAgent):
 
         raise ValueError(f"Structured output failed after {max_attempts} attempts: {last_error}")
 
+    def _build_enriched_system_prompt(self, context: AgentContext) -> str:
+        """
+        Build an enriched system prompt combining the agent's base instructions
+        with per-request context (skills, metadata, insights, attachments, etc.).
+
+        This is set as Agent(system_prompt=...) so LLM providers can cache it
+        as a stable prefix across turns.
+        """
+        parts = [self.config.instructions]
+
+        try:
+            skills_prompt = get_skills_service().render_skills_prompt(context.principal)
+            if skills_prompt:
+                parts.append("")
+                parts.append(skills_prompt)
+        except Exception as e:
+            logger.debug(f"Failed to render skills prompt: {e}")
+
+        if context.metadata:
+            parts.append("")
+            parts.append("## Application Context")
+            parts.append("The following metadata was provided by the calling application. Use these values when making tool calls:")
+            for key, value in context.metadata.items():
+                parts.append(f"- **{key}**: {value}")
+
+        if context.relevant_insights:
+            parts.append("")
+            parts.append("## Relevant User Context (from past conversations)")
+            parts.append("These are relevant facts, preferences, and context learned from the user's past conversations:")
+            for insight in context.relevant_insights:
+                category = insight.get("category", "context")
+                ins_content = insight.get("content", "")
+                parts.append(f"- [{category}] {ins_content}")
+
+        if context.missing_profile_fields:
+            parts.append("")
+            parts.append("## Missing Profile Context")
+            parts.append("These profile details are still missing and may improve future assistance:")
+            for field_name in context.missing_profile_fields:
+                parts.append(f"- {field_name}")
+
+        if context.pending_questions:
+            parts.append("")
+            parts.append("## Pending Follow-up Questions")
+            parts.append("Ask at most ONE of these naturally when relevant, then continue helping with the current request:")
+            for item in context.pending_questions[:3]:
+                question = str(item.get("content", "")).strip()
+                if question:
+                    parts.append(f"- {question}")
+
+        attachment_section = self._build_attachment_context_section(context)
+        if attachment_section:
+            parts.append("")
+            parts.extend(attachment_section)
+
+        return "\n".join(parts)
+
+    def _build_message_history(
+        self,
+        context: AgentContext,
+        enriched_system_prompt: str,
+    ) -> Optional[List[ModelMessage]]:
+        """
+        Convert compressed_history_summary + recent_messages into a proper
+        pydantic-ai message_history list.
+
+        Returns None when there is no conversation history (first message).
+
+        Structure:
+        - If a compressed summary exists, it becomes a synthetic user message
+          at position 0 so the LLM sees early context.
+        - Recent messages map to ModelRequest (user) / ModelResponse (assistant).
+        - The first ModelRequest carries instructions= so the system prompt is
+          included even when pydantic-ai skips auto-generation for non-empty
+          message_history.
+        """
+        has_summary = bool(context.compressed_history_summary)
+        has_recent = bool(context.recent_messages)
+
+        if not has_summary and not has_recent:
+            return None
+
+        messages: List[ModelMessage] = []
+        instructions_set = False
+
+        if has_summary:
+            summary_text = f"Summary of earlier conversation:\n{context.compressed_history_summary}"
+            messages.append(ModelRequest(
+                parts=[UserPromptPart(content=summary_text)],
+                instructions=enriched_system_prompt,
+            ))
+            instructions_set = True
+            messages.append(ModelResponse(
+                parts=[TextPart(content="Understood, I have the conversation context.")],
+            ))
+
+        if has_recent:
+            for msg in context.recent_messages:
+                role = msg.get("role", "")
+                msg_content = msg.get("content", "")
+                if not msg_content:
+                    continue
+
+                if role == "user":
+                    req_kwargs: Dict[str, Any] = {
+                        "parts": [UserPromptPart(content=msg_content)],
+                    }
+                    if not instructions_set:
+                        req_kwargs["instructions"] = enriched_system_prompt
+                        instructions_set = True
+                    messages.append(ModelRequest(**req_kwargs))
+                elif role == "assistant":
+                    messages.append(ModelResponse(
+                        parts=[TextPart(content=msg_content)],
+                    ))
+
+        if not messages:
+            return None
+
+        if not instructions_set and messages:
+            first = messages[0]
+            if isinstance(first, ModelRequest):
+                first.instructions = enriched_system_prompt
+
+        return messages
+
     def _build_llm_driven_prompt(self, query: str, context: AgentContext) -> str:
         """
         Build a prompt that includes conversation history and insights for LLM-driven execution.
-        
-        This ensures the LLM has full context when deciding which tools to use.
-        Includes:
-        - Application metadata context (e.g. projectId, appName)
-        - Relevant insights (memories from past conversations)
-        - Compressed history summary
-        - Recent conversation messages
-        - Current query
+
+        .. deprecated::
+            Use ``_build_enriched_system_prompt`` + ``_build_message_history``
+            instead, which produce proper multi-turn messages rather than a
+            flattened string.  This method is kept for backward compatibility
+            with subclass overrides.
         """
+        warnings.warn(
+            "_build_llm_driven_prompt is deprecated; "
+            "use _build_enriched_system_prompt + _build_message_history instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         parts = []
 
         # Add role-gated SKILL.md skills if enabled.

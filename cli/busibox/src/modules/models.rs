@@ -599,11 +599,19 @@ impl TierModelSet {
         backend: &LlmBackend,
     ) -> Result<Self> {
         let mc_contents = std::fs::read_to_string(model_config_path)?;
-        let mc_file: ModelConfigFile = serde_yaml::from_str(&mc_contents)?;
+        let reg_contents = std::fs::read_to_string(registry_path)?;
+        Self::from_deployed_config_str(&mc_contents, &reg_contents, backend)
+    }
+
+    pub fn from_deployed_config_str(
+        mc_contents: &str,
+        reg_contents: &str,
+        backend: &LlmBackend,
+    ) -> Result<Self> {
+        let mc_file: ModelConfigFile = serde_yaml::from_str(mc_contents)?;
         let mc_models = mc_file.models.unwrap_or_default();
 
-        let reg_contents = std::fs::read_to_string(registry_path)?;
-        let reg_file: ModelRegistryFile = serde_yaml::from_str(&reg_contents)?;
+        let reg_file: ModelRegistryFile = serde_yaml::from_str(reg_contents)?;
         let available = reg_file.available_models.unwrap_or_default();
 
         let defaults = reg_file.default_purposes.unwrap_or_default();

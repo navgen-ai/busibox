@@ -171,6 +171,46 @@ pub fn init_screen(app: &mut App) {
     app.models_manage_gpu_assignments.clear();
     app.models_manage_config_dirty = false;
     app.models_manage_config_undeployed = false;
+    app.models_manage_readonly = false;
+
+    // Detect staging profile sharing production vLLM — enter read-only mode
+    let prod_vllm_config = if let Some((_, profile)) = app.active_profile() {
+        if profile.environment == "staging" && profile.effective_use_production_vllm() && profile.remote {
+            let ssh_details: Option<(String, String, String)> = profile.effective_host().map(|h| {
+                (
+                    h.to_string(),
+                    profile.effective_user().to_string(),
+                    profile.effective_ssh_key().to_string(),
+                )
+            });
+            let remote_path = profile.effective_remote_path().to_string();
+            let yaml = read_model_config_yaml(&app.repo_root, true, &ssh_details, &remote_path);
+            if !yaml.trim().is_empty() {
+                Some(yaml)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some(ref remote_yaml) = prod_vllm_config {
+        app.models_manage_readonly = true;
+        let hw = get_hardware(app);
+        let backend = hw.map(|h| h.llm_backend.clone()).unwrap_or(LlmBackend::Vllm);
+        let registry_path = app.repo_root.join("provision/ansible/group_vars/all/model_registry.yml");
+        let reg_contents = std::fs::read_to_string(&registry_path).unwrap_or_default();
+        let tier_set = TierModelSet::from_deployed_config_str(remote_yaml, &reg_contents, &backend).ok();
+        app.models_manage_tier_models = tier_set;
+        app.models_manage_is_custom = true;
+        app.models_manage_tier_selected = CUSTOM_TIER_INDEX;
+        app.models_manage_current_tier = Some("production".to_string());
+        load_service_purposes(app);
+        return;
+    }
 
     let has_custom_deployed = has_deployed_config(app);
     app.models_manage_is_custom = has_custom_deployed;
@@ -203,13 +243,24 @@ pub fn render(f: &mut Frame, app: &App) {
         return;
     }
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
+    let constraints = if app.models_manage_readonly {
+        vec![
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Min(12),
+            Constraint::Length(3),
+        ]
+    } else {
+        vec![
             Constraint::Length(3),
             Constraint::Min(12),
             Constraint::Length(3),
-        ])
+        ]
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
         .margin(2)
         .split(f.area());
 
@@ -218,13 +269,24 @@ pub fn render(f: &mut Frame, app: &App) {
         .alignment(Alignment::Center);
     f.render_widget(title, chunks[0]);
 
+    let (content_idx, help_idx) = if app.models_manage_readonly {
+        let banner = Paragraph::new(Line::from(vec![
+            Span::styled("  Showing production model config (read-only)", theme::warning()),
+            Span::styled(" — deploy from production profile  ", theme::muted()),
+        ])).alignment(Alignment::Center);
+        f.render_widget(banner, chunks[1]);
+        (2, 3)
+    } else {
+        (1, 2)
+    };
+
     let content_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Percentage(25),
             Constraint::Percentage(75),
         ])
-        .split(chunks[1]);
+        .split(chunks[content_idx]);
 
     render_tier_selector(f, app, content_chunks[0]);
     render_model_details(f, app, content_chunks[1]);
@@ -257,71 +319,84 @@ pub fn render(f: &mut Frame, app: &App) {
         Span::styled("  │  ", theme::dim()),
     ];
 
-    match app.models_manage_focus {
-        ModelsFocus::Tiers => {
-            help_spans.push(Span::styled("↑/↓ ", theme::highlight()));
-            help_spans.push(Span::styled("Tier  ", theme::normal()));
-            help_spans.push(Span::styled("Tab ", theme::highlight()));
-            help_spans.push(Span::styled("Models  ", theme::normal()));
-            help_spans.push(Span::styled("p ", theme::highlight()));
-            help_spans.push(Span::styled("Svc  ", theme::normal()));
-            help_spans.push(Span::styled("b ", theme::highlight()));
-            help_spans.push(Span::styled("Bench  ", theme::normal()));
-            help_spans.push(Span::styled("d ", theme::highlight()));
-            help_spans.push(Span::styled("Deploy  ", theme::success()));
-        }
-        ModelsFocus::Models => {
-            if app.models_manage_focus_service {
+    if app.models_manage_readonly {
+        help_spans.push(Span::styled("↑/↓ ", theme::highlight()));
+        help_spans.push(Span::styled("Tier  ", theme::normal()));
+        help_spans.push(Span::styled("Tab ", theme::highlight()));
+        help_spans.push(Span::styled("Models  ", theme::normal()));
+        help_spans.push(Span::styled("p ", theme::highlight()));
+        help_spans.push(Span::styled("Svc  ", theme::normal()));
+        help_spans.push(Span::styled("b ", theme::highlight()));
+        help_spans.push(Span::styled("Bench  ", theme::normal()));
+    } else {
+        match app.models_manage_focus {
+            ModelsFocus::Tiers => {
                 help_spans.push(Span::styled("↑/↓ ", theme::highlight()));
-                help_spans.push(Span::styled("Purpose  ", theme::normal()));
-                help_spans.push(Span::styled("←/→ ", theme::highlight()));
-                help_spans.push(Span::styled("Cycle model  ", theme::normal()));
-                help_spans.push(Span::styled("s ", theme::highlight()));
-                help_spans.push(Span::styled("Save  ", theme::normal()));
-                help_spans.push(Span::styled("d ", theme::highlight()));
-                help_spans.push(Span::styled("Deploy  ", theme::success()));
-                help_spans.push(Span::styled("Esc ", theme::muted()));
-                help_spans.push(Span::styled("Back to LLMs", theme::muted()));
-            } else {
-                help_spans.push(Span::styled("↑/↓ ", theme::highlight()));
-                help_spans.push(Span::styled("Model  ", theme::normal()));
-                help_spans.push(Span::styled("0-9 ", theme::highlight()));
-                help_spans.push(Span::styled("GPU  ", theme::normal()));
-                help_spans.push(Span::styled("t ", theme::highlight()));
-                help_spans.push(Span::styled("TP  ", theme::normal()));
-                help_spans.push(Span::styled("r ", theme::highlight()));
-                help_spans.push(Span::styled("Roles  ", theme::normal()));
-                help_spans.push(Span::styled("a ", theme::highlight()));
-                help_spans.push(Span::styled("Add  ", theme::normal()));
-                help_spans.push(Span::styled("c ", theme::highlight()));
-                help_spans.push(Span::styled("Change  ", theme::normal()));
-                help_spans.push(Span::styled("x ", theme::highlight()));
-                help_spans.push(Span::styled("Del  ", theme::normal()));
+                help_spans.push(Span::styled("Tier  ", theme::normal()));
+                help_spans.push(Span::styled("Tab ", theme::highlight()));
+                help_spans.push(Span::styled("Models  ", theme::normal()));
                 help_spans.push(Span::styled("p ", theme::highlight()));
                 help_spans.push(Span::styled("Svc  ", theme::normal()));
-                help_spans.push(Span::styled("s ", theme::highlight()));
-                help_spans.push(Span::styled("Save  ", theme::normal()));
                 help_spans.push(Span::styled("b ", theme::highlight()));
                 help_spans.push(Span::styled("Bench  ", theme::normal()));
                 help_spans.push(Span::styled("d ", theme::highlight()));
                 help_spans.push(Span::styled("Deploy  ", theme::success()));
-                help_spans.push(Span::styled("Tab ", theme::highlight()));
-                help_spans.push(Span::styled("Keep  ", theme::normal()));
-                help_spans.push(Span::styled("Esc ", theme::muted()));
-                help_spans.push(Span::styled("Revert", theme::warning()));
+            }
+            ModelsFocus::Models => {
+                if app.models_manage_focus_service {
+                    help_spans.push(Span::styled("↑/↓ ", theme::highlight()));
+                    help_spans.push(Span::styled("Purpose  ", theme::normal()));
+                    help_spans.push(Span::styled("←/→ ", theme::highlight()));
+                    help_spans.push(Span::styled("Cycle model  ", theme::normal()));
+                    help_spans.push(Span::styled("s ", theme::highlight()));
+                    help_spans.push(Span::styled("Save  ", theme::normal()));
+                    help_spans.push(Span::styled("d ", theme::highlight()));
+                    help_spans.push(Span::styled("Deploy  ", theme::success()));
+                    help_spans.push(Span::styled("Esc ", theme::muted()));
+                    help_spans.push(Span::styled("Back to LLMs", theme::muted()));
+                } else {
+                    help_spans.push(Span::styled("↑/↓ ", theme::highlight()));
+                    help_spans.push(Span::styled("Model  ", theme::normal()));
+                    help_spans.push(Span::styled("0-9 ", theme::highlight()));
+                    help_spans.push(Span::styled("GPU  ", theme::normal()));
+                    help_spans.push(Span::styled("t ", theme::highlight()));
+                    help_spans.push(Span::styled("TP  ", theme::normal()));
+                    help_spans.push(Span::styled("r ", theme::highlight()));
+                    help_spans.push(Span::styled("Roles  ", theme::normal()));
+                    help_spans.push(Span::styled("a ", theme::highlight()));
+                    help_spans.push(Span::styled("Add  ", theme::normal()));
+                    help_spans.push(Span::styled("c ", theme::highlight()));
+                    help_spans.push(Span::styled("Change  ", theme::normal()));
+                    help_spans.push(Span::styled("x ", theme::highlight()));
+                    help_spans.push(Span::styled("Del  ", theme::normal()));
+                    help_spans.push(Span::styled("p ", theme::highlight()));
+                    help_spans.push(Span::styled("Svc  ", theme::normal()));
+                    help_spans.push(Span::styled("s ", theme::highlight()));
+                    help_spans.push(Span::styled("Save  ", theme::normal()));
+                    help_spans.push(Span::styled("b ", theme::highlight()));
+                    help_spans.push(Span::styled("Bench  ", theme::normal()));
+                    help_spans.push(Span::styled("d ", theme::highlight()));
+                    help_spans.push(Span::styled("Deploy  ", theme::success()));
+                    help_spans.push(Span::styled("Tab ", theme::highlight()));
+                    help_spans.push(Span::styled("Keep  ", theme::normal()));
+                    help_spans.push(Span::styled("Esc ", theme::muted()));
+                    help_spans.push(Span::styled("Revert", theme::warning()));
+                }
             }
         }
     }
 
-    if app.models_manage_focus == ModelsFocus::Tiers {
+    if !app.models_manage_readonly && app.models_manage_focus == ModelsFocus::Tiers {
         help_spans.push(Span::styled("s ", theme::highlight()));
         help_spans.push(Span::styled("Save  ", theme::normal()));
+    }
+    if app.models_manage_focus == ModelsFocus::Tiers {
         help_spans.push(Span::styled("Esc ", theme::muted()));
         help_spans.push(Span::styled("Back", theme::muted()));
     }
 
     let help = Paragraph::new(Line::from(help_spans));
-    f.render_widget(help, chunks[2]);
+    f.render_widget(help, chunks[help_idx]);
 
     if app.models_manage_add_mode {
         render_add_picker(f, app);
@@ -936,7 +1011,12 @@ fn render_model_details(f: &mut Frame, app: &App, area: Rect) {
     }
 
     lines.push(Line::from(""));
-    if app.models_manage_config_dirty {
+    if app.models_manage_readonly {
+        lines.push(Line::from(Span::styled(
+            " Production config — switch to production profile to modify",
+            theme::info(),
+        )));
+    } else if app.models_manage_config_dirty {
         lines.push(Line::from(vec![
             Span::styled(" Unsaved changes  ", theme::warning()),
             Span::styled("s Save  ", theme::highlight()),
@@ -1133,20 +1213,22 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 
 fn handle_tier_key(app: &mut App, key: KeyEvent) {
     let tier_count = tier_entry_count(app);
+    let readonly = app.models_manage_readonly;
 
     match key.code {
         KeyCode::Esc => {
             app.models_manage_loaded = false;
+            app.models_manage_readonly = false;
             app.screen = Screen::Welcome;
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            if app.models_manage_tier_selected > 0 {
+            if !readonly && app.models_manage_tier_selected > 0 {
                 app.models_manage_tier_selected -= 1;
                 rebuild_tier_cache(app);
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if app.models_manage_tier_selected < tier_count.saturating_sub(1) {
+            if !readonly && app.models_manage_tier_selected < tier_count.saturating_sub(1) {
                 app.models_manage_tier_selected += 1;
                 rebuild_tier_cache(app);
             }
@@ -1168,10 +1250,10 @@ fn handle_tier_key(app: &mut App, key: KeyEvent) {
             crate::screens::model_benchmark::init_screen(app, None);
             app.screen = Screen::ModelBenchmark;
         }
-        KeyCode::Char('s') => {
+        KeyCode::Char('s') if !readonly => {
             save_config(app);
         }
-        KeyCode::Char('d') => {
+        KeyCode::Char('d') if !readonly => {
             app.models_manage_deploy_confirm = true;
             app.set_message("Deploy models? Press 'y' to confirm, any other key to cancel", MessageKind::Warning);
         }
@@ -1191,6 +1273,7 @@ fn handle_model_key(app: &mut App, key: KeyEvent) {
         .map(|ts| ts.models.len())
         .unwrap_or(0);
     let gpu_count = get_gpu_count(app);
+    let readonly = app.models_manage_readonly;
 
     match key.code {
         KeyCode::Esc => {
@@ -1213,13 +1296,13 @@ fn handle_model_key(app: &mut App, key: KeyEvent) {
                 app.models_manage_model_selected += 1;
             }
         }
-        KeyCode::Char(c) if c.is_ascii_digit() => {
+        KeyCode::Char(c) if c.is_ascii_digit() && !readonly => {
             let gpu_idx = c.to_digit(10).unwrap() as usize;
             if gpu_idx < gpu_count {
                 toggle_gpu(app, gpu_idx);
             }
         }
-        KeyCode::Char('t') => {
+        KeyCode::Char('t') if !readonly => {
             toggle_tp(app);
         }
         KeyCode::Char('p') => {
@@ -1228,10 +1311,10 @@ fn handle_model_key(app: &mut App, key: KeyEvent) {
                 app.models_manage_service_selected = 0;
             }
         }
-        KeyCode::Char('a') => {
+        KeyCode::Char('a') if !readonly => {
             open_add_picker(app);
         }
-        KeyCode::Char('c') => {
+        KeyCode::Char('c') if !readonly => {
             change_model(app);
         }
         KeyCode::Char('b') => {
@@ -1254,16 +1337,16 @@ fn handle_model_key(app: &mut App, key: KeyEvent) {
             crate::screens::model_benchmark::init_screen(app, preselect_port);
             app.screen = Screen::ModelBenchmark;
         }
-        KeyCode::Char('r') => {
+        KeyCode::Char('r') if !readonly => {
             open_role_editor(app);
         }
-        KeyCode::Char('x') | KeyCode::Delete => {
+        KeyCode::Char('x') | KeyCode::Delete if !readonly => {
             remove_selected_model(app);
         }
-        KeyCode::Char('s') => {
+        KeyCode::Char('s') if !readonly => {
             save_config(app);
         }
-        KeyCode::Char('d') => {
+        KeyCode::Char('d') if !readonly => {
             app.models_manage_deploy_confirm = true;
             app.set_message("Deploy models? Press 'y' to confirm, any other key to cancel", MessageKind::Warning);
         }
@@ -1273,6 +1356,7 @@ fn handle_model_key(app: &mut App, key: KeyEvent) {
 
 fn handle_service_model_key(app: &mut App, key: KeyEvent) {
     let count = app.models_manage_service_purposes.len();
+    let readonly = app.models_manage_readonly;
 
     match key.code {
         KeyCode::Esc => {
@@ -1288,16 +1372,16 @@ fn handle_service_model_key(app: &mut App, key: KeyEvent) {
                 app.models_manage_service_selected += 1;
             }
         }
-        KeyCode::Left => {
+        KeyCode::Left if !readonly => {
             cycle_service_purpose(app, false);
         }
-        KeyCode::Right => {
+        KeyCode::Right if !readonly => {
             cycle_service_purpose(app, true);
         }
-        KeyCode::Char('s') => {
+        KeyCode::Char('s') if !readonly => {
             save_config(app);
         }
-        KeyCode::Char('d') => {
+        KeyCode::Char('d') if !readonly => {
             app.models_manage_deploy_confirm = true;
             app.set_message("Deploy models? Press 'y' to confirm, any other key to cancel", MessageKind::Warning);
         }

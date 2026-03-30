@@ -347,10 +347,13 @@ async def send_chat_message(
             if user_settings.enabled_tools:
                 enabled_tools = [t for t in enabled_tools if t in user_settings.enabled_tools]
         
-        # Get the most recent 20 messages for context (in chronological order)
+        # Get the most recent 20 messages for context (in chronological order).
+        # Exclude the just-inserted user message to avoid duplicating it in
+        # the prompt (agents add it separately as "Current Query").
         recent_ids_subq = (
             select(Message.id)
             .where(Message.conversation_id == conversation.id)
+            .where(Message.id != user_message.id)
             .order_by(desc(Message.created_at))
             .limit(20)
             .scalar_subquery()
@@ -682,10 +685,13 @@ async def send_chat_message_stream(
             )
             user_settings = settings_result.scalar_one_or_none()
             
-            # Get the most recent 20 messages for context (in chronological order)
+            # Get the most recent 20 messages for context (in chronological order).
+            # Exclude the just-inserted user message to avoid duplicating it in
+            # the prompt (agents add it separately as "Current Query").
             recent_ids_subq = (
                 select(Message.id)
                 .where(Message.conversation_id == conversation.id)
+                .where(Message.id != user_message.id)
                 .order_by(desc(Message.created_at))
                 .limit(20)
                 .scalar_subquery()
@@ -976,10 +982,13 @@ async def send_chat_message_stream_agentic(
                         "parsed_content": attachment.parsed_content,
                     })
             
-            # Get the most recent 20 messages for context (in chronological order)
+            # Get the most recent 20 messages for context (in chronological order).
+            # Exclude the just-inserted user message to avoid duplicating it in
+            # the prompt (agents add it separately as "Current Query").
             recent_ids_subq = (
                 select(Message.id)
                 .where(Message.conversation_id == conversation.id)
+                .where(Message.id != user_message.id)
                 .order_by(desc(Message.created_at))
                 .limit(20)
                 .scalar_subquery()
