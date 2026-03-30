@@ -58,7 +58,97 @@ if [[ -z "${LLM_BACKEND}" ]]; then
 fi
 
 if [[ "${LLM_BACKEND}" != "vllm" ]]; then
-  echo "[INFO] LLM_BACKEND=${LLM_BACKEND}; skipping model_config generation (only needed for vllm)." >&2
+  # For MLX/cloud backends, write a model_config.yml with purpose mappings only
+  # (no GPU assignments or model entries). This keeps model_config.yml as the
+  # single source of truth for what was deployed, regardless of backend.
+  echo "[INFO] LLM_BACKEND=${LLM_BACKEND}; generating purpose-only model_config.yml" >&2
+
+  export REPO_ROOT REGISTRY_FILE MODEL_CONFIG_FILE LLM_TIER="${LLM_TIER:-${MODEL_TIER:-}}" LLM_BACKEND
+
+  "${PYTHON_BIN}" <<'PYEOF_MLX'
+import os, sys
+from pathlib import Path
+try:
+    import yaml
+except Exception as exc:
+    print(f"[ERROR] PyYAML unavailable: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+registry_file = Path(os.environ["REGISTRY_FILE"])
+model_config_file = Path(os.environ["MODEL_CONFIG_FILE"])
+backend = os.environ.get("LLM_BACKEND", "mlx")
+
+with registry_file.open("r", encoding="utf-8") as f:
+    registry = yaml.safe_load(f) or {}
+
+available_models = registry.get("available_models", {}) or {}
+model_purposes = dict(registry.get("model_purposes", {}) or {})
+
+# Apply tier-based overrides
+llm_tier = os.environ.get("LLM_TIER", "").strip("'\"").strip()
+if llm_tier:
+    tiers = registry.get("tiers", {}) or {}
+    tier_cfg = tiers.get(llm_tier, {})
+    backend_models = tier_cfg.get(backend, {}) or {}
+    if backend_models:
+        print(f"[INFO] Applying tier '{llm_tier}' {backend} model overrides:", file=sys.stderr)
+        for role, model_key in backend_models.items():
+            old = model_purposes.get(role, "(unset)")
+            model_purposes[role] = model_key
+            print(f"[INFO]   {role}: {old} -> {model_key}", file=sys.stderr)
+
+        # Propagate tier's agent/fast to common aliases
+        tier_agent = backend_models.get("agent", "")
+        tier_fast = backend_models.get("fast", "")
+        propagate = {
+            "default": tier_agent, "chat": tier_agent, "tool_calling": tier_agent,
+            "parsing": tier_agent, "cleanup": tier_agent, "vision": tier_agent,
+            "research": tier_agent, "classify": tier_fast, "test": tier_fast,
+        }
+        for role, fallback in propagate.items():
+            if role not in backend_models and fallback:
+                entry = available_models.get(fallback, {})
+                provider = (entry.get("provider", "") or "").lower()
+                if provider == backend or (provider == "" and backend == "mlx"):
+                    old = model_purposes.get(role, "(unset)")
+                    model_purposes[role] = fallback
+                    print(f"[INFO]   {role}: {old} -> {fallback} (propagated from tier)", file=sys.stderr)
+    elif llm_tier not in tiers:
+        print(f"[WARN] Unknown tier '{llm_tier}' — using default model_purposes", file=sys.stderr)
+
+# Apply PURPOSE_<ROLE> env overrides (highest priority)
+for key, val in os.environ.items():
+    if key.startswith("PURPOSE_"):
+        role = key[len("PURPOSE_"):].lower()
+        model_purposes[role] = val.strip("'\"")
+        print(f"[INFO] Purpose override: {role} -> {val.strip(chr(39)+chr(34))}", file=sys.stderr)
+
+# Build models section with unique model keys referenced by purposes
+models = {}
+for _purpose, model_key in model_purposes.items():
+    if model_key in models:
+        continue
+    entry = available_models.get(model_key, {})
+    if not entry:
+        continue
+    provider = entry.get("provider", backend)
+    models[model_key] = {
+        "provider": provider,
+        "model_key": model_key,
+        "model_name": entry.get("model_name", model_key),
+        "assigned": True,
+    }
+
+result = {"models": models, "model_purposes": model_purposes}
+model_config_file.parent.mkdir(parents=True, exist_ok=True)
+with model_config_file.open("w", encoding="utf-8") as f:
+    yaml.safe_dump(result, f, sort_keys=False)
+
+print(f"[INFO] Wrote model_config.yml with {len(models)} {backend} model(s)", file=sys.stderr)
+print(f"[INFO] Output: {model_config_file}", file=sys.stderr)
+PYEOF_MLX
+
+  echo "[SUCCESS] model_config.yml generation complete" >&2
   exit 0
 fi
 

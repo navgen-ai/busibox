@@ -21,6 +21,7 @@ pub struct ModelTestResult {
 pub enum ModelTestTier {
     DirectVllm,
     LiteLLM,
+    Service,
 }
 
 impl std::fmt::Display for ModelTestTier {
@@ -28,6 +29,7 @@ impl std::fmt::Display for ModelTestTier {
         match self {
             ModelTestTier::DirectVllm => write!(f, "vLLM"),
             ModelTestTier::LiteLLM => write!(f, "LiteLLM"),
+            ModelTestTier::Service => write!(f, "Service"),
         }
     }
 }
@@ -112,7 +114,8 @@ pub fn build_curl_command(
 }
 
 /// Build a shell snippet that runs N parallel curl commands and collects all output.
-/// Each request's output is delimited by ---BENCH_REQ:N--- markers.
+/// Each request's output is captured to a temp file to avoid interleaved output,
+/// then concatenated with ---BENCH_REQ:N--- / ---BENCH_REQ_END:N--- markers.
 pub fn build_parallel_curl_command(
     vllm_ip: &str,
     port: u16,
@@ -122,15 +125,23 @@ pub fn build_parallel_curl_command(
     count: usize,
 ) -> String {
     let single = build_curl_command(vllm_ip, port, model_name, prompt, max_tokens);
-    let mut script = String::from("OVERALL_START=$(date +%s%N 2>/dev/null || echo 0); ");
+    let mut script = String::new();
+    script.push_str("_BENCH_DIR=$(mktemp -d); ");
+    script.push_str("OVERALL_START=$(date +%s%N 2>/dev/null || echo 0); ");
     for i in 0..count {
         script.push_str(&format!(
-            "( echo '---BENCH_REQ:{i}---'; {single}; echo ''; echo '---BENCH_REQ_END:{i}---' ) & "
+            "( {single} > \"$_BENCH_DIR/{i}.out\" 2>&1 ) & "
         ));
     }
     script.push_str("wait; ");
     script.push_str("OVERALL_END=$(date +%s%N 2>/dev/null || echo 0); ");
-    script.push_str("echo \"---BENCH_WALL:$(( (OVERALL_END - OVERALL_START) ))---\"");
+    for i in 0..count {
+        script.push_str(&format!(
+            "echo '---BENCH_REQ:{i}---'; cat \"$_BENCH_DIR/{i}.out\"; echo ''; echo '---BENCH_REQ_END:{i}---'; "
+        ));
+    }
+    script.push_str("echo \"---BENCH_WALL:$(( (OVERALL_END - OVERALL_START) ))---\"; ");
+    script.push_str("rm -rf \"$_BENCH_DIR\"");
     script
 }
 
@@ -363,5 +374,294 @@ pub fn testable_chat_purposes(purposes: &HashMap<String, String>) -> Vec<String>
         .collect();
     result.sort();
     result.dedup();
+    result
+}
+
+// --- Service model benchmark helpers ---
+
+/// Build a curl command to benchmark the embedding service (no auth required).
+/// POST /embed with a short text payload.
+pub fn build_embedding_curl_command(ip: &str, port: u16) -> String {
+    let body = serde_json::json!({
+        "input": "The quick brown fox jumps over the lazy dog. This is a benchmark test for embedding latency."
+    });
+    let body_str = body.to_string().replace('\'', "'\\''");
+    format!(
+        "curl -s -w '\\n---BENCH_TIME:%{{time_total}}---' \
+         -H 'Content-Type: application/json' \
+         --max-time 30 \
+         -d '{}' \
+         'http://{}:{}/embed'; true",
+        body_str, ip, port
+    )
+}
+
+/// Parse an embedding response — check for data array with embeddings.
+pub fn parse_embedding_response(output: &str) -> ModelTestResult {
+    let mut result = ModelTestResult {
+        test_name: String::new(),
+        tier: ModelTestTier::Service,
+        passed: false,
+        response_content: None,
+        error: None,
+        elapsed_ms: 0.0,
+    };
+
+    let timing_marker = "---BENCH_TIME:";
+    if let Some(timing_pos) = output.rfind(timing_marker) {
+        let after = &output[timing_pos + timing_marker.len()..];
+        if let Some(end) = after.find("---") {
+            if let Ok(secs) = after[..end].trim().parse::<f64>() {
+                result.elapsed_ms = secs * 1000.0;
+            }
+        }
+        let json_part = output[..timing_pos].trim();
+        if let Ok(json) = serde_json::from_str::<Value>(json_part) {
+            if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+                if !data.is_empty() {
+                    let dim = data[0]
+                        .get("embedding")
+                        .and_then(|e| e.as_array())
+                        .map(|a| a.len())
+                        .unwrap_or(0);
+                    result.passed = dim > 0;
+                    result.response_content = Some(format!("{} embeddings, dim={}", data.len(), dim));
+                } else {
+                    result.error = Some("Empty data array".to_string());
+                }
+            } else if let Some(detail) = json.get("detail").and_then(|d| d.as_str()) {
+                result.error = Some(detail.to_string());
+            } else {
+                result.error = Some("No 'data' field in response".to_string());
+            }
+        } else {
+            let preview: String = json_part.chars().take(120).collect();
+            result.error = Some(format!("Could not parse JSON: {preview}"));
+        }
+    } else {
+        let preview: String = output.chars().take(120).collect();
+        result.error = Some(format!("No timing marker in output: {preview}"));
+    }
+
+    result
+}
+
+/// Build a curl command to test TTS via LiteLLM (OpenAI-compatible /v1/audio/speech).
+pub fn build_tts_curl_command(ip: &str, port: u16, api_key: &str) -> String {
+    let body = serde_json::json!({
+        "model": "voice",
+        "input": "Hello, this is a benchmark test.",
+        "voice": "af_heart",
+    });
+    let body_str = body.to_string().replace('\'', "'\\''");
+    let auth = if api_key.is_empty() {
+        String::new()
+    } else {
+        format!("-H 'Authorization: Bearer {}'", api_key.replace('\'', "'\\''"))
+    };
+    format!(
+        "curl -s -o /dev/null -w '\\n---BENCH_TIME:%{{time_total}}---\\n%{{http_code}}' \
+         -H 'Content-Type: application/json' \
+         {auth} \
+         --max-time 30 \
+         -d '{body_str}' \
+         'http://{ip}:{port}/v1/audio/speech'; true"
+    )
+}
+
+/// Build a curl command to test image generation via LiteLLM.
+pub fn build_image_curl_command(ip: &str, port: u16, api_key: &str) -> String {
+    let body = serde_json::json!({
+        "model": "image",
+        "prompt": "A simple red circle on white background",
+        "n": 1,
+        "size": "256x256",
+    });
+    let body_str = body.to_string().replace('\'', "'\\''");
+    let auth = if api_key.is_empty() {
+        String::new()
+    } else {
+        format!("-H 'Authorization: Bearer {}'", api_key.replace('\'', "'\\''"))
+    };
+    format!(
+        "curl -s -w '\\n---BENCH_TIME:%{{time_total}}---' \
+         -H 'Content-Type: application/json' \
+         {auth} \
+         --max-time 120 \
+         -d '{body_str}' \
+         'http://{ip}:{port}/v1/images/generations'; true"
+    )
+}
+
+/// Build a curl command to test STT via LiteLLM.
+/// Generates a small silent WAV file inline and sends it.
+pub fn build_stt_curl_command(ip: &str, port: u16, api_key: &str) -> String {
+    let auth = if api_key.is_empty() {
+        String::new()
+    } else {
+        format!("-H 'Authorization: Bearer {}'", api_key.replace('\'', "'\\''"))
+    };
+    // Generate a tiny valid WAV file (44 bytes header + 8000 bytes silence = ~0.5s at 16kHz mono)
+    format!(
+        "python3 -c \"\
+import struct,sys,tempfile,os;\
+f=tempfile.NamedTemporaryFile(suffix='.wav',delete=False);\
+sr=16000;ns=sr//2;nc=1;bps=16;\
+data=b'\\x00\\x00'*ns;\
+f.write(b'RIFF');\
+f.write(struct.pack('<I',36+len(data)));\
+f.write(b'WAVEfmt ');\
+f.write(struct.pack('<IHHIIHH',16,1,nc,sr,sr*nc*bps//8,nc*bps//8,bps));\
+f.write(b'data');\
+f.write(struct.pack('<I',len(data)));\
+f.write(data);\
+f.close();\
+print(f.name)\
+\" 2>/dev/null | head -1 | xargs -I{{}} sh -c '\
+curl -s -w \"\\n---BENCH_TIME:%{{time_total}}---\" \
+ {auth} \
+ --max-time 30 \
+ -F model=transcribe \
+ -F \"file=@{{}}\" \
+ \"http://{ip}:{port}/v1/audio/transcriptions\"; rm -f {{}}\
+'; true"
+    )
+}
+
+/// Parse a TTS response — we use -o /dev/null and check HTTP code from -w output.
+pub fn parse_tts_response(output: &str) -> ModelTestResult {
+    let mut result = ModelTestResult {
+        test_name: String::new(),
+        tier: ModelTestTier::Service,
+        passed: false,
+        response_content: None,
+        error: None,
+        elapsed_ms: 0.0,
+    };
+
+    let timing_marker = "---BENCH_TIME:";
+    if let Some(timing_pos) = output.rfind(timing_marker) {
+        let after = &output[timing_pos + timing_marker.len()..];
+        if let Some(end) = after.find("---") {
+            if let Ok(secs) = after[..end].trim().parse::<f64>() {
+                result.elapsed_ms = secs * 1000.0;
+            }
+        }
+        // After timing marker and closing ---, the HTTP status code follows
+        let rest = if let Some(end) = after.find("---") {
+            after[end + 3..].trim()
+        } else {
+            ""
+        };
+        if let Ok(code) = rest.parse::<u16>() {
+            if code == 200 {
+                result.passed = true;
+                result.response_content = Some(format!("HTTP {code} audio returned"));
+            } else {
+                result.error = Some(format!("HTTP {code}"));
+            }
+        } else {
+            result.error = Some("Could not parse HTTP status".to_string());
+        }
+    } else {
+        let preview: String = output.chars().take(120).collect();
+        result.error = Some(format!("No timing marker: {preview}"));
+    }
+
+    result
+}
+
+/// Parse an image generation response — look for data[0].url or data[0].b64_json.
+pub fn parse_image_response(output: &str) -> ModelTestResult {
+    let mut result = ModelTestResult {
+        test_name: String::new(),
+        tier: ModelTestTier::Service,
+        passed: false,
+        response_content: None,
+        error: None,
+        elapsed_ms: 0.0,
+    };
+
+    let timing_marker = "---BENCH_TIME:";
+    if let Some(timing_pos) = output.rfind(timing_marker) {
+        let after = &output[timing_pos + timing_marker.len()..];
+        if let Some(end) = after.find("---") {
+            if let Ok(secs) = after[..end].trim().parse::<f64>() {
+                result.elapsed_ms = secs * 1000.0;
+            }
+        }
+        let json_part = output[..timing_pos].trim();
+        if let Ok(json) = serde_json::from_str::<Value>(json_part) {
+            if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+                if !data.is_empty() {
+                    let has_url = data[0].get("url").and_then(|u| u.as_str()).is_some();
+                    let has_b64 = data[0].get("b64_json").and_then(|b| b.as_str()).is_some();
+                    if has_url || has_b64 {
+                        result.passed = true;
+                        result.response_content = Some(format!("{} image(s) generated", data.len()));
+                    } else {
+                        result.error = Some("No url or b64_json in response".to_string());
+                    }
+                } else {
+                    result.error = Some("Empty data array".to_string());
+                }
+            } else if let Some(err) = json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+                result.error = Some(err.to_string());
+            } else {
+                result.error = Some("No 'data' in response".to_string());
+            }
+        } else {
+            let preview: String = json_part.chars().take(120).collect();
+            result.error = Some(format!("Could not parse JSON: {preview}"));
+        }
+    } else {
+        let preview: String = output.chars().take(120).collect();
+        result.error = Some(format!("No timing marker: {preview}"));
+    }
+
+    result
+}
+
+/// Parse an STT transcription response — look for text field.
+pub fn parse_stt_response(output: &str) -> ModelTestResult {
+    let mut result = ModelTestResult {
+        test_name: String::new(),
+        tier: ModelTestTier::Service,
+        passed: false,
+        response_content: None,
+        error: None,
+        elapsed_ms: 0.0,
+    };
+
+    let timing_marker = "---BENCH_TIME:";
+    if let Some(timing_pos) = output.rfind(timing_marker) {
+        let after = &output[timing_pos + timing_marker.len()..];
+        if let Some(end) = after.find("---") {
+            if let Ok(secs) = after[..end].trim().parse::<f64>() {
+                result.elapsed_ms = secs * 1000.0;
+            }
+        }
+        let json_part = output[..timing_pos].trim();
+        if let Ok(json) = serde_json::from_str::<Value>(json_part) {
+            if let Some(text) = json.get("text").and_then(|t| t.as_str()) {
+                result.passed = true;
+                let preview: String = text.chars().take(60).collect();
+                result.response_content = Some(if preview.is_empty() { "(silence)".to_string() } else { preview });
+            } else if let Some(err) = json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+                result.error = Some(err.to_string());
+            } else {
+                // A silent WAV may return empty text — that's still a pass
+                result.passed = true;
+                result.response_content = Some("(silence)".to_string());
+            }
+        } else {
+            let preview: String = json_part.chars().take(120).collect();
+            result.error = Some(format!("Could not parse JSON: {preview}"));
+        }
+    } else {
+        let preview: String = output.chars().take(120).collect();
+        result.error = Some(format!("No timing marker: {preview}"));
+    }
+
     result
 }

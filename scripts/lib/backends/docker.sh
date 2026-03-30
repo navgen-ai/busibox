@@ -215,6 +215,61 @@ _custom_service_action() {
 }
 
 # ============================================================================
+# Post-Verification Tests (PVT)
+# ============================================================================
+
+# Map a manage-level service name to the test service name used by
+# run-local-tests.sh. Only returns for services that have test_pvt.py.
+_pvt_test_service() {
+    local service="$1"
+    local test_svc
+    case "$service" in
+        authz*) test_svc="authz" ;;
+        agent*) test_svc="agent" ;;
+        ingest*|data*) test_svc="data" ;;
+        search*) test_svc="search" ;;
+        deploy*) test_svc="deploy" ;;
+        bridge*) test_svc="bridge" ;;
+        *) return 1 ;;
+    esac
+    local pvt_file="${REPO_ROOT}/srv/${test_svc}/tests/integration/test_pvt.py"
+    if [[ -f "$pvt_file" ]]; then
+        echo "$test_svc"
+        return 0
+    fi
+    return 1
+}
+
+# Run PVT for a service after deploy/redeploy.
+# Usage: _run_pvt SERVICE PREFIX
+# Warns on failure but does not abort the caller.
+_run_pvt() {
+    local service="$1"
+    local prefix="${2:-dev}"
+
+    if [[ "${NO_PVT:-0}" == "1" ]]; then
+        return 0
+    fi
+
+    local test_svc
+    if ! test_svc=$(_pvt_test_service "$service"); then
+        return 0
+    fi
+
+    info "Running post-verification tests for ${test_svc}..."
+    cd "${REPO_ROOT}"
+
+    if FAST=1 INV=docker CONTAINER_PREFIX="$prefix" \
+       bash scripts/test/run-local-tests.sh "$test_svc" docker \
+       "tests/integration/test_pvt.py" 2>&1; then
+        success "PVT passed for ${test_svc}"
+    else
+        warn "PVT FAILED for ${test_svc} — service is running but may have issues"
+        warn "Re-run manually: make test-docker SERVICE=${test_svc} ARGS='tests/integration/test_pvt.py'"
+    fi
+}
+
+# ============================================================================
 # Actions
 # ============================================================================
 
@@ -525,6 +580,7 @@ backend_service_action() {
             echo "Running: ${cmd}"
             if eval "$cmd"; then
                 success "Service redeployed"
+                _run_pvt "$service" "$prefix"
             else
                 error "Failed to redeploy"
                 return 1

@@ -76,30 +76,48 @@ print(model.get('model_name', '$model_key'))
     echo "${model_name:-$model_key}"
 }
 
-# Get purpose->model mapping based on environment
+# Get purpose->model mapping based on environment.
+# Checks PURPOSE_<ROLE> env vars first (set by CLI tier editor), then falls
+# back to the model_registry YAML.  Also applies tier-based overrides from
+# model_registry.yml tiers.<tier>.mlx when LLM_TIER is set.
 get_model_for_purpose() {
     local purpose="$1"
-    local model_key
-    
-    # Use model_purposes_dev for development, model_purposes for staging/production
-    if [[ "$ENVIRONMENT" == "development" || "$ENVIRONMENT" == "demo" || "$ENVIRONMENT" == "dev" ]]; then
-        model_key=$(python3 -c "
-import yaml
-with open('$MODEL_REGISTRY', 'r') as f:
-    data = yaml.safe_load(f)
-purposes = data.get('model_purposes_dev', data.get('model_purposes', {}))
-print(purposes.get('$purpose', ''))
-" 2>/dev/null)
-    else
-        model_key=$(python3 -c "
-import yaml
-with open('$MODEL_REGISTRY', 'r') as f:
-    data = yaml.safe_load(f)
-purposes = data.get('model_purposes', {})
-print(purposes.get('$purpose', ''))
-" 2>/dev/null)
+
+    # Highest priority: explicit PURPOSE_<ROLE> environment variable
+    local env_key
+    env_key="PURPOSE_$(echo "$purpose" | tr '[:lower:]-' '[:upper:]_')"
+    local env_val=""
+    eval "env_val=\"\${${env_key}:-}\""
+    if [[ -n "$env_val" ]]; then
+        echo "$env_val"
+        return
     fi
-    
+
+    local model_key
+    model_key=$(python3 -c "
+import yaml, os
+with open('$MODEL_REGISTRY', 'r') as f:
+    data = yaml.safe_load(f)
+
+env = '$ENVIRONMENT'
+if env in ('development', 'demo', 'dev'):
+    purposes = data.get('model_purposes_dev', data.get('model_purposes', {}))
+else:
+    purposes = data.get('model_purposes', {})
+
+# Apply tier-based overrides when LLM_TIER is set
+llm_tier = os.environ.get('LLM_TIER', '').strip(\"'\\\"\").strip()
+backend = os.environ.get('LLM_BACKEND', 'mlx').strip()
+if llm_tier:
+    tiers = data.get('tiers', {}) or {}
+    tier_cfg = tiers.get(llm_tier, {})
+    tier_models = tier_cfg.get(backend, {}) or {}
+    if tier_models:
+        purposes.update(tier_models)
+
+print(purposes.get('$purpose', ''))
+" 2>/dev/null)
+
     echo "$model_key"
 }
 

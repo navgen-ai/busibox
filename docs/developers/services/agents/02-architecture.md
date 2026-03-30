@@ -176,27 +176,103 @@ The agent server is a Python/FastAPI application that provides AI agent executio
 
 **Location**: `app/tools/`
 
-**Tools** (Pydantic AI):
+All tools are **generic and app-agnostic**. Apps customize agent behavior through system prompts and metadata, not custom tool code. This means any app can build powerful agents using only the core tool registry.
 
-1. **search_tool** (`search_tool.py`):
-   - Semantic search via Busibox Search API
-   - Input: query, top_k, filters
-   - Output: documents with scores
+**Core Design Principle**: No app-specific tools in the agent service codebase. Apps teach agents about their domain through the agent definition's `instructions` field (system prompt) and runtime `metadata`.
 
-2. **ingest_tool** (`ingest_tool.py`):
-   - Document ingestion via Busibox Ingest API
-   - Input: file_path, metadata
-   - Output: document_id, status
+**Data Tools** (`data_tool.py`):
 
-3. **rag_tool** (`rag_tool.py`):
-   - RAG queries via Busibox RAG API
-   - Input: query, top_k, database_id
-   - Output: answer, sources, confidence
+| Tool | Purpose | Required Scope |
+|------|---------|----------------|
+| `query_data` | Filter, sort, paginate records with optional aggregation | `data.read` |
+| `aggregate_data` | Run grouped analytics (count, sum, avg, min, max) | `data.read` |
+| `get_facets` | Get distinct values and counts for fields | `data.read` |
+| `insert_records` | Insert new records | `data.write` |
+| `update_records` | Update matching records | `data.write` |
+| `delete_records` | Delete records by filter or ID | `data.write` |
+| `list_data_documents` | List accessible data documents | `data.read` |
+| `get_data_document` | Get document metadata and schema | `data.read` |
+| `create_data_document` | Create a new data document | `data.write` |
 
-4. **weather_tool** (`weather_tool.py`):
-   - Weather data via Open-Meteo API
-   - Input: location (city name or coordinates)
-   - Output: temperature, humidity, wind, conditions
+**Search Tools**:
+
+| Tool | Purpose | Required Scope |
+|------|---------|----------------|
+| `document_search` | Semantic search across document embeddings | `search.read` |
+| `web_search` | Web search via DuckDuckGo/Perplexity/Tavily | (none) |
+| `web_scraper` | Scrape webpage content | (none) |
+| `playwright_browser` | Browser automation for dynamic pages | (none) |
+
+**Graph Tools** (`graph_tool.py`):
+
+| Tool | Purpose | Required Scope |
+|------|---------|----------------|
+| `graph_query` | Search knowledge graph entities | `data.read` |
+| `graph_explore` | Explore entity neighborhoods | `data.read` |
+| `graph_relate` | Create relationships between entities | `data.write` |
+
+**Utility Tools**:
+
+| Tool | Purpose | Required Scope |
+|------|---------|----------------|
+| `get_weather` | Weather data via Open-Meteo | (none) |
+| `generate_image` | Image generation | `data.write` |
+| `transcribe_audio` | Audio transcription | `data.read` |
+| `text_to_speech` | Text-to-speech synthesis | `data.write` |
+| `memory_search` / `memory_save` | Agent memory | (none) |
+| `calendar_list_events` / `calendar_create_event` | Calendar management | (none) |
+| `create_task` | Task creation | `task.write` |
+| `send_notification` | Notifications | (none) |
+| `search_users` | User search via AuthZ | `authz.read` |
+
+### Tool Architecture: How Apps Build Agents
+
+Apps define agents with **tool names** (strings referencing the core registry) and **instructions** (a system prompt that teaches the LLM the app's data schema, field names, and query patterns). No custom tools are needed in the agent service.
+
+```
+┌────────────────────────────────────────────────────────┐
+│  App (e.g., busibox-workforce)                         │
+│                                                        │
+│  lib/workforce-agents.ts                               │
+│  ├── name: "workforce-assistant"                       │
+│  ├── tools: ["query_data", "aggregate_data",           │
+│  │           "get_facets", "document_search"]           │
+│  └── instructions: "Field names: firstName, lastName,  │
+│                     department, division..."            │
+│                                                        │
+│  POST /agents/definitions → Agent API                  │
+└────────────────────────────────────────────────────────┘
+                         │
+                         ▼
+┌────────────────────────────────────────────────────────┐
+│  Agent Service (core tools only)                       │
+│                                                        │
+│  ToolRegistry                                          │
+│  ├── query_data      → data-api POST /data/{id}/query  │
+│  ├── aggregate_data  → data-api POST /data/{id}/query  │
+│  ├── get_facets      → data-api POST /data/{id}/query  │
+│  ├── document_search → search-api                      │
+│  ├── graph_query     → data-api graph endpoints        │
+│  └── ...                                               │
+└────────────────────────────────────────────────────────┘
+```
+
+**How the LLM knows what to query**: The agent's `instructions` (system prompt) teaches it:
+1. **Document IDs**: Which data document UUID to pass as `document_id` (provided via app metadata at chat time)
+2. **Field names**: The exact field names in the data (e.g., `firstName`, `department`, `employeeStatus`)
+3. **Query patterns**: Example `where` clauses and aggregation calls for common questions
+4. **Tool selection**: When to use `query_data` vs `aggregate_data` vs `get_facets`
+
+**Runtime metadata**: Apps pass context via the `metadata` field in chat requests:
+```json
+{
+  "schemaDocumentId": "uuid-of-employee-data",
+  "checkinsDocumentId": "uuid-of-checkins",
+  "filters": { "department": "Engineering" }
+}
+```
+
+The system prompt references these metadata keys, and the LLM uses them as tool arguments at runtime.
 
 ## Data Architecture
 

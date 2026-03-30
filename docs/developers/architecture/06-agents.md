@@ -311,10 +311,184 @@ await fetch(`${AGENT_API_URL}/runs/invoke`, {
 });
 ```
 
+## Building App Agents (Step-by-Step)
+
+This section explains how any Busibox app can add an AI agent without modifying the core agent service.
+
+### Core Principle: Generic Tools + Domain Prompts
+
+The agent service provides a registry of **generic, app-agnostic tools** (e.g., `query_data`, `aggregate_data`, `get_facets`, `document_search`). Apps customize behavior entirely through:
+
+1. **Agent instructions** (system prompt) -- teaches the LLM field names, query patterns, and document structure
+2. **Runtime metadata** -- provides document IDs and current filter state at chat time
+3. **Tool selection** -- chooses which core tools the agent can use
+
+No custom tool code is needed in the agent service.
+
+### Step 1: Define Agent (`lib/*-agents.ts`)
+
+Create an agent definition with tool names (from the core registry) and detailed instructions:
+
+```typescript
+// lib/my-agents.ts
+export const MY_APP_AGENT = {
+  name: "my-app-assistant",
+  display_name: "My App Assistant",
+  description: "Helps users analyze and manage data in My App",
+  instructions: `You are a helpful assistant for My App.
+
+## Context
+The app metadata contains:
+- **notesDocumentId**: Data document ID for notes records.
+
+## Data Schema (notesDocumentId)
+Field names for query_data where clauses:
+- \`title\`: Note title (string)
+- \`content\`: Note body (string)
+- \`category\`: e.g., "work", "personal", "ideas"
+- \`priority\`: 1-5 (integer)
+- \`createdAt\`: ISO date string
+- \`updatedAt\`: ISO date string
+
+## How to Answer Questions
+- To find notes: use **query_data** with notesDocumentId and where clauses
+- To get category breakdown: use **aggregate_data** with group_by=["category"]
+- To discover categories: use **get_facets** with fields=["category", "priority"]
+- For semantic search: use **document_search**
+`,
+  model: "agent",
+  tools: {
+    names: ["query_data", "aggregate_data", "get_facets", "document_search"],
+  },
+  workflows: {
+    execution_mode: "run_max_iterations",
+    tool_strategy: "llm_driven",
+    max_iterations: 10,
+  },
+  allow_frontier_fallback: true,
+  is_builtin: false,
+  scopes: ["data:read", "search:read"],
+};
+
+export const AGENT_DEFINITIONS = [MY_APP_AGENT];
+```
+
+### Step 2: Create Sync Logic (`lib/sync.ts`)
+
+Use the shared sync helpers from `@jazzmind/busibox-app`:
+
+```typescript
+// lib/sync.ts
+import {
+  syncAgentDefinitions,
+  getAgentSyncStatus,
+} from "@jazzmind/busibox-app/lib/agent/sync";
+import type {
+  AgentSyncResult,
+  SyncStatus,
+} from "@jazzmind/busibox-app/lib/agent";
+import { AGENT_DEFINITIONS } from "./my-agents";
+
+export type { AgentSyncResult, SyncStatus };
+
+export async function syncAgents(agentApiToken: string): Promise<AgentSyncResult> {
+  return syncAgentDefinitions(agentApiToken, AGENT_DEFINITIONS);
+}
+
+export async function getSyncStatus(agentToken: string): Promise<SyncStatus> {
+  return getAgentSyncStatus(agentToken, AGENT_DEFINITIONS);
+}
+```
+
+The `syncAgentDefinitions` function handles the `POST /agents/definitions` loop, tracking created/updated/failed agents. The `getAgentSyncStatus` function checks which definitions exist on the agent-api.
+
+### Step 3: Wire Into Setup (`app/api/setup/route.ts`)
+
+Call sync on first app load (idempotent):
+
+```typescript
+// In your existing setup route
+import { syncAgents } from "@/lib/sync";
+
+// During setup, after ensureDataDocuments:
+const agentToken = auth.apiToken; // or exchange for agent-api audience
+await syncAgents(agentToken);
+```
+
+### Step 4: Add Chat UI
+
+Use `SimpleChatInterface` from `@jazzmind/busibox-app`:
+
+```typescript
+"use client";
+import { SimpleChatInterface } from "@jazzmind/busibox-app/components/chat/SimpleChatInterface";
+
+export function AssistantChat({ token, notesDocumentId }: Props) {
+  return (
+    <SimpleChatInterface
+      token={token}
+      agentId="my-app-assistant"
+      placeholder="Ask about your notes..."
+      enableDocSearch={true}
+      useAgenticStreaming={true}
+      metadata={{ notesDocumentId }}
+    />
+  );
+}
+```
+
+### Step 5: Pass Metadata at Runtime
+
+The `metadata` prop on `SimpleChatInterface` (or the `metadata` field in chat API requests) provides runtime context that the agent's system prompt references:
+
+```json
+{
+  "notesDocumentId": "uuid-of-notes-document",
+  "currentCategory": "work",
+  "filters": { "priority": 3 }
+}
+```
+
+### Prompt Engineering for Tools
+
+Writing effective agent instructions is the key to making generic tools work well for your app:
+
+**DO:**
+- List exact field names with types (the LLM needs these to construct `where` clauses)
+- Provide concrete examples of `query_data` where clauses and `aggregate_data` calls
+- Reference metadata keys by name (e.g., "use schemaDocumentId from your Application Context")
+- Tell the agent which tool to use for which type of question
+- Include validation rules (e.g., "NEVER mention data not returned by a tool call")
+
+**DON'T:**
+- Assume the LLM knows your schema -- always spell out field names
+- Use raw field names without context -- explain what each field represents
+- Skip examples -- the LLM performs much better with concrete query patterns
+
+### Available Core Tools
+
+| Tool | Use For | Key Parameters |
+|------|---------|----------------|
+| `query_data` | Finding records by criteria | `document_id`, `where`, `select`, `order_by`, `limit` |
+| `aggregate_data` | Analytics, counts, averages | `document_id`, `aggregate`, `group_by`, `where` |
+| `get_facets` | Discovering valid filter values | `document_id`, `fields`, `where` |
+| `document_search` | Semantic/fuzzy search | `query`, `top_k`, `filters` |
+| `graph_query` | Knowledge graph search | `query`, `entity_type` |
+| `graph_explore` | Graph traversal | `entity_id` |
+| `insert_records` | Creating new records | `document_id`, `records` |
+| `update_records` | Modifying records | `document_id`, `updates`, `where` |
+| `delete_records` | Removing records | `document_id`, `where` or `record_ids` |
+| `web_search` | Web information | `query`, `max_results` |
+| `web_scraper` | Webpage content | `url` |
+
 ## App Integration
 - Apps exchange user session JWT for an `agent-api` audience token via AuthZ.
 - Call `agent-api /api/chat` with the exchanged token, streaming the response to the UI.
-- The `@jazzmind/busibox-app` library provides `AgentClient` and `SimpleChatInterface` for easy integration.
+- The `@jazzmind/busibox-app` library provides:
+  - `AgentClient` -- server-side factory for agent-api operations
+  - `SimpleChatInterface` -- chat UI component with agentic streaming
+  - `syncAgentDefinitions` / `getAgentSyncStatus` -- standalone helpers for syncing agent definitions (`@jazzmind/busibox-app/lib/agent/sync`)
+  - `AgentDefinitionInput`, `AgentSyncResult`, `SyncStatus` -- TypeScript types for agent definitions and sync results (`@jazzmind/busibox-app/lib/agent`)
 - For programmatic structured output, use `POST /runs/invoke` with `response_schema` (see above).
 
 ## Database

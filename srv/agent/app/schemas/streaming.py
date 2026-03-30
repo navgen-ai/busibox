@@ -20,16 +20,17 @@ class StreamEvent(BaseModel):
     """
     
     type: Literal[
-        "thought",      # Agent's reasoning/explanation
-        "plan",         # Planned execution summary
-        "progress",     # Progress update for multi-step plans
-        "interim",      # Mid-execution user-facing update
-        "tool_start",   # Starting a tool execution
-        "tool_result",  # Tool completed with result
-        "content",      # Final response content (streams to chat message)
-        "prompt",       # Request for user input with structured options
-        "complete",     # Execution finished
-        "error",        # Error occurred
+        "thought",            # Agent's reasoning/explanation
+        "plan",               # Planned execution summary
+        "progress",           # Progress update for multi-step plans
+        "interim",            # Mid-execution user-facing update
+        "tool_start",         # Starting a tool execution
+        "tool_result",        # Tool completed with result
+        "content",            # Final response content (streams to chat message)
+        "prompt",             # Request for user input with structured options
+        "clarify_parallel",   # Clarification question while tools run in background
+        "complete",           # Execution finished
+        "error",              # Error occurred
     ]
     
     source: str = Field(
@@ -100,6 +101,20 @@ def prompt(source: str, message: str, data: Optional[Dict[str, Any]] = None) -> 
     - default: optional default option string
     """
     return StreamEvent(type="prompt", source=source, message=message, data=data)
+
+
+def clarify_parallel(source: str, message: str, data: Optional[Dict[str, Any]] = None) -> StreamEvent:
+    """Helper to create a clarify_parallel event.
+
+    Emitted when the agent asks a clarification question while continuing
+    tool execution in the background.  The frontend should show the question
+    and allow the user to respond without blocking the ongoing work.
+
+    Expected ``data`` keys:
+    - options: list of option strings (e.g. ["Yes", "No"])
+    - background_status: brief description of ongoing work
+    """
+    return StreamEvent(type="clarify_parallel", source=source, message=message, data=data)
 
 
 def complete(source: str, message: str = "Done!", data: Optional[Dict[str, Any]] = None) -> StreamEvent:

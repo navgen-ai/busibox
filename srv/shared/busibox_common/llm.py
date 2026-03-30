@@ -418,6 +418,7 @@ class LiteLLMClient:
         messages: List[Dict[str, str]],
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        enable_thinking: Optional[bool] = None,
         **kwargs: Any,
     ) -> Dict:
         """
@@ -428,6 +429,9 @@ class LiteLLMClient:
             messages: List of message dicts with role and content
             temperature: Optional temperature override
             max_tokens: Optional max_tokens override
+            enable_thinking: If False, disables model thinking/reasoning mode
+                (Qwen3.5 ``<think>`` blocks). Passed as
+                ``chat_template_kwargs`` for vLLM/MLX backends via LiteLLM.
             **kwargs: Additional parameters for the API call
         
         Returns:
@@ -461,6 +465,9 @@ class LiteLLMClient:
             body["max_tokens"] = max_tokens
         elif "max_tokens" in model_config:
             body["max_tokens"] = model_config["max_tokens"]
+        
+        if enable_thinking is not None:
+            body["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
         
         # Add any extra kwargs
         body.update(kwargs)

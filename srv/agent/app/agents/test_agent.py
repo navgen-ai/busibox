@@ -75,11 +75,13 @@ class TestAgent(BaseStreamingAgent):
             provider="openai",
         )
         
-        # Recreate synthesis agent with test model
+        # Recreate synthesis agent with test model, disabling thinking
+        test_model_settings: dict = {"max_tokens": 100}
+        self._inject_thinking_settings(test_model_settings)
         self.synthesis_agent = Agent(
             model=self.synthesis_model,
             system_prompt=TEST_SYSTEM_PROMPT,
-            model_settings={"max_tokens": 100},  # Short responses for test
+            model_settings=test_model_settings,
         )
     
     def pipeline_steps(self, query: str, context: AgentContext) -> List[PipelineStep]:

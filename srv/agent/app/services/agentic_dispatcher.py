@@ -28,6 +28,7 @@ from app.agents.status_agent import status_assistant_agent, status_update_agent
 from app.agents.image_agent import image_agent
 from app.agents.builder_agent import builder_agent
 from app.agents.builder_local_agent import builder_local_agent
+from app.agents.test_agent import test_agent
 from app.agents.base_agent import create_agent_from_definition, BaseStreamingAgent
 from app.config.settings import get_settings
 from app.core.logging import get_logger
@@ -73,6 +74,10 @@ STREAMING_AGENTS: Dict[str, StreamingAgent] = {
     "builder_local": builder_local_agent,
     "builder-local": builder_local_agent,
     "builder_local_agent": builder_local_agent,
+    # Test agent (minimal, no tools, fast model)
+    "test": test_agent,
+    "test_agent": test_agent,
+    "test-agent": test_agent,
 }
 
 # Map agent names/types to streaming agent keys
@@ -117,6 +122,11 @@ AGENT_TYPE_MAPPING = {
     "builder_local": "builder_local",
     "builder-local": "builder_local",
     "builder_local_agent": "builder_local",
+    # Test agent mappings
+    "test": "test",
+    "test_agent": "test",
+    "test-agent": "test",
+    "test agent": "test",
     # Status agent mappings
     "status_assistant": "status_assistant",
     "status-assistant": "status_assistant",
@@ -139,6 +149,7 @@ AGENT_DESCRIPTIONS = {
     "builder_local": "Build and iterate Busibox applications with local-model fallback via Aider",
     "status_assistant": "Manage project status, create/query/update projects and tasks",
     "status_update": "Record quick status updates for projects and tasks",
+    "test": "Minimal test agent for LLM pipeline validation",
 }
 
 # UUID pattern for detecting agent IDs
@@ -610,7 +621,7 @@ Choose the most appropriate single agent for the query.""",
                 # Route to best agent
                 t_route = time.monotonic()
                 agent_names = [name for _, name, _ in resolved_agents]
-                selected_idx = await self._route_query_to_index(query, agent_names)
+                selected_idx = await self._route_query_to_index(query, agent_names, resolved_agents)
                 selected_id, selected_display_name, selected_streaming_key = resolved_agents[selected_idx]
                 logger.info(
                     "Routing decision complete",
@@ -805,46 +816,90 @@ Choose the most appropriate single agent for the query.""",
     async def _route_query_to_index(
         self,
         query: str,
-        agent_names: List[str]
+        agent_names: List[str],
+        resolved_agents: Optional[List[Tuple[str, str, Optional[str]]]] = None,
     ) -> int:
         """
-        Route the query to the appropriate agent.
-        
+        Route the query to the appropriate agent using domain-aware matching.
+
+        First tries keyword heuristics against agent descriptions and names.
+        Falls back to a fast LLM call only when heuristics are inconclusive.
+
         Returns the index of the selected agent in the list.
         """
         if len(agent_names) == 1:
             return 0
-        
+
+        # --- Phase 1: keyword / domain heuristic ---
+        query_lower = query.lower()
+
+        # Build description list aligned to agent_names indices
+        descriptions: List[str] = []
+        for i, name in enumerate(agent_names):
+            # Check AGENT_DESCRIPTIONS by streaming key if available
+            desc = ""
+            if resolved_agents and i < len(resolved_agents):
+                key = resolved_agents[i][2]
+                if key:
+                    desc = AGENT_DESCRIPTIONS.get(key, "")
+            if not desc:
+                normalised = name.lower().replace(" ", "_").replace("-", "_")
+                desc = AGENT_DESCRIPTIONS.get(normalised, "")
+            descriptions.append(desc.lower())
+
+        # Score each agent: +1 for each keyword overlap between query and description/name
+        scores = [0] * len(agent_names)
+        for i, (name, desc) in enumerate(zip(agent_names, descriptions)):
+            combined = f"{name.lower()} {desc}"
+            for word in query_lower.split():
+                if len(word) > 2 and word in combined:
+                    scores[i] += 1
+
+        max_score = max(scores)
+        if max_score > 0:
+            top_indices = [i for i, s in enumerate(scores) if s == max_score]
+            if len(top_indices) == 1:
+                logger.info(
+                    "Routing via keyword heuristic",
+                    extra={"selected": agent_names[top_indices[0]], "score": max_score},
+                )
+                return top_indices[0]
+
+        # --- Phase 2: LLM routing (with descriptions) ---
         try:
-            # Use routing agent to decide
-            agents_list = "\n".join(f"- {i}: {name}" for i, name in enumerate(agent_names))
+            agents_list_parts = []
+            for i, name in enumerate(agent_names):
+                desc = descriptions[i] if i < len(descriptions) else ""
+                if desc:
+                    agents_list_parts.append(f"- {i}: {name} — {desc}")
+                else:
+                    agents_list_parts.append(f"- {i}: {name}")
+            agents_list = "\n".join(agents_list_parts)
+
             result = await self.routing_agent.run(
-                f"Query: {query}\n\nAvailable agents:\n{agents_list}\n\nRespond with ONLY the number of the best agent."
+                f"Query: {query}\n\nAvailable agents:\n{agents_list}\n\n"
+                "Which agent is best suited? Respond with ONLY the number."
             )
-            
+
             response = str(result.output).strip() if hasattr(result, 'output') else str(result).strip()
-            
-            # Try to extract a number
+
             for i in range(len(agent_names)):
                 if str(i) in response:
                     return i
-            
-            # Check for name matches
+
             response_lower = response.lower()
             for i, name in enumerate(agent_names):
                 if name.lower() in response_lower:
                     return i
-            
-            # Default: prefer web search for research-like queries
-            query_lower = query.lower()
-            if any(word in query_lower for word in ["search", "find", "research", "what", "how", "news", "current", "today", "happening"]):
+
+            # Fallback heuristics for common query patterns
+            if any(word in query_lower for word in ["search", "find", "research", "news", "current", "today", "happening"]):
                 for i, name in enumerate(agent_names):
                     if "search" in name.lower() or "research" in name.lower():
                         return i
-            
-            # Default to first agent
+
             return 0
-            
+
         except Exception as e:
             logger.warning(f"Routing failed, using first agent: {e}")
             return 0

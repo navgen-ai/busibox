@@ -1072,6 +1072,153 @@ fn start_model_tests(app: &mut App) {
             let _ = tx.send(BenchmarkUpdate::ModelTestResult(result));
         }
 
+        // --- Phase 3: Service model tests (embedding, TTS, STT, image) ---
+        let _ = tx.send(BenchmarkUpdate::Log(String::new()));
+        let _ = tx.send(BenchmarkUpdate::Log(
+            "=== Phase 3: Service Model Tests ===".into(),
+        ));
+
+        // Embedding service runs on data-lxc (:206) port 8005
+        let embed_ip = if is_proxmox {
+            format!("{vllm_network_base}.206")
+        } else {
+            "localhost".to_string()
+        };
+        let embed_port: u16 = 8005;
+
+        let _ = tx.send(BenchmarkUpdate::Log(
+            ">>> Testing embedding service...".into(),
+        ));
+        let embed_cmd = benchmark::build_embedding_curl_command(&embed_ip, embed_port);
+        let embed_result = match exec_curl(&embed_cmd, is_remote, &ssh_details) {
+            Ok(output) => {
+                let mut r = benchmark::parse_embedding_response(&output);
+                r.test_name = "embedding".to_string();
+                r
+            }
+            Err(e) => benchmark::ModelTestResult {
+                test_name: "embedding".to_string(),
+                tier: benchmark::ModelTestTier::Service,
+                passed: false,
+                response_content: None,
+                error: Some(e),
+                elapsed_ms: 0.0,
+            },
+        };
+        let status = if embed_result.passed { "PASS" } else { "FAIL" };
+        let detail = embed_result
+            .response_content
+            .as_deref()
+            .or(embed_result.error.as_deref())
+            .unwrap_or("—");
+        let _ = tx.send(BenchmarkUpdate::Log(format!(
+            "  embedding [{status}] {:.0}ms - {detail}",
+            embed_result.elapsed_ms
+        )));
+        let _ = tx.send(BenchmarkUpdate::ModelTestResult(embed_result));
+
+        // TTS via LiteLLM
+        if purposes.contains_key("voice") {
+            let _ = tx.send(BenchmarkUpdate::Log(
+                ">>> Testing TTS (voice) via LiteLLM...".into(),
+            ));
+            let tts_cmd = benchmark::build_tts_curl_command(&litellm_ip, litellm_port, &litellm_key);
+            let tts_result = match exec_curl(&tts_cmd, is_remote, &ssh_details) {
+                Ok(output) => {
+                    let mut r = benchmark::parse_tts_response(&output);
+                    r.test_name = "voice (TTS)".to_string();
+                    r
+                }
+                Err(e) => benchmark::ModelTestResult {
+                    test_name: "voice (TTS)".to_string(),
+                    tier: benchmark::ModelTestTier::Service,
+                    passed: false,
+                    response_content: None,
+                    error: Some(e),
+                    elapsed_ms: 0.0,
+                },
+            };
+            let status = if tts_result.passed { "PASS" } else { "FAIL" };
+            let detail = tts_result
+                .response_content
+                .as_deref()
+                .or(tts_result.error.as_deref())
+                .unwrap_or("—");
+            let _ = tx.send(BenchmarkUpdate::Log(format!(
+                "  voice [{status}] {:.0}ms - {detail}",
+                tts_result.elapsed_ms
+            )));
+            let _ = tx.send(BenchmarkUpdate::ModelTestResult(tts_result));
+        }
+
+        // STT via LiteLLM
+        if purposes.contains_key("transcribe") {
+            let _ = tx.send(BenchmarkUpdate::Log(
+                ">>> Testing STT (transcribe) via LiteLLM...".into(),
+            ));
+            let stt_cmd = benchmark::build_stt_curl_command(&litellm_ip, litellm_port, &litellm_key);
+            let stt_result = match exec_curl(&stt_cmd, is_remote, &ssh_details) {
+                Ok(output) => {
+                    let mut r = benchmark::parse_stt_response(&output);
+                    r.test_name = "transcribe (STT)".to_string();
+                    r
+                }
+                Err(e) => benchmark::ModelTestResult {
+                    test_name: "transcribe (STT)".to_string(),
+                    tier: benchmark::ModelTestTier::Service,
+                    passed: false,
+                    response_content: None,
+                    error: Some(e),
+                    elapsed_ms: 0.0,
+                },
+            };
+            let status = if stt_result.passed { "PASS" } else { "FAIL" };
+            let detail = stt_result
+                .response_content
+                .as_deref()
+                .or(stt_result.error.as_deref())
+                .unwrap_or("—");
+            let _ = tx.send(BenchmarkUpdate::Log(format!(
+                "  transcribe [{status}] {:.0}ms - {detail}",
+                stt_result.elapsed_ms
+            )));
+            let _ = tx.send(BenchmarkUpdate::ModelTestResult(stt_result));
+        }
+
+        // Image generation via LiteLLM
+        if purposes.contains_key("image") {
+            let _ = tx.send(BenchmarkUpdate::Log(
+                ">>> Testing image generation via LiteLLM...".into(),
+            ));
+            let img_cmd = benchmark::build_image_curl_command(&litellm_ip, litellm_port, &litellm_key);
+            let img_result = match exec_curl(&img_cmd, is_remote, &ssh_details) {
+                Ok(output) => {
+                    let mut r = benchmark::parse_image_response(&output);
+                    r.test_name = "image".to_string();
+                    r
+                }
+                Err(e) => benchmark::ModelTestResult {
+                    test_name: "image".to_string(),
+                    tier: benchmark::ModelTestTier::Service,
+                    passed: false,
+                    response_content: None,
+                    error: Some(e),
+                    elapsed_ms: 0.0,
+                },
+            };
+            let status = if img_result.passed { "PASS" } else { "FAIL" };
+            let detail = img_result
+                .response_content
+                .as_deref()
+                .or(img_result.error.as_deref())
+                .unwrap_or("—");
+            let _ = tx.send(BenchmarkUpdate::Log(format!(
+                "  image [{status}] {:.0}ms - {detail}",
+                img_result.elapsed_ms
+            )));
+            let _ = tx.send(BenchmarkUpdate::ModelTestResult(img_result));
+        }
+
         // Summary
         let _ = tx.send(BenchmarkUpdate::Log(String::new()));
         let _ = tx.send(BenchmarkUpdate::Log(

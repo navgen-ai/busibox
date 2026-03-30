@@ -1,4 +1,4 @@
-use crate::app::{App, GpuAssignment, MessageKind, ModelsFocus, ModelsManageUpdate, Screen};
+use crate::app::{App, GpuAssignment, MessageKind, ModelsFocus, ModelsManageUpdate, Screen, ServicePurpose};
 use crate::modules::hardware::{LlmBackend, MemoryTier};
 use crate::modules::models::TierModelSet;
 use crate::modules::remote;
@@ -132,6 +132,33 @@ fn rebuild_tier_cache(app: &mut App) {
 
     app.models_manage_tier_models = tier_set;
     app.models_manage_model_selected = 0;
+
+    load_service_purposes(app);
+}
+
+fn load_service_purposes(app: &mut App) {
+    let config_path = app
+        .repo_root
+        .join("provision/ansible/group_vars/all/model_registry.yml");
+    if !config_path.exists() {
+        return;
+    }
+    let environment = app
+        .active_profile()
+        .map(|(_, p)| p.environment.clone())
+        .unwrap_or_else(|| "development".into());
+
+    let raw = crate::modules::models::load_service_purposes(&config_path, &environment);
+    app.models_manage_service_purposes = raw
+        .into_iter()
+        .map(|(purpose, selected_key, options, provider)| ServicePurpose {
+            purpose,
+            selected_key,
+            options,
+            provider,
+        })
+        .collect();
+    app.models_manage_service_selected = 0;
 }
 
 pub fn init_screen(app: &mut App) {
@@ -142,6 +169,8 @@ pub fn init_screen(app: &mut App) {
     app.models_manage_focus = ModelsFocus::Tiers;
     app.models_manage_model_selected = 0;
     app.models_manage_gpu_assignments.clear();
+    app.models_manage_config_dirty = false;
+    app.models_manage_config_undeployed = false;
 
     let has_custom_deployed = has_deployed_config(app);
     app.models_manage_is_custom = has_custom_deployed;
@@ -206,15 +235,6 @@ pub fn render(f: &mut Frame, app: &App) {
         .map(capitalize)
         .unwrap_or_else(|| "None".to_string());
 
-    let selected_name = if app.models_manage_tier_selected == CUSTOM_TIER_INDEX {
-        "Custom".to_string()
-    } else {
-        let selected_tier = MemoryTier::all()
-            .get(app.models_manage_tier_selected)
-            .copied()
-            .unwrap_or(MemoryTier::Standard);
-        capitalize(selected_tier.name())
-    };
     let selected_tier_name = if app.models_manage_tier_selected == CUSTOM_TIER_INDEX {
         "custom"
     } else {
@@ -223,14 +243,13 @@ pub fn render(f: &mut Frame, app: &App) {
             .map(|t| t.name())
             .unwrap_or("standard")
     };
-    let is_changed = app
+    let _is_changed = app
         .models_manage_current_tier
         .as_deref()
         .map(|c| c != selected_tier_name)
         .unwrap_or(true);
 
-    let gpu_count = get_gpu_count(app);
-    let has_gpus = gpu_count > 1;
+    let _gpu_count = get_gpu_count(app);
 
     let mut help_spans = vec![
         Span::styled("Active: ", theme::muted()),
@@ -242,56 +261,61 @@ pub fn render(f: &mut Frame, app: &App) {
         ModelsFocus::Tiers => {
             help_spans.push(Span::styled("↑/↓ ", theme::highlight()));
             help_spans.push(Span::styled("Tier  ", theme::normal()));
-            if has_gpus {
-                help_spans.push(Span::styled("Tab ", theme::highlight()));
-                help_spans.push(Span::styled("GPU assign  ", theme::normal()));
-            }
+            help_spans.push(Span::styled("Tab ", theme::highlight()));
+            help_spans.push(Span::styled("Models  ", theme::normal()));
+            help_spans.push(Span::styled("p ", theme::highlight()));
+            help_spans.push(Span::styled("Svc  ", theme::normal()));
             help_spans.push(Span::styled("b ", theme::highlight()));
             help_spans.push(Span::styled("Bench  ", theme::normal()));
+            help_spans.push(Span::styled("d ", theme::highlight()));
+            help_spans.push(Span::styled("Deploy  ", theme::success()));
         }
         ModelsFocus::Models => {
-            help_spans.push(Span::styled("↑/↓ ", theme::highlight()));
-            help_spans.push(Span::styled("Model  ", theme::normal()));
-            help_spans.push(Span::styled("0-9 ", theme::highlight()));
-            help_spans.push(Span::styled("GPU  ", theme::normal()));
-            help_spans.push(Span::styled("t ", theme::highlight()));
-            help_spans.push(Span::styled("TP  ", theme::normal()));
-            help_spans.push(Span::styled("r ", theme::highlight()));
-            help_spans.push(Span::styled("Roles  ", theme::normal()));
-            help_spans.push(Span::styled("a ", theme::highlight()));
-            help_spans.push(Span::styled("Add  ", theme::normal()));
-            help_spans.push(Span::styled("c ", theme::highlight()));
-            help_spans.push(Span::styled("Change  ", theme::normal()));
-            help_spans.push(Span::styled("d ", theme::highlight()));
-            help_spans.push(Span::styled("Del  ", theme::normal()));
-            help_spans.push(Span::styled("s ", theme::highlight()));
-            help_spans.push(Span::styled("Save  ", theme::normal()));
-            help_spans.push(Span::styled("b ", theme::highlight()));
-            help_spans.push(Span::styled("Bench  ", theme::normal()));
-            help_spans.push(Span::styled("Enter ", theme::highlight()));
-            help_spans.push(Span::styled(
-                format!("Apply {selected_name}  "),
-                theme::success(),
-            ));
-            help_spans.push(Span::styled("Tab ", theme::highlight()));
-            help_spans.push(Span::styled("Keep  ", theme::normal()));
-            help_spans.push(Span::styled("Esc ", theme::muted()));
-            help_spans.push(Span::styled("Revert", theme::warning()));
+            if app.models_manage_focus_service {
+                help_spans.push(Span::styled("↑/↓ ", theme::highlight()));
+                help_spans.push(Span::styled("Purpose  ", theme::normal()));
+                help_spans.push(Span::styled("←/→ ", theme::highlight()));
+                help_spans.push(Span::styled("Cycle model  ", theme::normal()));
+                help_spans.push(Span::styled("s ", theme::highlight()));
+                help_spans.push(Span::styled("Save  ", theme::normal()));
+                help_spans.push(Span::styled("d ", theme::highlight()));
+                help_spans.push(Span::styled("Deploy  ", theme::success()));
+                help_spans.push(Span::styled("Esc ", theme::muted()));
+                help_spans.push(Span::styled("Back to LLMs", theme::muted()));
+            } else {
+                help_spans.push(Span::styled("↑/↓ ", theme::highlight()));
+                help_spans.push(Span::styled("Model  ", theme::normal()));
+                help_spans.push(Span::styled("0-9 ", theme::highlight()));
+                help_spans.push(Span::styled("GPU  ", theme::normal()));
+                help_spans.push(Span::styled("t ", theme::highlight()));
+                help_spans.push(Span::styled("TP  ", theme::normal()));
+                help_spans.push(Span::styled("r ", theme::highlight()));
+                help_spans.push(Span::styled("Roles  ", theme::normal()));
+                help_spans.push(Span::styled("a ", theme::highlight()));
+                help_spans.push(Span::styled("Add  ", theme::normal()));
+                help_spans.push(Span::styled("c ", theme::highlight()));
+                help_spans.push(Span::styled("Change  ", theme::normal()));
+                help_spans.push(Span::styled("x ", theme::highlight()));
+                help_spans.push(Span::styled("Del  ", theme::normal()));
+                help_spans.push(Span::styled("p ", theme::highlight()));
+                help_spans.push(Span::styled("Svc  ", theme::normal()));
+                help_spans.push(Span::styled("s ", theme::highlight()));
+                help_spans.push(Span::styled("Save  ", theme::normal()));
+                help_spans.push(Span::styled("b ", theme::highlight()));
+                help_spans.push(Span::styled("Bench  ", theme::normal()));
+                help_spans.push(Span::styled("d ", theme::highlight()));
+                help_spans.push(Span::styled("Deploy  ", theme::success()));
+                help_spans.push(Span::styled("Tab ", theme::highlight()));
+                help_spans.push(Span::styled("Keep  ", theme::normal()));
+                help_spans.push(Span::styled("Esc ", theme::muted()));
+                help_spans.push(Span::styled("Revert", theme::warning()));
+            }
         }
     }
 
     if app.models_manage_focus == ModelsFocus::Tiers {
         help_spans.push(Span::styled("s ", theme::highlight()));
         help_spans.push(Span::styled("Save  ", theme::normal()));
-        help_spans.push(Span::styled("Enter ", theme::highlight()));
-        if is_changed {
-            help_spans.push(Span::styled(
-                format!("Apply {selected_name}  "),
-                theme::success(),
-            ));
-        } else {
-            help_spans.push(Span::styled("Re-apply  ", theme::success()));
-        }
         help_spans.push(Span::styled("Esc ", theme::muted()));
         help_spans.push(Span::styled("Back", theme::muted()));
     }
@@ -826,10 +850,11 @@ fn render_model_details(f: &mut Frame, app: &App, area: Rect) {
         )));
 
         let total: f64 = unique_sizes.values().sum();
-        let total_str = if total < 1.0 {
-            format!("{:.0} MB", total * 1024.0)
+        let total_rounded = (total * 10.0).round() / 10.0;
+        let total_str = if total_rounded < 1.0 {
+            format!("{:.0} MB", total_rounded * 1024.0)
         } else {
-            format!("{:.1} GB", total)
+            format!("{:.1} GB", total_rounded)
         };
 
         let unique_count = unique_sizes.len();
@@ -862,17 +887,65 @@ fn render_model_details(f: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
+    // Service models section (embedding, reranking, voice, transcribe, image)
+    if !app.models_manage_service_purposes.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(" Service Models", theme::heading())));
+        lines.push(Line::from(Span::styled(
+            " ─".to_string() + &"─".repeat(58),
+            theme::dim(),
+        )));
+
+        for (i, sp) in app.models_manage_service_purposes.iter().enumerate() {
+            let is_selected = app.models_manage_focus_service && i == app.models_manage_service_selected;
+            let has_alternatives = sp.options.len() > 1;
+
+            let key_display = if sp.selected_key.len() > 32 {
+                format!("{}…", &sp.selected_key[..31])
+            } else {
+                sp.selected_key.clone()
+            };
+
+            let provider_tag = match sp.provider.to_lowercase().as_str() {
+                "mlx" => " MLX",
+                "vllm" | "gpu" => " GPU",
+                "fastembed" | "local" => " cpu",
+                _ => "",
+            };
+
+            let row_style = if is_selected { theme::selected() } else { theme::normal() };
+            let label_style = if is_selected { row_style } else { theme::info() };
+            let provider_style = match sp.provider.to_lowercase().as_str() {
+                "mlx" | "vllm" | "gpu" => if is_selected { row_style } else { theme::highlight() },
+                _ => if is_selected { row_style } else { theme::dim() },
+            };
+
+            let cycle_hint = if is_selected && has_alternatives {
+                " ◂▸"
+            } else {
+                ""
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {:12}", sp.purpose), label_style),
+                Span::styled(key_display, row_style),
+                Span::styled(provider_tag.to_string(), provider_style),
+                Span::styled(cycle_hint.to_string(), theme::highlight()),
+            ]));
+        }
+    }
+
     lines.push(Line::from(""));
     if app.models_manage_config_dirty {
         lines.push(Line::from(vec![
             Span::styled(" Unsaved changes  ", theme::warning()),
             Span::styled("s Save  ", theme::highlight()),
-            Span::styled("Enter Deploy", theme::success()),
+            Span::styled("d Deploy", theme::success()),
         ]));
     } else if app.models_manage_config_undeployed {
         lines.push(Line::from(vec![
             Span::styled(" Saved (not deployed)  ", theme::info()),
-            Span::styled("Enter Deploy to GPUs", theme::success()),
+            Span::styled("d Deploy", theme::success()),
         ]));
     } else {
         lines.push(Line::from(Span::styled(
@@ -1028,6 +1101,20 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    if app.models_manage_deploy_confirm {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                app.models_manage_deploy_confirm = false;
+                apply_tier(app);
+            }
+            _ => {
+                app.models_manage_deploy_confirm = false;
+                app.set_message("Deploy cancelled", MessageKind::Info);
+            }
+        }
+        return;
+    }
+
     if app.models_manage_role_edit_mode {
         handle_role_edit_key(app, key);
         return;
@@ -1056,23 +1143,25 @@ fn handle_tier_key(app: &mut App, key: KeyEvent) {
             if app.models_manage_tier_selected > 0 {
                 app.models_manage_tier_selected -= 1;
                 rebuild_tier_cache(app);
-                app.models_manage_config_dirty = true;
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
             if app.models_manage_tier_selected < tier_count.saturating_sub(1) {
                 app.models_manage_tier_selected += 1;
                 rebuild_tier_cache(app);
-                app.models_manage_config_dirty = true;
             }
         }
         KeyCode::Tab => {
-            let gpu_count = get_gpu_count(app);
-            if gpu_count > 1 {
-                app.models_manage_gpu_saved =
-                    Some(app.models_manage_gpu_assignments.clone());
+            app.models_manage_gpu_saved =
+                Some(app.models_manage_gpu_assignments.clone());
+            app.models_manage_focus = ModelsFocus::Models;
+            app.models_manage_model_selected = 0;
+        }
+        KeyCode::Char('p') => {
+            if !app.models_manage_service_purposes.is_empty() {
                 app.models_manage_focus = ModelsFocus::Models;
-                app.models_manage_model_selected = 0;
+                app.models_manage_focus_service = true;
+                app.models_manage_service_selected = 0;
             }
         }
         KeyCode::Char('b') => {
@@ -1082,14 +1171,20 @@ fn handle_tier_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('s') => {
             save_config(app);
         }
-        KeyCode::Enter => {
-            apply_tier(app);
+        KeyCode::Char('d') => {
+            app.models_manage_deploy_confirm = true;
+            app.set_message("Deploy models? Press 'y' to confirm, any other key to cancel", MessageKind::Warning);
         }
         _ => {}
     }
 }
 
 fn handle_model_key(app: &mut App, key: KeyEvent) {
+    if app.models_manage_focus_service {
+        handle_service_model_key(app, key);
+        return;
+    }
+
     let model_count = app
         .models_manage_tier_models
         .as_ref()
@@ -1127,6 +1222,12 @@ fn handle_model_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('t') => {
             toggle_tp(app);
         }
+        KeyCode::Char('p') => {
+            if !app.models_manage_service_purposes.is_empty() {
+                app.models_manage_focus_service = true;
+                app.models_manage_service_selected = 0;
+            }
+        }
         KeyCode::Char('a') => {
             open_add_picker(app);
         }
@@ -1156,17 +1257,96 @@ fn handle_model_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('r') => {
             open_role_editor(app);
         }
-        KeyCode::Char('d') | KeyCode::Delete => {
+        KeyCode::Char('x') | KeyCode::Delete => {
             remove_selected_model(app);
         }
         KeyCode::Char('s') => {
             save_config(app);
         }
-        KeyCode::Enter => {
-            apply_tier(app);
+        KeyCode::Char('d') => {
+            app.models_manage_deploy_confirm = true;
+            app.set_message("Deploy models? Press 'y' to confirm, any other key to cancel", MessageKind::Warning);
         }
         _ => {}
     }
+}
+
+fn handle_service_model_key(app: &mut App, key: KeyEvent) {
+    let count = app.models_manage_service_purposes.len();
+
+    match key.code {
+        KeyCode::Esc => {
+            app.models_manage_focus_service = false;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.models_manage_service_selected > 0 {
+                app.models_manage_service_selected -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.models_manage_service_selected < count.saturating_sub(1) {
+                app.models_manage_service_selected += 1;
+            }
+        }
+        KeyCode::Left => {
+            cycle_service_purpose(app, false);
+        }
+        KeyCode::Right => {
+            cycle_service_purpose(app, true);
+        }
+        KeyCode::Char('s') => {
+            save_config(app);
+        }
+        KeyCode::Char('d') => {
+            app.models_manage_deploy_confirm = true;
+            app.set_message("Deploy models? Press 'y' to confirm, any other key to cancel", MessageKind::Warning);
+        }
+        _ => {}
+    }
+}
+
+fn cycle_service_purpose(app: &mut App, forward: bool) {
+    let idx = app.models_manage_service_selected;
+    let sp = match app.models_manage_service_purposes.get(idx) {
+        Some(sp) => sp,
+        None => return,
+    };
+    if sp.options.len() <= 1 {
+        return;
+    }
+    let current_pos = sp.options.iter().position(|k| k == &sp.selected_key).unwrap_or(0);
+    let next_pos = if forward {
+        (current_pos + 1) % sp.options.len()
+    } else if current_pos == 0 {
+        sp.options.len() - 1
+    } else {
+        current_pos - 1
+    };
+    let new_key = sp.options[next_pos].clone();
+
+    let registry_path = app
+        .repo_root
+        .join("provision/ansible/group_vars/all/model_registry.yml");
+    let new_provider = std::fs::read_to_string(&registry_path)
+        .ok()
+        .and_then(|contents| {
+            serde_yaml::from_str::<serde_yaml::Value>(&contents)
+                .ok()
+                .and_then(|v| {
+                    v.get("available_models")
+                        .and_then(|am| am.get(&new_key))
+                        .and_then(|m| m.get("provider"))
+                        .and_then(|p| p.as_str())
+                        .map(|s| s.to_string())
+                })
+        })
+        .unwrap_or_default();
+
+    if let Some(sp) = app.models_manage_service_purposes.get_mut(idx) {
+        sp.selected_key = new_key;
+        sp.provider = new_provider;
+    }
+    app.models_manage_config_dirty = true;
 }
 
 fn change_model(app: &mut App) {
@@ -1676,6 +1856,11 @@ fn apply_tier_inner(app: &mut App, deploy: bool) {
         .map(|(_, p)| super::install::env_to_prefix(&p.environment))
         .unwrap_or_else(|| "dev".into());
 
+    let vault_prefix: String = app
+        .active_profile()
+        .and_then(|(id, p)| p.vault_prefix.clone().or(Some(id.to_string())))
+        .unwrap_or_else(|| "dev".into());
+
     let is_proxmox = app
         .active_profile()
         .map(|(_, p)| p.backend == "proxmox")
@@ -1689,7 +1874,7 @@ fn apply_tier_inner(app: &mut App, deploy: bool) {
     let gpu_assignments = app.models_manage_gpu_assignments.clone();
 
     // Build purpose overrides: role -> model_key for any roles assigned in the UI
-    let purpose_overrides: std::collections::HashMap<String, String> = app
+    let mut purpose_overrides: std::collections::HashMap<String, String> = app
         .models_manage_tier_models
         .as_ref()
         .map(|ts| {
@@ -1703,10 +1888,16 @@ fn apply_tier_inner(app: &mut App, deploy: bool) {
         })
         .unwrap_or_default();
 
+    // Include service model purpose selections
+    for sp in &app.models_manage_service_purposes {
+        purpose_overrides.insert(sp.purpose.clone(), sp.selected_key.clone());
+    }
+
     let env_prefix = format!(
         "BUSIBOX_ENV={profile_environment} \
          BUSIBOX_BACKEND={profile_backend} \
-         CONTAINER_PREFIX={container_prefix} "
+         CONTAINER_PREFIX={container_prefix} \
+         VAULT_PREFIX={vault_prefix} "
     );
 
     let deploy = deploy;
@@ -2065,6 +2256,55 @@ fn apply_tier_inner(app: &mut App, deploy: bool) {
                             "WARNING: Some vLLM models did not become ready within timeout — proceeding anyway".into(),
                         ));
                     }
+                }
+            }
+
+            // Step 3b (MLX only): Regenerate config/litellm-config.yaml
+            // Docker mounts this file directly; the Ansible generate_model_config.py
+            // only handles vLLM/bedrock/gpu, not MLX.
+            if backend_str == "mlx" {
+                let _ = tx.send(ModelsManageUpdate::Log(
+                    "--- Regenerating litellm-config.yaml for MLX ---".into(),
+                ));
+
+                let gen_litellm_ok = if is_remote {
+                    if let Some((ref host, ref user, ref key)) = ssh_details {
+                        let ssh = crate::modules::ssh::SshConnection::new(host, user, key);
+                        let gen_cmd = format!(
+                            "{} bash scripts/llm/generate-litellm-config.sh mlx",
+                            env_parts.join(" ")
+                        );
+                        let tx2 = tx.clone();
+                        let result = remote::exec_remote_streaming(
+                            &ssh, &remote_path, &gen_cmd,
+                            |line| { let _ = tx2.send(ModelsManageUpdate::Log(format!("  {line}"))); },
+                        );
+                        matches!(result, Ok(0))
+                    } else {
+                        false
+                    }
+                } else {
+                    let tx2 = tx.clone();
+                    let mut gen_args: Vec<String> = env_parts.clone();
+                    gen_args.push("LLM_BACKEND=mlx".into());
+                    let result = run_local_command_streaming(
+                        &repo_root,
+                        "bash",
+                        &["scripts/llm/generate-litellm-config.sh", "mlx"],
+                        &gen_args,
+                        |line| { let _ = tx2.send(ModelsManageUpdate::Log(format!("  {line}"))); },
+                    );
+                    matches!(result, Ok(0))
+                };
+
+                if gen_litellm_ok {
+                    let _ = tx.send(ModelsManageUpdate::Log(
+                        "✓ litellm-config.yaml regenerated".into(),
+                    ));
+                } else {
+                    let _ = tx.send(ModelsManageUpdate::Log(
+                        "WARNING: Failed to regenerate litellm-config.yaml — litellm may use stale config".into(),
+                    ));
                 }
             }
 

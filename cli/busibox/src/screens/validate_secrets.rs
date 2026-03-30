@@ -1,5 +1,5 @@
 use crate::app::{App, Screen};
-use crate::modules::remote::{KeyState, SecretKeyStatus};
+use crate::modules::remote::{KeyState, LiveState, SecretKeyStatus};
 use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
@@ -16,6 +16,26 @@ fn key_state_label(state: &KeyState) -> (&str, Style) {
         KeyState::NullOrEmpty => ("NULL/EMPTY", theme::error()),
         KeyState::NotChecked => ("n/a", theme::dim()),
         KeyState::Pending => ("...", theme::info()),
+    }
+}
+
+fn live_state_label(state: &LiveState) -> (&str, Style) {
+    match state {
+        LiveState::NotChecked => ("n/a", theme::dim()),
+        LiveState::Pending => ("...", theme::info()),
+        LiveState::Pass => ("PASS", theme::success()),
+        LiveState::Fail(_) => ("FAIL", theme::error()),
+        LiveState::EnvMatch => ("MATCH", theme::success()),
+        LiveState::EnvMismatch => ("MISMATCH", theme::error()),
+        LiveState::Skipped => ("skip", theme::dim()),
+    }
+}
+
+fn live_state_icon(state: &LiveState) -> &'static str {
+    match state {
+        LiveState::Pass | LiveState::EnvMatch => "✓ ",
+        LiveState::Fail(_) | LiveState::EnvMismatch => "✗ ",
+        _ => "  ",
     }
 }
 
@@ -41,9 +61,9 @@ pub fn render(f: &mut Frame, app: &App) {
 
     // Info block: vault file, status summary
     let info_text = if app.validate_secrets_loading {
-        let tick = app.manage_tick; // reuse manage_tick for spinner
+        let tick = app.manage_tick;
         let frame = SPINNER_FRAMES[tick % SPINNER_FRAMES.len()];
-        format!("{} Loading vault secrets...", frame)
+        format!("{} Loading vault secrets and running live checks...", frame)
     } else if let Some(ref err) = app.validate_secrets_error {
         format!("Error: {}", err)
     } else {
@@ -54,6 +74,14 @@ pub fn render(f: &mut Frame, app: &App) {
             .filter(|k| k.required)
             .collect();
         let ok_count = required.iter().filter(|k| k.local == KeyState::Ok).count();
+        let live_pass = required
+            .iter()
+            .filter(|k| matches!(k.live, LiveState::Pass | LiveState::EnvMatch))
+            .count();
+        let live_fail = required
+            .iter()
+            .filter(|k| k.live.is_bad())
+            .count();
         let remote_label = if app.validate_secrets_is_remote {
             let remote_ok = required
                 .iter()
@@ -63,12 +91,18 @@ pub fn render(f: &mut Frame, app: &App) {
         } else {
             String::new()
         };
+        let live_label = if live_fail > 0 {
+            format!(" | Live: {}/{} OK, {} FAIL", live_pass, required.len(), live_fail)
+        } else {
+            format!(" | Live: {}/{} OK", live_pass, required.len())
+        };
         format!(
-            "Vault: {}  |  Local: {}/{} required OK  |  {} total keys{}",
+            "Vault: {}  |  Local: {}/{} OK  |  {} keys{}{}",
             app.validate_secrets_vault_file,
             ok_count,
             required.len(),
             total,
+            live_label,
             remote_label,
         )
     };
@@ -93,7 +127,7 @@ pub fn render(f: &mut Frame, app: &App) {
     let table_area = chunks[3];
 
     if app.validate_secrets_loading && app.validate_secrets_results.is_empty() {
-        let loading = Paragraph::new("Decrypting and parsing vault files...")
+        let loading = Paragraph::new("Decrypting vault and checking services...")
             .style(theme::info())
             .alignment(Alignment::Center)
             .block(
@@ -133,28 +167,23 @@ pub fn render(f: &mut Frame, app: &App) {
 fn render_secrets_table(f: &mut Frame, app: &App, area: Rect) {
     let show_remote = app.validate_secrets_is_remote;
 
-    // Build header
-    let header_cells = if show_remote {
-        vec![
-            Cell::from(" Key").style(theme::heading()),
-            Cell::from("Required").style(theme::heading()),
-            Cell::from("Local").style(theme::heading()),
-            Cell::from("Remote").style(theme::heading()),
-        ]
-    } else {
-        vec![
-            Cell::from(" Key").style(theme::heading()),
-            Cell::from("Required").style(theme::heading()),
-            Cell::from("Local").style(theme::heading()),
-        ]
-    };
+    // Build header -- always show Live column
+    let mut header_cells = vec![
+        Cell::from(" Key").style(theme::heading()),
+        Cell::from("Required").style(theme::heading()),
+        Cell::from("Local").style(theme::heading()),
+        Cell::from("Live").style(theme::heading()),
+    ];
+    if show_remote {
+        header_cells.push(Cell::from("Remote").style(theme::heading()));
+    }
     let header = Row::new(header_cells)
         .style(Style::default().bg(theme::BRAND_DIM))
         .height(1);
 
     // Build rows
     let results = &app.validate_secrets_results;
-    let visible_height = area.height.saturating_sub(4) as usize; // borders + header
+    let visible_height = area.height.saturating_sub(4) as usize;
     let scroll = app.validate_secrets_scroll.min(results.len().saturating_sub(visible_height));
 
     let rows: Vec<Row> = results
@@ -169,6 +198,9 @@ fn render_secrets_table(f: &mut Frame, app: &App, area: Rect) {
                 _ => "✗ ",
             };
 
+            let (live_label, live_style) = live_state_label(&entry.live);
+            let live_icon = live_state_icon(&entry.live);
+
             let req_label = if entry.required { "yes" } else { "" };
             let req_style = if entry.required {
                 theme::info()
@@ -176,13 +208,20 @@ fn render_secrets_table(f: &mut Frame, app: &App, area: Rect) {
                 theme::dim()
             };
 
-            let key_style = if entry.required && entry.local.is_bad() {
+            let key_style = if entry.required && (entry.local.is_bad() || entry.live.is_bad()) {
                 theme::error()
             } else if !entry.required {
                 theme::muted()
             } else {
                 theme::normal()
             };
+
+            let mut cells = vec![
+                Cell::from(format!(" {}", entry.key_path)).style(key_style),
+                Cell::from(req_label).style(req_style),
+                Cell::from(format!("{}{}", local_icon, local_label)).style(local_style),
+                Cell::from(format!("{}{}", live_icon, live_label)).style(live_style),
+            ];
 
             if show_remote {
                 let (remote_label, remote_style) = key_state_label(&entry.remote);
@@ -191,36 +230,24 @@ fn render_secrets_table(f: &mut Frame, app: &App, area: Rect) {
                     KeyState::NotChecked | KeyState::Pending => "  ",
                     _ => "✗ ",
                 };
-                Row::new(vec![
-                    Cell::from(format!(" {}", entry.key_path)).style(key_style),
-                    Cell::from(req_label).style(req_style),
-                    Cell::from(format!("{}{}", local_icon, local_label)).style(local_style),
+                cells.push(
                     Cell::from(format!("{}{}", remote_icon, remote_label)).style(remote_style),
-                ])
-            } else {
-                Row::new(vec![
-                    Cell::from(format!(" {}", entry.key_path)).style(key_style),
-                    Cell::from(req_label).style(req_style),
-                    Cell::from(format!("{}{}", local_icon, local_label)).style(local_style),
-                ])
+                );
             }
+
+            Row::new(cells)
         })
         .collect();
 
-    let widths = if show_remote {
-        vec![
-            Constraint::Min(28),
-            Constraint::Length(10),
-            Constraint::Length(16),
-            Constraint::Length(16),
-        ]
-    } else {
-        vec![
-            Constraint::Min(28),
-            Constraint::Length(10),
-            Constraint::Length(16),
-        ]
-    };
+    let mut widths = vec![
+        Constraint::Min(28),
+        Constraint::Length(10),
+        Constraint::Length(16),
+        Constraint::Length(16),
+    ];
+    if show_remote {
+        widths.push(Constraint::Length(16));
+    }
 
     let table = Table::new(rows, widths)
         .header(header)

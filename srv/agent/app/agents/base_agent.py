@@ -29,6 +29,16 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Type, Union
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.messages import (
+    AgentStreamEvent,
+    PartStartEvent,
+    PartDeltaEvent,
+    TextPartDelta,
+    ToolCallPartDelta,
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+)
+from pydantic_ai.run import AgentRunResultEvent
 from pydantic_ai.models.openai import OpenAIChatModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,7 +47,7 @@ from app.agents.streaming_agent import StreamingAgent, StreamCallback
 from app.clients.busibox import BusiboxClient
 from app.config.settings import get_settings
 from app.schemas.auth import Principal
-from app.schemas.streaming import StreamEvent, thought, tool_start, tool_result, content, error, complete
+from app.schemas.streaming import StreamEvent, thought, tool_start, tool_result, content, error, complete, clarify_parallel, progress
 from app.services.attachment_resolver import attachment_resolver
 from app.services.token_service import get_or_exchange_token
 from app.services.skills_service import get_skills_service
@@ -321,6 +331,11 @@ TOOL_SCOPES: Dict[str, List[str]] = {
     "calendar_list_events": [],
     "calendar_create_event": [],
     "search_users": ["authz.read"],
+    "aggregate_data": ["data.read"],
+    "get_facets": ["data.read"],
+    "graph_query": ["data.read"],
+    "graph_explore": ["data.read"],
+    "graph_relate": ["data.write"],
 }
 
 
@@ -456,11 +471,13 @@ def _register_builtin_tools():
     except ImportError as e:
         logger.warning(f"Could not register user search tool: {e}")
 
-    # Register data management tools (list, query, insert, update, delete data documents)
+    # Register data management tools (list, query, insert, update, delete, aggregate, facets)
     try:
         from app.tools.data_tool import (
             list_data_documents, ListDataDocumentsOutput,
             query_data, QueryDataOutput,
+            aggregate_data, AggregateDataOutput,
+            get_facets, GetFacetsOutput,
             insert_records, InsertRecordsOutput,
             update_records, UpdateRecordsOutput,
             delete_records, DeleteRecordsOutput,
@@ -470,6 +487,8 @@ def _register_builtin_tools():
         
         ToolRegistry.register("list_data_documents", list_data_documents, ListDataDocumentsOutput)
         ToolRegistry.register("query_data", query_data, QueryDataOutput)
+        ToolRegistry.register("aggregate_data", aggregate_data, AggregateDataOutput)
+        ToolRegistry.register("get_facets", get_facets, GetFacetsOutput)
         ToolRegistry.register("insert_records", insert_records, InsertRecordsOutput)
         ToolRegistry.register("update_records", update_records, UpdateRecordsOutput)
         ToolRegistry.register("delete_records", delete_records, DeleteRecordsOutput)
@@ -477,6 +496,20 @@ def _register_builtin_tools():
         ToolRegistry.register("get_data_document", get_data_document, GetDocumentOutput)
     except ImportError as e:
         logger.warning(f"Could not register data tools: {e}")
+
+    # Register graph tools (knowledge graph queries)
+    try:
+        from app.tools.graph_tool import (
+            graph_query, GraphQueryOutput,
+            graph_explore, GraphExploreOutput,
+            graph_relate, GraphRelateOutput,
+        )
+        
+        ToolRegistry.register("graph_query", graph_query, GraphQueryOutput)
+        ToolRegistry.register("graph_explore", graph_explore, GraphExploreOutput)
+        ToolRegistry.register("graph_relate", graph_relate, GraphRelateOutput)
+    except ImportError as e:
+        logger.warning(f"Could not register graph tools: {e}")
 
 
 # Initialize tool registry on module load
@@ -552,9 +585,10 @@ class BaseStreamingAgent(StreamingAgent):
         
         # Build model settings - only include max_tokens if explicitly set
         # If max_tokens is None, don't pass it so the model uses its natural limit
-        model_settings = {}
+        model_settings: Dict[str, Any] = {}
         if config.max_tokens is not None:
             model_settings["max_tokens"] = config.max_tokens
+        self._inject_thinking_settings(model_settings)
         
         # Create synthesis agent
         self.synthesis_agent = Agent(
@@ -563,6 +597,24 @@ class BaseStreamingAgent(StreamingAgent):
             model_settings=model_settings if model_settings else None,
         )
     
+    _THINKING_DISABLED_MODELS = {"fast", "test"}
+
+    def _should_disable_thinking(self) -> bool:
+        """Whether to suppress Qwen3-style <think> reasoning for this agent's model."""
+        model_name = (self.config.model or "").lower()
+        if model_name in self._THINKING_DISABLED_MODELS:
+            return True
+        if self.config.instructions and "/no_think" in self.config.instructions:
+            return True
+        return False
+
+    def _inject_thinking_settings(self, model_settings: Dict[str, Any]) -> None:
+        """Mutate *model_settings* to disable thinking when appropriate."""
+        if self._should_disable_thinking():
+            model_settings.setdefault("extra_body", {}).setdefault(
+                "chat_template_kwargs", {}
+            )["enable_thinking"] = False
+
     def pipeline_steps(self, query: str, context: AgentContext) -> List[PipelineStep]:
         """
         Define the pipeline steps to execute.
@@ -1248,47 +1300,54 @@ class BaseStreamingAgent(StreamingAgent):
                 ))
                 return None
 
-            # Execute tool
+            # Execute tool with timeout protection
             # Detect whether the tool function expects a RunContext `ctx`.
+            TOOL_TIMEOUT_SECONDS = 60
             expects_ctx = "ctx" in tool_sig.parameters
             tool_scopes = TOOL_SCOPES.get(step.tool, [])
             logger.info(f"Executing tool {step.tool} with scopes={tool_scopes}, has_deps={context.deps is not None}")
             
-            if expects_ctx and context.deps:
-                deps_for_tool = context.deps
-                # Exchange per-tool token so each tool gets the correct downstream audience.
-                # This prevents mixed-scope agents from reusing a token minted for the wrong API.
-                if tool_scopes and context.session and context.principal:
-                    try:
-                        purpose = tool_scopes[0].split(".")[0] if tool_scopes else "search"
-                        exchanged_token = await get_or_exchange_token(
-                            session=context.session,
-                            principal=context.principal,
-                            scopes=tool_scopes,
-                            purpose=purpose,
-                        )
-                        deps_for_tool = BusiboxDeps(
-                            principal=context.principal,
-                            busibox_client=BusiboxClient(access_token=exchanged_token.access_token),
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "Per-tool token exchange failed for %s, falling back to shared deps token: %s",
-                            step.tool,
-                            exc,
-                        )
-                # Create mock context for tools that need BusiboxDeps
-                class MockRunContext:
-                    def __init__(self, deps):
-                        self.deps = deps
-                
-                mock_ctx = MockRunContext(deps_for_tool)
-                result = await tool_func(ctx=mock_ctx, **filtered_args)
-            elif expects_ctx and not context.deps:
-                raise RuntimeError(f"Tool {step.tool} requires authenticated context")
-            else:
-                # Tool doesn't need deps context - call directly
-                result = await tool_func(**filtered_args)
+            async def _run_tool():
+                if expects_ctx and context.deps:
+                    deps_for_tool = context.deps
+                    if tool_scopes and context.session and context.principal:
+                        try:
+                            purpose = tool_scopes[0].split(".")[0] if tool_scopes else "search"
+                            exchanged_token = await get_or_exchange_token(
+                                session=context.session,
+                                principal=context.principal,
+                                scopes=tool_scopes,
+                                purpose=purpose,
+                            )
+                            deps_for_tool = BusiboxDeps(
+                                principal=context.principal,
+                                busibox_client=BusiboxClient(access_token=exchanged_token.access_token),
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Per-tool token exchange failed for %s, falling back to shared deps token: %s",
+                                step.tool,
+                                exc,
+                            )
+                    class MockRunContext:
+                        def __init__(self, deps):
+                            self.deps = deps
+                    mock_ctx = MockRunContext(deps_for_tool)
+                    return await tool_func(ctx=mock_ctx, **filtered_args)
+                elif expects_ctx and not context.deps:
+                    raise RuntimeError(f"Tool {step.tool} requires authenticated context")
+                else:
+                    return await tool_func(**filtered_args)
+
+            try:
+                result = await asyncio.wait_for(_run_tool(), timeout=TOOL_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                logger.error(f"Tool {step.tool} timed out after {TOOL_TIMEOUT_SECONDS}s")
+                await stream(error(
+                    source=step.tool,
+                    message=f"Tool {step.tool} timed out after {TOOL_TIMEOUT_SECONDS}s"
+                ))
+                return None
             
             # Log result details for debugging
             result_count = getattr(result, 'result_count', None)
@@ -1439,7 +1498,6 @@ class BaseStreamingAgent(StreamingAgent):
                         f"{self.name} NativeOutput structured output failed: {e}",
                         exc_info=True,
                     )
-                    # Last-resort fallback: direct OpenAI call with jsonschema validation
                     try:
                         logger.info(f"{self.name} attempting direct OpenAI structured output fallback")
                         structured_output = await self._call_structured_output(
@@ -1469,38 +1527,31 @@ class BaseStreamingAgent(StreamingAgent):
             # Disable LiteLLM context_window_fallbacks unless agent opts in
             if not self.config.allow_frontier_fallback:
                 model_settings.setdefault("extra_body", {})["disable_fallbacks"] = True
+
+            self._inject_thinking_settings(model_settings)
             
             # Create agent without tools for pure conversation
             agent_kwargs: Dict[str, Any] = {
                 "model": self.synthesis_model,
                 "system_prompt": self.config.instructions,
+                "model_settings": model_settings if model_settings else None,
             }
             if self.config.output_type is not None:
                 agent_kwargs["output_type"] = self.config.output_type
             agent = Agent(**agent_kwargs)
             
-            # Run agent with context-enriched prompt (pass model_settings at
-            # run-time for highest priority in PydanticAI's merge order)
+            # Stream events in real-time so thinking/content arrive incrementally
             try:
                 t_conv = time.monotonic()
-                result = await agent.run(
-                    prompt_with_context,
-                    deps=context.deps,
+                full_text = await self._stream_llm_events(
+                    agent, prompt_with_context, context, stream, cancel,
                     model_settings=model_settings if model_settings else None,
                 )
                 logger.info(
-                    f"{self.name} conversational LLM call complete",
+                    f"{self.name} conversational LLM streaming complete",
                     extra={"elapsed_ms": round((time.monotonic() - t_conv) * 1000)},
                 )
-                
-                output = result.output
-                if hasattr(output, "model_dump"):
-                    context.tool_results["llm_response"] = json.dumps(output.model_dump())
-                elif isinstance(output, (dict, list)):
-                    context.tool_results["llm_response"] = json.dumps(output)
-                else:
-                    cleaned = _THINK_RE.sub("", str(output)).strip() if isinstance(output, str) else output
-                    context.tool_results["llm_response"] = cleaned
+                context.tool_results["llm_response"] = full_text
                 
             except Exception as e:
                 logger.error(f"Conversational agent error after {round((time.monotonic() - t_conv) * 1000)}ms: {e}", exc_info=True)
@@ -1519,6 +1570,8 @@ class BaseStreamingAgent(StreamingAgent):
         # Disable LiteLLM context_window_fallbacks unless agent opts in
         if not self.config.allow_frontier_fallback:
             model_settings.setdefault("extra_body", {})["disable_fallbacks"] = True
+
+        self._inject_thinking_settings(model_settings)
 
         if context.response_schema:
             model_settings.setdefault("extra_body", {})["response_format"] = {
@@ -1552,27 +1605,19 @@ class BaseStreamingAgent(StreamingAgent):
             }
         )
         
-        # Run agent with context-enriched prompt (pass model_settings at
-        # run-time for highest priority in PydanticAI's merge order)
+        # Stream events in real-time: thinking blocks, tool calls, and
+        # content arrive incrementally instead of waiting for full completion.
         try:
             t_llm = time.monotonic()
-            result = await agent.run(
-                prompt_with_context,
-                deps=context.deps,
+            full_text = await self._stream_llm_events(
+                agent, prompt_with_context, context, stream, cancel,
                 model_settings=model_settings if model_settings else None,
             )
             logger.info(
-                f"{self.name} LLM agent.run() complete",
+                f"{self.name} LLM streaming execution complete",
                 extra={"elapsed_ms": round((time.monotonic() - t_llm) * 1000)},
             )
-            
-            output = result.output
-            if hasattr(output, "model_dump"):
-                context.tool_results["llm_response"] = json.dumps(output.model_dump())
-            elif isinstance(output, (dict, list)):
-                context.tool_results["llm_response"] = json.dumps(output)
-            else:
-                context.tool_results["llm_response"] = output
+            context.tool_results["llm_response"] = full_text
             
         except Exception as e:
             logger.error(
@@ -1585,6 +1630,160 @@ class BaseStreamingAgent(StreamingAgent):
                 message=f"Error: {str(e)}"
             ))
     
+    async def _stream_llm_events(
+        self,
+        agent: Agent,
+        prompt: str,
+        context: "AgentContext",
+        stream: StreamCallback,
+        cancel: asyncio.Event,
+        *,
+        model_settings: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Stream LLM execution events in real-time via run_stream_events().
+
+        Handles thinking blocks (<think> tags), tool calls, and content deltas
+        as they arrive from the model rather than waiting for full completion.
+
+        Returns the final text output (with think tags stripped).
+        """
+        full_text = ""
+        think_buffer = ""
+        in_think = False
+        has_output_type = self.config.output_type is not None
+
+        async for event in agent.run_stream_events(
+            prompt,
+            deps=context.deps,
+            model_settings=model_settings,
+        ):
+            if cancel.is_set():
+                break
+
+            if isinstance(event, PartStartEvent):
+                part = event.part
+                if hasattr(part, "part_kind"):
+                    if part.part_kind == "tool-call":
+                        tool_name = getattr(part, "tool_name", "tool")
+                        await stream(tool_start(
+                            source=tool_name,
+                            message=f"Using {tool_name}...",
+                        ))
+
+            elif isinstance(event, PartDeltaEvent):
+                delta = event.delta
+                if isinstance(delta, TextPartDelta):
+                    chunk = delta.content_delta
+                    if not chunk:
+                        continue
+
+                    # Handle <think> blocks in real-time
+                    combined = (think_buffer if in_think else full_text) + chunk
+
+                    if in_think:
+                        think_buffer += chunk
+                        close_idx = think_buffer.find("</think>")
+                        if close_idx != -1:
+                            think_content = think_buffer[:close_idx].strip()
+                            if think_content:
+                                await stream(thought(
+                                    source=self.name,
+                                    message=think_content,
+                                    data={"phase": "model_reasoning", "streaming": True},
+                                ))
+                            remainder = think_buffer[close_idx + len("</think>"):]
+                            think_buffer = ""
+                            in_think = False
+                            if remainder.strip():
+                                full_text += remainder
+                                await stream(content(
+                                    source=self.name,
+                                    message=remainder,
+                                    data={"streaming": True, "partial": True},
+                                ))
+                        else:
+                            # Still inside think block, stream thought content
+                            # incrementally for UX responsiveness
+                            if len(think_buffer) > 50:
+                                await stream(thought(
+                                    source=self.name,
+                                    message=think_buffer,
+                                    data={"phase": "model_reasoning", "streaming": True, "partial": True},
+                                ))
+                                think_buffer = ""
+                    else:
+                        open_idx = chunk.find("<think>")
+                        if open_idx != -1:
+                            before = chunk[:open_idx]
+                            if before:
+                                full_text += before
+                                await stream(content(
+                                    source=self.name,
+                                    message=before,
+                                    data={"streaming": True, "partial": True},
+                                ))
+                            in_think = True
+                            think_buffer = chunk[open_idx + len("<think>"):]
+                            close_idx = think_buffer.find("</think>")
+                            if close_idx != -1:
+                                think_content = think_buffer[:close_idx].strip()
+                                if think_content:
+                                    await stream(thought(
+                                        source=self.name,
+                                        message=think_content,
+                                        data={"phase": "model_reasoning", "streaming": True},
+                                    ))
+                                remainder = think_buffer[close_idx + len("</think>"):]
+                                think_buffer = ""
+                                in_think = False
+                                if remainder.strip():
+                                    full_text += remainder
+                                    await stream(content(
+                                        source=self.name,
+                                        message=remainder,
+                                        data={"streaming": True, "partial": True},
+                                    ))
+                        else:
+                            full_text += chunk
+                            if not has_output_type:
+                                await stream(content(
+                                    source=self.name,
+                                    message=chunk,
+                                    data={"streaming": True, "partial": True},
+                                ))
+
+            elif isinstance(event, FunctionToolResultEvent):
+                tool_name = getattr(event.tool_call_part, "tool_name", "tool")
+                result_str = str(event.result.content) if hasattr(event.result, "content") else str(event.result)
+                context.tool_results[tool_name] = result_str
+                await stream(tool_result(
+                    source=tool_name,
+                    message=result_str[:500],
+                    data={"result": result_str[:2000]},
+                ))
+
+            elif isinstance(event, AgentRunResultEvent):
+                output = event.result.output
+                if has_output_type:
+                    if hasattr(output, "model_dump"):
+                        full_text = json.dumps(output.model_dump())
+                    elif isinstance(output, (dict, list)):
+                        full_text = json.dumps(output)
+                    else:
+                        full_text = str(output) if output else ""
+
+        # Flush any remaining think buffer
+        if think_buffer.strip():
+            await stream(thought(
+                source=self.name,
+                message=think_buffer.strip(),
+                data={"phase": "model_reasoning", "streaming": True},
+            ))
+
+        # Clean up any leftover think tags in the final text
+        final = _THINK_RE.sub("", full_text).strip()
+        return final
+
     async def _run_native_structured_output(
         self,
         query: str,
@@ -1742,6 +1941,9 @@ class BaseStreamingAgent(StreamingAgent):
             "response_format": {
                 "type": "json_schema",
                 "json_schema": response_schema,
+            },
+            "extra_body": {
+                "chat_template_kwargs": {"enable_thinking": False},
             },
         }
 
@@ -1942,35 +2144,43 @@ class BaseStreamingAgent(StreamingAgent):
             ))
             return "I couldn't find any relevant information."
         
-        # For LLM_DRIVEN, return the LLM's response directly
+        # For LLM_DRIVEN, the response was already streamed incrementally
+        # via _stream_llm_events — just return the collected text.
         if "llm_response" in context.tool_results:
-            response = str(context.tool_results["llm_response"])
-            await stream(content(source=self.name, message=response))
-            return response
+            return str(context.tool_results["llm_response"])
         
         # Build synthesis context
+        SYNTHESIS_TIMEOUT_SECONDS = 90
         synthesis_context = self._build_synthesis_context(query, context)
         
+        await stream(progress(
+            source=self.name,
+            message="Generating response...",
+            data={"phase": "synthesis"},
+        ))
         await stream(thought(
             source=self.name,
             message="Synthesizing answer from results..."
         ))
         
         try:
-            # Run synthesis with streaming
-            full_output = ""
-            
-            async with self.synthesis_agent.run_stream(synthesis_context) as result:
-                async for chunk in result.stream_text(delta=True):
-                    if cancel.is_set():
-                        break
-                    
-                    full_output += chunk
-                    await stream(content(
-                        source=self.name,
-                        message=chunk,
-                        data={"streaming": True, "partial": True}
-                    ))
+            async def _run_synthesis():
+                full_output = ""
+                async with self.synthesis_agent.run_stream(synthesis_context) as result:
+                    async for chunk in result.stream_text(delta=True):
+                        if cancel.is_set():
+                            break
+                        full_output += chunk
+                        await stream(content(
+                            source=self.name,
+                            message=chunk,
+                            data={"streaming": True, "partial": True}
+                        ))
+                return full_output
+
+            full_output = await asyncio.wait_for(
+                _run_synthesis(), timeout=SYNTHESIS_TIMEOUT_SECONDS
+            )
             
             # Send completion marker
             await stream(content(
@@ -1984,6 +2194,16 @@ class BaseStreamingAgent(StreamingAgent):
             ))
             
             return full_output.strip()
+
+        except asyncio.TimeoutError:
+            logger.error(f"Synthesis timed out after {SYNTHESIS_TIMEOUT_SECONDS}s")
+            await stream(error(
+                source=self.name,
+                message=f"Response generation timed out after {SYNTHESIS_TIMEOUT_SECONDS}s"
+            ))
+            fallback = self._build_fallback_response(query, context)
+            await stream(content(source=self.name, message=fallback))
+            return fallback
             
         except Exception as e:
             logger.error(f"Synthesis error: {e}", exc_info=True)

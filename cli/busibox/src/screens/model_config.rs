@@ -322,7 +322,10 @@ fn render_tier_details(f: &mut Frame, app: &App, area: Rect, backend: Option<&cr
         .join("model_registry.yml");
     let recommendation = if config_path.exists() {
         let backend_val = backend.cloned().unwrap_or(crate::modules::hardware::LlmBackend::Mlx);
-        ModelRecommendation::from_config(&config_path, selected_tier, &backend_val).ok()
+        let env = app.active_profile()
+            .map(|(_, p)| p.environment.as_str())
+            .unwrap_or("development");
+        ModelRecommendation::from_config(&config_path, selected_tier, &backend_val, env).ok()
     } else {
         None
     };
@@ -606,7 +609,10 @@ pub fn load_recommendations(app: &mut App) {
         return;
     }
 
-    match ModelRecommendation::from_config(&config_path, hw.memory_tier, &hw.llm_backend) {
+    let env = app.active_profile()
+        .map(|(_, p)| p.environment.as_str())
+        .unwrap_or("development");
+    match ModelRecommendation::from_config(&config_path, hw.memory_tier, &hw.llm_backend, env) {
         Ok(rec) => app.model_recommendation = Some(rec),
         Err(e) => {
             app.set_message(

@@ -361,9 +361,12 @@ fn render_tier_details_overlay(
         .join("group_vars")
         .join("all")
         .join("model_registry.yml");
+    let environment = app.active_profile()
+        .map(|(_, p)| p.environment.as_str())
+        .unwrap_or("development");
     let recommendation = config_path
         .exists()
-        .then(|| ModelRecommendation::from_config(&config_path, selected_tier, backend).ok())
+        .then(|| ModelRecommendation::from_config(&config_path, selected_tier, backend, environment).ok())
         .flatten();
 
     let mut lines: Vec<Line> = Vec::new();

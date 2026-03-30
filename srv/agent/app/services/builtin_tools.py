@@ -53,10 +53,10 @@ BUILTIN_TOOL_METADATA = {
     },
     "document_search_tool": {
         "name": "document_search",
-        "description": "Search through user documents to find relevant information using semantic, keyword, or hybrid search.",
+        "description": "Search through user documents to find relevant information using semantic, keyword, or hybrid search. Results are filtered by relevancy score.",
         "entrypoint": "app.tools.document_search_tool:search_documents",
         "scopes": ["search:read"],
-        "version": 1,
+        "version": 2,
         "schema": {
             "input": {
                 "type": "object",
@@ -67,8 +67,13 @@ BUILTIN_TOOL_METADATA = {
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of results (default 5, max 50)",
-                        "default": 5
+                        "description": "Maximum number of results (default 10, max 50)",
+                        "default": 10
+                    },
+                    "min_score": {
+                        "type": "number",
+                        "description": "Minimum relevancy score threshold (0-1, default 0.3). Results below this score are excluded.",
+                        "default": 0.3
                     },
                     "mode": {
                         "type": "string",
@@ -78,6 +83,11 @@ BUILTIN_TOOL_METADATA = {
                     "file_ids": {
                         "type": "array",
                         "description": "Optional list of file IDs to filter"
+                    },
+                    "expand_graph": {
+                        "type": "boolean",
+                        "description": "Expand graph relationships for richer context (adds latency, default false)",
+                        "default": False
                     }
                 },
                 "required": ["query"]
@@ -797,164 +807,57 @@ BUILTIN_TOOL_METADATA = {
             }
         }
     },
-    # Workforce-specific tools (busibox-workforce app)
-    "workforce_search_employees_tool": {
-        "name": "workforce_search_employees",
-        "description": "Search and filter workforce employees using HR-friendly parameters (department, division, status, type, name/title search, hire date range).",
-        "entrypoint": "app.tools.workforce_tool:workforce_search_employees",
+    # Aggregation and facets tools
+    "aggregate_data_tool": {
+        "name": "aggregate_data",
+        "description": "Run aggregation queries (count, sum, avg, min, max) on a data document, optionally grouped by fields. Use for analytics, summaries, and dashboards.",
+        "entrypoint": "app.tools.data_tool:aggregate_data",
         "scopes": ["data:read"],
         "version": 1,
         "schema": {
             "input": {
                 "type": "object",
                 "properties": {
-                    "document_id": {"type": "string", "description": "Employee data document UUID (schemaDocumentId)"},
-                    "departments": {"type": "array", "description": "Filter by department names"},
-                    "divisions": {"type": "array", "description": "Filter by division names"},
-                    "statuses": {"type": "array", "description": "Filter by status (Active, Terminated, Leave, Retired)"},
-                    "employee_types": {"type": "array", "description": "Filter by type (Full-Time, Part-Time, Contract, Intern, Temporary)"},
-                    "search_term": {"type": "string", "description": "Search across firstName, lastName, and title"},
-                    "hire_date_from": {"type": "string", "description": "Hire date lower bound (ISO format)"},
-                    "hire_date_to": {"type": "string", "description": "Hire date upper bound (ISO format)"},
-                    "limit": {"type": "integer", "description": "Max records (default 25, max 100)", "default": 25},
-                    "offset": {"type": "integer", "description": "Pagination offset", "default": 0}
+                    "document_id": {"type": "string", "description": "UUID of the data document"},
+                    "aggregate": {"type": "object", "description": "Aggregation functions, e.g., {\"count\": \"*\", \"avg\": \"salary\"}"},
+                    "group_by": {"type": "array", "description": "Fields to group by, e.g., [\"department\", \"status\"]"},
+                    "where": {"type": "object", "description": "Optional filter conditions (same syntax as query_data)"}
                 },
-                "required": ["document_id"]
+                "required": ["document_id", "aggregate"]
             },
             "output": {
                 "type": "object",
                 "properties": {
                     "success": {"type": "boolean"},
-                    "employees": {"type": "array", "description": "Matching employee records"},
-                    "total": {"type": "integer", "description": "Total matching (before limit)"},
-                    "limit": {"type": "integer"},
-                    "offset": {"type": "integer"},
+                    "results": {"type": "array", "description": "Aggregation results with group values and computed metrics"},
+                    "total_groups": {"type": "integer", "description": "Number of groups returned"},
                     "error": {"type": "string"}
                 }
             }
         }
     },
-    "workforce_get_stats_tool": {
-        "name": "workforce_get_stats",
-        "description": "Compute workforce analytics: headcount, turnover rate, hires/departures by month, department/division breakdowns, tenure, and status/type counts.",
-        "entrypoint": "app.tools.workforce_tool:workforce_get_stats",
+    "get_facets_tool": {
+        "name": "get_facets",
+        "description": "Get distinct values and counts for specified fields in a data document. Useful for discovering valid filter values and building category breakdowns.",
+        "entrypoint": "app.tools.data_tool:get_facets",
         "scopes": ["data:read"],
         "version": 1,
         "schema": {
             "input": {
                 "type": "object",
                 "properties": {
-                    "document_id": {"type": "string", "description": "Employee data document UUID (schemaDocumentId)"},
-                    "months_back": {"type": "integer", "description": "Trailing months to include (default 12)", "default": 12},
-                    "departments": {"type": "array", "description": "Optional department filter"},
-                    "divisions": {"type": "array", "description": "Optional division filter"},
-                    "statuses": {"type": "array", "description": "Optional status filter"},
-                    "employee_types": {"type": "array", "description": "Optional employee type filter"}
+                    "document_id": {"type": "string", "description": "UUID of the data document"},
+                    "fields": {"type": "array", "description": "Field names to get facets for, e.g., [\"department\", \"status\"]"},
+                    "where": {"type": "object", "description": "Optional filter to scope facet computation"}
                 },
-                "required": ["document_id"]
+                "required": ["document_id", "fields"]
             },
             "output": {
                 "type": "object",
                 "properties": {
                     "success": {"type": "boolean"},
-                    "total_headcount": {"type": "integer", "description": "Active employees"},
-                    "total_employees": {"type": "integer", "description": "All employees (any status)"},
-                    "turnover_rate": {"type": "number", "description": "Turnover rate percentage"},
-                    "net_growth": {"type": "integer", "description": "Net hires minus departures"},
-                    "average_tenure_years": {"type": "number"},
-                    "hires_by_month": {"type": "array"},
-                    "departures_by_month": {"type": "array"},
-                    "employees_by_department": {"type": "array"},
-                    "employees_by_division": {"type": "array"},
-                    "status_breakdown": {"type": "object"},
-                    "type_breakdown": {"type": "object"},
-                    "error": {"type": "string"}
-                }
-            }
-        }
-    },
-    "workforce_get_employee_tool": {
-        "name": "workforce_get_employee",
-        "description": "Get a single employee's full profile and their related check-ins/exit interviews.",
-        "entrypoint": "app.tools.workforce_tool:workforce_get_employee",
-        "scopes": ["data:read"],
-        "version": 1,
-        "schema": {
-            "input": {
-                "type": "object",
-                "properties": {
-                    "document_id": {"type": "string", "description": "Employee data document UUID (schemaDocumentId)"},
-                    "employee_id": {"type": "string", "description": "Employee record id"},
-                    "checkins_document_id": {"type": "string", "description": "Check-ins document UUID (checkinsDocumentId)"}
-                },
-                "required": ["document_id", "employee_id"]
-            },
-            "output": {
-                "type": "object",
-                "properties": {
-                    "success": {"type": "boolean"},
-                    "employee": {"type": "object", "description": "Full employee record"},
-                    "checkins": {"type": "array", "description": "Related check-ins"},
-                    "checkin_count": {"type": "integer"},
-                    "error": {"type": "string"}
-                }
-            }
-        }
-    },
-    "workforce_search_checkins_tool": {
-        "name": "workforce_search_checkins",
-        "description": "Search check-in and exit interview records with workforce-aware filters (employee, type, status).",
-        "entrypoint": "app.tools.workforce_tool:workforce_search_checkins",
-        "scopes": ["data:read"],
-        "version": 1,
-        "schema": {
-            "input": {
-                "type": "object",
-                "properties": {
-                    "document_id": {"type": "string", "description": "Check-ins data document UUID (checkinsDocumentId)"},
-                    "employee_id": {"type": "string", "description": "Filter by employee record id"},
-                    "checkin_type": {"type": "string", "description": "Filter: checkin or exit-interview"},
-                    "status": {"type": "string", "description": "Filter: scheduled, invited, survey-complete, interview-complete, summarized, shared"},
-                    "limit": {"type": "integer", "description": "Max records (default 20, max 100)", "default": 20}
-                },
-                "required": ["document_id"]
-            },
-            "output": {
-                "type": "object",
-                "properties": {
-                    "success": {"type": "boolean"},
-                    "checkins": {"type": "array", "description": "Matching check-in records"},
-                    "total": {"type": "integer"},
-                    "error": {"type": "string"}
-                }
-            }
-        }
-    },
-    "workforce_get_facets_tool": {
-        "name": "workforce_get_facets",
-        "description": "Get available filter values (departments, divisions, statuses, employee types, pay groups, years) for the workforce dataset.",
-        "entrypoint": "app.tools.workforce_tool:workforce_get_facets",
-        "scopes": ["data:read"],
-        "version": 1,
-        "schema": {
-            "input": {
-                "type": "object",
-                "properties": {
-                    "document_id": {"type": "string", "description": "Employee data document UUID (schemaDocumentId)"}
-                },
-                "required": ["document_id"]
-            },
-            "output": {
-                "type": "object",
-                "properties": {
-                    "success": {"type": "boolean"},
-                    "departments": {"type": "array"},
-                    "divisions": {"type": "array"},
-                    "employee_types": {"type": "array"},
-                    "statuses": {"type": "array"},
-                    "pay_groups": {"type": "array"},
-                    "years": {"type": "array"},
-                    "total_employees": {"type": "integer"},
+                    "facets": {"type": "object", "description": "Map of field name to [{value, count}] entries"},
+                    "total_records": {"type": "integer"},
                     "error": {"type": "string"}
                 }
             }

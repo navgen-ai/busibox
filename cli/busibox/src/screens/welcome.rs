@@ -363,10 +363,22 @@ fn render_docker_proxmox_system_info(app: &App) -> Vec<Line<'_>> {
                 ("○", theme::warning())
             };
             let short_name = entry.name.rsplit('/').next().unwrap_or(&entry.name);
+            let device_tag = match entry.provider.to_lowercase().as_str() {
+                "mlx" => " MLX",
+                "vllm" | "gpu" => " GPU",
+                "fastembed" | "local" => " cpu",
+                p if !p.is_empty() => " cpu",
+                _ => "",
+            };
+            let device_style = match entry.provider.to_lowercase().as_str() {
+                "mlx" | "vllm" | "gpu" => theme::highlight(),
+                _ => theme::dim(),
+            };
             info_lines.push(Line::from(vec![
                 Span::styled(format!("  {icon} "), style),
                 Span::styled(format!("{}: ", entry.role), theme::muted()),
                 Span::styled(short_name, theme::normal()),
+                Span::styled(device_tag, device_style),
             ]));
         }
         let cached_count = app.model_cache_status.iter().filter(|e| e.cached).count();
@@ -611,6 +623,74 @@ fn render_status_panel(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("  · ", theme::dim()),
                 Span::styled(cpu_names.join(", "), theme::dim()),
                 Span::styled(" (cpu)", theme::dim()),
+            ]));
+        }
+    }
+
+    // Service models: embedding, reranking, TTS, STT, image
+    // Derive live status from the health check results for their host services.
+    let service_models: Vec<&ModelCacheEntry> = app
+        .model_cache_status
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.role.as_str(),
+                "embed" | "reranking" | "voice" | "transcribe" | "image"
+            )
+        })
+        .collect();
+
+    if !service_models.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("Service Models", theme::heading())));
+
+        for entry in &service_models {
+            let short_name = entry.name.rsplit('/').next().unwrap_or(&entry.name);
+            let short_name = if short_name.len() > 24 {
+                format!("{}…", &short_name[..23])
+            } else {
+                short_name.to_string()
+            };
+
+            let device_tag = match entry.provider.to_lowercase().as_str() {
+                "mlx" => " MLX",
+                "vllm" | "gpu" => " GPU",
+                _ => " cpu",
+            };
+            let device_style = match entry.provider.to_lowercase().as_str() {
+                "mlx" | "vllm" | "gpu" => theme::highlight(),
+                _ => theme::dim(),
+            };
+
+            // Map model role to the service that hosts it for live status
+            let host_service = match entry.role.as_str() {
+                "embed" => Some("embedding"),
+                "reranking" => Some("search"),
+                "voice" | "transcribe" | "image" => Some("litellm"),
+                _ => None,
+            };
+            let (status_str, status_style) = match host_service {
+                Some(svc) => {
+                    match app.health_results.iter().find(|r| r.name == svc) {
+                        Some(r) => match &r.status {
+                            HealthStatus::Healthy => (" [active]".to_string(), theme::success()),
+                            HealthStatus::Checking => (" [checking]".to_string(), theme::warning()),
+                            HealthStatus::Unhealthy => (" [degraded]".to_string(), theme::warning()),
+                            HealthStatus::Down => (" [offline]".to_string(), theme::error()),
+                        },
+                        None if app.health_check_running => (" [checking]".to_string(), theme::warning()),
+                        None => (" [?]".to_string(), theme::dim()),
+                    }
+                }
+                None => (String::new(), theme::dim()),
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled("  · ", theme::dim()),
+                Span::styled(format!("{}: ", entry.role), theme::muted()),
+                Span::styled(short_name, theme::normal()),
+                Span::styled(device_tag, device_style),
+                Span::styled(status_str, status_style),
             ]));
         }
     }
@@ -1405,13 +1485,23 @@ pub fn check_model_cache(app: &mut App) {
         .join("all")
         .join("model_registry.yml");
 
-    let rec = match ModelRecommendation::from_config(&config_path, tier, backend) {
+    let environment = profile.environment.as_str();
+
+    let rec = match ModelRecommendation::from_config(&config_path, tier, backend, environment) {
         Ok(r) => r,
         Err(_) => {
             app.model_cache_check_state = ModelCacheCheckState::Failed;
             return;
         }
     };
+
+    // Build a provider lookup from the recommendation so we can attach it to cache entries
+    let provider_map: std::collections::HashMap<String, String> = rec
+        .models()
+        .iter()
+        .filter(|m| !m.name.is_empty())
+        .map(|m| (m.name.clone(), m.provider.clone()))
+        .collect();
 
     if profile.remote {
         let host = match profile.effective_host() {
@@ -1436,11 +1526,15 @@ pub fn check_model_cache(app: &mut App) {
         let results = models::check_remote_model_cache(&ssh, &model_list);
         app.model_cache_status = results
             .into_iter()
-            .map(|(name, role, cached)| ModelCacheEntry {
-                name,
-                role,
-                cached,
-                downloading: false,
+            .map(|(name, role, cached)| {
+                let provider = provider_map.get(&name).cloned().unwrap_or_default();
+                ModelCacheEntry {
+                    name,
+                    role,
+                    cached,
+                    downloading: false,
+                    provider,
+                }
             })
             .collect();
     } else {
@@ -1453,6 +1547,7 @@ pub fn check_model_cache(app: &mut App) {
                     role: m.role.clone(),
                     cached,
                     downloading: false,
+                    provider: m.provider.clone(),
                 });
             }
         }

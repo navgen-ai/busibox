@@ -361,9 +361,6 @@ fn main() -> Result<()> {
                                 app.models_manage_config_undeployed = !deployed;
                                 if deployed {
                                     app.models_manage_is_custom = true;
-                                    app.models_manage_current_tier = Some("custom".to_string());
-                                    app.models_manage_tier_selected =
-                                        screens::models_manage::CUSTOM_TIER_INDEX;
                                     if let Ok(profiles) =
                                         modules::profile::load_profiles(&app.repo_root)
                                     {
@@ -1175,7 +1172,8 @@ fn perform_mkcert_setup(app: &mut App) {
 }
 
 /// Switch to the ValidateSecrets screen and spawn a background worker to
-/// decrypt + parse the local (and optionally remote) vault file.
+/// decrypt + parse the local (and optionally remote) vault file, then run
+/// live checks against running services.
 fn perform_validate_secrets(app: &mut App) {
     use crate::app::MessageKind;
 
@@ -1197,6 +1195,8 @@ fn perform_validate_secrets(app: &mut App) {
 
     let vault_prefix = resolve_vault_prefix(&profile_name, &profile);
     let is_remote = profile.remote;
+    let backend = profile.backend.clone();
+    let environment = profile.environment.clone();
     let vault_file = format!("vault.{vault_prefix}.yml");
 
     // Reset screen state
@@ -1222,8 +1222,9 @@ fn perform_validate_secrets(app: &mut App) {
 
     std::thread::spawn(move || {
         use crate::modules::remote::{
-            decrypt_local_vault, decrypt_remote_vault, parse_vault_content, KeyState,
-            SecretKeyStatus,
+            decrypt_local_vault, decrypt_remote_vault,
+            parse_vault_content_with_values, KeyState, LiveState,
+            SecretKeyStatus, live_check_docker, live_check_remote_docker,
         };
 
         // Decrypt local vault
@@ -1247,7 +1248,7 @@ fn perform_validate_secrets(app: &mut App) {
             }
         };
 
-        let local_keys = parse_vault_content(&local_content);
+        let (local_keys, vault_values) = parse_vault_content_with_values(&local_content);
 
         // Decrypt remote vault if applicable
         let (remote_keys, remote_error) = if is_remote {
@@ -1262,7 +1263,7 @@ fn perform_validate_secrets(app: &mut App) {
                     &vault_password,
                 ) {
                     Ok(content) => {
-                        let keys = parse_vault_content(&content);
+                        let (keys, _) = parse_vault_content_with_values(&content);
                         (Some(keys), None)
                     }
                     Err(e) => (None, Some(format!("{e}"))),
@@ -1274,7 +1275,23 @@ fn perform_validate_secrets(app: &mut App) {
             (None, None)
         };
 
-        // Merge local + remote into SecretKeyStatus entries
+        // Run live checks against running services
+        let container_prefix = busibox_core::deploy::env_to_prefix(&environment);
+        let live_results = if backend == "docker" && !is_remote {
+            live_check_docker(&container_prefix, &vault_values)
+        } else if backend == "docker" && is_remote {
+            if let (Some(host), Some(key)) = (&remote_host, &remote_key) {
+                let user = remote_user.as_deref().unwrap_or("root");
+                let ssh = crate::modules::ssh::SshConnection::new(host, user, key);
+                live_check_remote_docker(&ssh, &container_prefix, &vault_values)
+            } else {
+                std::collections::HashMap::new()
+            }
+        } else {
+            std::collections::HashMap::new()
+        };
+
+        // Merge local + remote + live into SecretKeyStatus entries
         let results: Vec<SecretKeyStatus> = local_keys
             .iter()
             .map(|(key_path, local_state)| {
@@ -1291,6 +1308,11 @@ fn perform_validate_secrets(app: &mut App) {
                     KeyState::NotChecked
                 };
 
+                let live_state = live_results
+                    .get(key_path)
+                    .cloned()
+                    .unwrap_or(LiveState::Skipped);
+
                 let required = crate::modules::remote::REQUIRED_VAULT_KEYS
                     .iter()
                     .any(|rk| *rk == key_path);
@@ -1300,6 +1322,7 @@ fn perform_validate_secrets(app: &mut App) {
                     required,
                     local: local_state.clone(),
                     remote: remote_state,
+                    live: live_state,
                 }
             })
             .collect();

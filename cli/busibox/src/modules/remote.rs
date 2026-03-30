@@ -1133,13 +1133,33 @@ impl KeyState {
     }
 }
 
-/// Per-key validation result with local and optional remote status.
+/// Result of a live check against a running service.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub enum LiveState {
+    NotChecked,
+    Pending,
+    Pass,
+    Fail(String),
+    EnvMatch,
+    EnvMismatch,
+    Skipped,
+}
+
+impl LiveState {
+    pub fn is_bad(&self) -> bool {
+        matches!(self, LiveState::Fail(_) | LiveState::EnvMismatch)
+    }
+}
+
+/// Per-key validation result with local, optional remote, and live status.
 #[derive(Debug, Clone)]
 pub struct SecretKeyStatus {
     pub key_path: String,
     pub required: bool,
     pub local: KeyState,
     pub remote: KeyState,
+    pub live: LiveState,
 }
 
 /// Classify a single trimmed, unquoted value string.
@@ -1251,6 +1271,395 @@ pub fn parse_vault_content(content: &str) -> Vec<(String, KeyState)> {
     }
 
     found_keys
+}
+
+/// Like `parse_vault_content`, but also returns the raw decrypted values
+/// for use in live service checks.
+pub fn parse_vault_content_with_values(
+    content: &str,
+) -> (Vec<(String, KeyState)>, std::collections::HashMap<String, String>) {
+    let keys = parse_vault_content(content);
+    let mut values: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    let mut path_stack: Vec<(usize, String)> = Vec::new();
+    let mut in_secrets = false;
+    let mut secrets_indent = 0usize;
+
+    let mut lines = content.lines().peekable();
+    while let Some(line) = lines.peek() {
+        let trimmed = line.trim();
+        if trimmed == "secrets:" || trimmed.starts_with("secrets:") {
+            secrets_indent = line.len() - line.trim_start().len();
+            in_secrets = true;
+            lines.next();
+            break;
+        }
+        lines.next();
+    }
+
+    if in_secrets {
+        for line in lines {
+            let stripped = line.trim_start();
+            if stripped.is_empty() || stripped.starts_with('#') {
+                continue;
+            }
+            let indent = line.len() - stripped.len();
+            if indent <= secrets_indent && !stripped.is_empty() {
+                break;
+            }
+
+            if let Some(colon_pos) = stripped.find(':') {
+                let key = stripped[..colon_pos].trim();
+                let value_part = stripped[colon_pos + 1..].trim();
+
+                while let Some((last_indent, _)) = path_stack.last() {
+                    if *last_indent >= indent {
+                        path_stack.pop();
+                    } else {
+                        break;
+                    }
+                }
+
+                if value_part.is_empty() {
+                    path_stack.push((indent, key.to_string()));
+                } else {
+                    let mut full_key = String::new();
+                    for (_, part) in &path_stack {
+                        full_key.push_str(part);
+                        full_key.push('.');
+                    }
+                    full_key.push_str(key);
+
+                    let val = value_part.trim_matches(|c| c == '\'' || c == '"');
+                    values.insert(full_key, val.to_string());
+                }
+            }
+        }
+    }
+
+    (keys, values)
+}
+
+// ---------------------------------------------------------------------------
+// Live service checks
+// ---------------------------------------------------------------------------
+
+/// Mapping from vault key path to (container_suffix, env_var_name) for env-var comparison checks.
+///
+/// Each tuple: (vault_key, container_suffix, env_var_name).
+/// The vault_key is the dot-path under `secrets:` in the vault YAML.
+/// Container names are formed as `{prefix}-{container_suffix}`.
+///
+/// Fallback keys: Ansible's shared_secrets.yml resolves litellm keys with a
+/// fallback chain (litellm_master_key → litellm_api_key). The live_check
+/// functions handle this by trying fallback vault keys when the primary
+/// doesn't match.
+const ENV_VAR_CHECKS: &[(&str, &str, &str)] = &[
+    ("authz_master_key", "authz-api", "AUTHZ_MASTER_KEY"),
+    ("litellm_master_key", "litellm", "LITELLM_MASTER_KEY"),
+    ("litellm_salt_key", "litellm", "LITELLM_SALT_KEY"),
+    ("jwt_secret", "deploy-api", "SSO_JWT_SECRET"),
+    ("encryption_key", "deploy-api", "CONFIG_ENCRYPTION_KEY"),
+];
+
+/// Vault key fallback chains mirroring Ansible's shared_secrets.yml logic.
+/// Each entry: (primary_vault_key, &[fallback_vault_keys]).
+const VAULT_KEY_FALLBACKS: &[(&str, &[&str])] = &[
+    ("litellm_master_key", &["litellm_api_key"]),
+    ("litellm_salt_key", &["litellm_master_key", "litellm_api_key"]),
+    ("encryption_key", &["config_api.encryption_key"]),
+];
+
+/// Run a shell command and return (success, stderr/stdout).
+fn run_cmd(cmd: &str, args: &[&str]) -> (bool, String) {
+    match Command::new(cmd).args(args).output() {
+        Ok(output) => {
+            let combined = if output.status.success() {
+                String::from_utf8_lossy(&output.stdout).to_string()
+            } else {
+                let out = String::from_utf8_lossy(&output.stdout);
+                let err = String::from_utf8_lossy(&output.stderr);
+                format!("{}{}", out, err)
+            };
+            (output.status.success(), combined.trim().to_string())
+        }
+        Err(e) => (false, format!("command failed: {e}")),
+    }
+}
+
+/// Get a single environment variable from a running Docker container.
+fn docker_get_env(container: &str, var_name: &str) -> Option<String> {
+    let format_arg = format!("{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}");
+    let (ok, output) = run_cmd(
+        "docker",
+        &["inspect", container, "--format", &format_arg],
+    );
+    if !ok {
+        return None;
+    }
+    for line in output.lines() {
+        if let Some(val) = line.strip_prefix(&format!("{var_name}=")) {
+            return Some(val.to_string());
+        }
+    }
+    None
+}
+
+/// Check if a Docker container is running.
+fn docker_container_running(container: &str) -> bool {
+    let (ok, output) = run_cmd(
+        "docker",
+        &["inspect", container, "--format", "{{.State.Running}}"],
+    );
+    ok && output.trim() == "true"
+}
+
+/// Resolve a vault value with Ansible-style fallback chains.
+/// Returns the value for the primary key, or the first matching fallback.
+fn resolve_vault_value<'a>(
+    primary_key: &str,
+    vault_values: &'a std::collections::HashMap<String, String>,
+) -> Option<&'a String> {
+    if let Some(val) = vault_values.get(primary_key) {
+        return Some(val);
+    }
+    for (key, fallbacks) in VAULT_KEY_FALLBACKS {
+        if *key == primary_key {
+            for fb in *fallbacks {
+                if let Some(val) = vault_values.get(*fb) {
+                    return Some(val);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Run live checks against local Docker containers.
+pub fn live_check_docker(
+    container_prefix: &str,
+    vault_values: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, LiveState> {
+    let mut results = std::collections::HashMap::new();
+
+    // --- PostgreSQL: attempt actual login ---
+    if let Some(pg_pass) = vault_values.get("postgresql.password") {
+        let container = format!("{container_prefix}-postgres");
+        if !docker_container_running(&container) {
+            results.insert("postgresql.password".into(), LiveState::Fail("container not running".into()));
+        } else {
+            let (ok, output) = run_cmd("docker", &[
+                "exec", "-e", &format!("PGPASSWORD={pg_pass}"),
+                &container, "psql", "-U", "busibox_user", "-d", "agent",
+                "-c", "SELECT 1", "-t", "-A",
+            ]);
+            if ok && output.trim().contains('1') {
+                results.insert("postgresql.password".into(), LiveState::Pass);
+            } else {
+                let reason = if output.contains("authentication failed") {
+                    "auth failed".to_string()
+                } else {
+                    output.chars().take(80).collect()
+                };
+                results.insert("postgresql.password".into(), LiveState::Fail(reason));
+            }
+        }
+    }
+
+    // --- MinIO: attempt actual login ---
+    {
+        let minio_user = vault_values.get("minio.root_user");
+        let minio_pass = vault_values.get("minio.root_password");
+        if let (Some(user), Some(pass)) = (minio_user, minio_pass) {
+            let container = format!("{container_prefix}-minio");
+            if !docker_container_running(&container) {
+                results.insert("minio.root_user".into(), LiveState::Fail("container not running".into()));
+                results.insert("minio.root_password".into(), LiveState::Fail("container not running".into()));
+            } else {
+                let (ok, output) = run_cmd("docker", &[
+                    "exec", &container, "mc", "alias", "set", "livecheck",
+                    "http://localhost:9000", user, pass,
+                ]);
+                if ok {
+                    results.insert("minio.root_user".into(), LiveState::Pass);
+                    results.insert("minio.root_password".into(), LiveState::Pass);
+                } else {
+                    let reason = if output.contains("Access Denied") || output.contains("AccessDenied") {
+                        "auth failed".to_string()
+                    } else {
+                        output.chars().take(80).collect()
+                    };
+                    results.insert("minio.root_user".into(), LiveState::Fail(reason.clone()));
+                    results.insert("minio.root_password".into(), LiveState::Fail(reason));
+                }
+                let _ = run_cmd("docker", &[
+                    "exec", &container, "mc", "alias", "remove", "livecheck",
+                ]);
+            }
+        }
+    }
+
+    // --- Neo4j: attempt actual login ---
+    if let Some(neo4j_pass) = vault_values.get("neo4j.password") {
+        let container = format!("{container_prefix}-neo4j");
+        if !docker_container_running(&container) {
+            results.insert("neo4j.password".into(), LiveState::Fail("container not running".into()));
+        } else {
+            let (ok, output) = run_cmd("docker", &[
+                "exec", &container, "cypher-shell",
+                "-u", "neo4j", "-p", neo4j_pass,
+                "RETURN 1 AS ok",
+            ]);
+            if ok {
+                results.insert("neo4j.password".into(), LiveState::Pass);
+            } else {
+                let reason = if output.contains("authentication") || output.contains("Unauthorized") {
+                    "auth failed".to_string()
+                } else {
+                    output.chars().take(80).collect()
+                };
+                results.insert("neo4j.password".into(), LiveState::Fail(reason));
+            }
+        }
+    }
+
+    // --- Env-var comparison checks ---
+    for (vault_key, container_suffix, env_var) in ENV_VAR_CHECKS {
+        let vault_val = resolve_vault_value(vault_key, vault_values);
+        if let Some(val) = vault_val {
+            let container = format!("{container_prefix}-{container_suffix}");
+            if !docker_container_running(&container) {
+                results.insert(vault_key.to_string(), LiveState::Fail("container not running".into()));
+            } else if let Some(live_val) = docker_get_env(&container, env_var) {
+                if live_val == *val {
+                    results.insert(vault_key.to_string(), LiveState::EnvMatch);
+                } else {
+                    results.insert(vault_key.to_string(), LiveState::EnvMismatch);
+                }
+            } else {
+                results.insert(vault_key.to_string(), LiveState::Fail("env var not found".into()));
+            }
+        }
+    }
+
+    results
+}
+
+/// Run live checks against Docker containers on a remote host via SSH.
+pub fn live_check_remote_docker(
+    ssh: &crate::modules::ssh::SshConnection,
+    container_prefix: &str,
+    vault_values: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, LiveState> {
+    let mut results = std::collections::HashMap::new();
+
+    // Helper: run a command via SSH and return (success, output)
+    let ssh_run = |cmd: &str| -> (bool, String) {
+        match ssh.run(cmd) {
+            Ok(output) => (true, output.trim().to_string()),
+            Err(e) => (false, format!("{e}")),
+        }
+    };
+
+    // --- PostgreSQL ---
+    if let Some(pg_pass) = vault_values.get("postgresql.password") {
+        let escaped = pg_pass.replace('\'', "'\\''");
+        let container = format!("{container_prefix}-postgres");
+        let cmd = format!(
+            "docker exec -e PGPASSWORD='{escaped}' {container} psql -U busibox_user -d agent -c 'SELECT 1' -t -A 2>&1"
+        );
+        let (ok, output) = ssh_run(&cmd);
+        if ok && output.contains('1') {
+            results.insert("postgresql.password".into(), LiveState::Pass);
+        } else if output.contains("No such container") || output.contains("not running") {
+            results.insert("postgresql.password".into(), LiveState::Fail("container not running".into()));
+        } else {
+            let reason = if output.contains("authentication failed") {
+                "auth failed".to_string()
+            } else {
+                output.chars().take(80).collect()
+            };
+            results.insert("postgresql.password".into(), LiveState::Fail(reason));
+        }
+    }
+
+    // --- MinIO ---
+    {
+        let minio_user = vault_values.get("minio.root_user");
+        let minio_pass = vault_values.get("minio.root_password");
+        if let (Some(user), Some(pass)) = (minio_user, minio_pass) {
+            let container = format!("{container_prefix}-minio");
+            let eu = user.replace('\'', "'\\''");
+            let ep = pass.replace('\'', "'\\''");
+            let cmd = format!(
+                "docker exec {container} mc alias set livecheck http://localhost:9000 '{eu}' '{ep}' 2>&1; \
+                 docker exec {container} mc alias remove livecheck 2>/dev/null; true"
+            );
+            let (ok, output) = ssh_run(&cmd);
+            if ok && !output.contains("AccessDenied") && !output.contains("Access Denied") {
+                results.insert("minio.root_user".into(), LiveState::Pass);
+                results.insert("minio.root_password".into(), LiveState::Pass);
+            } else {
+                let reason = if output.contains("No such container") {
+                    "container not running".to_string()
+                } else {
+                    "auth failed".to_string()
+                };
+                results.insert("minio.root_user".into(), LiveState::Fail(reason.clone()));
+                results.insert("minio.root_password".into(), LiveState::Fail(reason));
+            }
+        }
+    }
+
+    // --- Neo4j ---
+    if let Some(neo4j_pass) = vault_values.get("neo4j.password") {
+        let escaped = neo4j_pass.replace('\'', "'\\''");
+        let container = format!("{container_prefix}-neo4j");
+        let cmd = format!(
+            "docker exec {container} cypher-shell -u neo4j -p '{escaped}' 'RETURN 1 AS ok' 2>&1"
+        );
+        let (ok, output) = ssh_run(&cmd);
+        if ok && !output.contains("Unauthorized") && !output.contains("authentication") {
+            results.insert("neo4j.password".into(), LiveState::Pass);
+        } else if output.contains("No such container") || output.contains("not running") {
+            results.insert("neo4j.password".into(), LiveState::Fail("container not running".into()));
+        } else {
+            results.insert("neo4j.password".into(), LiveState::Fail("auth failed".into()));
+        }
+    }
+
+    // --- Env-var comparison checks ---
+    for (vault_key, container_suffix, env_var) in ENV_VAR_CHECKS {
+        let vault_val = resolve_vault_value(vault_key, vault_values);
+        if let Some(val) = vault_val {
+            let container = format!("{container_prefix}-{container_suffix}");
+            let cmd = format!(
+                "docker inspect {container} --format '{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}' 2>&1"
+            );
+            let (ok, output) = ssh_run(&cmd);
+            if !ok || output.contains("No such") {
+                results.insert(vault_key.to_string(), LiveState::Fail("container not running".into()));
+            } else {
+                let prefix_str = format!("{env_var}=");
+                let found = output.lines().find(|l| l.starts_with(&prefix_str));
+                match found {
+                    Some(line) => {
+                        let live_val = &line[prefix_str.len()..];
+                        if live_val == val.as_str() {
+                            results.insert(vault_key.to_string(), LiveState::EnvMatch);
+                        } else {
+                            results.insert(vault_key.to_string(), LiveState::EnvMismatch);
+                        }
+                    }
+                    None => {
+                        results.insert(vault_key.to_string(), LiveState::Fail("env var not found".into()));
+                    }
+                }
+            }
+        }
+    }
+
+    results
 }
 
 /// Decrypt a vault file on a remote host via SSH and return the plaintext.

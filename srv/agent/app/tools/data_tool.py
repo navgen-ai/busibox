@@ -67,6 +67,14 @@ class QueryDataInput(BaseModel):
         default=None,
         description="Sort order, e.g., [{'field': 'name', 'direction': 'asc'}]"
     )
+    aggregate: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Aggregation specification, e.g., {'count': '*', 'avg': 'salary'}. Supported: count, sum, avg, min, max"
+    )
+    group_by: Optional[List[str]] = Field(
+        default=None,
+        description="Fields to group by when aggregating, e.g., ['department', 'status']"
+    )
     limit: int = Field(default=20, ge=1, le=100, description="Max records to return (keep low to avoid context overflow)")
     offset: int = Field(default=0, ge=0, description="Pagination offset")
 
@@ -78,6 +86,57 @@ class QueryDataOutput(BaseModel):
     total: int = Field(default=0, description="Total matching records")
     limit: int = Field(description="Limit used")
     offset: int = Field(description="Offset used")
+    aggregations: Optional[List[Dict[str, Any]]] = Field(default=None, description="Aggregation results when aggregate/group_by used")
+    error: Optional[str] = Field(default=None, description="Error message if failed")
+
+
+class AggregateDataInput(BaseModel):
+    """Input for aggregating data records."""
+    document_id: str = Field(description="UUID of the data document to query")
+    aggregate: Dict[str, str] = Field(
+        description="Aggregation functions to apply, e.g., {'count': '*', 'avg': 'salary', 'sum': 'revenue'}. Supported: count, sum, avg, min, max"
+    )
+    group_by: Optional[List[str]] = Field(
+        default=None,
+        description="Fields to group results by, e.g., ['department', 'status']. Returns one row per group."
+    )
+    where: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Filter conditions (same syntax as query_data)"
+    )
+
+
+class AggregateDataOutput(BaseModel):
+    """Output from aggregating data records."""
+    success: bool = Field(description="Whether aggregation succeeded")
+    results: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Aggregation results. Each item has the group_by field values (if grouped) plus aggregation values."
+    )
+    total_groups: int = Field(default=0, description="Number of groups returned")
+    error: Optional[str] = Field(default=None, description="Error message if failed")
+
+
+class GetFacetsInput(BaseModel):
+    """Input for getting distinct values and counts for fields."""
+    document_id: str = Field(description="UUID of the data document")
+    fields: List[str] = Field(
+        description="Field names to get distinct values for, e.g., ['department', 'status', 'employeeType']"
+    )
+    where: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional filter to scope the facet computation"
+    )
+
+
+class GetFacetsOutput(BaseModel):
+    """Output from getting facets."""
+    success: bool = Field(description="Whether facet retrieval succeeded")
+    facets: Dict[str, List[Dict[str, Any]]] = Field(
+        default_factory=dict,
+        description="Map of field name to list of {value, count} entries, sorted by count descending"
+    )
+    total_records: int = Field(default=0, description="Total records in the document (before filtering)")
     error: Optional[str] = Field(default=None, description="Error message if failed")
 
 
@@ -244,13 +303,15 @@ async def query_data(
     select: Optional[List[str]] = None,
     where: Optional[Dict[str, Any]] = None,
     order_by: Optional[List[Dict[str, str]]] = None,
+    aggregate: Optional[Dict[str, str]] = None,
+    group_by: Optional[List[str]] = None,
     limit: int = 20,
     offset: int = 0,
 ) -> QueryDataOutput:
     """
-    Query records from a data document with filtering and sorting.
+    Query records from a data document with filtering, sorting, and optional aggregation.
     
-    Supports SQL-like queries with WHERE, ORDER BY, LIMIT, and OFFSET.
+    Supports SQL-like queries with WHERE, ORDER BY, LIMIT, OFFSET, and GROUP BY.
     
     Args:
         ctx: RunContext with authenticated client
@@ -258,11 +319,13 @@ async def query_data(
         select: List of fields to return (default: all)
         where: Filter conditions
         order_by: Sort specification
+        aggregate: Aggregation spec, e.g., {"count": "*", "avg": "salary"}
+        group_by: Fields to group by when aggregating
         limit: Max records to return (default: 20)
         offset: Pagination offset (default: 0)
     
     Returns:
-        QueryDataOutput with matching records
+        QueryDataOutput with matching records and optional aggregations
     
     Example where clause:
         Simple: {"field": "status", "op": "eq", "value": "pending"}
@@ -271,19 +334,29 @@ async def query_data(
             {"field": "priority", "op": "gte", "value": 3}
         ]}
     
+    Example aggregation:
+        aggregate={"count": "*", "avg": "salary"}, group_by=["department"]
+    
     Supported operators: eq, ne, gt, gte, lt, lte, in, nin, contains, startswith, endswith
+    Supported aggregations: count, sum, avg, min, max
     """
     try:
+        body: Dict[str, Any] = {
+            "select": select,
+            "where": where,
+            "orderBy": order_by,
+            "limit": limit,
+            "offset": offset,
+        }
+        if aggregate:
+            body["aggregate"] = aggregate
+        if group_by:
+            body["groupBy"] = group_by
+
         response = await ctx.deps.busibox_client.request(
             method="POST",
             path=f"/data/{document_id}/query",
-            json={
-                "select": select,
-                "where": where,
-                "orderBy": order_by,
-                "limit": limit,
-                "offset": offset,
-            },
+            json=body,
         )
         
         return QueryDataOutput(
@@ -292,6 +365,7 @@ async def query_data(
             total=response.get("total", 0),
             limit=response.get("limit", limit),
             offset=response.get("offset", offset),
+            aggregations=response.get("aggregations"),
         )
     except Exception as e:
         return QueryDataOutput(
@@ -518,6 +592,148 @@ async def get_data_document(
         )
 
 
+async def aggregate_data(
+    ctx: RunContext[BusiboxDeps],
+    document_id: str,
+    aggregate: Dict[str, str],
+    group_by: Optional[List[str]] = None,
+    where: Optional[Dict[str, Any]] = None,
+) -> AggregateDataOutput:
+    """
+    Run aggregation queries on a data document for analytics and summaries.
+    
+    Use this for counting, summing, averaging, or finding min/max values,
+    optionally grouped by one or more fields. More efficient than fetching
+    all records and computing manually.
+    
+    Args:
+        ctx: RunContext with authenticated client
+        document_id: UUID of the data document
+        aggregate: Aggregation functions, e.g., {"count": "*", "avg": "salary", "sum": "revenue"}
+        group_by: Fields to group results by (e.g., ["department", "status"])
+        where: Optional filter conditions (same syntax as query_data)
+    
+    Returns:
+        AggregateDataOutput with grouped results
+    
+    Examples:
+        Count all records: aggregate={"count": "*"}
+        Average salary by department: aggregate={"avg": "salary", "count": "*"}, group_by=["department"]
+        Total revenue by status: aggregate={"sum": "revenue"}, group_by=["status"]
+    
+    Supported aggregation functions: count, sum, avg, min, max
+    Use "*" as the field for count to count all records.
+    """
+    try:
+        body: Dict[str, Any] = {
+            "aggregate": aggregate,
+            "limit": 1000,
+        }
+        if group_by:
+            body["groupBy"] = group_by
+        if where:
+            body["where"] = where
+
+        response = await ctx.deps.busibox_client.request(
+            method="POST",
+            path=f"/data/{document_id}/query",
+            json=body,
+        )
+        
+        agg_results = response.get("aggregations", [])
+        if not isinstance(agg_results, list):
+            agg_results = [agg_results] if agg_results else []
+
+        return AggregateDataOutput(
+            success=True,
+            results=agg_results,
+            total_groups=len(agg_results),
+        )
+    except Exception as e:
+        return AggregateDataOutput(
+            success=False,
+            error=str(e),
+        )
+
+
+async def get_facets(
+    ctx: RunContext[BusiboxDeps],
+    document_id: str,
+    fields: List[str],
+    where: Optional[Dict[str, Any]] = None,
+) -> GetFacetsOutput:
+    """
+    Get distinct values and their counts for specified fields in a data document.
+    
+    Useful for discovering what filter values exist before constructing queries,
+    or for building filter dropdowns and category breakdowns.
+    
+    Args:
+        ctx: RunContext with authenticated client
+        document_id: UUID of the data document
+        fields: Field names to get facets for (e.g., ["department", "status", "type"])
+        where: Optional filter to scope the facet computation
+    
+    Returns:
+        GetFacetsOutput with facets map: {field_name: [{value, count}, ...]}
+    
+    Example:
+        fields=["department", "status"] returns:
+        {
+            "department": [{"value": "Engineering", "count": 45}, {"value": "Sales", "count": 30}],
+            "status": [{"value": "Active", "count": 60}, {"value": "Terminated", "count": 15}]
+        }
+    """
+    try:
+        facets: Dict[str, List[Dict[str, Any]]] = {}
+        total_records = 0
+
+        for field_name in fields:
+            body: Dict[str, Any] = {
+                "aggregate": {"count": "*"},
+                "groupBy": [field_name],
+                "limit": 1000,
+            }
+            if where:
+                body["where"] = where
+
+            response = await ctx.deps.busibox_client.request(
+                method="POST",
+                path=f"/data/{document_id}/query",
+                json=body,
+            )
+
+            agg_results = response.get("aggregations", [])
+            if not isinstance(agg_results, list):
+                agg_results = [agg_results] if agg_results else []
+
+            facet_values = []
+            for row in agg_results:
+                val = row.get(field_name)
+                if val is not None and val != "":
+                    facet_values.append({
+                        "value": val,
+                        "count": row.get("count", 0),
+                    })
+
+            facet_values.sort(key=lambda x: x["count"], reverse=True)
+            facets[field_name] = facet_values
+
+            if not total_records:
+                total_records = response.get("total", 0)
+
+        return GetFacetsOutput(
+            success=True,
+            facets=facets,
+            total_records=total_records,
+        )
+    except Exception as e:
+        return GetFacetsOutput(
+            success=False,
+            error=str(e),
+        )
+
+
 # =============================================================================
 # Tool Definitions
 # =============================================================================
@@ -547,22 +763,24 @@ query_data_tool = Tool(
     query_data,
     takes_ctx=True,
     name="query_data",
-    description="""Query records from a data document with filtering and sorting.
+    description="""Query records from a data document with filtering, sorting, and optional aggregation.
 
 Supports SQL-like queries with:
 - Field selection (select specific fields)
 - WHERE clauses with AND/OR/NOT
-- Comparison operators (eq, ne, gt, gte, lt, lte, in, contains, etc.)
+- Comparison operators (eq, ne, gt, gte, lt, lte, in, nin, contains, startswith, endswith)
 - ORDER BY with multiple fields
 - LIMIT and OFFSET for pagination
+- Aggregation (count, sum, avg, min, max) with GROUP BY
 
 Use this to:
 - Find specific records by criteria
 - List all records with sorting
 - Check if records exist
 - Get counts or filtered views
+- Run simple aggregations inline with record queries
 
-Example: Find all high-priority pending tasks.""",
+For complex analytics, prefer aggregate_data. For discovering filter values, prefer get_facets.""",
 )
 
 insert_records_tool = Tool(
@@ -644,10 +862,53 @@ Set include_records=False for just metadata/schema.""",
 )
 
 
+aggregate_data_tool = Tool(
+    aggregate_data,
+    takes_ctx=True,
+    name="aggregate_data",
+    description="""Run aggregation queries on a data document for analytics and summaries.
+
+Use this for counting, summing, averaging, or finding min/max values,
+optionally grouped by one or more fields. More efficient than fetching
+all records and computing manually.
+
+Supports: count, sum, avg, min, max
+Use "*" as the field for count to count all records.
+
+Examples:
+- Count by status: aggregate={"count": "*"}, group_by=["status"]
+- Average salary by department: aggregate={"avg": "salary", "count": "*"}, group_by=["department"]
+- Total by category: aggregate={"sum": "amount"}, group_by=["category"]
+
+Combine with where filters to scope the aggregation.""",
+)
+
+get_facets_tool = Tool(
+    get_facets,
+    takes_ctx=True,
+    name="get_facets",
+    description="""Get distinct values and their counts for specified fields.
+
+Returns all unique values for each requested field along with how many
+records have that value. Useful for discovering valid filter values
+before constructing queries, or for building category breakdowns.
+
+Example: fields=["department", "status"] returns:
+{
+    "department": [{"value": "Engineering", "count": 45}, ...],
+    "status": [{"value": "Active", "count": 60}, ...]
+}
+
+Values are sorted by count (most common first).""",
+)
+
+
 # Convenience list of all data tools for registration
 DATA_TOOLS = [
     create_data_document_tool,
     query_data_tool,
+    aggregate_data_tool,
+    get_facets_tool,
     insert_records_tool,
     update_records_tool,
     delete_records_tool,

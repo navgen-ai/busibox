@@ -109,6 +109,8 @@ pub struct App {
     pub models_manage_action_complete: bool,
     /// True when the in-memory config has unsaved changes vs model_config.yml
     pub models_manage_config_dirty: bool,
+    /// True when awaiting 'y' confirmation to deploy
+    pub models_manage_deploy_confirm: bool,
     /// True when the saved model_config.yml differs from what is actually running on GPUs
     pub models_manage_config_undeployed: bool,
     pub models_manage_tick: usize,
@@ -127,6 +129,11 @@ pub struct App {
     pub models_manage_change_inherit_roles: Option<Vec<String>>,
     pub models_manage_change_inherit_gpu: Option<GpuAssignment>,
     pub models_manage_change_insert_index: Option<usize>,
+
+    // Service model purpose editor state (embedding, reranking, voice, transcribe, image)
+    pub models_manage_service_purposes: Vec<ServicePurpose>,
+    pub models_manage_service_selected: usize,
+    pub models_manage_focus_service: bool,
 
     // Benchmark screen state
     pub benchmark_models: Vec<DeployedModel>,
@@ -398,6 +405,8 @@ pub struct ModelCacheEntry {
     pub role: String,
     pub cached: bool,
     pub downloading: bool,
+    /// Provider/device hint: "mlx", "vllm", "fastembed", "local", "gpu", etc.
+    pub provider: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -485,6 +494,16 @@ pub enum ManageUpdate {
 pub enum ModelsFocus {
     Tiers,
     Models,
+}
+
+/// A configurable service purpose (embedding, reranking, voice, etc.)
+/// with the selected model key and available alternatives.
+#[derive(Debug, Clone)]
+pub struct ServicePurpose {
+    pub purpose: String,
+    pub selected_key: String,
+    pub options: Vec<String>,
+    pub provider: String,
 }
 
 #[derive(Debug, Clone)]
@@ -663,6 +682,7 @@ impl App {
             models_manage_action_running: false,
             models_manage_action_complete: false,
             models_manage_config_dirty: false,
+            models_manage_deploy_confirm: false,
             models_manage_config_undeployed: false,
             models_manage_tick: 0,
             models_manage_rx: None,
@@ -675,6 +695,9 @@ impl App {
             models_manage_change_inherit_roles: None,
             models_manage_change_inherit_gpu: None,
             models_manage_change_insert_index: None,
+            models_manage_service_purposes: Vec::new(),
+            models_manage_service_selected: 0,
+            models_manage_focus_service: false,
             benchmark_models: Vec::new(),
             benchmark_selected: 0,
             benchmark_toggled: Vec::new(),

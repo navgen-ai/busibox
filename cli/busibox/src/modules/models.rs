@@ -14,6 +14,7 @@ pub struct ModelRecommendation {
     pub fast: ModelInfo,
     pub agent: ModelInfo,
     pub embed: ModelInfo,
+    pub reranker: Option<ModelInfo>,
     pub whisper: Option<ModelInfo>,
     pub kokoro: Option<ModelInfo>,
     pub flux: Option<ModelInfo>,
@@ -24,6 +25,8 @@ pub struct ModelInfo {
     pub name: String,
     pub role: String,
     pub estimated_size_gb: f64,
+    /// Provider/device hint: "mlx", "vllm", "fastembed", "local", "gpu", "cpu", etc.
+    pub provider: String,
 }
 
 /// A single unique model that needs to be loaded, with all the roles it serves
@@ -451,6 +454,7 @@ struct ModelRegistryFile {
     tiers: Option<HashMap<String, TierConfig>>,
     default_purposes: Option<HashMap<String, String>>,
     model_purposes: Option<HashMap<String, String>>,
+    model_purposes_dev: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -843,10 +847,20 @@ impl TierModelSet {
 
 impl ModelRecommendation {
     /// Load model recommendations from model_registry.yml based on hardware tier.
+    ///
+    /// Resolves models from two sources:
+    /// 1. Tier's backend map (mlx/vllm) for LLM roles (fast, agent, embed, whisper, etc.)
+    /// 2. Merged purpose map (default_purposes + environment overrides) for roles not in
+    ///    the tier map, such as reranking and embedding fallback.
+    ///
+    /// `environment` selects which purpose overrides to apply:
+    /// - "development" uses `model_purposes_dev`
+    /// - anything else (staging, production) uses `model_purposes`
     pub fn from_config(
         config_path: &Path,
         tier: MemoryTier,
         backend: &LlmBackend,
+        environment: &str,
     ) -> Result<Self> {
         let contents = std::fs::read_to_string(config_path)?;
         let file: ModelRegistryFile = serde_yaml::from_str(&contents)?;
@@ -857,6 +871,21 @@ impl ModelRecommendation {
         let available = file.available_models.as_ref().ok_or_else(|| {
             color_eyre::eyre::eyre!("No 'available_models' section in model registry")
         })?;
+
+        // Build merged purpose map: defaults overridden by environment-specific purposes.
+        // Development profiles use model_purposes_dev; staging/production use model_purposes.
+        let mut merged_purposes: HashMap<String, String> = file
+            .default_purposes
+            .clone()
+            .unwrap_or_default();
+        let overrides = if environment == "development" {
+            &file.model_purposes_dev
+        } else {
+            &file.model_purposes
+        };
+        if let Some(ref env_overrides) = overrides {
+            merged_purposes.extend(env_overrides.clone());
+        }
 
         let tier_name = tier.name();
         let tier_config = tiers.get(tier_name).ok_or_else(|| {
@@ -889,10 +918,17 @@ impl ModelRecommendation {
                 })
         };
 
-        let get_model = |role: &str| -> (String, f64) {
+        let resolve_provider = |key: &str| -> String {
+            available
+                .get(key)
+                .and_then(|m| m.provider.clone())
+                .unwrap_or_default()
+        };
+
+        let get_model = |role: &str| -> (String, f64, String) {
             backend_models
                 .and_then(|bm| bm.get(role))
-                .map(|key| (resolve(key), resolve_size(key)))
+                .map(|key| (resolve(key), resolve_size(key), resolve_provider(key)))
                 .unwrap_or_default()
         };
 
@@ -902,23 +938,67 @@ impl ModelRecommendation {
                 .map(|key| {
                     let name = resolve(key);
                     let size = resolve_size(key);
+                    let provider = resolve_provider(key);
                     ModelInfo {
                         name,
                         role: role.to_string(),
                         estimated_size_gb: size,
+                        provider,
                     }
                 })
                 .filter(|m| !m.name.is_empty())
         };
 
-        let (fast_name, fast_size) = get_model("fast");
-        let (agent_name, agent_size) = get_model("agent");
-        let (embed_name, embed_size) = {
-            let (n, s) = get_model("embed");
+        /// Resolve a purpose alias chain: follow aliases until we find a
+        /// concrete model key in available_models.
+        fn resolve_purpose_key<'a>(
+            purpose: &str,
+            purposes: &'a HashMap<String, String>,
+            available: &HashMap<String, AvailableModel>,
+        ) -> Option<&'a str> {
+            let mut key = purposes.get(purpose)?.as_str();
+            for _ in 0..10 {
+                if available.contains_key(key) {
+                    return Some(key);
+                }
+                key = match purposes.get(key) {
+                    Some(next) if next.as_str() != key => next.as_str(),
+                    _ => return None,
+                };
+            }
+            None
+        }
+
+        // Build a ModelInfo from the merged purpose map for roles that
+        // aren't in the tier's backend map (e.g. reranking, embedding fallback).
+        let get_purpose_model = |role: &str| -> Option<ModelInfo> {
+            let key = resolve_purpose_key(role, &merged_purposes, available)?;
+            let name = resolve(key);
+            if name.is_empty() {
+                return None;
+            }
+            let size = resolve_size(key);
+            let provider = resolve_provider(key);
+            Some(ModelInfo {
+                name,
+                role: role.to_string(),
+                estimated_size_gb: size,
+                provider,
+            })
+        };
+
+        let (fast_name, fast_size, fast_provider) = get_model("fast");
+        let (agent_name, agent_size, agent_provider) = get_model("agent");
+        let (embed_name, embed_size, embed_provider) = {
+            let (n, s, p) = get_model("embed");
             if n.is_empty() {
-                ("nomic-ai/nomic-embed-text-v1.5".to_string(), 0.5)
+                // Tier map doesn't have embed — resolve from purpose map
+                match get_purpose_model("embedding") {
+                    Some(m) => (m.name, m.estimated_size_gb, m.provider),
+                    None => ("nomic-ai/nomic-embed-text-v1.5".to_string(), 0.5, "fastembed".to_string()),
+                }
             } else {
-                (n, s)
+                (n, s, p)
             }
         };
 
@@ -932,23 +1012,30 @@ impl ModelRecommendation {
                 name: fast_name,
                 role: "fast".into(),
                 estimated_size_gb: fast_size,
+                provider: fast_provider,
             },
             agent: ModelInfo {
                 name: agent_name,
                 role: "agent".into(),
                 estimated_size_gb: agent_size,
+                provider: agent_provider,
             },
             embed: ModelInfo {
                 name: embed_name,
                 role: "embed".into(),
                 estimated_size_gb: embed_size,
+                provider: embed_provider,
             },
+            reranker: get_purpose_model("reranking"),
             whisper: get_optional_model("whisper")
-                .or_else(|| get_optional_model("transcribe")),
+                .or_else(|| get_optional_model("transcribe"))
+                .or_else(|| get_purpose_model("transcribe")),
             kokoro: get_optional_model("kokoro")
-                .or_else(|| get_optional_model("voice")),
+                .or_else(|| get_optional_model("voice"))
+                .or_else(|| get_purpose_model("voice")),
             flux: get_optional_model("flux")
-                .or_else(|| get_optional_model("image")),
+                .or_else(|| get_optional_model("image"))
+                .or_else(|| get_purpose_model("image")),
         })
     }
 
@@ -957,28 +1044,20 @@ impl ModelRecommendation {
         let mut total = self.fast.estimated_size_gb
             + self.agent.estimated_size_gb
             + self.embed.estimated_size_gb;
-        if let Some(ref m) = self.whisper {
-            total += m.estimated_size_gb;
-        }
-        if let Some(ref m) = self.kokoro {
-            total += m.estimated_size_gb;
-        }
-        if let Some(ref m) = self.flux {
-            total += m.estimated_size_gb;
+        for opt in [&self.reranker, &self.whisper, &self.kokoro, &self.flux] {
+            if let Some(ref m) = opt {
+                total += m.estimated_size_gb;
+            }
         }
         total
     }
 
     pub fn models(&self) -> Vec<&ModelInfo> {
         let mut v = vec![&self.fast, &self.agent, &self.embed];
-        if let Some(ref m) = self.whisper {
-            v.push(m);
-        }
-        if let Some(ref m) = self.kokoro {
-            v.push(m);
-        }
-        if let Some(ref m) = self.flux {
-            v.push(m);
+        for opt in [&self.reranker, &self.whisper, &self.kokoro, &self.flux] {
+            if let Some(ref m) = opt {
+                v.push(m);
+            }
         }
         v
     }
@@ -1094,13 +1173,114 @@ fn estimate_model_size(name: &str) -> f64 {
 // --- Background model downloads ---
 
 /// Priority order for download roles. Lower index = higher priority.
-const DOWNLOAD_PRIORITY: &[&str] = &["embed", "fast", "agent", "voice", "transcribe", "image"];
+const DOWNLOAD_PRIORITY: &[&str] = &["embed", "fast", "agent", "reranking", "voice", "transcribe", "image"];
 
 fn role_priority(role: &str) -> usize {
     DOWNLOAD_PRIORITY
         .iter()
         .position(|&r| role.contains(r))
         .unwrap_or(DOWNLOAD_PRIORITY.len())
+}
+
+/// Service model purposes and the available alternatives for each.
+pub const SERVICE_PURPOSES: &[&str] = &["embedding", "reranking", "voice", "transcribe", "image"];
+
+/// Load service model purpose assignments and their available alternatives from the registry.
+///
+/// Returns a list of (purpose, current_model_key, alternatives, provider) tuples.
+/// `environment` selects which override map to use.
+pub fn load_service_purposes(
+    config_path: &Path,
+    environment: &str,
+) -> Vec<(String, String, Vec<String>, String)> {
+    let contents = match std::fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let file: ModelRegistryFile = match serde_yaml::from_str(&contents) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+
+    let available = file.available_models.unwrap_or_default();
+
+    let mut merged_purposes: HashMap<String, String> =
+        file.default_purposes.clone().unwrap_or_default();
+    let overrides = if environment == "development" {
+        &file.model_purposes_dev
+    } else {
+        &file.model_purposes
+    };
+    if let Some(ref env_overrides) = overrides {
+        merged_purposes.extend(env_overrides.clone());
+    }
+
+    // For each service purpose, find the currently assigned model key and all compatible alternatives.
+    // A model is a valid candidate for a purpose if its mode or provider semantics match.
+    let mode_for_purpose = |purpose: &str| -> Option<&str> {
+        match purpose {
+            "voice" => Some("audio_speech"),
+            "transcribe" => Some("audio_transcription"),
+            "image" => Some("image_generation"),
+            _ => None,
+        }
+    };
+
+    let provider_for_purpose = |purpose: &str| -> Option<&str> {
+        match purpose {
+            "embedding" => Some("fastembed"),
+            "reranking" => None,
+            _ => None,
+        }
+    };
+
+    let mut results = Vec::new();
+
+    for &purpose in SERVICE_PURPOSES {
+        let current_key = match merged_purposes.get(purpose) {
+            Some(k) => k.clone(),
+            None => continue,
+        };
+
+        let current_provider = available
+            .get(&current_key)
+            .and_then(|m| m.provider.as_deref())
+            .unwrap_or("")
+            .to_string();
+
+        let mut options: Vec<String> = Vec::new();
+
+        if let Some(mode) = mode_for_purpose(purpose) {
+            for (key, model) in &available {
+                if model.mode.as_deref() == Some(mode) {
+                    options.push(key.clone());
+                }
+            }
+        } else if let Some(prov) = provider_for_purpose(purpose) {
+            for (key, model) in &available {
+                if model.provider.as_deref() == Some(prov) {
+                    options.push(key.clone());
+                }
+            }
+        } else if purpose == "reranking" {
+            for (key, model) in &available {
+                let name = key.to_lowercase();
+                let desc = model.description.as_deref().unwrap_or("").to_lowercase();
+                if name.contains("rerank") || desc.contains("rerank") {
+                    options.push(key.clone());
+                }
+            }
+        }
+
+        options.sort();
+        if !options.contains(&current_key) {
+            options.insert(0, current_key.clone());
+        }
+
+        results.push((purpose.to_string(), current_key, options, current_provider));
+    }
+
+    results
 }
 
 /// Spawn a background thread that downloads missing models sequentially,

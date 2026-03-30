@@ -24,6 +24,10 @@ class Settings(BaseSettings):
         "fast",
         description="Fast/cheap model for simple tasks like query optimization",
     )
+    frontier_model: str = Field(
+        "frontier",
+        description="Most capable model for complex tasks (research, analysis, reports)",
+    )
     litellm_base_url: AnyHttpUrl = Field(
         "http://10.96.200.207:4000/v1",
         description="Base URL for LiteLLM proxy (OpenAI-compatible endpoint)",

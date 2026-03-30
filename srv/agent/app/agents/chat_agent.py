@@ -24,7 +24,7 @@ from app.agents.base_agent import (
     ToolRegistry,
     ToolStrategy,
 )
-from app.schemas.streaming import content, error, interim, plan, progress, prompt, thought
+from app.schemas.streaming import clarify_parallel, content, error, interim, plan, progress, prompt, thought
 from pydantic import BaseModel, ValidationError
 
 from busibox_common.llm import get_client
@@ -109,6 +109,7 @@ class FastAckDecision(BaseModel):
     follow_up_question: Optional[str] = None
     confidence: float = 0.75
     routing_source: str = "llm"
+    complexity: str = "moderate"  # simple | moderate | complex
 
 
 class PlanStep(BaseModel):
@@ -413,7 +414,7 @@ class ChatAgent(BaseStreamingAgent):
         default = self._heuristic_fast_ack(query)
         prompt = (
             "You are deciding how to handle a user message.\n"
-            "Return ONLY JSON with keys: action_type, needs_tools, response, follow_up_question, confidence.\n"
+            "Return ONLY JSON with keys: action_type, needs_tools, response, follow_up_question, confidence, complexity.\n"
             "Rules:\n"
             "- action_type must be one of: direct, research, search, analysis, clarify, multi_step.\n"
             "- needs_tools=true when external tools or fresh system data are useful "
@@ -424,7 +425,11 @@ class ChatAgent(BaseStreamingAgent):
             "- if action_type=clarify, set needs_tools=false and provide a follow_up_question.\n"
             "- response must be concise (max 1 sentence, max 120 chars).\n"
             "- If needs_tools=true, response should acknowledge and indicate you are checking.\n"
-            "- If needs_tools=false, response should be a complete direct reply.\n\n"
+            "- If needs_tools=false, response should be a complete direct reply.\n"
+            "- complexity must be one of: simple, moderate, complex.\n"
+            "  - simple: greeting, chitchat, single-fact lookup, yes/no answer\n"
+            "  - moderate: summarization, multi-step data retrieval, document analysis\n"
+            "  - complex: multi-source research, comparative analysis, detailed reports, creative writing\n\n"
             "Intent guidance (IMPORTANT):\n"
             "- Queries about owned records/documents/candidates/resumes (e.g. 'do I have resumes for data analytics?') MUST set action_type=search and needs_tools=true.\n"
             "- If user asks to find/list/show/filter internal data, do NOT answer directly; use tools.\n"
@@ -442,9 +447,10 @@ class ChatAgent(BaseStreamingAgent):
                         "role": "system",
                         "content": "You are a strict JSON generator. Return only valid JSON.",
                     },
-                    {"role": "user", "content": prompt},
+                    {"role": "user", "content": f"/no_think\n{prompt}"},
                 ],
                 temperature=0.1,
+                enable_thinking=False,
             )
             logger.info("fast_ack: LLM responded in %dms", round((time.monotonic() - t_llm) * 1000))
             raw = (
@@ -507,9 +513,10 @@ class ChatAgent(BaseStreamingAgent):
                 model="fast",
                 messages=[
                     {"role": "system", "content": "You write concise interim progress summaries."},
-                    {"role": "user", "content": prompt},
+                    {"role": "user", "content": f"/no_think\n{prompt}"},
                 ],
                 temperature=0.2,
+                enable_thinking=False,
             )
             logger.info("quick_findings: LLM responded in %dms", round((time.monotonic() - t_qf) * 1000))
             return (
@@ -570,21 +577,8 @@ class ChatAgent(BaseStreamingAgent):
                 "show my data tables",
             )
         )
-        document_library_intent = any(
-            phrase in ql for phrase in (
-                "document",
-                "documents",
-                "file",
-                "files",
-                "pdf",
-                "resume",
-                "resumes",
-                "candidate",
-                "candidates",
-            )
-        )
-
         # Always search user's personal and shared documents for context
+        parallel_step_ids: List[str] = []
         if "document_search" in enabled_tools:
             fallback_steps.append(
                 PlanStep(
@@ -594,20 +588,22 @@ class ChatAgent(BaseStreamingAgent):
                     args={"query": query},
                 )
             )
+            parallel_step_ids.append("step_1")
 
         if (
             dispatch.action_type in {"research", "search"}
             and "web_search" in enabled_tools
-            and not document_library_intent
         ):
             step_id = f"step_{len(fallback_steps) + 1}"
             fallback_steps.append(
                 PlanStep(id=step_id, tool="web_search", objective="Gather external context", args={"query": query})
             )
+            parallel_step_ids.append(step_id)
+
         if data_document_list_intent and "list_data_documents" in enabled_tools:
             fallback_steps.append(
                 PlanStep(
-                    id="step_2" if fallback_steps else "step_1",
+                    id=f"step_{len(fallback_steps) + 1}",
                     tool="list_data_documents",
                     objective="List available structured data documents",
                     args={"limit": 50},
@@ -618,10 +614,13 @@ class ChatAgent(BaseStreamingAgent):
                 PlanStep(id="step_1", tool=enabled_tools[0], objective="Collect supporting context", args={"query": query})
             )
 
+        # Run doc search + web search in parallel when both are present
+        parallel_groups = [parallel_step_ids] if len(parallel_step_ids) > 1 else [[]]
+
         fallback = ExecutionPlan(
             summary="I'll gather the most relevant information first, then synthesize the final answer.",
             steps=fallback_steps,
-            parallel_groups=[[]],
+            parallel_groups=parallel_groups,
             feedback_points=[],
             estimated_duration="quick" if len(fallback_steps) <= 1 else "moderate",
         )
@@ -663,7 +662,8 @@ class ChatAgent(BaseStreamingAgent):
             "- Do NOT include `create_task` unless the user explicitly asked to create a scheduled task.\n"
             "- Do NOT include `send_notification` unless the user explicitly asked to send a notification.\n"
             "- Do NOT include `memory_search` or `memory_save` unless the user asks about previous conversations or preferences.\n"
-            "- ALWAYS include `document_search` as the first step to search the user's personal and shared documents for relevant context. Add `web_search` as a second step when external information is also needed.\n"
+            "- ALWAYS include `document_search` to search the user's personal and shared documents for relevant context.\n"
+            "- When `web_search` is also needed, run it IN PARALLEL with `document_search` by putting both step IDs in the same parallel_groups entry.\n"
             "- Use `list_data_documents`, `get_data_document`, or `query_data` ONLY when the user explicitly asks about structured data tables/records.\n\n"
             f"Dispatch action type: {dispatch.action_type}\n"
             f"User query: {query}\n"
@@ -677,9 +677,10 @@ class ChatAgent(BaseStreamingAgent):
                 model="tool_calling",
                 messages=[
                     {"role": "system", "content": "You are a strict JSON planner. Return valid JSON only."},
-                    {"role": "user", "content": prompt},
+                    {"role": "user", "content": f"/no_think\n{prompt}"},
                 ],
                 temperature=0.1,
+                enable_thinking=False,
             )
             logger.info("plan: LLM responded in %dms", round((time.monotonic() - t_plan) * 1000))
             raw = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
@@ -900,8 +901,79 @@ class ChatAgent(BaseStreamingAgent):
         if cancel.is_set():
             return ""
 
-        # If dispatch asks a clarifying question, stop after first response.
+        # If dispatch asks a clarifying question, check if we can do useful
+        # background work in parallel (e.g. searching docs while waiting for
+        # the user's answer).
         if decision.action_type == "clarify":
+            enabled_tools = [t for t in self.config.tools if ToolRegistry.has(t)]
+            can_search_parallel = any(
+                t in enabled_tools for t in ("document_search", "web_search", "query_data")
+            )
+
+            if can_search_parallel and decision.confidence < 0.8:
+                # Run clarification AND background search in parallel
+                question = decision.follow_up_question or "Could you provide more detail?"
+                if question not in fast_response:
+                    await stream(clarify_parallel(
+                        source=self.name,
+                        message=question,
+                        data={
+                            "options": ["Yes", "No"] if _ends_with_yes_no_question(question) else None,
+                            "background_status": "Searching for relevant context while you decide...",
+                        },
+                    ))
+
+                # Start background execution in a separate task
+                bg_cancel = asyncio.Event()
+                bg_context = AgentContext(
+                    deps=agent_context.deps,
+                    principal=agent_context.principal,
+                    session=agent_context.session,
+                    metadata=agent_context.metadata,
+                    conversation_id=agent_context.conversation_id,
+                    message_history=agent_context.message_history,
+                    relevant_insights=agent_context.relevant_insights,
+                    compressed_history_summary=agent_context.compressed_history_summary,
+                    recent_messages=agent_context.recent_messages,
+                    attachment_metadata=agent_context.attachment_metadata,
+                )
+
+                async def bg_search():
+                    try:
+                        for tool_name in ("document_search", "web_search"):
+                            if bg_cancel.is_set():
+                                break
+                            tool_func = ToolRegistry.get(tool_name)
+                            if tool_func:
+                                await stream(thought(
+                                    source=self.name,
+                                    message=f"Searching in background: {tool_name}",
+                                    data={"phase": "background_search"},
+                                ))
+                    except Exception as exc:
+                        logger.debug("Background search during clarify skipped: %s", exc)
+
+                bg_task = asyncio.create_task(bg_search())
+
+                # Emit the prompt so the frontend shows quick-reply buttons
+                if _ends_with_yes_no_question(question):
+                    await stream(prompt(
+                        source=self.name,
+                        message=question,
+                        data={"prompt_type": "confirm", "options": ["Yes", "No"]},
+                    ))
+                else:
+                    await stream(prompt(
+                        source=self.name,
+                        message=question,
+                        data={"prompt_type": "open", "options": []},
+                    ))
+
+                bg_cancel.set()
+                await bg_task
+                return f"{fast_response}\n\n{question}".strip()
+
+            # Simple clarify (no parallel work useful)
             if decision.follow_up_question and decision.follow_up_question not in fast_response:
                 await stream(content(
                     source=self.name,
@@ -927,10 +999,36 @@ class ChatAgent(BaseStreamingAgent):
                 ))
             return fast_response
 
+        # Complexity-based model routing: upgrade to frontier model for
+        # complex requests when the agent config allows it.
+        original_model = self.synthesis_model
+        if (
+            decision.complexity == "complex"
+            and self.config.allow_frontier_fallback
+        ):
+            from app.config.settings import get_settings
+            from pydantic_ai.models.openai import OpenAIChatModel
+            settings = get_settings()
+            frontier_model = settings.frontier_model
+            if frontier_model != self.config.model:
+                self.synthesis_model = OpenAIChatModel(
+                    model_name=frontier_model,
+                    provider="openai",
+                )
+                logger.info(
+                    "Upgraded to frontier model for complex request",
+                    extra={"complexity": decision.complexity, "model": frontier_model},
+                )
+                await stream(thought(
+                    source=self.name,
+                    message="Complex request detected — using advanced model for best results.",
+                    data={"phase": "model_upgrade", "complexity": decision.complexity, "model": frontier_model},
+                ))
+
         await stream(thought(
             source=self.name,
             message="Thinking through your request and selecting the best tools...",
-            data={"phase": "deep_start"},
+            data={"phase": "deep_start", "complexity": decision.complexity},
         ))
 
         logger.info("Chat resolving attachments")
@@ -970,26 +1068,16 @@ class ChatAgent(BaseStreamingAgent):
                 message=f"Error during execution: {str(exc)}",
             ))
             return f"{fast_response}\n\nI encountered an error while checking that." if fast_response else "I encountered an error while checking that."
+        finally:
+            self.synthesis_model = original_model
 
         if cancel.is_set():
             return ""
 
-        # For LLM-driven chat, _execute_llm_driven stores final text in llm_response,
-        # and base _synthesize emits one full content event. To preserve incremental
-        # second-phase UX, stream it in chunks ourselves.
+        # _execute_llm_driven now streams content/thinking events in real-time
+        # via _stream_llm_events.  The llm_response stored in tool_results is the
+        # final text.  We emit a completion marker and handle any non-tool paths.
         if "llm_response" in agent_context.tool_results:
-            await stream(thought(
-                source=self.name,
-                message="Synthesizing findings...",
-                data={"phase": "synthesis"},
-            ))
-            quick_findings = await self._generate_quick_findings(query, agent_context.tool_results)
-            if quick_findings:
-                await stream(content(
-                    source=self.name,
-                    message=quick_findings,
-                    data={"phase": "quick_findings", "partial": False},
-                ))
             deep_response = str(agent_context.tool_results["llm_response"] or "").strip()
             deep_response, deep_think = _strip_think_tags(deep_response)
             if deep_think:
@@ -999,15 +1087,6 @@ class ChatAgent(BaseStreamingAgent):
                     data={"phase": "model_reasoning"},
                 ))
             if deep_response:
-                for chunk in self._stream_chunks(deep_response):
-                    if cancel.is_set():
-                        return ""
-                    await stream(content(
-                        source=self.name,
-                        message=chunk,
-                        data={"phase": "deep_response", "streaming": True, "partial": True},
-                    ))
-                    await asyncio.sleep(0.03)
                 await stream(content(
                     source=self.name,
                     message="",

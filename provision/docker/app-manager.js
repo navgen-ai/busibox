@@ -7,6 +7,12 @@
  *   - Individual app restart without affecting others
  *   - HTTP control API on port 9999 (container-internal only)
  *   - Graceful shutdown with SIGTERM/SIGINT propagation
+ *   - Dynamic busibox-app watcher (tsc --watch) lifecycle tied to dev apps
+ *
+ * The shared package watcher (@jazzmind/busibox-app tsc --watch) is started
+ * automatically when the first app enters dev mode and stopped when the last
+ * app leaves dev mode. This ensures busibox-app code changes are picked up
+ * by dev-mode apps via HMR without wasting resources when all apps are in prod.
  *
  * Control API:
  *   GET  /status            - All app statuses, modes, PIDs, health
@@ -157,6 +163,24 @@ function pipeOutput(proc, appName, color) {
   if (proc.stderr) proc.stderr.on('data', (d) => flush('stderr', d.toString()));
 }
 
+function hasAnyDevApp() {
+  for (const [, state] of apps) {
+    if (state.mode === 'dev') return true;
+  }
+  return false;
+}
+
+function isAppLibRunning() {
+  return appLibProc !== null && appLibProc.exitCode === null;
+}
+
+function stopAppLib() {
+  if (!isAppLibRunning()) return;
+  managerLog('Stopping shared package watch (no dev apps remaining)...');
+  killProcessGroup(appLibProc.pid, 'SIGTERM');
+  appLibProc = null;
+}
+
 function startAppLib() {
   managerLog('Starting shared package watch (@jazzmind/busibox-app dev)...');
   const proc = spawn('pnpm', ['--filter', '@jazzmind/busibox-app', 'dev'], {
@@ -167,12 +191,25 @@ function startAppLib() {
   });
   pipeOutput(proc, 'app-lib', 'gray');
   proc.on('exit', (code) => {
-    if (!shuttingDown) {
+    if (!shuttingDown && hasAnyDevApp()) {
       managerLog(`app-lib exited with code ${code}, restarting in 2s...`);
       setTimeout(() => { appLibProc = startAppLib(); }, 2000);
+    } else if (!shuttingDown) {
+      managerLog(`app-lib exited with code ${code}, not restarting (no dev apps)`);
+      appLibProc = null;
     }
   });
   return proc;
+}
+
+function updateAppLibWatcher() {
+  const needsWatcher = hasAnyDevApp();
+  const running = isAppLibRunning();
+  if (needsWatcher && !running) {
+    appLibProc = startAppLib();
+  } else if (!needsWatcher && running) {
+    stopAppLib();
+  }
 }
 
 function startApp(def, mode) {
@@ -509,6 +546,7 @@ async function handleRequest(req, res) {
         }
 
         saveModes();
+        updateAppLibWatcher();
         sendJson(res, 200, { success: true, data: results });
         return;
       }
@@ -541,6 +579,8 @@ async function handleRequest(req, res) {
             cleanNextCache(def);
             const proc = startApp(def, 'dev');
             if (proc) { state.proc = proc; state.pid = proc.pid; }
+            saveModes();
+            updateAppLibWatcher();
             sendJson(res, 500, { success: false, error: 'Build failed, reverted to dev mode' });
             return;
           }
@@ -556,6 +596,7 @@ async function handleRequest(req, res) {
         }
 
         saveModes();
+        updateAppLibWatcher();
         sendJson(res, 200, { success: true, data: { changed: true, mode } });
         return;
       }
@@ -702,6 +743,7 @@ async function handleRequest(req, res) {
             }
           }
           saveModes();
+          updateAppLibWatcher();
           managerLog('=== REINSTALL COMPLETE ===');
         } catch (e) {
           managerLog(`REINSTALL ERROR: ${e.message}`);

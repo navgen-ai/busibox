@@ -839,7 +839,7 @@ services:
       - ./srv/shared:/app/shared:ro
       - builder_projects:/srv/projects
       - ./config/litellm-config.yaml:/app/litellm-config.yaml:ro
-    command: ["sh", "-c", "echo 'Migration files:' && ls -la /app/alembic/versions/ && echo 'Current alembic head:' && python -m alembic heads && echo 'Current DB version:' && python -m alembic current && echo 'Running migrations...' && python -m alembic upgrade head && echo 'Migrations complete' && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app"]
+    command: ["sh", "-c", "echo 'Migration files:' && ls -la /app/alembic/versions/ && echo 'Current alembic head:' && python -m alembic heads && echo 'Current DB version:' && python -m alembic current && echo 'Running migrations...' && python -m alembic upgrade head && echo 'Migrations complete' && if [ -n \"$TEST_DATABASE_URL\" ]; then echo 'Running test DB migrations...' && DATABASE_URL=$TEST_DATABASE_URL python -m alembic upgrade head && echo 'Test DB migrations complete'; fi && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app"]
     environment:
       # Service
       ENVIRONMENT: development

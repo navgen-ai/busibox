@@ -11,14 +11,15 @@
 #   - Set GITHUB_AUTH_TOKEN in .env.local for @jazzmind/busibox-app
 #
 # Core Apps Mode (CORE_APPS_MODE env var):
-#   dev  - (default) Turbopack hot-reload. Code changes apply instantly.
+#   prod - (default) Builds apps from volume-mounted source, then serves standalone.
+#          Much lower CPU. Switch individual apps to dev mode at runtime via
+#          the app-manager control API (POST /mode) or deploy-api.
+#   dev  - Turbopack hot-reload. Code changes apply instantly.
 #          Higher CPU usage due to on-demand compilation.
-#   prod - Builds apps from volume-mounted source, then serves with `next start`.
-#          Much lower CPU. Restart container to pick up code changes.
 #
 # Usage:
-#   make docker-up                          # Default (dev mode)
-#   CORE_APPS_MODE=prod make docker-up      # Production mode (built, no hot-reload)
+#   make docker-up                          # Default (prod mode)
+#   CORE_APPS_MODE=dev make docker-up       # Dev mode for all apps (hot-reload)
 #   Or: docker compose -f docker-compose.yml -f docker-compose.local-dev.yml up
 #
 # Architecture:
@@ -42,9 +43,10 @@ services:
     container_name: ${CONTAINER_PREFIX:-local}-core-apps
     hostname: core-apps
     restart: unless-stopped
-    # Pass the mode to the entrypoint: "dev" (Turbopack) or "prod" (build + serve)
-    # Set CORE_APPS_MODE=prod for pre-built production mode (much lower CPU, no hot-reload)
-    command: ["${CORE_APPS_MODE:-dev}"]
+    # Pass the mode to the entrypoint: "prod" (build + serve) or "dev" (Turbopack)
+    # Set CORE_APPS_MODE=dev for hot-reload mode (higher CPU), or switch individual
+    # apps at runtime via the app-manager control API on port 9999.
+    command: ["${CORE_APPS_MODE:-prod}"]
     environment:
       # NODE_ENV is set by the entrypoint based on the mode
       NODE_ENV: development

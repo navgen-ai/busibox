@@ -44,11 +44,26 @@ alembic upgrade head
 
 echo "✓ Migrations completed successfully"
 
-
-
-
-
-
-
-
+# Also migrate the test database if TEST_DATABASE_URL is set
+if [ -n "${TEST_DATABASE_URL:-}" ]; then
+    echo ""
+    echo "Running test database migrations..."
+    echo "Test database: ${TEST_DATABASE_URL%%\?*}"
+    
+    ORIG_DATABASE_URL="$DATABASE_URL"
+    export DATABASE_URL="$TEST_DATABASE_URL"
+    
+    if ! alembic current &> /dev/null; then
+        echo "No migration history in test DB. Checking if tables already exist..."
+        if alembic stamp head 2>&1 | grep -q "Can't locate revision identified by"; then
+            echo "Stamping test database at initial revision..."
+            alembic stamp 001
+        fi
+    fi
+    
+    alembic upgrade head
+    
+    export DATABASE_URL="$ORIG_DATABASE_URL"
+    echo "✓ Test database migrations completed successfully"
+fi
 

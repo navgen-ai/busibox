@@ -9,13 +9,18 @@ from app.agents.core import BusiboxDeps
 
 logger = structlog.get_logger()
 
+HIGH_RELEVANCY_THRESHOLD = 0.7
+ADAPTIVE_MULTIPLIER = 2
+
 
 class DocumentSearchInput(BaseModel):
     """Input schema for document search tool."""
     query: str = Field(description="Search query to find relevant documents")
-    limit: int = Field(default=5, description="Maximum number of results (default 5, max 50)")
+    limit: int = Field(default=10, description="Maximum number of results (default 10, max 50)")
+    min_score: float = Field(default=0.3, description="Minimum relevancy score to include (0-1, default 0.3)")
     mode: str = Field(default="hybrid", description="Search mode: hybrid, semantic, or keyword")
     file_ids: Optional[List[str]] = Field(default=None, description="Optional list of file IDs to filter")
+    expand_graph: bool = Field(default=False, description="Expand graph relationships (adds latency, default false)")
 
 
 class SearchResultItem(BaseModel):
@@ -41,15 +46,18 @@ class DocumentSearchOutput(BaseModel):
 async def search_documents(
     ctx: RunContext[BusiboxDeps],
     query: str,
-    limit: int = 5,
+    limit: int = 10,
+    min_score: float = 0.3,
     mode: str = "hybrid",
     file_ids: Optional[List[str]] = None,
+    expand_graph: bool = False,
 ) -> DocumentSearchOutput:
     """
     Search through user documents to find relevant information.
     
     This tool performs semantic, keyword, or hybrid search across the user's
-    document library. Results are automatically filtered based on user permissions.
+    document library. Results are automatically filtered based on user permissions
+    and a minimum relevancy score threshold.
     
     When called from a document-scoped chat, file_ids are automatically injected
     from the application context so the search is restricted to the relevant documents.
@@ -57,9 +65,11 @@ async def search_documents(
     Args:
         ctx: RunContext with authenticated BusiboxClient
         query: Search query string
-        limit: Maximum number of results (default: 5, max: 50)
+        limit: Maximum number of results (default: 10, max: 50)
+        min_score: Minimum relevancy score to include (default: 0.3)
         mode: Search mode - "hybrid" (recommended), "semantic", or "keyword"
         file_ids: Optional list of file IDs to restrict search
+        expand_graph: Whether to expand graph relationships (default: False)
     """
     try:
         effective_file_ids = file_ids
@@ -72,13 +82,14 @@ async def search_documents(
                     extra={"count": len(effective_file_ids)},
                 )
 
+        capped_limit = min(limit, 50)
         response = await ctx.deps.busibox_client.search(
             query=query,
-            top_k=min(limit, 50),
+            top_k=capped_limit,
             mode=mode,
             file_ids=effective_file_ids,
             rerank=True,
-            expand_graph=True,
+            expand_graph=expand_graph,
         )
         
         results = response.get("results", [])
@@ -90,20 +101,58 @@ async def search_documents(
                 context="No relevant documents found for your query.",
                 results=[],
             )
+
+        # Filter by minimum relevancy score
+        relevant_results = [r for r in results if r.get("score", 0.0) >= min_score]
+
+        # Adaptive fetching: if all results score above the high-relevancy threshold
+        # and we got exactly `limit` back, there may be more good results -- fetch again.
+        if (
+            relevant_results
+            and len(relevant_results) == len(results)
+            and all(r.get("score", 0.0) >= HIGH_RELEVANCY_THRESHOLD for r in relevant_results)
+            and len(results) >= capped_limit
+            and capped_limit * ADAPTIVE_MULTIPLIER <= 50
+        ):
+            logger.info(
+                "document_search: all results highly relevant, fetching additional batch",
+                extra={"original_limit": capped_limit, "new_limit": capped_limit * ADAPTIVE_MULTIPLIER},
+            )
+            expanded_response = await ctx.deps.busibox_client.search(
+                query=query,
+                top_k=capped_limit * ADAPTIVE_MULTIPLIER,
+                mode=mode,
+                file_ids=effective_file_ids,
+                rerank=True,
+                expand_graph=expand_graph,
+            )
+            expanded_results = expanded_response.get("results", [])
+            if expanded_results:
+                relevant_results = [r for r in expanded_results if r.get("score", 0.0) >= min_score]
+                response = expanded_response
+
+        if not relevant_results:
+            return DocumentSearchOutput(
+                found=False,
+                result_count=0,
+                context="Search returned results but none met the relevancy threshold.",
+                results=[],
+            )
         
         formatted_results = []
         context_parts = []
         
-        for idx, result in enumerate(results, 1):
+        for idx, result in enumerate(relevant_results, 1):
             fid = result.get("file_id", "unknown")
             fname = result.get("filename") or f"Document {fid[:8]}"
             page_num = result.get("page_number") if result.get("page_number", 0) > 0 else None
+            score = result.get("score", 0.0)
 
             result_item = SearchResultItem(
                 file_id=fid,
                 filename=fname,
                 text=result.get("text", ""),
-                score=result.get("score", 0.0),
+                score=score,
                 page_number=page_num,
                 chunk_index=result.get("chunk_index", 0),
             )
@@ -115,7 +164,7 @@ async def search_documents(
             source_ref = ", ".join(source_parts)
 
             context_parts.append(
-                f"--- Source {idx} [{source_ref}] (file_id:{fid}) ---\n{result.get('text', '')}"
+                f"--- Source {idx} [{source_ref}] (score:{score:.2f}, file_id:{fid}) ---\n{result.get('text', '')}"
             )
         
         full_context = "\n\n".join(context_parts)
