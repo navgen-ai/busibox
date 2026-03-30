@@ -526,12 +526,12 @@ async function handleRequest(req, res) {
         }
 
         const state = apps.get(app);
-        if (state.mode === mode) {
+        if (state.mode === mode && !body.force) {
           sendJson(res, 200, { success: true, data: { changed: false, mode } });
           return;
         }
 
-        managerLog(`Switching ${app} to ${mode} mode...`);
+        managerLog(`${body.force && state.mode === mode ? 'Rebuilding' : 'Switching'} ${app} to ${mode} mode...`);
         await stopApp(app);
 
         if (mode === 'prod') {

@@ -3966,6 +3966,7 @@ class AppModeRequest(BaseModel):
     app: str | None = None
     mode: str | None = None
     allApps: str | None = None
+    force: bool | None = None
 
 
 class AppRestartRequest(BaseModel):
@@ -3996,6 +3997,8 @@ async def set_core_apps_dev_mode(
     elif req.app and req.mode:
         body["app"] = req.app
         body["mode"] = req.mode
+        if req.force:
+            body["force"] = True
     else:
         raise HTTPException(status_code=400, detail="Provide {app, mode} or {allApps}")
 
