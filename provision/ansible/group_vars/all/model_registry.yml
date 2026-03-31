@@ -393,7 +393,7 @@ model_purposes:
   default: "qwen3.5-35b-vllm"
   agent: "qwen3.5-35b-vllm"
   chat: "qwen3.5-35b-vllm"
-  research: "agent"
+  research: "qwen3.5-35b-vllm"
   tool_calling: "agent"
   vision: "agent"
   parsing: "chat"
@@ -413,6 +413,8 @@ model_purposes_dev:
   test: "qwen3.5-0.8b-mlx"          # Same as fast
   default: "qwen3.5-4b-mlx"         # Same as agent
   agent: "qwen3.5-4b-mlx"         # Beats Qwen3-30B on GPQA, 262K ctx, vision+tools
+  chat: "qwen3.5-4b-mlx"          # Same model as agent, thinking disabled at app level
+  research: "qwen3.5-4b-mlx"      # Same model as agent, longer thinking budget at app level
   image: "flux2-klein-4b-mlx"       # MLX local FLUX
   transcribe: "whisper-tiny-mlx"     # Whisper Tiny ~150 MB for dev
   voice: "kokoro-82m-mlx"           # Kokoro MLX

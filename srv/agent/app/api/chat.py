@@ -34,8 +34,10 @@ from app.services.dispatcher_service import route_query
 from app.services.model_selector import select_model_and_tools, list_available_models, ModelCapabilities
 from app.services.chat_executor import execute_chat, execute_chat_stream
 from app.services.insights_generator import (
+    ConversationInsight,
     generate_and_store_insights,
     identify_knowledge_gaps,
+    resolve_pending_question,
     should_generate_insights,
 )
 from app.services.insights_service import ChatInsight
@@ -151,19 +153,66 @@ async def _generate_insights_and_pending_question(
             user_id=user_id,
             limit=250,
         )
-        # Refresh pending profile prompts each chat cycle: remove stale unresolved
-        # prompts, then compute whether a new question is still needed.
+        # Before deleting pending questions, check if the user answered any of them.
+        # Run resolution in parallel with the rest of the flow for efficiency.
         non_pending_insights: List[Dict[str, Any]] = []
+        pending_questions_to_resolve: List[Dict[str, Any]] = []
         for insight in all_insights:
             if str(insight.get("category", "")) == "pending_question":
-                insight_id = str(insight.get("id", ""))
-                if insight_id:
-                    try:
-                        insights_service.delete_insight(insight_id=insight_id, user_id=user_id)
-                    except Exception as exc:
-                        logger.warning("Failed to delete stale pending question %s: %s", insight_id, exc)
+                pending_questions_to_resolve.append(insight)
                 continue
             non_pending_insights.append(insight)
+
+        # Resolve answers from user messages for each pending question (in parallel).
+        resolved_insights: List[ConversationInsight] = []
+        if pending_questions_to_resolve:
+            resolve_tasks = [
+                resolve_pending_question(
+                    pending_question_content=str(pq.get("content", "")),
+                    messages=messages,
+                    conversation_id=str(conversation.id),
+                    user_id=user_id,
+                )
+                for pq in pending_questions_to_resolve
+            ]
+            resolve_results = await asyncio.gather(*resolve_tasks, return_exceptions=True)
+            for result in resolve_results:
+                if isinstance(result, ConversationInsight):
+                    resolved_insights.append(result)
+
+        # Store resolved answers as proper profile insights.
+        if resolved_insights:
+            for resolved in resolved_insights:
+                embedding = await insights_service.generate_embedding(
+                    resolved.content,
+                    user_id=user_id,
+                    authorization=user_token,
+                )
+                chat_insight = ChatInsight(
+                    id=str(uuid.uuid4()),
+                    user_id=user_id,
+                    content=resolved.content,
+                    embedding=embedding,
+                    conversation_id=resolved.conversation_id,
+                    analyzed_at=int(datetime.now(timezone.utc).timestamp()),
+                    category=resolved.category,
+                )
+                insights_service.insert_insights([chat_insight])
+                logger.info(
+                    "Stored resolved pending question answer as %s insight: %s",
+                    resolved.category,
+                    resolved.content[:80],
+                )
+
+        # Now delete all old pending question insights.
+        for pq in pending_questions_to_resolve:
+            pq_id = str(pq.get("id", ""))
+            if pq_id:
+                try:
+                    insights_service.delete_insight(insight_id=pq_id, user_id=user_id)
+                except Exception as exc:
+                    logger.warning("Failed to delete stale pending question %s: %s", pq_id, exc)
+
         pending_question = await identify_knowledge_gaps(
             conversation=conversation,
             messages=messages,

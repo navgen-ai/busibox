@@ -1,7 +1,7 @@
 # LiteLLM Configuration - Generated from model_registry.yml
 # Environment: development
 # Backend: mlx
-# Generated: 2026-03-30T13:26:51-04:00
+# Generated: 2026-03-30T21:41:53-04:00
 # DO NOT EDIT - regenerate with: scripts/llm/generate-litellm-config.sh
 
 model_list:
@@ -38,39 +38,6 @@ model_list:
       multimodal: true
       tool_calling: true
 
-  - model_name: classify
-    litellm_params:
-      model: openai/mlx-community/Qwen3.5-0.8B-4bit
-      api_base: http://host.docker.internal:18081/v1
-      api_key: local
-    model_info:
-      display_name: "Classify"
-      description: "Tiny multimodal model (0.8B, 262K ctx, vision+tools+thinking)"
-      multimodal: true
-      tool_calling: true
-
-  - model_name: cleanup
-    litellm_params:
-      model: openai/mlx-community/Qwen3.5-4B-4bit
-      api_base: http://host.docker.internal:8080/v1
-      api_key: local
-    model_info:
-      display_name: "Cleanup"
-      description: "Primary dev agent — beats Qwen3-30B on GPQA, 262K ctx, vision+tools"
-      multimodal: true
-      tool_calling: true
-
-  - model_name: parsing
-    litellm_params:
-      model: openai/mlx-community/Qwen3.5-4B-4bit
-      api_base: http://host.docker.internal:8080/v1
-      api_key: local
-    model_info:
-      display_name: "Parsing"
-      description: "Primary dev agent — beats Qwen3-30B on GPQA, 262K ctx, vision+tools"
-      multimodal: true
-      tool_calling: true
-
   - model_name: agent
     litellm_params:
       model: openai/mlx-community/Qwen3.5-4B-4bit
@@ -93,13 +60,13 @@ model_list:
       multimodal: true
       tool_calling: true
 
-  - model_name: tool_calling
+  - model_name: research
     litellm_params:
       model: openai/mlx-community/Qwen3.5-4B-4bit
       api_base: http://host.docker.internal:8080/v1
       api_key: local
     model_info:
-      display_name: "Tool Calling"
+      display_name: "Research"
       description: "Primary dev agent — beats Qwen3-30B on GPQA, 262K ctx, vision+tools"
       multimodal: true
       tool_calling: true

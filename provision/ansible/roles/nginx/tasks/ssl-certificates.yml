@@ -2,12 +2,14 @@
 # SSL Certificate Discovery and Setup
 # Purpose: Find SSL certificates from ssl/ directory or generate self-signed
 # Priority:
-#   1. Exact domain match: {full_domain}.crt + {full_domain}.key (with cert/key verification)
-#   2. Wildcard parent match: {parent_domain}.crt + {parent_domain}.key (with cert/key verification)
+#   1. Files on disk in ssl/ directory (exact domain, then wildcard parent)
+#   2. Vault fallback: materialize from secrets.ssl_certificates (only if no files on disk)
 #   3. Self-signed fallback: Generate certificates
 #
 # Note: For each candidate, we verify that the certificate and key modulus match
 # before using them. This prevents deployment failures from mismatched cert/key pairs.
+# Files on disk always take priority over vault — vault materialization never overwrites
+# existing certificate files.
 
 - name: Determine SSL source directory
   set_fact:
@@ -31,47 +33,6 @@
     mode: "0755"
   delegate_to: localhost
   become: false
-
-- name: Materialize certificate from vault to SSL source dir
-  copy:
-    content: "{{ secrets.ssl_certificates.certificate }}"
-    dest: "{{ ssl_source_dir }}/{{ full_domain }}.crt"
-    mode: "0644"
-  delegate_to: localhost
-  become: false
-  when:
-    - secrets is defined
-    - secrets.ssl_certificates is defined
-    - secrets.ssl_certificates.certificate is defined
-    - (secrets.ssl_certificates.certificate | trim | length) > 0
-
-- name: Materialize private key from vault to SSL source dir
-  copy:
-    content: "{{ secrets.ssl_certificates.private_key }}"
-    dest: "{{ ssl_source_dir }}/{{ full_domain }}.key"
-    mode: "0600"
-  delegate_to: localhost
-  become: false
-  when:
-    - secrets is defined
-    - secrets.ssl_certificates is defined
-    - secrets.ssl_certificates.private_key is defined
-    - (secrets.ssl_certificates.private_key | trim | length) > 0
-
-- name: Materialize fullchain cert from vault to SSL source dir
-  copy:
-    content: "{{ secrets.ssl_certificates.certificate }}\n{{ secrets.ssl_certificates.chain }}"
-    dest: "{{ ssl_source_dir }}/{{ full_domain }}.fullchain.crt"
-    mode: "0644"
-  delegate_to: localhost
-  become: false
-  when:
-    - secrets is defined
-    - secrets.ssl_certificates is defined
-    - secrets.ssl_certificates.certificate is defined
-    - secrets.ssl_certificates.chain is defined
-    - (secrets.ssl_certificates.certificate | trim | length) > 0
-    - (secrets.ssl_certificates.chain | trim | length) > 0
 
 - name: Extract parent domain for wildcard lookup
   set_fact:
@@ -130,6 +91,87 @@
   delegate_to: localhost
   become: false
   when: parent_domain != full_domain
+
+# Determine if any cert files exist on disk already
+- name: Check if any certificate files were found on disk
+  set_fact:
+    ssl_files_found_on_disk: >-
+      {{
+        (exact_fullchain_stat.stat.exists | default(false) and exact_key_stat.stat.exists | default(false)) or
+        (exact_cert_stat.stat.exists | default(false) and exact_key_stat.stat.exists | default(false)) or
+        (wildcard_fullchain_stat.stat.exists | default(false) and wildcard_key_stat.stat.exists | default(false)) or
+        (wildcard_cert_stat.stat.exists | default(false) and wildcard_key_stat.stat.exists | default(false))
+      }}
+
+# Vault fallback: only materialize from vault when no cert files exist on disk
+- name: Materialize certificate from vault (no files found on disk)
+  copy:
+    content: "{{ secrets.ssl_certificates.certificate }}"
+    dest: "{{ ssl_source_dir }}/{{ full_domain }}.crt"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+  when:
+    - not ssl_files_found_on_disk
+    - secrets is defined
+    - secrets.ssl_certificates is defined
+    - secrets.ssl_certificates.certificate is defined
+    - (secrets.ssl_certificates.certificate | trim | length) > 0
+
+- name: Materialize private key from vault (no files found on disk)
+  copy:
+    content: "{{ secrets.ssl_certificates.private_key }}"
+    dest: "{{ ssl_source_dir }}/{{ full_domain }}.key"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when:
+    - not ssl_files_found_on_disk
+    - secrets is defined
+    - secrets.ssl_certificates is defined
+    - secrets.ssl_certificates.private_key is defined
+    - (secrets.ssl_certificates.private_key | trim | length) > 0
+
+- name: Materialize fullchain cert from vault (no files found on disk)
+  copy:
+    content: "{{ secrets.ssl_certificates.certificate }}\n{{ secrets.ssl_certificates.chain }}"
+    dest: "{{ ssl_source_dir }}/{{ full_domain }}.fullchain.crt"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+  when:
+    - not ssl_files_found_on_disk
+    - secrets is defined
+    - secrets.ssl_certificates is defined
+    - secrets.ssl_certificates.certificate is defined
+    - secrets.ssl_certificates.chain is defined
+    - (secrets.ssl_certificates.certificate | trim | length) > 0
+    - (secrets.ssl_certificates.chain | trim | length) > 0
+
+# Re-check file existence after potential vault materialization
+- name: Re-check exact domain certificate (with fullchain)
+  stat:
+    path: "{{ ssl_source_dir }}/{{ full_domain }}.fullchain.crt"
+  register: exact_fullchain_stat
+  delegate_to: localhost
+  become: false
+  when: not ssl_files_found_on_disk
+
+- name: Re-check exact domain certificate (without fullchain)
+  stat:
+    path: "{{ ssl_source_dir }}/{{ full_domain }}.crt"
+  register: exact_cert_stat
+  delegate_to: localhost
+  become: false
+  when: not ssl_files_found_on_disk
+
+- name: Re-check exact domain key
+  stat:
+    path: "{{ ssl_source_dir }}/{{ full_domain }}.key"
+  register: exact_key_stat
+  delegate_to: localhost
+  become: false
+  when: not ssl_files_found_on_disk
 
 # Verify cert/key pairs match (modulus comparison)
 - name: Verify exact fullchain cert matches key

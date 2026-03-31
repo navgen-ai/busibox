@@ -445,6 +445,103 @@ def get_profile_completeness(existing_insights: List[Dict[str, Any]]) -> Dict[st
     }
 
 
+async def resolve_pending_question(
+    pending_question_content: str,
+    messages: List[Message],
+    conversation_id: str,
+    user_id: str,
+) -> Optional[ConversationInsight]:
+    """
+    Check if the user answered a pending profile question in recent messages.
+
+    Uses the LLM to determine whether any recent user message contains an
+    answer to the pending question and, if so, extracts a profile insight.
+
+    Returns a ConversationInsight (category=fact/preference) if an answer was
+    found, or None if the question remains unanswered.
+    """
+    recent_user_messages = [
+        str(msg.content or "").strip()
+        for msg in messages[-8:]
+        if msg.role == "user" and msg.content
+    ]
+    if not recent_user_messages:
+        return None
+
+    user_text = "\n".join(f"- {m[:300]}" for m in recent_user_messages)
+
+    prompt = (
+        "A profile question was previously asked to the user:\n"
+        f'Question: "{pending_question_content}"\n\n'
+        "Here are the user's recent messages:\n"
+        f"{user_text}\n\n"
+        "Does any message contain an answer (even partial) to the question?\n\n"
+        "If YES, respond with JSON:\n"
+        "  For factual information (location, job, name, etc.):\n"
+        "    {\"answered\": true, \"insight\": \"User is based in Boston\", \"category\": \"fact\"}\n"
+        "  For preferences or style choices (communication style, format preferences, etc.):\n"
+        "    {\"answered\": true, \"insight\": \"User prefers detailed responses\", \"category\": \"preference\"}\n\n"
+        "Choose the category that best matches the answer:\n"
+        "  - 'fact' for verifiable personal information (location, role, experience, etc.)\n"
+        "  - 'preference' for subjective choices and style (preferred format, communication style, interests, etc.)\n\n"
+        "If NO answer is found, respond with: {\"answered\": false}\n"
+        "Return ONLY valid JSON."
+    )
+
+    try:
+        from busibox_common.llm import get_client
+
+        client = get_client()
+        response = await client.chat_completion(
+            model="fast",
+            messages=[
+                {"role": "system", "content": "You are a strict JSON generator. Return only valid JSON."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+        )
+        raw = response.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        if raw.startswith("```json"):
+            raw = raw[7:]
+        if raw.startswith("```"):
+            raw = raw[3:]
+        if raw.endswith("```"):
+            raw = raw[:-3]
+        raw = raw.strip()
+        if not raw.startswith("{"):
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                raw = raw[start:end + 1]
+
+        parsed = json.loads(raw)
+        if not parsed.get("answered"):
+            return None
+
+        insight_content = str(parsed.get("insight", "")).strip()
+        category = str(parsed.get("category", "fact")).strip()
+        if category not in ("fact", "preference"):
+            category = "fact"
+        if not insight_content or len(insight_content) < 8:
+            return None
+
+        logger.info(
+            "Resolved pending question answer: %s -> %s",
+            pending_question_content[:60],
+            insight_content[:80],
+        )
+        return ConversationInsight(
+            content=insight_content,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            importance=0.9,
+            category=category,
+        )
+    except Exception as exc:
+        logger.warning("Failed to resolve pending question: %s", exc)
+        return None
+
+
 async def identify_knowledge_gaps(
     conversation: Conversation,
     messages: List[Message],
@@ -470,6 +567,28 @@ async def identify_knowledge_gaps(
     ]
     if existing_pending:
         return None
+
+    # If the assistant already asked a profile question in the recent conversation,
+    # don't generate another one — the user may have answered, ignored, or moved on.
+    recent_assistant_messages = [
+        str(msg.content or "").lower()
+        for msg in messages[-6:]
+        if msg.role == "assistant"
+    ]
+    profile_question_markers = [
+        "quick profile question",
+        "quick preference check",
+        "what city or region",
+        "what kind of work do you do",
+        "do you prefer concise",
+        "what language should i default",
+        "what timezone should i assume",
+        "what topics do you most want",
+    ]
+    for assistant_msg in recent_assistant_messages:
+        if any(marker in assistant_msg for marker in profile_question_markers):
+            logger.info("Skipping knowledge gap question: assistant already asked a profile question recently")
+            return None
 
     fallback_questions = {
         "location": "Quick profile question: what city or region are you usually based in?",
@@ -543,12 +662,18 @@ async def identify_knowledge_gaps(
     except Exception as exc:
         logger.warning("Knowledge-gap question generation fallback: %s", exc)
 
-    # Guard against near-duplicate pending questions across user's memory.
+    # Guard against near-duplicate pending questions by checking recent assistant messages.
+    recent_assistant_contents = [
+        {"content": str(msg.content or "")}
+        for msg in messages[-10:]
+        if msg.role == "assistant" and msg.content
+    ]
     if is_similar_to_existing(
         question_text,
-        [i for i in existing if str(i.get("category", "")) == "pending_question"],
-        similarity_threshold=0.75,
+        recent_assistant_contents,
+        similarity_threshold=0.65,
     ):
+        logger.info("Skipping knowledge gap question: too similar to a recent assistant message")
         return None
 
     return ConversationInsight(
@@ -1107,7 +1232,7 @@ async def generate_and_store_insights(
             insights_service.insert_insights(chat_insights)
             
             logger.info(
-                f"Stored {len(chat_insights)} new insights and updated {updated_count} for conversation {conversation.id} (had {existing_count} existing)",
+                f"Inserted {len(chat_insights)} new insights and updated {updated_count} for conversation {conversation.id} (had {existing_count} existing)",
                 extra={
                     "conversation_id": str(conversation.id),
                     "user_id": conversation.user_id,

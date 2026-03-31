@@ -36,21 +36,27 @@ logger = logging.getLogger(__name__)
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 _YES_NO_PATTERNS = [
-    "would you like me to",
-    "shall i",
-    "do you want me to",
-    "should i",
-    "would you like to",
+    re.compile(r"\bwould you like me to\b"),
+    re.compile(r"\bshall i\b"),
+    re.compile(r"\bdo you want me to\b"),
+    re.compile(r"\bshould i\b"),
+    re.compile(r"\bwould you like to\b(?!\s+\w+\s+or\b)"),
 ]
 
 
 def _ends_with_yes_no_question(text: str) -> bool:
-    """Return True if *text* ends with a question that looks like a yes/no prompt."""
+    """Return True if *text* ends with a genuinely binary yes/no question.
+
+    Excludes choice questions that contain "or" (e.g., "do you prefer X or Y?")
+    since those need open-ended answers, not yes/no buttons.
+    """
     stripped = text.rstrip()
     if not stripped.endswith("?"):
         return False
     last_sentence = stripped.rsplit("\n", 1)[-1].lower()
-    return any(p in last_sentence for p in _YES_NO_PATTERNS)
+    if " or " in last_sentence:
+        return False
+    return any(p.search(last_sentence) for p in _YES_NO_PATTERNS)
 
 
 def _strip_think_tags(text: str) -> tuple:
@@ -66,6 +72,12 @@ def _strip_think_tags(text: str) -> tuple:
 # Chat agent system prompt - focused on behavior, tools are auto-documented by PydanticAI
 CHAT_SYSTEM_PROMPT = """You are a versatile chat assistant that helps users by using available tools when appropriate.
 
+**Response Format:**
+- Do NOT include internal reasoning, analysis preamble, or "thinking out loud" in your response.
+- Begin your answer directly — no headers like "Thinking Process:", "Let me analyze...", or "I need to consider...".
+- If context or explanation is needed, weave it naturally into your answer.
+- Never start with a numbered analysis of what you're about to do.
+
 **Key Behaviors:**
 
 1. **Use Conversation Context**: The conversation history is provided with each message. Use it to:
@@ -74,16 +86,17 @@ CHAT_SYSTEM_PROMPT = """You are a versatile chat assistant that helps users by u
    - Maintain continuity across turns
 
 2. **Use Tools Proactively**: Don't wait for explicit tool requests:
-   - Questions about current events, news, prices → search the web
+   - Questions about products, current events, news, prices, etc. → search the web
    - Questions about weather → get weather
    - Questions about "my documents" or specific files → search documents
    - Requests for recurring tasks → create task
 
 3. **Gather Profile Context Opportunistically**:
-   - If pending follow-up questions or missing profile fields are provided in context, ask at most one short follow-up question naturally.
+   - ALWAYS address the user's actual message first. Profile questions are secondary.
+   - Only after fully answering the user's request, you may optionally append one short follow-up question from the pending list.
    - Do not interrupt urgent task completion; weave the question into natural transitions.
    - Keep profile prompts optional and friendly (e.g. "Quick preference check: do you prefer concise or detailed responses?")
-   - If a pending profile question is present, prioritize that phrasing.
+   - NEVER respond with just a profile question — always answer the user's request first.
 
 4. **Handle Ambiguous References**: When the user says "it", "that", "this topic", etc., look at the conversation history to understand what they're referring to.
 
@@ -155,6 +168,7 @@ class ChatAgent(BaseStreamingAgent):
             name="chat-agent",
             display_name="Chat Agent",
             instructions=CHAT_SYSTEM_PROMPT,
+            model="chat",
             tools=[
                 "web_search",
                 "get_weather",
@@ -170,7 +184,7 @@ class ChatAgent(BaseStreamingAgent):
                 "memory_save",
             ],
             execution_mode=ExecutionMode.RUN_ONCE,
-            tool_strategy=ToolStrategy.LLM_DRIVEN,  # Let LLM decide which tools to use
+            tool_strategy=ToolStrategy.LLM_DRIVEN,
         )
         super().__init__(config)
     
@@ -240,19 +254,18 @@ class ChatAgent(BaseStreamingAgent):
                 lines.append(f"- {filename} ({mime_type})")
             lines.append("")
 
+        lines.append(f"Current user message: {query}")
+
         if context.pending_questions:
-            lines.append("Pending follow-up prompts:")
+            lines.append("")
+            lines.append("(Optional, low-priority) After answering the user, you may append one of these profile follow-ups:")
             for item in context.pending_questions[:2]:
                 question = str(item.get("content", "")).strip()
                 if question:
                     lines.append(f"- {question}")
-            lines.append("")
 
         if context.missing_profile_fields:
             lines.append(f"Missing profile fields: {', '.join(context.missing_profile_fields)}")
-            lines.append("")
-
-        lines.append(f"Current user message: {query}")
         return "\n".join(lines)
 
     def _normalize_action_type(self, action_type: str) -> str:

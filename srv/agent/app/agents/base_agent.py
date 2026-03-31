@@ -604,12 +604,14 @@ class BaseStreamingAgent(StreamingAgent):
             model_settings=model_settings if model_settings else None,
         )
     
-    _THINKING_DISABLED_MODELS = {"fast", "test"}
+    _THINKING_DISABLED_MODELS = {"fast", "test", "chat"}
     _FRONTIER_MODEL_PREFIXES = {"frontier", "claude", "gpt", "o1", "o3", "gemini"}
     _THINKING_BUDGET_TOKENS: Dict[str, int] = {
         "default": 512,
         "chat": 512,
+        "agent": 1024,
         "complex": 2048,
+        "research": 4096,
     }
     _DEFAULT_THINKING_BUDGET = 512
 
@@ -617,6 +619,7 @@ class BaseStreamingAgent(StreamingAgent):
         "default": "medium",
         "chat": "medium",
         "complex": "high",
+        "research": "high",
         "frontier": "high",
         "frontier-fast": "medium",
     }
@@ -2554,8 +2557,8 @@ class BaseStreamingAgent(StreamingAgent):
             parts.append("")
 
         if context.pending_questions:
-            parts.append("## Pending Follow-up Questions")
-            parts.append("If appropriate, ask one concise follow-up question naturally before or after answering:")
+            parts.append("## Optional Profile Follow-ups (low priority)")
+            parts.append("After fully answering the user's request, you may optionally append ONE of these questions. NEVER replace or skip the user's request to ask these instead:")
             for item in context.pending_questions[:3]:
                 question = str(item.get("content", "")).strip()
                 if question:

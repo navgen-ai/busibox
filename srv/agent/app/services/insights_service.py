@@ -359,15 +359,30 @@ class InsightsService:
         
         # Validate embeddings have correct dimension
         valid_insights = []
+        mismatched_insights = []
         for insight in insights:
             if len(insight.embedding) != expected_dim:
+                mismatched_insights.append(insight)
+                continue
+            valid_insights.append(insight)
+        
+        if not valid_insights and mismatched_insights:
+            actual_dim = len(mismatched_insights[0].embedding)
+            logger.warning(
+                f"All {len(mismatched_insights)} insights have dimension {actual_dim} "
+                f"but collection expects {expected_dim}. Recreating collection with new dimension."
+            )
+            utility.drop_collection(COLLECTION_NAME, using="insights")
+            self.collection = None
+            self.initialize_collection(embedding_dim=actual_dim)
+            valid_insights = mismatched_insights
+        elif mismatched_insights:
+            for insight in mismatched_insights:
                 logger.warning(
                     f"Skipping insight with invalid embedding dimension: "
                     f"got {len(insight.embedding)}, expected {expected_dim}, "
                     f"model: {insight.model_name}"
                 )
-                continue
-            valid_insights.append(insight)
         
         if not valid_insights:
             logger.warning("No valid insights to insert after dimension validation")

@@ -100,7 +100,7 @@ impl Executor for SshExecutor {
     fn sync_repo(&self, local_path: &Path) -> Result<()> {
         use std::process::{Command, Stdio};
 
-        let excludes: Vec<String> = [".git/", ".cursor/", ".vscode/", ".idea/", "ssl/"]
+        let excludes: Vec<String> = [".git/", ".cursor/", ".vscode/", ".idea/"]
             .iter()
             .flat_map(|e| vec!["--exclude".to_string(), e.to_string()])
             .collect();
@@ -110,6 +110,8 @@ impl Executor for SshExecutor {
             "rsync".to_string(),
             "-az".to_string(),
             "--delete".to_string(),
+            "--include=ssl/".to_string(),
+            "--include=ssl/**".to_string(),
             "--filter=:- .gitignore".to_string(),
         ];
         args.extend(excludes);
