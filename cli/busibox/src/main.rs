@@ -1420,7 +1420,7 @@ fn handle_admin_login(app: &mut App) {
 
             let env_export = if let Some(ref env_val) = busibox_env {
                 let escaped = env_val.replace('\'', "'\\''");
-                format!("export BUSIBOX_ENV='{escaped}'; ")
+                format!("export ENV='{escaped}'; export BUSIBOX_ENV='{escaped}'; ")
             } else {
                 String::new()
             };
@@ -1492,6 +1492,7 @@ fn handle_admin_login(app: &mut App) {
             cmd.env("ANSIBLE_VAULT_PASSWORD", vault_pw);
         }
         if let Some(ref env_val) = busibox_env {
+            cmd.env("ENV", env_val);
             cmd.env("BUSIBOX_ENV", env_val);
         }
         if let Some(ref backend_val) = busibox_backend {

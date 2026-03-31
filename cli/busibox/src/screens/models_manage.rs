@@ -1978,7 +1978,8 @@ fn apply_tier_inner(app: &mut App, deploy: bool) {
     }
 
     let env_prefix = format!(
-        "BUSIBOX_ENV={profile_environment} \
+        "ENV={profile_environment} \
+         BUSIBOX_ENV={profile_environment} \
          BUSIBOX_BACKEND={profile_backend} \
          CONTAINER_PREFIX={container_prefix} \
          VAULT_PREFIX={vault_prefix} "

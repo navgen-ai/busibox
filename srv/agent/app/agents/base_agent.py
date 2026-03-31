@@ -1487,9 +1487,20 @@ class BaseStreamingAgent(StreamingAgent):
                     async def monitored_tool(*args, _tool_name=tool_name, _tool=wrapped_tool, **kwargs):
                         if cancel.is_set():
                             return ""
+                        input_payload: Dict[str, Any]
+                        if kwargs:
+                            input_payload = dict(kwargs)
+                        elif args:
+                            input_payload = {"args": [str(a) for a in args]}
+                        else:
+                            input_payload = {}
                         await stream(tool_start(
                             source=_tool_name,
                             message=f"Using {_tool_name}...",
+                            data={
+                                "tool_name": _tool_name,
+                                "input": input_payload,
+                            },
                         ))
                         t_tool = time.monotonic()
                         try:
@@ -1878,14 +1889,10 @@ class BaseStreamingAgent(StreamingAgent):
                 break
 
             if isinstance(event, PartStartEvent):
-                part = event.part
-                if hasattr(part, "part_kind"):
-                    if part.part_kind == "tool-call":
-                        tool_name = getattr(part, "tool_name", "tool")
-                        await stream(tool_start(
-                            source=tool_name,
-                            message=f"Using {tool_name}...",
-                        ))
+                # Tool start/result events are emitted by monitored_tool() in
+                # _execute_llm_driven. Emitting them again here creates duplicate
+                # timeline entries and can desync frontend pending-tool state.
+                pass
 
             elif isinstance(event, PartDeltaEvent):
                 delta = event.delta
@@ -1896,14 +1903,24 @@ class BaseStreamingAgent(StreamingAgent):
                     await _process_chunk(chunk)
 
             elif isinstance(event, FunctionToolResultEvent):
-                tool_name = getattr(event.tool_call_part, "tool_name", "tool")
+                # PydanticAI event schema can vary by version; avoid hard
+                # dependence on tool_call_part to prevent runtime crashes.
+                tool_name = (
+                    getattr(event, "tool_name", None)
+                    or getattr(getattr(event, "tool_call_part", None), "tool_name", None)
+                    or getattr(getattr(event, "tool_call", None), "tool_name", None)
+                    or "tool"
+                )
                 result_str = str(event.result.content) if hasattr(event.result, "content") else str(event.result)
-                context.tool_results[tool_name] = result_str
-                await stream(tool_result(
-                    source=tool_name,
-                    message=result_str[:500],
-                    data={"result": result_str[:2000]},
-                ))
+                # monitored_tool() already emits tool_result; only fall back here
+                # if the tool wasn't captured in the wrapped callback path.
+                if tool_name not in context.tool_results:
+                    context.tool_results[tool_name] = result_str
+                    await stream(tool_result(
+                        source=tool_name,
+                        message=result_str[:500],
+                        data={"result": result_str[:2000]},
+                    ))
 
             elif isinstance(event, AgentRunResultEvent):
                 output = event.result.output

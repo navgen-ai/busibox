@@ -1347,7 +1347,7 @@ fn spawn_action_worker(app: &mut App, service_name: &str, action: &str) {
             .map(|vp| format!("VAULT_PREFIX={vp} "))
             .unwrap_or_default();
         let make_args = format!(
-            "{site_domain_export}{llm_backend_export}{vault_prefix_export}manage SERVICE={service} ACTION={action} BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
+            "{site_domain_export}{llm_backend_export}{vault_prefix_export}manage SERVICE={service} ACTION={action} ENV={env_val} BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
         );
         let _ = tx.send(ManageUpdate::Log(format!("Running: make {make_args}")));
 
@@ -1410,7 +1410,7 @@ fn spawn_action_worker(app: &mut App, service_name: &str, action: &str) {
                             .map(|vp| format!("VAULT_PREFIX={vp} "))
                             .unwrap_or_default();
                         let vllm_args = format!(
-                            "{sd}{lb}{vp_export}manage SERVICE=vllm ACTION=redeploy BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
+                            "{sd}{lb}{vp_export}manage SERVICE=vllm ACTION=redeploy ENV={env_val} BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
                         );
                         let _ = tx.send(ManageUpdate::Log(format!("Running: make {vllm_args}")));
 
@@ -1570,7 +1570,7 @@ fn spawn_log_tail_worker(app: &mut App) {
             .map(|b| format!("LLM_BACKEND={b} "))
             .unwrap_or_default();
         let make_args = format!(
-            "{site_domain_export}{llm_backend_export}manage SERVICE={make_svc} ACTION=logs BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
+            "{site_domain_export}{llm_backend_export}manage SERVICE={make_svc} ACTION=logs ENV={env_val} BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
         );
 
         let child_result: std::io::Result<std::process::Child> = if is_remote {
@@ -1846,7 +1846,7 @@ pub fn spawn_install_with_env(app: &mut App, services: &str, extra_env: &str) {
             .map(|b| format!("LLM_BACKEND={b} "))
             .unwrap_or_default();
         let make_args = format!(
-            "{extra_env} {site_domain_export}{llm_backend_export}install SERVICE={services} BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
+            "{extra_env} {site_domain_export}{llm_backend_export}install SERVICE={services} ENV={env_val} BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
         );
         let _ = tx.send(ManageUpdate::Log(format!("Running: make {make_args}")));
 

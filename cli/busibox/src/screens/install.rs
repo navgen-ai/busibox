@@ -1433,7 +1433,7 @@ fn spawn_install_worker(app: &mut App) {
             if let Some(ref ov) = app_k8s_overlay {
                 env_prefix.push_str(&format!("K8S_OVERLAY={ov} "));
             }
-            env_prefix.push_str(&format!("BUSIBOX_ENV={profile_environment} CONTAINER_PREFIX={container_prefix} VAULT_PREFIX={vault_prefix} "));
+            env_prefix.push_str(&format!("ENV={profile_environment} BUSIBOX_ENV={profile_environment} CONTAINER_PREFIX={container_prefix} VAULT_PREFIX={vault_prefix} "));
             if let Some(ref backend) = profile_llm_backend {
                 env_prefix.push_str(&format!("LLM_BACKEND={backend} "));
             }
@@ -3379,7 +3379,7 @@ echo "✓ User-specific values applied"
                     });
                 }
 
-                let setup_cmd = format!("BUSIBOX_ENV={profile_environment} LLM_BACKEND=mlx bash scripts/make/install.sh --mlx-host-setup");
+                let setup_cmd = format!("ENV={profile_environment} BUSIBOX_ENV={profile_environment} LLM_BACKEND=mlx bash scripts/make/install.sh --mlx-host-setup");
 
                 let result: color_eyre::Result<(i32, String)> = if is_remote {
                     if let Some((ref host, ref user, ref key)) = ssh_details {
@@ -3499,7 +3499,7 @@ echo "✓ User-specific values applied"
                     });
                 }
 
-                let make_args = format!("BUSIBOX_ENV={profile_environment} BUSIBOX_BACKEND={profile_backend} VAULT_PREFIX={vault_prefix} CONTAINER_PREFIX={container_prefix} validate-env");
+                let make_args = format!("ENV={profile_environment} BUSIBOX_ENV={profile_environment} BUSIBOX_BACKEND={profile_backend} VAULT_PREFIX={vault_prefix} CONTAINER_PREFIX={container_prefix} validate-env");
                 let tx_stream = tx.clone();
                 let on_line = |line: &str| {
                     let _ = tx_stream.send(InstallUpdate::Log(format!("  {line}")));
