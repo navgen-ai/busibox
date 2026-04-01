@@ -353,6 +353,11 @@ TOOL_CLASSES: Dict[str, Dict[str, Any]] = {
     "get_data_document": {"class": "fast", "timeout": 10},
     "list_data_documents": {"class": "fast", "timeout": 10},
     "get_facets": {"class": "fast", "timeout": 10},
+    "data_document": {"class": "fast", "timeout": 15},
+    "insert_records": {"class": "fast", "timeout": 15},
+    "update_records": {"class": "fast", "timeout": 15},
+    "delete_records": {"class": "fast", "timeout": 15},
+    "create_data_document": {"class": "fast", "timeout": 15},
     "graph_query": {"class": "fast", "timeout": 15},
     "graph_explore": {"class": "fast", "timeout": 15},
     "graph_relate": {"class": "fast", "timeout": 15},
@@ -362,6 +367,7 @@ TOOL_CLASSES: Dict[str, Dict[str, Any]] = {
     "calendar_list_events": {"class": "fast", "timeout": 15},
     "calendar_create_event": {"class": "fast", "timeout": 15},
     "get_weather": {"class": "fast", "timeout": 15},
+    "rag_query": {"class": "fast", "timeout": 15},
     "web_search": {"class": "slow", "timeout": 30},
     "web_scraper": {"class": "slow", "timeout": 45},
     "playwright_browser": {"class": "slow", "timeout": 60},
@@ -1817,8 +1823,13 @@ class BaseStreamingAgent(StreamingAgent):
         # enable_thinking=True, so the model starts generating thinking
         # content immediately without emitting an opening <think> tag.
         # Frontier models (Claude, OpenAI) don't use <think> tags.
+        # When tools are active (usage_limits set), the MLX server disables
+        # thinking via enable_thinking=False, so the model won't emit thinking
+        # content — start in content mode to avoid buffering the response.
+        has_tools = usage_limits is not None
         starts_in_think = (
-            not self._should_disable_thinking()
+            not has_tools
+            and not self._should_disable_thinking()
             and not self._is_frontier_model()
         )
 
@@ -2278,9 +2289,13 @@ class BaseStreamingAgent(StreamingAgent):
         if context.metadata:
             parts.append("")
             parts.append("## Application Context")
-            parts.append("The following metadata was provided by the calling application. Use these values when making tool calls:")
+            parts.append("The following metadata was provided by the calling application.")
+            parts.append("IMPORTANT: Any key ending in 'DocumentId' is a UUID you MUST pass as the document_id parameter to query_data, aggregate_data, get_facets, etc. Do NOT invent document IDs.")
             for key, value in context.metadata.items():
-                parts.append(f"- **{key}**: {value}")
+                if str(key).endswith("DocumentId"):
+                    parts.append(f"- **{key}** (use as document_id): `{value}`")
+                else:
+                    parts.append(f"- **{key}**: {value}")
 
         if context.relevant_insights:
             parts.append("")

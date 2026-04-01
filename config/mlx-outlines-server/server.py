@@ -175,10 +175,15 @@ def _render_chat_prompt(
     if tools:
         extra_kwargs = {**extra_kwargs, "tools": tools}
     try:
-        return tokenizer.apply_chat_template(
+        result = tokenizer.apply_chat_template(
             msg_dicts, tokenize=False, add_generation_prompt=True, **extra_kwargs
         )
-    except Exception:
+        if tools:
+            logger.info(f"Native chat template rendered successfully with {len(tools)} tools")
+            logger.debug(f"Template output (last 300 chars): ...{result[-300:]}")
+        return result
+    except Exception as tmpl_err:
+        logger.warning(f"Chat template failed, using fallback: {tmpl_err}")
         parts = []
         pending_tool_results: list[str] = []
         for i, m in enumerate(messages):
@@ -535,14 +540,14 @@ def _extract_tool_calls(raw_output: str) -> Optional[List[Dict[str, Any]]]:
             except Exception:
                 pass
 
-        # Try XML format: <function_name><param>val</param>...</function_name>
-        fn_match = re.match(r"<([a-zA-Z_][a-zA-Z0-9_]*)>\s*([\s\S]*?)\s*</\1>", tc_body)
-        if fn_match:
-            fn_name = fn_match.group(1)
-            params_body = fn_match.group(2)
+        # Try Qwen3.5 attribute-style XML: <function=name><parameter=key>val</parameter></function>
+        attr_fn_match = re.match(r"<function=([a-zA-Z_][a-zA-Z0-9_]*)>\s*([\s\S]*?)\s*</function>", tc_body)
+        if attr_fn_match:
+            fn_name = attr_fn_match.group(1)
+            params_body = attr_fn_match.group(2)
             arguments: Dict[str, Any] = {}
             for param_match in re.finditer(
-                r"<([a-zA-Z_][a-zA-Z0-9_]*)>\s*([\s\S]*?)\s*</\1>", params_body
+                r"<parameter=([a-zA-Z_][a-zA-Z0-9_]*)>\s*([\s\S]*?)\s*</parameter>", params_body
             ):
                 param_name = param_match.group(1)
                 param_value_str = param_match.group(2).strip()
@@ -551,6 +556,24 @@ def _extract_tool_calls(raw_output: str) -> Optional[List[Dict[str, Any]]]:
                 except (json.JSONDecodeError, ValueError):
                     arguments[param_name] = param_value_str
             candidates.append({"name": fn_name, "arguments": arguments})
+            continue
+
+        # Try standard XML format: <function_name><param>val</param>...</function_name>
+        fn_match = re.match(r"<([a-zA-Z_][a-zA-Z0-9_]*)>\s*([\s\S]*?)\s*</\1>", tc_body)
+        if fn_match:
+            fn_name = fn_match.group(1)
+            params_body = fn_match.group(2)
+            arguments2: Dict[str, Any] = {}
+            for param_match in re.finditer(
+                r"<([a-zA-Z_][a-zA-Z0-9_]*)>\s*([\s\S]*?)\s*</\1>", params_body
+            ):
+                param_name = param_match.group(1)
+                param_value_str = param_match.group(2).strip()
+                try:
+                    arguments2[param_name] = json.loads(param_value_str)
+                except (json.JSONDecodeError, ValueError):
+                    arguments2[param_name] = param_value_str
+            candidates.append({"name": fn_name, "arguments": arguments2})
             continue
 
     # 1b) Fallback brace-counting for malformed <tool_call>{...}> variants
@@ -684,6 +707,10 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
         chat_template_kwargs=chat_kwargs or None,
     )
 
+    if tools_payload:
+        logger.info(f"Tool-calling request with {len(tools_payload)} tools")
+        logger.debug(f"Rendered prompt (last 500 chars): ...{prompt[-500:]}")
+
     rf = req.response_format
     use_json_schema = (
         rf is not None
@@ -692,25 +719,30 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
     )
     use_json_object = rf is not None and rf.type == "json_object"
 
-    # For tool-calling requests, generate full output then emit OpenAI-style
-    # tool_calls chunks. Token-by-token stream is kept for plain text only.
+    # For tool-calling requests, try full generation to extract structured
+    # tool calls. If the model produces tool calls, return them immediately.
+    # If it produces plain text instead, fall through to the normal streaming
+    # path below so the response gets proper token-level streaming.
     if req.stream and req.tools and not use_json_schema and not use_json_object:
         chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
         t0 = time.monotonic()
         try:
             content = _generate_plain(prompt, req)
+            logger.info(f"Tool-call raw output ({len(content)} chars): {content[:500]}")
             tool_calls = _extract_tool_calls(content)
             if tool_calls:
+                elapsed_ms = round((time.monotonic() - t0) * 1000)
+                logger.info(f"Extracted {len(tool_calls)} tool call(s) in {elapsed_ms}ms")
                 async def _stream_tool_result():
                     yield _build_stream_tool_chunk(chunk_id, req.model, tool_calls, finish_reason=None)
                     yield _build_stream_chunk(chunk_id, req.model, finish_reason="tool_calls")
                     yield "data: [DONE]\n\n"
-                elapsed_ms = round((time.monotonic() - t0) * 1000)
-                logger.info(f"Streamed tool call result in {elapsed_ms}ms")
                 return StreamingResponse(_stream_tool_result(), media_type="text/event-stream")
+            else:
+                logger.info(f"No tool calls extracted, falling through to streaming path")
         except Exception as e:
-            logger.error(f"Tool-call streaming generation failed: {e}", exc_info=True)
+            logger.error(f"Tool-call generation failed: {e}", exc_info=True)
 
     # Streaming is only supported for plain text generation (no grammar constraints)
     if req.stream and not use_json_schema and not use_json_object:
