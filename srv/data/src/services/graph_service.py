@@ -732,7 +732,10 @@ class GraphService:
                     to_id=document_id,
                 )
         
-        # Create relationships based on graphRelationships schema
+        # Create relationships based on graphRelationships schema.
+        # When target_label is provided and the target node doesn't exist yet
+        # (e.g. department name "Engineering" rather than a record UUID), we
+        # auto-upsert a lightweight node so the relationship can be created.
         graph_rels = schema.get("graphRelationships", [])
         for rel_def in graph_rels:
             source_label = rel_def.get("source_label", graph_node_label)
@@ -743,15 +746,29 @@ class GraphService:
             if not (target_field and relationship):
                 continue
             
+            seen_targets: set = set()
             for record in records:
                 record_id = record.get("id")
                 target_id = record.get(target_field)
-                if record_id and target_id:
-                    await self.create_relationship(
-                        from_id=record_id,
-                        rel_type=relationship,
-                        to_id=target_id,
+                if not (record_id and target_id):
+                    continue
+                
+                # Auto-create target nodes for name-based references
+                if target_label and target_id not in seen_targets:
+                    seen_targets.add(target_id)
+                    await self.upsert_node(
+                        label=target_label,
+                        properties={"name": target_id},
+                        node_id=target_id,
+                        owner_id=owner_id,
+                        visibility=visibility,
                     )
+                
+                await self.create_relationship(
+                    from_id=record_id,
+                    rel_type=relationship,
+                    to_id=target_id,
+                )
         
         logger.info(
             "[GRAPH] Synced data document records",
