@@ -158,7 +158,7 @@ async def graph_query(
             error="Neo4j not connected",
         )
     
-    user_id = ctx.deps.user_id
+    user_id = ctx.deps.principal.sub
     
     try:
         terms = [t.strip().lower() for t in query.split() if len(t.strip()) > 2]
@@ -282,7 +282,7 @@ async def graph_explore(
             error="Neo4j not connected",
         )
     
-    user_id = ctx.deps.user_id
+    user_id = ctx.deps.principal.sub
     depth = min(max(depth, 1), 5)
     
     try:
@@ -408,7 +408,7 @@ async def graph_relate(
             error="Neo4j not connected",
         )
     
-    user_id = ctx.deps.user_id
+    user_id = ctx.deps.principal.sub
     safe_rel = _sanitize_label(relationship)
     
     if not safe_rel:

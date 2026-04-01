@@ -46,6 +46,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.run import AgentRunResultEvent
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.usage import UsageLimits
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.core import BusiboxDeps
@@ -345,6 +346,34 @@ TOOL_SCOPES: Dict[str, List[str]] = {
     "graph_relate": ["data.write"],
 }
 
+TOOL_CLASSES: Dict[str, Dict[str, Any]] = {
+    "document_search": {"class": "fast", "timeout": 15},
+    "query_data": {"class": "fast", "timeout": 15},
+    "aggregate_data": {"class": "fast", "timeout": 15},
+    "get_data_document": {"class": "fast", "timeout": 10},
+    "list_data_documents": {"class": "fast", "timeout": 10},
+    "get_facets": {"class": "fast", "timeout": 10},
+    "graph_query": {"class": "fast", "timeout": 15},
+    "graph_explore": {"class": "fast", "timeout": 15},
+    "graph_relate": {"class": "fast", "timeout": 15},
+    "memory_search": {"class": "fast", "timeout": 10},
+    "memory_save": {"class": "fast", "timeout": 10},
+    "search_users": {"class": "fast", "timeout": 10},
+    "calendar_list_events": {"class": "fast", "timeout": 15},
+    "calendar_create_event": {"class": "fast", "timeout": 15},
+    "get_weather": {"class": "fast", "timeout": 15},
+    "web_search": {"class": "slow", "timeout": 30},
+    "web_scraper": {"class": "slow", "timeout": 45},
+    "playwright_browser": {"class": "slow", "timeout": 60},
+    "generate_image": {"class": "slow", "timeout": 120},
+    "transcribe_audio": {"class": "slow", "timeout": 60},
+    "text_to_speech": {"class": "slow", "timeout": 180},
+    "send_notification": {"class": "slow", "timeout": 30},
+    "create_task": {"class": "slow", "timeout": 30},
+}
+
+TOOL_CLASS_DEFAULT: Dict[str, Any] = {"class": "slow", "timeout": 60}
+
 
 @dataclass
 class PipelineStep:
@@ -560,6 +589,8 @@ class AgentContext:
     response_schema: Optional[Dict[str, Any]] = None
     # Optional per-run token budget override.
     max_tokens: Optional[int] = None
+    # Deduplication cache for tool calls: maps (tool_name, args_json) -> result
+    _tool_call_dedup: Dict[str, Any] = field(default_factory=dict)
 
 
 class BaseStreamingAgent(StreamingAgent):
@@ -1365,7 +1396,8 @@ class BaseStreamingAgent(StreamingAgent):
 
             # Execute tool with timeout protection
             # Detect whether the tool function expects a RunContext `ctx`.
-            TOOL_TIMEOUT_SECONDS = 60
+            tool_class = TOOL_CLASSES.get(step.tool, TOOL_CLASS_DEFAULT)
+            tool_timeout_seconds = tool_class["timeout"]
             expects_ctx = "ctx" in tool_sig.parameters
             tool_scopes = TOOL_SCOPES.get(step.tool, [])
             logger.info(f"Executing tool {step.tool} with scopes={tool_scopes}, has_deps={context.deps is not None}")
@@ -1403,12 +1435,12 @@ class BaseStreamingAgent(StreamingAgent):
                     return await tool_func(**filtered_args)
 
             try:
-                result = await asyncio.wait_for(_run_tool(), timeout=TOOL_TIMEOUT_SECONDS)
+                result = await asyncio.wait_for(_run_tool(), timeout=tool_timeout_seconds)
             except asyncio.TimeoutError:
-                logger.error(f"Tool {step.tool} timed out after {TOOL_TIMEOUT_SECONDS}s")
+                logger.error(f"Tool {step.tool} timed out after {tool_timeout_seconds}s")
                 await stream(error(
                     source=step.tool,
-                    message=f"Tool {step.tool} timed out after {TOOL_TIMEOUT_SECONDS}s"
+                    message=f"Tool {step.tool} timed out after {tool_timeout_seconds}s"
                 ))
                 return None
             
@@ -1494,6 +1526,13 @@ class BaseStreamingAgent(StreamingAgent):
                             input_payload = {"args": [str(a) for a in args]}
                         else:
                             input_payload = {}
+
+                        # Deduplication: skip if identical call already made
+                        dedup_key = f"{_tool_name}:{json.dumps(input_payload, sort_keys=True, default=str)}"
+                        if dedup_key in context._tool_call_dedup:
+                            logger.info(f"Tool {_tool_name} dedup hit, returning cached result")
+                            return context._tool_call_dedup[dedup_key]
+
                         await stream(tool_start(
                             source=_tool_name,
                             message=f"Using {_tool_name}...",
@@ -1502,15 +1541,20 @@ class BaseStreamingAgent(StreamingAgent):
                                 "input": input_payload,
                             },
                         ))
+                        tool_class = TOOL_CLASSES.get(_tool_name, TOOL_CLASS_DEFAULT)
+                        timeout_s = tool_class["timeout"]
                         t_tool = time.monotonic()
                         try:
-                            result = await _tool(*args, **kwargs)
+                            result = await asyncio.wait_for(
+                                _tool(*args, **kwargs), timeout=timeout_s
+                            )
                             tool_ms = round((time.monotonic() - t_tool) * 1000)
                             logger.info(
                                 f"Tool {_tool_name} complete",
                                 extra={"elapsed_ms": tool_ms},
                             )
                             context.tool_results[_tool_name] = result
+                            context._tool_call_dedup[dedup_key] = result
                             result_data = (
                                 result.model_dump()
                                 if hasattr(result, "model_dump")
@@ -1524,6 +1568,16 @@ class BaseStreamingAgent(StreamingAgent):
                                 data=result_data,
                             ))
                             return result
+                        except asyncio.TimeoutError:
+                            tool_ms = round((time.monotonic() - t_tool) * 1000)
+                            logger.error(
+                                f"Tool {_tool_name} timed out after {timeout_s}s ({tool_ms}ms elapsed)"
+                            )
+                            await stream(error(
+                                source=_tool_name,
+                                message=f"{_tool_name} timed out after {timeout_s}s",
+                            ))
+                            raise RuntimeError(f"{_tool_name} timed out after {timeout_s}s")
                         except Exception as e:
                             logger.error(
                                 f"Tool {_tool_name} failed after {round((time.monotonic() - t_tool) * 1000)}ms: {e}",
@@ -1711,6 +1765,7 @@ class BaseStreamingAgent(StreamingAgent):
                 agent, query, context, stream, cancel,
                 model_settings=model_settings if model_settings else None,
                 message_history=msg_history,
+                usage_limits=UsageLimits(tool_calls_limit=12),
             )
             logger.info(
                 f"{self.name} LLM streaming execution complete",
@@ -1739,6 +1794,7 @@ class BaseStreamingAgent(StreamingAgent):
         *,
         model_settings: Optional[Dict[str, Any]] = None,
         message_history: Optional[List[ModelMessage]] = None,
+        usage_limits: Optional[UsageLimits] = None,
     ) -> str:
         """Stream LLM execution events in real-time via run_stream_events().
 
@@ -1748,6 +1804,9 @@ class BaseStreamingAgent(StreamingAgent):
         When *message_history* is provided it is forwarded to pydantic-ai so
         the LLM receives proper multi-turn user/assistant messages instead of a
         flattened context string.
+
+        When *usage_limits* is provided it caps the number of tool invocations
+        pydantic-ai will allow before forcing a final text response.
 
         Returns the final text output (with think tags stripped).
         """
@@ -1879,12 +1938,15 @@ class BaseStreamingAgent(StreamingAgent):
                         pending = pending[safe_len:]
                         break
 
-        async for event in agent.run_stream_events(
-            prompt,
-            deps=context.deps,
-            model_settings=model_settings,
-            message_history=message_history,
-        ):
+        run_kwargs: Dict[str, Any] = {
+            "deps": context.deps,
+            "model_settings": model_settings,
+            "message_history": message_history,
+        }
+        if usage_limits is not None:
+            run_kwargs["usage_limits"] = usage_limits
+
+        async for event in agent.run_stream_events(prompt, **run_kwargs):
             if cancel.is_set():
                 break
 

@@ -151,17 +151,25 @@ def _render_chat_prompt(
         if m.tool_call_id:
             item["tool_call_id"] = m.tool_call_id
         if m.tool_calls:
-            item["tool_calls"] = [
-                {
+            tool_call_dicts = []
+            for tc in m.tool_calls:
+                args_raw = tc.function.arguments or "{}"
+                if isinstance(args_raw, str):
+                    try:
+                        args_parsed = json.loads(args_raw)
+                    except (json.JSONDecodeError, TypeError):
+                        args_parsed = {}
+                else:
+                    args_parsed = args_raw
+                tool_call_dicts.append({
                     "id": tc.id,
                     "type": tc.type,
                     "function": {
                         "name": tc.function.name,
-                        "arguments": tc.function.arguments or "",
+                        "arguments": args_parsed,
                     },
-                }
-                for tc in m.tool_calls
-            ]
+                })
+            item["tool_calls"] = tool_call_dicts
         msg_dicts.append(item)
     extra_kwargs = chat_template_kwargs or {}
     if tools:
@@ -172,24 +180,45 @@ def _render_chat_prompt(
         )
     except Exception:
         parts = []
-        for m in messages:
+        pending_tool_results: list[str] = []
+        for i, m in enumerate(messages):
             if m.role == "system":
-                parts.append(f"<|system|>\n{m.content or ''}")
+                parts.append(f"<|im_start|>system\n{m.content or ''}<|im_end|>")
             elif m.role == "user":
-                parts.append(f"<|user|>\n{m.content or ''}")
+                parts.append(f"<|im_start|>user\n{m.content or ''}<|im_end|>")
             elif m.role == "assistant":
+                content = m.content or ""
                 if m.tool_calls:
+                    tc_parts = []
                     for tc in m.tool_calls:
-                        parts.append(
-                            "<|assistant|>\n"
-                            f"<tool_call>{json.dumps({'name': tc.function.name, 'arguments': tc.function.arguments or '{}'})}</tool_call>"
-                        )
+                        fn_name = tc.function.name
+                        args_raw = tc.function.arguments or "{}"
+                        try:
+                            args_dict = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                        except (json.JSONDecodeError, TypeError):
+                            args_dict = {}
+                        param_lines = []
+                        if isinstance(args_dict, dict):
+                            for k, v in args_dict.items():
+                                v_str = json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+                                param_lines.append(f"<{k}>\n{v_str}\n</{k}>")
+                        params_block = "\n".join(param_lines)
+                        tc_parts.append(f"<tool_call>\n<{fn_name}>\n{params_block}\n</{fn_name}>\n</tool_call>")
+                    tc_text = "\n\n".join(tc_parts)
+                    if content.strip():
+                        parts.append(f"<|im_start|>assistant\n{content}\n\n{tc_text}<|im_end|>")
+                    else:
+                        parts.append(f"<|im_start|>assistant\n{tc_text}<|im_end|>")
                 else:
-                    parts.append(f"<|assistant|>\n{m.content or ''}")
+                    parts.append(f"<|im_start|>assistant\n{content}<|im_end|>")
             elif m.role == "tool":
                 tool_content = m.content if isinstance(m.content, str) else json.dumps(m.content or {})
-                parts.append(f"<|tool|>\n{tool_content}")
-        parts.append("<|assistant|>\n")
+                pending_tool_results.append(f"<tool_response>\n{tool_content}\n</tool_response>")
+                next_is_tool = (i + 1 < len(messages) and messages[i + 1].role == "tool")
+                if not next_is_tool:
+                    parts.append(f"<|im_start|>user\n" + "\n".join(pending_tool_results) + "<|im_end|>")
+                    pending_tool_results.clear()
+        parts.append("<|im_start|>assistant\n")
         return "\n".join(parts)
 
 
@@ -263,7 +292,14 @@ DEFAULT_THINKING_BUDGET = 512
 
 
 def _resolve_thinking_budget(req: ChatCompletionRequest) -> Optional[int]:
-    """Determine thinking budget: explicit param > extra_body > server default."""
+    """Determine thinking budget: explicit param > extra_body > server default.
+
+    Auto-disables thinking when tools are active to prevent thinking content
+    from bleeding into tool call output (Qwen3.5 best practice per QwenLM/Qwen3#1831).
+    """
+    if req.tools:
+        return None
+
     if req.max_thinking_tokens is not None:
         return req.max_thinking_tokens if req.max_thinking_tokens > 0 else None
 
@@ -470,7 +506,13 @@ def _strip_think_blocks(text: str) -> str:
 
 
 def _extract_tool_calls(raw_output: str) -> Optional[List[Dict[str, Any]]]:
-    """Parse model output into OpenAI-style tool_calls if present."""
+    """Parse model output into OpenAI-style tool_calls if present.
+
+    Handles three formats:
+    1. Qwen3.5 native XML: <tool_call><fn_name><arg>val</arg></fn_name></tool_call>
+    2. Qwen JSON-in-tags: <tool_call>{"name":"fn","arguments":{...}}</tool_call>
+    3. Raw JSON / fenced JSON fallback
+    """
     import re
 
     cleaned = _strip_think_blocks(raw_output)
@@ -479,61 +521,82 @@ def _extract_tool_calls(raw_output: str) -> Optional[List[Dict[str, Any]]]:
 
     candidates: List[Dict[str, Any]] = []
 
-    # 1) Qwen tool-call tags: <tool_call>{...}</tool_call>
-    # Also accept malformed variants like:
-    #   <tool_call>{...}>
-    #   <tool_call>{...}</tool_name>
-    start_idx = 0
-    while True:
-        tag_idx = cleaned.find("<tool_call>", start_idx)
-        if tag_idx == -1:
-            break
-        brace_idx = cleaned.find("{", tag_idx)
-        if brace_idx == -1:
-            break
-        depth = 0
-        in_string = False
-        escape = False
-        end_idx = -1
-        for i in range(brace_idx, len(cleaned)):
-            ch = cleaned[i]
-            if in_string:
-                if escape:
-                    escape = False
-                elif ch == "\\":
-                    escape = True
-                elif ch == "\"":
-                    in_string = False
-                continue
-            if ch == "\"":
-                in_string = True
-                continue
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    end_idx = i
-                    break
-        if end_idx == -1:
-            break
-        payload = cleaned[brace_idx : end_idx + 1].strip()
-        try:
-            obj = json.loads(payload)
-            if isinstance(obj, dict):
-                candidates.append(obj)
-        except Exception:
-            pass
-        start_idx = end_idx + 1
+    # 1a) Qwen3.5 native XML tool calls: <tool_call><fn_name><arg>val</arg></fn_name></tool_call>
+    for tc_match in re.finditer(r"<tool_call>\s*([\s\S]*?)\s*</tool_call>", cleaned):
+        tc_body = tc_match.group(1).strip()
 
-    for match in re.findall(r"<tool_call>\s*([\s\S]*?)\s*</tool_call>", cleaned):
-        payload = match.strip()
-        try:
-            obj = json.loads(payload)
-            if isinstance(obj, dict):
-                candidates.append(obj)
-        except Exception:
+        # Try JSON parse first (format 2)
+        if tc_body.startswith("{"):
+            try:
+                obj = json.loads(tc_body)
+                if isinstance(obj, dict):
+                    candidates.append(obj)
+                    continue
+            except Exception:
+                pass
+
+        # Try XML format: <function_name><param>val</param>...</function_name>
+        fn_match = re.match(r"<([a-zA-Z_][a-zA-Z0-9_]*)>\s*([\s\S]*?)\s*</\1>", tc_body)
+        if fn_match:
+            fn_name = fn_match.group(1)
+            params_body = fn_match.group(2)
+            arguments: Dict[str, Any] = {}
+            for param_match in re.finditer(
+                r"<([a-zA-Z_][a-zA-Z0-9_]*)>\s*([\s\S]*?)\s*</\1>", params_body
+            ):
+                param_name = param_match.group(1)
+                param_value_str = param_match.group(2).strip()
+                try:
+                    arguments[param_name] = json.loads(param_value_str)
+                except (json.JSONDecodeError, ValueError):
+                    arguments[param_name] = param_value_str
+            candidates.append({"name": fn_name, "arguments": arguments})
             continue
+
+    # 1b) Fallback brace-counting for malformed <tool_call>{...}> variants
+    if not candidates:
+        start_idx = 0
+        while True:
+            tag_idx = cleaned.find("<tool_call>", start_idx)
+            if tag_idx == -1:
+                break
+            brace_idx = cleaned.find("{", tag_idx)
+            if brace_idx == -1:
+                break
+            depth = 0
+            in_string = False
+            escape = False
+            end_idx = -1
+            for i in range(brace_idx, len(cleaned)):
+                ch = cleaned[i]
+                if in_string:
+                    if escape:
+                        escape = False
+                    elif ch == "\\":
+                        escape = True
+                    elif ch == "\"":
+                        in_string = False
+                    continue
+                if ch == "\"":
+                    in_string = True
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end_idx = i
+                        break
+            if end_idx == -1:
+                break
+            payload = cleaned[brace_idx : end_idx + 1].strip()
+            try:
+                obj = json.loads(payload)
+                if isinstance(obj, dict):
+                    candidates.append(obj)
+            except Exception:
+                pass
+            start_idx = end_idx + 1
 
     # 2) Raw JSON payload fallback
     if not candidates:
@@ -605,45 +668,20 @@ def _extract_tool_calls(raw_output: str) -> Optional[List[Dict[str, Any]]]:
     return tool_calls or None
 
 
-def _augment_messages_for_tools(
-    messages: List[ChatMessage],
-    tools: Optional[List[RequestToolDefinition]],
-) -> List[ChatMessage]:
-    """Inject tool-format instruction as a system message for local MLX models."""
-    if not tools:
-        return messages
-    lines = [
-        "If a tool is needed, do NOT answer directly.",
-        "Return ONLY tool call tags in this format:",
-        "<tool_call>{\"name\":\"<tool_name>\",\"arguments\":{...}}</tool_call>",
-        "No markdown fences. No explanatory text.",
-        "Available tools:",
-    ]
-    for t in tools:
-        fn = t.function or {}
-        fn_name = fn.get("name", "unknown_tool")
-        fn_desc = fn.get("description", "")
-        params = fn.get("parameters", {"type": "object", "properties": {}})
-        lines.append(f"- {fn_name}: {fn_desc}")
-        lines.append(f"  parameters: {json.dumps(params, ensure_ascii=True)}")
-
-    injected = ChatMessage(role="system", content="\n".join(lines))
-    return [injected, *messages]
-
-
 async def chat_completions(request: Request) -> JSONResponse | StreamingResponse:
     body = await request.json()
     req = ChatCompletionRequest(**body)
     holder = get_holder()
 
     tools_payload = [t.model_dump() for t in req.tools] if req.tools else None
-    chat_kwargs = _resolve_chat_template_kwargs(req)
-    prompt_messages = _augment_messages_for_tools(req.messages, req.tools)
+    chat_kwargs = _resolve_chat_template_kwargs(req) or {}
+    if tools_payload:
+        chat_kwargs["enable_thinking"] = False
     prompt = _render_chat_prompt(
         holder.tokenizer,
-        prompt_messages,
-        tools=None,
-        chat_template_kwargs=chat_kwargs,
+        req.messages,
+        tools=tools_payload,
+        chat_template_kwargs=chat_kwargs or None,
     )
 
     rf = req.response_format

@@ -21,6 +21,8 @@ from app.agents.base_agent import (
     BaseStreamingAgent,
     ExecutionMode,
     PipelineStep,
+    TOOL_CLASSES,
+    TOOL_CLASS_DEFAULT,
     ToolRegistry,
     ToolStrategy,
 )
@@ -789,39 +791,33 @@ class ChatAgent(BaseStreamingAgent):
         if not execution_plan.steps:
             return
 
-        step_by_id = {step.id: step for step in execution_plan.steps}
-        group_map: Dict[str, int] = {}
-        for group_idx, group in enumerate(execution_plan.parallel_groups):
-            for step_id in group:
-                group_map[step_id] = group_idx
-
-        completed: Set[str] = set()
+        fast_steps = [
+            s for s in execution_plan.steps
+            if TOOL_CLASSES.get(s.tool, TOOL_CLASS_DEFAULT).get("class") == "fast"
+        ]
+        slow_steps = [
+            s for s in execution_plan.steps
+            if TOOL_CLASSES.get(s.tool, TOOL_CLASS_DEFAULT).get("class") != "fast"
+        ]
         total = len(execution_plan.steps)
+        completed: Set[str] = set()
 
-        while len(completed) < total:
-            if cancel.is_set():
-                return
+        # Phase 1: run all fast tools in parallel
+        if fast_steps:
+            logger.info(
+                "Plan execution: running %d fast steps first (%s)",
+                len(fast_steps),
+                [s.tool for s in fast_steps],
+            )
+            fast_tasks = [
+                self._execute_step(
+                    PipelineStep(tool=s.tool, args=s.args), stream, cancel, agent_context
+                )
+                for s in fast_steps
+            ]
+            await asyncio.gather(*fast_tasks, return_exceptions=True)
 
-            pending = [step for step in execution_plan.steps if step.id not in completed]
-            if not pending:
-                break
-
-            next_step = pending[0]
-            group_idx = group_map.get(next_step.id)
-            if group_idx is not None:
-                group_ids = [sid for sid in execution_plan.parallel_groups[group_idx] if sid not in completed]
-                runnable = [step_by_id[sid] for sid in group_ids if sid in step_by_id]
-            else:
-                runnable = [next_step]
-
-            tasks = []
-            for step in runnable:
-                pipeline_step = PipelineStep(tool=step.tool, args=step.args)
-                tasks.append(self._execute_step(pipeline_step, stream, cancel, agent_context))
-
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-            for step in runnable:
+            for step in fast_steps:
                 completed.add(step.id)
                 await stream(progress(
                     source=self.name,
@@ -833,18 +829,95 @@ class ChatAgent(BaseStreamingAgent):
                         "tool": step.tool,
                     },
                 ))
-                for fp in execution_plan.feedback_points:
-                    if fp.after_step_id == step.id:
-                        bridge_channels = agent_context.metadata.get("bridge_channels")
-                        await stream(interim(
+                await self._emit_feedback_points(step, execution_plan, agent_context, stream)
+
+            # Emit interim summary from fast results before slow tools run
+            if slow_steps and agent_context.tool_results:
+                try:
+                    interim_msg = await self._generate_quick_findings(
+                        query, agent_context.tool_results
+                    )
+                    if interim_msg:
+                        await stream(content(
                             source=self.name,
-                            message=fp.message,
-                            data={
-                                "kind": fp.kind,
-                                "after_step_id": step.id,
-                                "bridge_channels": bridge_channels if isinstance(bridge_channels, list) else [],
-                            },
+                            message=interim_msg,
+                            data={"phase": "interim"},
                         ))
+                except Exception as e:
+                    logger.warning("Failed to generate interim summary: %s", e)
+
+        if cancel.is_set():
+            return
+
+        # Phase 2: run slow tools using parallel_groups ordering
+        if slow_steps:
+            logger.info(
+                "Plan execution: running %d slow steps (%s)",
+                len(slow_steps),
+                [s.tool for s in slow_steps],
+            )
+            step_by_id = {step.id: step for step in slow_steps}
+            group_map: Dict[str, int] = {}
+            for group_idx, group in enumerate(execution_plan.parallel_groups):
+                for step_id in group:
+                    if step_id in step_by_id:
+                        group_map[step_id] = group_idx
+
+            while len(completed) < total:
+                if cancel.is_set():
+                    return
+
+                pending = [step for step in slow_steps if step.id not in completed]
+                if not pending:
+                    break
+
+                next_step = pending[0]
+                group_idx = group_map.get(next_step.id)
+                if group_idx is not None:
+                    group_ids = [
+                        sid for sid in execution_plan.parallel_groups[group_idx]
+                        if sid not in completed and sid in step_by_id
+                    ]
+                    runnable = [step_by_id[sid] for sid in group_ids]
+                else:
+                    runnable = [next_step]
+
+                tasks = [
+                    self._execute_step(
+                        PipelineStep(tool=s.tool, args=s.args), stream, cancel, agent_context
+                    )
+                    for s in runnable
+                ]
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+                for step in runnable:
+                    completed.add(step.id)
+                    await stream(progress(
+                        source=self.name,
+                        message=f"Completed {len(completed)}/{total}: {step.objective}",
+                        data={
+                            "completed": len(completed),
+                            "total": total,
+                            "step_id": step.id,
+                            "tool": step.tool,
+                        },
+                    ))
+                    await self._emit_feedback_points(step, execution_plan, agent_context, stream)
+
+    async def _emit_feedback_points(self, step, execution_plan, agent_context, stream):
+        """Emit any feedback points that fire after a given step."""
+        for fp in execution_plan.feedback_points:
+            if fp.after_step_id == step.id:
+                bridge_channels = agent_context.metadata.get("bridge_channels")
+                await stream(interim(
+                    source=self.name,
+                    message=fp.message,
+                    data={
+                        "kind": fp.kind,
+                        "after_step_id": step.id,
+                        "bridge_channels": bridge_channels if isinstance(bridge_channels, list) else [],
+                    },
+                ))
 
     async def run_with_streaming(
         self,
