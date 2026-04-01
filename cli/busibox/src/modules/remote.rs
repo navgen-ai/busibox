@@ -182,6 +182,23 @@ where
         .spawn()?;
 
     let stdout = child.stdout.take().ok_or_else(|| eyre!("no stdout"))?;
+    let stderr = child.stderr.take();
+
+    // Drain stderr in a background thread to prevent deadlock when the
+    // child process fills the OS pipe buffer (~64 KB).
+    let stderr_handle = {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let handle = std::thread::spawn(move || {
+            if let Some(se) = stderr {
+                let reader = std::io::BufReader::new(se);
+                for line in reader.lines().flatten() {
+                    let _ = tx.send(line);
+                }
+            }
+        });
+        (rx, handle)
+    };
+
     let reader = std::io::BufReader::new(stdout);
     for line in reader.lines() {
         if let Ok(l) = line {
@@ -192,6 +209,15 @@ where
             }
         }
     }
+
+    for line in stderr_handle.0.try_iter() {
+        let cleaned = strip_ansi(&line);
+        let trimmed = cleaned.trim();
+        if !trimmed.is_empty() {
+            on_line(trimmed);
+        }
+    }
+    let _ = stderr_handle.1.join();
 
     let status = child.wait()?;
     Ok(status.code().unwrap_or(1))
