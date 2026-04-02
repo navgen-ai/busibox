@@ -154,6 +154,9 @@ export COMPOSE_PROJECT_NAME = $(COMPOSE_PROJECT)
 export CONTAINER_PREFIX
 export BUSIBOX_ENV = $(ENV)
 export GITHUB_AUTH_TOKEN
+# Profile-sourced protected config (passed by TUI for vault sync on redeploy)
+export ADMIN_EMAIL
+export ALLOWED_DOMAINS
 
 # ============================================================================
 # MAIN MENU (Default)

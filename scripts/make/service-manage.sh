@@ -178,6 +178,16 @@ main() {
     # can resolve the correct vault file for deployment_environment
     export VAULT_PREFIX="${VAULT_PREFIX:-$prefix}"
 
+    # For redeploy, sync protected config (admin_email, allowed_domains) from
+    # env vars into the vault before Ansible renders .env files.  The TUI
+    # passes these as ADMIN_EMAIL / ALLOWED_DOMAINS in the process environment.
+    if [[ "$action" == "redeploy" ]]; then
+        source "${REPO_ROOT}/scripts/lib/vault.sh"
+        set_vault_environment "${VAULT_PREFIX}" 2>/dev/null || true
+        ensure_vault_access 2>/dev/null || true
+        sync_secrets_to_vault 2>/dev/null || true
+    fi
+
     # Load the appropriate backend
     load_backend "$backend"
 
