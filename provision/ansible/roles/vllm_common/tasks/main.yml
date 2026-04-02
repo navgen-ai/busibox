@@ -260,28 +260,11 @@
   shell: |
     {{ vllm_venv_dir }}/bin/uv pip install -U \
       huggingface-hub \
-      transformers
+      'transformers>=4.49,<5'
   args:
     executable: /bin/bash
   environment:
     VIRTUAL_ENV: "{{ vllm_venv_dir }}"
-  tags: [vllm_install]
-
-# Qwen3.5 config passes ignore_keys_at_rope_validation as a list, but
-# transformers' convert_rope_params_to_dict tries list | set which fails.
-# Patch the installed file to coerce to set before the union.
-- name: Patch transformers rope_utils for list|set compatibility
-  shell: |
-    ROPE_FILE="{{ vllm_venv_dir }}/lib/python3.11/site-packages/transformers/modeling_rope_utils.py"
-    if [ -f "$ROPE_FILE" ] && grep -q 'ignore_keys_at_rope_validation | {' "$ROPE_FILE"; then
-      sed -i 's/ignore_keys_at_rope_validation | {/set(ignore_keys_at_rope_validation) | {/g' "$ROPE_FILE"
-      echo "Patched modeling_rope_utils.py"
-    else
-      echo "No patch needed or file not found"
-    fi
-  args:
-    executable: /bin/bash
-  changed_when: false
   tags: [vllm_install]
 
 - name: Discover nvidia library paths in venv

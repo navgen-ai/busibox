@@ -973,6 +973,8 @@ def get_tool_executor(tool_name: str) -> Optional[Callable]:
         "delete_records": ("app.tools.data_tool", "delete_records"),
         "list_data_documents": ("app.tools.data_tool", "list_data_documents"),
         "get_data_document": ("app.tools.data_tool", "get_data_document"),
+        "aggregate_data": ("app.tools.data_tool", "aggregate_data"),
+        "get_facets": ("app.tools.data_tool", "get_facets"),
         # Graph tools
         "graph_query": ("app.tools.graph_tool", "graph_query"),
         "graph_explore": ("app.tools.graph_tool", "graph_explore"),
@@ -1039,6 +1041,8 @@ def get_tool_object(tool_name: str) -> Optional[Any]:
         "delete_records": ("app.tools.data_tool", "delete_records_tool"),
         "list_data_documents": ("app.tools.data_tool", "list_data_documents_tool"),
         "get_data_document": ("app.tools.data_tool", "get_data_document_tool"),
+        "aggregate_data": ("app.tools.data_tool", "aggregate_data_tool"),
+        "get_facets": ("app.tools.data_tool", "get_facets_tool"),
         # Graph tools
         "graph_query": ("app.tools.graph_tool", "graph_query_tool"),
         "graph_explore": ("app.tools.graph_tool", "graph_explore_tool"),
