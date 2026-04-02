@@ -15,9 +15,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.busibox import BusiboxClient
 from app.schemas.auth import Principal
-from app.schemas.streaming import StreamEvent, thought
+from app.schemas.streaming import StreamEvent, content, progress, thought
 
 logger = logging.getLogger(__name__)
+
+_STAGE_DISPLAY: dict[str, str] = {
+    "queued": "Queued for processing",
+    "parsing": "Extracting text",
+    "classifying": "Classifying document",
+    "extracting_metadata": "Extracting metadata",
+    "chunking": "Splitting into chunks",
+    "cleanup": "Cleaning up text",
+    "markdown": "Generating readable format",
+    "entity_extraction": "Extracting entities",
+    "embedding": "Creating vector embeddings",
+    "indexing": "Indexing for search",
+    "available": "Almost ready",
+}
 
 StreamFn = Callable[[StreamEvent], Awaitable[None]]
 
@@ -200,7 +214,8 @@ class AttachmentResolver:
         elapsed = 0.0
         interval = 1.0
         max_interval = 8.0
-        notified = False
+        notified_initial = False
+        last_stage = ""
 
         while elapsed < self.max_wait_seconds:
             file_info = await client.request("GET", f"/files/{file_id}")
@@ -212,23 +227,59 @@ class AttachmentResolver:
             )
 
             if status_lower in {"completed", "complete", "ready", "indexed", "success"}:
+                if notified_initial and stream:
+                    await stream(content(
+                        source="attachments",
+                        message=f"**{filename}** is ready.",
+                        data={"phase": "attachment_ready", "file_id": file_id},
+                    ))
                 return
             if status_lower in {"failed", "error"}:
+                if stream:
+                    await stream(content(
+                        source="attachments",
+                        message=f"Processing failed for **{filename}**. I'll try to work with what's available.",
+                        data={"phase": "attachment_failed", "file_id": file_id},
+                    ))
                 raise RuntimeError(f"Processing failed for {filename}")
 
-            if stream and not notified:
-                await stream(
-                    thought(
+            if stream:
+                stage_label = _STAGE_DISPLAY.get(status_lower, status_lower)
+                if not notified_initial:
+                    await stream(content(
                         source="attachments",
-                        message=f"Waiting for {filename} to finish processing...",
-                    )
-                )
-                notified = True
+                        message=f"**{filename}** is still being processed ({stage_label}). I'll wait for it to finish before answering your question.",
+                        data={
+                            "phase": "attachment_processing",
+                            "file_id": file_id,
+                            "stage": status_lower,
+                            "filename": filename,
+                        },
+                    ))
+                    notified_initial = True
+                elif status_lower != last_stage:
+                    await stream(progress(
+                        source="attachments",
+                        message=f"Processing **{filename}**: {stage_label}...",
+                        data={
+                            "phase": "attachment_processing",
+                            "file_id": file_id,
+                            "stage": status_lower,
+                            "filename": filename,
+                        },
+                    ))
+                last_stage = status_lower
 
             await asyncio.sleep(interval)
             elapsed += interval
             interval = min(max_interval, interval * 2)
 
+        if stream:
+            await stream(content(
+                source="attachments",
+                message=f"**{filename}** is taking longer than expected to process. I'll answer with what's available, but some details may be incomplete.",
+                data={"phase": "attachment_timeout", "file_id": file_id},
+            ))
         raise RuntimeError(f"Timed out waiting for {filename} processing")
 
     async def _fetch_markdown(self, *, client: BusiboxClient, file_id: str) -> str:

@@ -117,6 +117,7 @@ def mock_config():
         "reranker_model": "BAAI/bge-reranker-v2-m3",
         "reranker_device": "cpu",
         "enable_reranking": True,
+        "reranking_mode": "none",
         "redis_host": None,
         "enable_caching": False,
         "highlight_fragment_size": 200,

@@ -427,6 +427,8 @@ class ChatAgent(BaseStreamingAgent):
         Generate a fast first response and decide whether we need a deeper tool pass.
         """
         default = self._heuristic_fast_ack(query)
+        enabled_tools = [t for t in self.config.tools if ToolRegistry.has(t)]
+        has_attachments = bool(context.attachment_metadata)
         prompt = (
             "You are deciding how to handle a user message.\n"
             "Return ONLY JSON with keys: action_type, needs_tools, response, follow_up_question, confidence, complexity.\n"
@@ -439,8 +441,12 @@ class ChatAgent(BaseStreamingAgent):
             "- use action_type=clarify when the request is ambiguous or underspecified.\n"
             "- if action_type=clarify, set needs_tools=false and provide a follow_up_question.\n"
             "- response must be concise (max 1 sentence, max 120 chars).\n"
-            "- If needs_tools=true, response should acknowledge and indicate you are checking.\n"
+            "- If needs_tools=true, response should acknowledge and indicate you are working on it.\n"
+            "  Good examples: 'Let me look into that for you.', 'Sure, checking now.', 'On it — gathering info.'\n"
+            "  BAD examples (NEVER say these): 'I don't have access to tools', 'I can't search documents', 'I'm unable to perform searches'\n"
             "- If needs_tools=false, response should be a complete direct reply.\n"
+            "- CRITICAL: You DO have access to tools. NEVER say you lack tools or capabilities.\n"
+            f"  Available tools: {', '.join(enabled_tools)}\n"
             "- complexity must be one of: simple, moderate, complex.\n"
             "  - simple: greeting, chitchat, single-fact lookup, yes/no answer\n"
             "  - moderate: summarization, multi-step data retrieval, document analysis\n"
@@ -448,8 +454,14 @@ class ChatAgent(BaseStreamingAgent):
             "Intent guidance (IMPORTANT):\n"
             "- Queries about owned records/documents/candidates/resumes (e.g. 'do I have resumes for data analytics?') MUST set action_type=search and needs_tools=true.\n"
             "- If user asks to find/list/show/filter internal data, do NOT answer directly; use tools.\n"
-            "- Prefer false positives (using tools) over false negatives (missing a search).\n\n"
-            f"{self._build_fast_ack_context(query, context)}"
+            "- Prefer false positives (using tools) over false negatives (missing a search).\n"
+            + (
+                "- User has uploaded attachments. If the question is about the attachments, "
+                "set needs_tools=true and respond with something like 'Let me review that attachment.' "
+                "Do NOT say you can't access the file.\n"
+                if has_attachments else ""
+            )
+            + f"\n{self._build_fast_ack_context(query, context)}"
         )
         try:
             client = get_client()
@@ -580,6 +592,7 @@ class ChatAgent(BaseStreamingAgent):
         """Generate a lightweight execution plan before tool execution."""
         enabled_tools = [t for t in self.config.tools if ToolRegistry.has(t)]
         fallback_steps: List[PlanStep] = []
+        has_attachments = bool(context.attachment_metadata)
 
         # Deterministic fallback mapping by action type.
         ql = query.lower()
@@ -592,9 +605,14 @@ class ChatAgent(BaseStreamingAgent):
                 "show my data tables",
             )
         )
-        # Always search user's personal and shared documents for context
         parallel_step_ids: List[str] = []
-        if "document_search" in enabled_tools:
+        attachment_only_query = has_attachments and not any(
+            kw in ql for kw in (
+                "compare with", "find similar", "search my", "other documents",
+                "in my files", "in my docs", "my other",
+            )
+        )
+        if "document_search" in enabled_tools and not attachment_only_query:
             fallback_steps.append(
                 PlanStep(
                     id="step_1",
@@ -650,13 +668,30 @@ class ChatAgent(BaseStreamingAgent):
             )
 
         tool_sigs = self._build_tool_signatures(enabled_tools)
-        has_attachments = bool(context.attachment_metadata)
         has_audio = has_attachments and any(
             a.get("mime_type", "").startswith("audio/") for a in context.attachment_metadata
         )
         has_image_request = any(
             kw in query.lower() for kw in ("generate image", "create image", "draw", "make a picture", "make an image")
         )
+
+        # When the user uploaded attachments, the content is already resolved
+        # and injected into the synthesis prompt. A full document_search is
+        # only needed if the query asks about *other* documents beyond the
+        # attachment.
+        if has_attachments:
+            attachment_names = [a.get("filename", "attachment") for a in context.attachment_metadata]
+            doc_search_rule = (
+                f"- The user uploaded attachments ({', '.join(attachment_names)}). "
+                "Their content is already available — you do NOT need `document_search` "
+                "to answer questions about the uploaded files.\n"
+                "- Only include `document_search` if the query ALSO asks about other "
+                "documents in the user's library (e.g. 'compare this with my previous report').\n"
+            )
+        else:
+            doc_search_rule = (
+                "- ALWAYS include `document_search` to search the user's personal and shared documents for relevant context.\n"
+            )
 
         prompt = (
             "Plan tool execution for this user request.\n"
@@ -677,7 +712,7 @@ class ChatAgent(BaseStreamingAgent):
             "- Do NOT include `create_task` unless the user explicitly asked to create a scheduled task.\n"
             "- Do NOT include `send_notification` unless the user explicitly asked to send a notification.\n"
             "- Do NOT include `memory_search` or `memory_save` unless the user asks about previous conversations or preferences.\n"
-            "- ALWAYS include `document_search` to search the user's personal and shared documents for relevant context.\n"
+            + doc_search_rule +
             "- When `web_search` is also needed, run it IN PARALLEL with `document_search` by putting both step IDs in the same parallel_groups entry.\n"
             "- Use `list_data_documents`, `get_data_document`, or `query_data` ONLY when the user explicitly asks about structured data tables/records.\n\n"
             f"Dispatch action type: {dispatch.action_type}\n"

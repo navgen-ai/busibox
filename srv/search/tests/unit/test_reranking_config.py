@@ -217,9 +217,10 @@ class TestSigmoidNormalization:
         mock_cross_encoder = Mock()
         mock_cross_encoder.predict.return_value = raw_scores
 
-        with patch.object(service, '_cpu_reranker', mock_cross_encoder, create=True):
-            with patch('services.milvus_search.CrossEncoder', return_value=mock_cross_encoder):
-                reranked = await service._rerank_with_local_model("test query", results, top_k=None)
+        # CrossEncoder is lazily imported inside _rerank_with_local_model,
+        # so we inject the mock via the cached _cpu_reranker attribute
+        service._cpu_reranker = mock_cross_encoder
+        reranked = await service._rerank_with_local_model("test query", results, top_k=None)
 
         assert len(reranked) == 3
         for r in reranked:
