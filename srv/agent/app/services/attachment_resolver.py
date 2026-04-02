@@ -2,14 +2,18 @@
 Attachment resolution service for agentic chat.
 
 Resolves uploaded chat attachments into prompt-ready context by:
-- Waiting for data-api processing completion
-- Fetching markdown for processed documents
+- Waiting for data-api processing completion (or partial availability)
+- Fetching markdown for fully processed documents
+- Using early chunk text from Postgres when embeddings aren't ready yet
+- Applying lightweight keyword ranking for early-access chunk selection
 - Applying token-aware full-document vs RAG chunk injection
 """
 
 import asyncio
 import logging
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+import math
+import re
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,7 +37,55 @@ _STAGE_DISPLAY: dict[str, str] = {
     "available": "Almost ready",
 }
 
+TERMINAL_STATES = {"completed", "complete", "ready", "indexed", "success"}
+EARLY_READY_STATES = {"available", "embedding", "indexing", "cleanup", "markdown", "entity_extraction"}
+FAILED_STATES = {"failed", "error"}
+
+_STOPWORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "need", "dare", "ought",
+    "to", "of", "in", "for", "on", "with", "at", "by", "from", "as",
+    "into", "through", "during", "before", "after", "above", "below",
+    "between", "out", "off", "over", "under", "again", "further", "then",
+    "once", "here", "there", "when", "where", "why", "how", "all", "both",
+    "each", "few", "more", "most", "other", "some", "such", "no", "nor",
+    "not", "only", "own", "same", "so", "than", "too", "very", "just",
+    "because", "but", "and", "or", "if", "while", "about", "up",
+    "what", "which", "who", "whom", "this", "that", "these", "those",
+    "i", "me", "my", "we", "our", "you", "your", "he", "him", "his",
+    "she", "her", "it", "its", "they", "them", "their",
+})
+
+_WORD_RE = re.compile(r"[a-z0-9]+(?:'[a-z]+)?")
+
 StreamFn = Callable[[StreamEvent], Awaitable[None]]
+
+
+class _ProcessingStatus:
+    """Structured result from a processing status check."""
+
+    __slots__ = ("stage", "is_terminal", "is_early_ready", "is_failed",
+                 "pages_processed", "total_pages", "raw_info")
+
+    def __init__(
+        self,
+        stage: str,
+        *,
+        is_terminal: bool = False,
+        is_early_ready: bool = False,
+        is_failed: bool = False,
+        pages_processed: Optional[int] = None,
+        total_pages: Optional[int] = None,
+        raw_info: Optional[Dict[str, Any]] = None,
+    ):
+        self.stage = stage
+        self.is_terminal = is_terminal
+        self.is_early_ready = is_early_ready
+        self.is_failed = is_failed
+        self.pages_processed = pages_processed
+        self.total_pages = total_pages
+        self.raw_info = raw_info or {}
 
 
 class AttachmentResolver:
@@ -121,7 +173,6 @@ class AttachmentResolver:
 
         for attachment in attachment_metadata:
             try:
-                source_kind = "document"
                 file_id = attachment.get("file_id")
                 mime_type = (attachment.get("mime_type") or "").lower()
                 filename = attachment.get("filename") or "attachment"
@@ -153,64 +204,194 @@ class AttachmentResolver:
                         resolved.append(self._fallback_attachment(attachment))
                     continue
 
-                await self._wait_until_processed(
+                result = await self._resolve_document(
                     client=client,
                     file_id=file_id,
                     filename=filename,
+                    query=query,
+                    available_tokens=available_tokens,
                     stream=stream,
+                    attachment=attachment,
                 )
-
-                markdown = await self._fetch_markdown(client=client, file_id=file_id)
-                if not markdown:
-                    resolved.append(self._fallback_attachment(attachment))
-                    continue
-
-                markdown_tokens = self._estimate_tokens(markdown)
-                if markdown_tokens <= available_tokens:
-                    source_kind = "full_markdown"
-                    content_text = markdown
-                else:
-                    source_kind = "rag_chunks"
-                    chunks = await self._search_chunks(
-                        client=client,
-                        file_id=file_id,
-                        query=query,
-                    )
-                    content_text = self._pack_chunks_to_budget(chunks, available_tokens)
-                    if not content_text.strip():
-                        # Last resort: trimmed markdown head to avoid empty context.
-                        content_text = markdown[: max(1000, available_tokens * 4)]
-
-                if stream:
-                    await stream(
-                        thought(
-                            source="attachments",
-                            message=f"Prepared context from {filename} ({source_kind}).",
-                        )
-                    )
-
-                resolved.append(
-                    {
-                        "attachment_id": attachment.get("id"),
-                        "filename": filename,
-                        "source_kind": source_kind,
-                        "content": content_text,
-                    }
-                )
+                resolved.append(result)
             except Exception as exc:
                 logger.warning("Attachment resolution failed for %s: %s", attachment.get("id"), exc)
                 resolved.append(self._fallback_attachment(attachment))
 
         return resolved
 
-    async def _wait_until_processed(
+    async def _resolve_document(
         self,
         *,
         client: BusiboxClient,
         file_id: str,
         filename: str,
+        query: str,
+        available_tokens: int,
         stream: Optional[StreamFn],
-    ) -> None:
+        attachment: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Resolve a document attachment, using early chunks if available."""
+        proc_status = await self._check_status(client, file_id)
+
+        if proc_status.is_terminal:
+            return await self._resolve_completed_document(
+                client=client,
+                file_id=file_id,
+                filename=filename,
+                query=query,
+                available_tokens=available_tokens,
+                stream=stream,
+                attachment=attachment,
+            )
+
+        if proc_status.is_failed:
+            if stream:
+                await stream(content(
+                    source="attachments",
+                    message=f"Processing failed for **{filename}**. I'll try to work with what's available.",
+                    data={"phase": "attachment_failed", "file_id": file_id},
+                ))
+            return self._fallback_attachment(attachment)
+
+        if proc_status.is_early_ready:
+            return await self._resolve_early_document(
+                client=client,
+                file_id=file_id,
+                filename=filename,
+                query=query,
+                available_tokens=available_tokens,
+                stream=stream,
+                attachment=attachment,
+                proc_status=proc_status,
+            )
+
+        # Still in early pipeline (queued, parsing, chunking) -- poll until
+        # we get either a terminal state or an early-ready state.
+        return await self._resolve_with_polling(
+            client=client,
+            file_id=file_id,
+            filename=filename,
+            query=query,
+            available_tokens=available_tokens,
+            stream=stream,
+            attachment=attachment,
+        )
+
+    async def _resolve_completed_document(
+        self,
+        *,
+        client: BusiboxClient,
+        file_id: str,
+        filename: str,
+        query: str,
+        available_tokens: int,
+        stream: Optional[StreamFn],
+        attachment: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Full-quality path for completed documents."""
+        markdown = await self._fetch_markdown(client=client, file_id=file_id)
+        if not markdown:
+            return self._fallback_attachment(attachment)
+
+        markdown_tokens = self._estimate_tokens(markdown)
+        if markdown_tokens <= available_tokens:
+            source_kind = "full_markdown"
+            content_text = markdown
+        else:
+            source_kind = "rag_chunks"
+            chunks = await self._search_chunks(
+                client=client,
+                file_id=file_id,
+                query=query,
+            )
+            content_text = self._pack_chunks_to_budget(chunks, available_tokens)
+            if not content_text.strip():
+                content_text = markdown[: max(1000, available_tokens * 4)]
+
+        if stream:
+            await stream(thought(
+                source="attachments",
+                message=f"Prepared context from {filename} ({source_kind}).",
+            ))
+
+        return {
+            "attachment_id": attachment.get("id"),
+            "filename": filename,
+            "source_kind": source_kind,
+            "content": content_text,
+        }
+
+    async def _resolve_early_document(
+        self,
+        *,
+        client: BusiboxClient,
+        file_id: str,
+        filename: str,
+        query: str,
+        available_tokens: int,
+        stream: Optional[StreamFn],
+        attachment: Dict[str, Any],
+        proc_status: _ProcessingStatus,
+    ) -> Dict[str, Any]:
+        """Early-access path using raw chunk text from Postgres."""
+        pages_proc = proc_status.pages_processed
+        total_pages = proc_status.total_pages
+        coverage = f"{pages_proc} of {total_pages} pages" if pages_proc and total_pages else "partial"
+
+        if stream:
+            await stream(content(
+                source="attachments",
+                message=(
+                    f"**{filename}** is partially processed ({coverage}). "
+                    "I'll answer with what's available now."
+                ),
+                data={
+                    "phase": "attachment_early_ready",
+                    "file_id": file_id,
+                    "pages_processed": pages_proc,
+                    "total_pages": total_pages,
+                },
+            ))
+
+        chunks_response = await self._fetch_early_chunks(client=client, file_id=file_id)
+        if not chunks_response:
+            logger.warning("No early chunks available for %s, falling back", file_id)
+            return self._fallback_attachment(attachment)
+
+        ranked = self._rank_chunks_by_relevance(query, chunks_response)
+        content_text = self._pack_chunks_to_budget(ranked, available_tokens)
+
+        if not content_text.strip():
+            return self._fallback_attachment(attachment)
+
+        if stream:
+            await stream(thought(
+                source="attachments",
+                message=f"Using early chunks from {filename} ({coverage}, keyword-ranked).",
+            ))
+
+        return {
+            "attachment_id": attachment.get("id"),
+            "filename": filename,
+            "source_kind": "early_chunks",
+            "content": content_text,
+            "pages_processed": pages_proc,
+            "total_pages": total_pages,
+        }
+
+    async def _resolve_with_polling(
+        self,
+        *,
+        client: BusiboxClient,
+        file_id: str,
+        filename: str,
+        query: str,
+        available_tokens: int,
+        stream: Optional[StreamFn],
+        attachment: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Poll until document reaches a usable state, then resolve."""
         elapsed = 0.0
         interval = 1.0
         max_interval = 8.0
@@ -218,23 +399,26 @@ class AttachmentResolver:
         last_stage = ""
 
         while elapsed < self.max_wait_seconds:
-            file_info = await client.request("GET", f"/files/{file_id}")
-            status = self._extract_status(file_info)
-            status_lower = status.lower()
-            logger.debug(
-                "Attachment status poll: file_id=%s status=%s elapsed=%.1f",
-                file_id, status, elapsed,
-            )
+            proc_status = await self._check_status(client, file_id)
 
-            if status_lower in {"completed", "complete", "ready", "indexed", "success"}:
+            if proc_status.is_terminal:
                 if notified_initial and stream:
                     await stream(content(
                         source="attachments",
                         message=f"**{filename}** is ready.",
                         data={"phase": "attachment_ready", "file_id": file_id},
                     ))
-                return
-            if status_lower in {"failed", "error"}:
+                return await self._resolve_completed_document(
+                    client=client,
+                    file_id=file_id,
+                    filename=filename,
+                    query=query,
+                    available_tokens=available_tokens,
+                    stream=stream,
+                    attachment=attachment,
+                )
+
+            if proc_status.is_failed:
                 if stream:
                     await stream(content(
                         source="attachments",
@@ -243,32 +427,48 @@ class AttachmentResolver:
                     ))
                 raise RuntimeError(f"Processing failed for {filename}")
 
+            if proc_status.is_early_ready:
+                return await self._resolve_early_document(
+                    client=client,
+                    file_id=file_id,
+                    filename=filename,
+                    query=query,
+                    available_tokens=available_tokens,
+                    stream=stream,
+                    attachment=attachment,
+                    proc_status=proc_status,
+                )
+
+            stage_lower = proc_status.stage.lower()
             if stream:
-                stage_label = _STAGE_DISPLAY.get(status_lower, status_lower)
+                stage_label = _STAGE_DISPLAY.get(stage_lower, stage_lower)
                 if not notified_initial:
                     await stream(content(
                         source="attachments",
-                        message=f"**{filename}** is still being processed ({stage_label}). I'll wait for it to finish before answering your question.",
+                        message=(
+                            f"**{filename}** is still being processed ({stage_label}). "
+                            "I'll wait for it to finish before answering your question."
+                        ),
                         data={
                             "phase": "attachment_processing",
                             "file_id": file_id,
-                            "stage": status_lower,
+                            "stage": stage_lower,
                             "filename": filename,
                         },
                     ))
                     notified_initial = True
-                elif status_lower != last_stage:
+                elif stage_lower != last_stage:
                     await stream(progress(
                         source="attachments",
                         message=f"Processing **{filename}**: {stage_label}...",
                         data={
                             "phase": "attachment_processing",
                             "file_id": file_id,
-                            "stage": status_lower,
+                            "stage": stage_lower,
                             "filename": filename,
                         },
                     ))
-                last_stage = status_lower
+                last_stage = stage_lower
 
             await asyncio.sleep(interval)
             elapsed += interval
@@ -277,10 +477,104 @@ class AttachmentResolver:
         if stream:
             await stream(content(
                 source="attachments",
-                message=f"**{filename}** is taking longer than expected to process. I'll answer with what's available, but some details may be incomplete.",
+                message=(
+                    f"**{filename}** is taking longer than expected to process. "
+                    "I'll answer with what's available, but some details may be incomplete."
+                ),
                 data={"phase": "attachment_timeout", "file_id": file_id},
             ))
         raise RuntimeError(f"Timed out waiting for {filename} processing")
+
+    # ------------------------------------------------------------------
+    # Status check
+    # ------------------------------------------------------------------
+
+    async def _check_status(self, client: BusiboxClient, file_id: str) -> _ProcessingStatus:
+        """Poll data-api for file processing status and return structured result."""
+        file_info = await client.request("GET", f"/files/{file_id}")
+        stage = self._extract_status(file_info)
+        stage_lower = stage.lower()
+
+        pages_processed, total_pages = self._extract_page_progress(file_info)
+
+        return _ProcessingStatus(
+            stage=stage,
+            is_terminal=stage_lower in TERMINAL_STATES,
+            is_early_ready=stage_lower in EARLY_READY_STATES,
+            is_failed=stage_lower in FAILED_STATES,
+            pages_processed=pages_processed,
+            total_pages=total_pages,
+            raw_info=file_info,
+        )
+
+    # ------------------------------------------------------------------
+    # Early chunk fetching (Postgres, no embeddings required)
+    # ------------------------------------------------------------------
+
+    async def _fetch_early_chunks(
+        self,
+        *,
+        client: BusiboxClient,
+        file_id: str,
+        limit: int = 200,
+    ) -> List[str]:
+        """Fetch raw chunk text from data-api before embeddings are ready."""
+        try:
+            response = await client.request(
+                "GET",
+                f"/files/{file_id}/chunks",
+                params={"limit": limit},
+            )
+        except Exception as exc:
+            logger.warning("Failed to fetch early chunks for %s: %s", file_id, exc)
+            return []
+        return self._extract_chunk_texts(response)
+
+    # ------------------------------------------------------------------
+    # Keyword-based chunk ranking (no LLM, no vectors)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _rank_chunks_by_relevance(query: str, chunks: List[str]) -> List[str]:
+        """Rank chunks by lightweight keyword overlap with the query.
+
+        Uses a simplified BM25-like scoring: for each query term that appears
+        in a chunk, score += 1 / log(1 + df) where df is the number of chunks
+        containing that term. Chunks are returned sorted by descending score,
+        with positional order as a tiebreaker.
+        """
+        if not chunks or not query:
+            return chunks
+
+        query_terms = {
+            t for t in _WORD_RE.findall(query.lower()) if t not in _STOPWORDS and len(t) > 1
+        }
+        if not query_terms:
+            return chunks
+
+        chunk_term_sets: List[set] = []
+        for chunk in chunks:
+            chunk_term_sets.append(set(_WORD_RE.findall(chunk.lower())))
+
+        # Document frequency per query term
+        df: Dict[str, int] = {}
+        for term in query_terms:
+            df[term] = sum(1 for ts in chunk_term_sets if term in ts)
+
+        scored: List[Tuple[float, int, str]] = []
+        for idx, (chunk, terms) in enumerate(zip(chunks, chunk_term_sets)):
+            score = 0.0
+            for qt in query_terms:
+                if qt in terms:
+                    score += 1.0 / math.log(1 + max(df.get(qt, 1), 1))
+            scored.append((score, idx, chunk))
+
+        scored.sort(key=lambda t: (-t[0], t[1]))
+        return [chunk for _, _, chunk in scored]
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
     async def _fetch_markdown(self, *, client: BusiboxClient, file_id: str) -> str:
         response = await client.request("GET", f"/files/{file_id}/markdown")
@@ -332,6 +626,20 @@ class AttachmentResolver:
                             return nested_val
         return "unknown"
 
+    def _extract_page_progress(self, payload: Dict[str, Any]) -> Tuple[Optional[int], Optional[int]]:
+        """Extract pages_processed and total_pages from nested file info."""
+        for container in (payload, payload.get("status", {}), payload.get("data", {})):
+            if not isinstance(container, dict):
+                continue
+            pp = container.get("pages_processed")
+            tp = container.get("total_pages")
+            if pp is not None or tp is not None:
+                return (
+                    int(pp) if pp is not None else None,
+                    int(tp) if tp is not None else None,
+                )
+        return None, None
+
     def _extract_chunk_texts(self, response: Dict[str, Any]) -> List[str]:
         result_sets = []
         if isinstance(response, dict):
@@ -378,7 +686,6 @@ class AttachmentResolver:
         return "\n\n".join(kept)
 
     def _estimate_tokens(self, text: str) -> int:
-        # Simple fallback estimate; adequate for budgeting decisions.
         return max(1, len(text) // 4)
 
     def _fallback_attachment(self, attachment: Dict[str, Any]) -> Dict[str, Any]:

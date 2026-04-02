@@ -1232,9 +1232,27 @@ class BaseStreamingAgent(StreamingAgent):
                     parts.append("Image attachment provided (no URL available).")
                 continue
 
-            content = attachment.get("content", "")
-            if isinstance(content, str) and content.strip():
-                parts.append(content.strip())
+            if source_kind == "early_chunks":
+                pages_proc = attachment.get("pages_processed")
+                total_pages = attachment.get("total_pages")
+                if pages_proc and total_pages:
+                    parts.append(
+                        f"**Note: This document is still being processed. "
+                        f"The content below covers approximately {pages_proc} of "
+                        f"{total_pages} pages. Your answer may be incomplete — "
+                        f"the full document will be available shortly for follow-up questions.**"
+                    )
+                else:
+                    parts.append(
+                        "**Note: This document is still being processed. "
+                        "Only partial content is available below. Your answer may be "
+                        "incomplete — the full document will be available shortly for "
+                        "follow-up questions.**"
+                    )
+
+            att_content = attachment.get("content", "")
+            if isinstance(att_content, str) and att_content.strip():
+                parts.append(att_content.strip())
             else:
                 parts.append("No extracted text content available.")
 
