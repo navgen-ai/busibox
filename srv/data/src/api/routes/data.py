@@ -24,7 +24,7 @@ All endpoints respect RLS policies for security.
 
 import json
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import structlog
 from fastapi import APIRouter, Depends, Request, Query, HTTPException
@@ -186,7 +186,7 @@ class QueryResponse(BaseModel):
     total: int
     limit: int
     offset: int
-    aggregations: Optional[Dict] = None
+    aggregations: Optional[Union[Dict, List[Dict]]] = None
 
 
 class RecordOperationResponse(BaseModel):

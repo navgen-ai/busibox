@@ -477,7 +477,10 @@ class QueryEngine:
         elif op in ("gt", "gte", "lt", "lte"):
             params.append(value)
             op_symbol = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
-            clause = f"({col}{json_path})::numeric {op_symbol} ${param_idx}"
+            if isinstance(value, (int, float)):
+                clause = f"({col}{json_path})::numeric {op_symbol} ${param_idx}"
+            else:
+                clause = f"({col}->>{json_path[2:]}) {op_symbol} ${param_idx}::text"
             param_idx += 1
         elif op == "in":
             params.append(value)
