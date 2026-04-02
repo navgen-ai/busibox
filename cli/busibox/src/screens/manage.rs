@@ -1257,6 +1257,12 @@ fn spawn_action_worker(app: &mut App, service_name: &str, action: &str) {
     let profile_vault_prefix: Option<String> = app
         .active_profile()
         .and_then(|(id, p)| p.vault_prefix.clone().or(Some(id.to_string())));
+    let profile_admin_email: Option<String> = app
+        .active_profile()
+        .and_then(|(_, p)| p.admin_email.clone());
+    let profile_allowed_email_domains: Option<String> = app
+        .active_profile()
+        .and_then(|(_, p)| p.allowed_email_domains.clone());
 
     std::thread::spawn(move || {
         let remote_path = profile_remote_path
@@ -1346,8 +1352,16 @@ fn spawn_action_worker(app: &mut App, service_name: &str, action: &str) {
             .as_deref()
             .map(|vp| format!("VAULT_PREFIX={vp} "))
             .unwrap_or_default();
+        let admin_email_export = profile_admin_email
+            .as_deref()
+            .map(|e| format!("ADMIN_EMAIL={e} "))
+            .unwrap_or_default();
+        let allowed_domains_export = profile_allowed_email_domains
+            .as_deref()
+            .map(|d| format!("ALLOWED_DOMAINS={d} "))
+            .unwrap_or_default();
         let make_args = format!(
-            "{site_domain_export}{llm_backend_export}{vault_prefix_export}manage SERVICE={service} ACTION={action} ENV={env_val} BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
+            "{site_domain_export}{llm_backend_export}{vault_prefix_export}{admin_email_export}{allowed_domains_export}manage SERVICE={service} ACTION={action} ENV={env_val} BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
         );
         let _ = tx.send(ManageUpdate::Log(format!("Running: make {make_args}")));
 
@@ -1409,8 +1423,16 @@ fn spawn_action_worker(app: &mut App, service_name: &str, action: &str) {
                             .as_deref()
                             .map(|vp| format!("VAULT_PREFIX={vp} "))
                             .unwrap_or_default();
+                        let ae = profile_admin_email
+                            .as_deref()
+                            .map(|e| format!("ADMIN_EMAIL={e} "))
+                            .unwrap_or_default();
+                        let ad = profile_allowed_email_domains
+                            .as_deref()
+                            .map(|d| format!("ALLOWED_DOMAINS={d} "))
+                            .unwrap_or_default();
                         let vllm_args = format!(
-                            "{sd}{lb}{vp_export}manage SERVICE=vllm ACTION=redeploy ENV={env_val} BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
+                            "{sd}{lb}{vp_export}{ae}{ad}manage SERVICE=vllm ACTION=redeploy ENV={env_val} BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
                         );
                         let _ = tx.send(ManageUpdate::Log(format!("Running: make {vllm_args}")));
 
