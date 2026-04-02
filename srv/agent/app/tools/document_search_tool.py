@@ -9,7 +9,7 @@ from app.agents.core import BusiboxDeps
 
 logger = structlog.get_logger()
 
-HIGH_RELEVANCY_THRESHOLD = 0.7
+HIGH_RELEVANCY_THRESHOLD = 0.85
 ADAPTIVE_MULTIPLIER = 2
 
 
@@ -17,7 +17,7 @@ class DocumentSearchInput(BaseModel):
     """Input schema for document search tool."""
     query: str = Field(description="Search query to find relevant documents")
     limit: int = Field(default=10, description="Maximum number of results (default 10, max 50)")
-    min_score: float = Field(default=0.3, description="Minimum relevancy score to include (0-1, default 0.3)")
+    min_score: float = Field(default=0.1, description="Minimum relevancy score to include (0-1, default 0.1)")
     mode: str = Field(default="hybrid", description="Search mode: hybrid, semantic, or keyword")
     file_ids: Optional[List[str]] = Field(default=None, description="Optional list of file IDs to filter")
     expand_graph: bool = Field(default=False, description="Expand graph relationships (adds latency, default false)")
@@ -47,7 +47,7 @@ async def search_documents(
     ctx: RunContext[BusiboxDeps],
     query: str,
     limit: int = 10,
-    min_score: float = 0.3,
+    min_score: float = 0.1,
     mode: str = "hybrid",
     file_ids: Optional[List[str]] = None,
     expand_graph: bool = False,
@@ -66,7 +66,7 @@ async def search_documents(
         ctx: RunContext with authenticated BusiboxClient
         query: Search query string
         limit: Maximum number of results (default: 10, max: 50)
-        min_score: Minimum relevancy score to include (default: 0.3)
+        min_score: Minimum relevancy score to include (default: 0.1)
         mode: Search mode - "hybrid" (recommended), "semantic", or "keyword"
         file_ids: Optional list of file IDs to restrict search
         expand_graph: Whether to expand graph relationships (default: False)
@@ -95,12 +95,26 @@ async def search_documents(
         results = response.get("results", [])
         
         if not results or len(results) == 0:
+            logger.info(
+                "document_search: search API returned 0 results",
+                extra={"query": query, "mode": mode},
+            )
             return DocumentSearchOutput(
                 found=False,
                 result_count=0,
                 context="No relevant documents found for your query.",
                 results=[],
             )
+
+        score_summary = [round(r.get("score", 0.0), 4) for r in results[:5]]
+        logger.info(
+            "document_search: raw results from search API",
+            extra={
+                "total_results": len(results),
+                "min_score_filter": min_score,
+                "top_5_scores": score_summary,
+            },
+        )
 
         # Filter by minimum relevancy score
         relevant_results = [r for r in results if r.get("score", 0.0) >= min_score]
@@ -132,6 +146,15 @@ async def search_documents(
                 response = expanded_response
 
         if not relevant_results:
+            logger.warning(
+                "document_search: all results filtered by min_score",
+                extra={
+                    "total_raw": len(results),
+                    "min_score": min_score,
+                    "lowest_score": min(r.get("score", 0.0) for r in results) if results else None,
+                    "highest_score": max(r.get("score", 0.0) for r in results) if results else None,
+                },
+            )
             return DocumentSearchOutput(
                 found=False,
                 result_count=0,

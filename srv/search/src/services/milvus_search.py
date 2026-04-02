@@ -8,6 +8,7 @@ Partition Strategy for Role-Based Access:
 Search is restricted to partitions the user has read access to.
 """
 
+import math
 import structlog
 from typing import List, Dict, Optional
 from pymilvus import Collection, connections
@@ -608,19 +609,22 @@ class MilvusSearchService:
                     logger.warning("Unexpected reranker response format")
                     return results[:top_k] if top_k else results
                 
-                # Map scores back to results
+                # Map scores back to results, normalizing raw logits to 0-1 via sigmoid.
+                # Cross-encoder rerankers return unbounded logits (can be negative),
+                # but downstream consumers (e.g. document_search_tool) expect 0-1 scores.
                 reranked_results = []
                 for idx, score_item in enumerate(rerank_data["data"]):
                     if idx < len(results):
                         result = results[idx].copy()
-                        relevance_score = score_item.get("score", 0.0)
-                        result["rerank_score"] = relevance_score
+                        raw_score = score_item.get("score", 0.0)
+                        normalized_score = 1.0 / (1.0 + math.exp(-raw_score))
+                        result["rerank_score"] = raw_score
                         result["original_score"] = result["score"]
-                        result["score"] = relevance_score
+                        result["score"] = normalized_score
                         reranked_results.append(result)
                 
-                # Sort by rerank score
-                reranked_results.sort(key=lambda x: x["rerank_score"], reverse=True)
+                # Sort by normalized score (preserves rank order since sigmoid is monotonic)
+                reranked_results.sort(key=lambda x: x["score"], reverse=True)
                 
                 if top_k:
                     reranked_results = reranked_results[:top_k]
@@ -669,17 +673,19 @@ class MilvusSearchService:
             # Get scores
             scores = self._cpu_reranker.predict(pairs)
             
-            # Map scores back to results
+            # Map scores back to results, normalizing raw logits to 0-1 via sigmoid
             reranked_results = []
             for idx, score in enumerate(scores):
                 result = results[idx].copy()
-                result["rerank_score"] = float(score)
+                raw_score = float(score)
+                normalized_score = 1.0 / (1.0 + math.exp(-raw_score))
+                result["rerank_score"] = raw_score
                 result["original_score"] = result["score"]
-                result["score"] = float(score)
+                result["score"] = normalized_score
                 reranked_results.append(result)
             
-            # Sort by rerank score
-            reranked_results.sort(key=lambda x: x["rerank_score"], reverse=True)
+            # Sort by normalized score
+            reranked_results.sort(key=lambda x: x["score"], reverse=True)
             
             if top_k:
                 reranked_results = reranked_results[:top_k]
@@ -809,6 +815,27 @@ class MilvusSearchService:
         
         # Sort by RRF score
         fused_results.sort(key=lambda x: x["score"], reverse=True)
+        
+        # Normalize RRF scores to 0-1 range.
+        # Raw RRF scores are tiny (max ~1/k ≈ 0.016 for k=60) and
+        # downstream consumers (document_search_tool) expect 0-1 scores.
+        # Use min-max normalization: best result → 1.0, worst → scaled proportionally.
+        if len(fused_results) > 1:
+            max_score = fused_results[0]["score"]
+            min_score = fused_results[-1]["score"]
+            score_range = max_score - min_score
+            if score_range > 0:
+                for r in fused_results:
+                    raw = r["score"]
+                    r["rrf_score"] = raw
+                    r["score"] = (raw - min_score) / score_range
+            else:
+                for r in fused_results:
+                    r["rrf_score"] = r["score"]
+                    r["score"] = 1.0
+        elif len(fused_results) == 1:
+            fused_results[0]["rrf_score"] = fused_results[0]["score"]
+            fused_results[0]["score"] = 1.0
         
         return fused_results
     

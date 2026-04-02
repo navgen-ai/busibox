@@ -52,11 +52,16 @@ class Config(BaseSettings):
     litellm_api_key: str = os.getenv("LITELLM_API_KEY", "")
     
     # Reranking mode: "none" (skip), "vllm" or "qwen3-gpu" (GPU), "local" or "baai-cpu" (CPU, slow startup)
-    # This determines the default reranker used by hybrid search
-    reranking_mode: str = os.getenv("RERANKING_MODE", "none")
+    # This determines the default reranker used by hybrid search.
+    # When not explicitly set, derived from ENABLE_RERANKING for backward compatibility.
+    reranking_mode: str = os.getenv(
+        "RERANKING_MODE",
+        "local" if os.getenv("ENABLE_RERANKING", "false").lower() == "true" else "none",
+    )
     
-    # Legacy enable_reranking bool - superseded by reranking_mode
-    # If reranking_mode is "none", reranking is disabled regardless of this setting
+    # Legacy enable_reranking bool - superseded by reranking_mode.
+    # If RERANKING_MODE is explicitly set, this value is ignored by MilvusSearchService.
+    # Kept for backward compatibility with RerankingService (the standalone CPU reranker).
     enable_reranking: bool = os.getenv("ENABLE_RERANKING", "true").lower() == "true"
     
     # Reranking (local model for RerankingService)

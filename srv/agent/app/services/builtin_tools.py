@@ -72,8 +72,8 @@ BUILTIN_TOOL_METADATA = {
                     },
                     "min_score": {
                         "type": "number",
-                        "description": "Minimum relevancy score threshold (0-1, default 0.3). Results below this score are excluded.",
-                        "default": 0.3
+                        "description": "Minimum relevancy score threshold (0-1, default 0.1). Results below this score are excluded.",
+                        "default": 0.1
                     },
                     "mode": {
                         "type": "string",

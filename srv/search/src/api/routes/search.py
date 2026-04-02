@@ -526,14 +526,14 @@ async def _enrich_results(results: list, request: Request) -> list:
                 for row in file_rows
             }
             
-            # Enrich results
-            enriched = []
+            # Enrich results -- keep all results even if file metadata missing from PG
             for result in results:
                 if result["file_id"] in filename_lookup:
                     result["filename"] = filename_lookup[result["file_id"]]
-                    enriched.append(result)
+                else:
+                    result["filename"] = f"Document {result['file_id'][:8]}"
             
-            return enriched
+            return results
     
     except Exception as e:
         logger.error(
