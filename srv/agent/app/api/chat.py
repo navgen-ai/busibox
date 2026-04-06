@@ -663,7 +663,8 @@ async def send_chat_message(
             )
             message_count = count_result.scalar_one()
             
-            if should_generate_insights(conversation, message_count):
+            insights_enabled = user_settings.insights_enabled if user_settings else True
+            if insights_enabled and should_generate_insights(conversation, message_count):
                 # Generate insights asynchronously (don't wait)
                 asyncio.create_task(
                     _generate_insights_background(
@@ -1162,6 +1163,7 @@ async def send_chat_message_stream_agentic(
                 principal=principal,
                 metadata=dispatcher_metadata,
                 attachment_metadata=attachment_metadata,
+                insights_enabled=user_settings.insights_enabled if user_settings else True,
             ):
                 # Yield event to client (hide verbose thinking events for bridge channels)
                 if not (suppress_thinking_events and event.type in BRIDGE_FILTERED_AGENTIC_EVENTS):
@@ -1272,7 +1274,8 @@ async def send_chat_message_stream_agentic(
                     select(func.count()).select_from(Message).where(Message.conversation_id == conversation.id)
                 )
                 message_count = count_result.scalar_one()
-                if should_generate_insights(conversation, message_count):
+                insights_enabled = user_settings.insights_enabled if user_settings else True
+                if insights_enabled and should_generate_insights(conversation, message_count):
                     pending_follow_up_question = await _generate_insights_and_pending_question(
                         conversation=conversation,
                         messages=history_messages + [user_message, assistant_message],

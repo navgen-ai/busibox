@@ -181,6 +181,22 @@
   until: model_download.rc == 0
   tags: [embedding_api, embedding_api_deploy]
 
+- name: Write deployment version file
+  copy:
+    content: |
+      {
+        "git_commit": "{{ lookup('pipe', 'cd ' + playbook_dir + '/../.. && git rev-parse --short HEAD 2>/dev/null || echo unknown') }}",
+        "branch": "{{ lookup('pipe', 'cd ' + playbook_dir + '/../.. && git branch --show-current 2>/dev/null || echo unknown') }}",
+        "timestamp": "{{ now(utc=true).isoformat() }}",
+        "deployed_by": "ansible"
+      }
+    dest: /opt/embedding/.deploy_version
+    owner: "{{ embedding_api_user }}"
+    group: "{{ embedding_api_user }}"
+    mode: "0644"
+  ignore_errors: true
+  tags: [embedding_api, embedding_api_deploy]
+
 - name: Enable and start embedding-api service
   ansible.builtin.systemd:
     name: embedding-api

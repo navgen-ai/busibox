@@ -1,4 +1,4 @@
-use crate::app::{App, BenchmarkUpdate, Screen};
+use crate::app::{App, BenchmarkUpdate, CloudKeysUpdate, Screen};
 use crate::modules::benchmark::{
     self, BenchmarkConfig, BenchmarkMode, BenchmarkResult, ModelTestTier,
 };
@@ -64,14 +64,47 @@ pub fn init_screen(app: &mut App, preselect_port: Option<u16>) {
 }
 
 pub fn render(f: &mut Frame, app: &App) {
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(0)])
+        .split(f.area());
+    render_tab_bar(f, app, outer[0]);
     match app.benchmark_mode {
-        BenchmarkMode::Performance => render_performance(f, app),
-        BenchmarkMode::ModelTests => render_model_tests(f, app),
-        BenchmarkMode::LoadTest => render_load_test(f, app),
+        BenchmarkMode::Performance => render_performance(f, app, outer[1]),
+        BenchmarkMode::ModelTests => render_model_tests(f, app, outer[1]),
+        BenchmarkMode::LoadTest => render_load_test(f, app, outer[1]),
+        BenchmarkMode::CloudKeys => render_cloud_keys(f, app, outer[1]),
     }
 }
 
-fn render_load_test(f: &mut Frame, app: &App) {
+fn render_tab_bar(f: &mut Frame, app: &App, area: Rect) {
+    let tabs: &[(&str, BenchmarkMode)] = &[
+        (" Benchmark ", BenchmarkMode::Performance),
+        (" Model Tests ", BenchmarkMode::ModelTests),
+        (" Load Test ", BenchmarkMode::LoadTest),
+        (" Cloud Keys ", BenchmarkMode::CloudKeys),
+    ];
+    let mut spans: Vec<Span> = Vec::new();
+    for (label, mode) in tabs {
+        let active = app.benchmark_mode == *mode;
+        let style = if active {
+            theme::highlight()
+                .add_modifier(ratatui::style::Modifier::BOLD)
+                .add_modifier(ratatui::style::Modifier::UNDERLINED)
+        } else {
+            theme::muted()
+        };
+        let prefix = if active { "▶ " } else { "  " };
+        spans.push(Span::styled(format!("{prefix}{label}"), style));
+        spans.push(Span::styled("  │  ", theme::dim()));
+    }
+    spans.push(Span::styled(" Tab to switch", theme::dim()));
+    let para = Paragraph::new(Line::from(spans))
+        .block(Block::default().borders(Borders::BOTTOM).border_style(theme::dim()));
+    f.render_widget(para, area);
+}
+
+fn render_load_test(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -79,7 +112,7 @@ fn render_load_test(f: &mut Frame, app: &App) {
             Constraint::Length(5),  // info
             Constraint::Min(6),    // log
         ])
-        .split(f.area());
+        .split(area);
 
     let title = Paragraph::new(Line::from(vec![
         Span::styled("  Load Test ", theme::highlight()),
@@ -129,7 +162,7 @@ fn render_load_test(f: &mut Frame, app: &App) {
     f.render_widget(log, chunks[2]);
 }
 
-fn render_performance(f: &mut Frame, app: &App) {
+fn render_performance(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -140,7 +173,7 @@ fn render_performance(f: &mut Frame, app: &App) {
             Constraint::Length(2), // help bar
         ])
         .margin(2)
-        .split(f.area());
+        .split(area);
 
     // Title
     let spinner_char = if app.benchmark_running {
@@ -201,11 +234,13 @@ fn render_performance(f: &mut Frame, app: &App) {
     render_help_bar(f, app, chunks[4]);
 }
 
-fn render_model_tests(f: &mut Frame, app: &App) {
+fn render_model_tests(f: &mut Frame, app: &App, area: Rect) {
     let results_height = if app.benchmark_model_test_results.is_empty() {
         0u16
     } else {
-        (app.benchmark_model_test_results.len() as u16 + 4).min(16)
+        // Allow up to half the screen height for results table, min 6 rows for log
+        let max_table = area.height.saturating_sub(6 + 2 + 3 + 2); // log+help+title+margin
+        (app.benchmark_model_test_results.len() as u16 + 4).min(max_table.max(8))
     };
 
     let chunks = Layout::default()
@@ -217,7 +252,7 @@ fn render_model_tests(f: &mut Frame, app: &App) {
             Constraint::Length(2),         // help bar
         ])
         .margin(2)
-        .split(f.area());
+        .split(area);
 
     let spinner_char = if app.benchmark_running {
         SPINNER[app.benchmark_tick % SPINNER.len()]
@@ -459,8 +494,6 @@ fn render_results_table(f: &mut Frame, app: &App, area: Rect) {
         Cell::from(Span::styled("Port", theme::heading())),
         Cell::from(Span::styled("TTFT", theme::heading())),
         Cell::from(Span::styled("Throughput", theme::heading())),
-        Cell::from(Span::styled("Parallel", theme::heading())),
-        Cell::from(Span::styled("P.Latency", theme::heading())),
     ])
     .height(1);
 
@@ -468,8 +501,8 @@ fn render_results_table(f: &mut Frame, app: &App, area: Rect) {
         .benchmark_results
         .iter()
         .map(|r| {
-            let name = if r.model_name.len() > 25 {
-                format!("{}…", &r.model_name[..24])
+            let name = if r.model_name.len() > 30 {
+                format!("{}…", &r.model_name[..29])
             } else {
                 r.model_name.clone()
             };
@@ -482,33 +515,21 @@ fn render_results_table(f: &mut Frame, app: &App, area: Rect) {
                 .throughput_tps
                 .map(|v| format!("{:.1} tok/s", v))
                 .unwrap_or_else(|| "—".into());
-            let parallel = r
-                .parallel_tps
-                .map(|v| format!("{:.1} tok/s", v))
-                .unwrap_or_else(|| "—".into());
-            let p_latency = r
-                .parallel_latency_ms
-                .map(|v| format!("{:.0} ms", v))
-                .unwrap_or_else(|| "—".into());
 
             Row::new(vec![
                 Cell::from(Span::styled(name, theme::info())),
                 Cell::from(Span::styled(r.port.to_string(), theme::muted())),
                 Cell::from(Span::styled(ttft, theme::normal())),
                 Cell::from(Span::styled(throughput, theme::success())),
-                Cell::from(Span::styled(parallel, theme::info())),
-                Cell::from(Span::styled(p_latency, theme::muted())),
             ])
         })
         .collect();
 
     let widths = [
-        Constraint::Min(20),
+        Constraint::Min(25),
         Constraint::Length(6),
         Constraint::Length(10),
         Constraint::Length(14),
-        Constraint::Length(14),
-        Constraint::Length(10),
     ];
 
     let table = Table::new(rows, widths)
@@ -550,8 +571,13 @@ fn render_log(f: &mut Frame, app: &App, area: Rect) {
     let visible_height = area.height.saturating_sub(2) as usize;
     let total = log_lines.len();
     let offset = if total > visible_height {
-        app.benchmark_log_scroll
-            .min(total.saturating_sub(visible_height))
+        if app.benchmark_running {
+            // Auto-scroll to show the latest entries while running
+            total.saturating_sub(visible_height)
+        } else {
+            app.benchmark_log_scroll
+                .min(total.saturating_sub(visible_height))
+        }
     } else {
         0
     };
@@ -604,10 +630,16 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             app.screen = Screen::ModelsManage;
         }
         KeyCode::Tab | KeyCode::BackTab => {
+            // If editing in CloudKeys, Tab moves between fields instead of switching tabs
+            if app.benchmark_mode == BenchmarkMode::CloudKeys && app.cloud_keys_editing {
+                app.cloud_keys_editing = false;
+                return;
+            }
             app.benchmark_mode = match app.benchmark_mode {
                 BenchmarkMode::Performance => BenchmarkMode::ModelTests,
                 BenchmarkMode::ModelTests => BenchmarkMode::LoadTest,
-                BenchmarkMode::LoadTest => BenchmarkMode::Performance,
+                BenchmarkMode::LoadTest => BenchmarkMode::CloudKeys,
+                BenchmarkMode::CloudKeys => BenchmarkMode::Performance,
             };
             // Clear results when switching modes
             app.benchmark_results.clear();
@@ -617,25 +649,33 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             app.benchmark_complete = false;
         }
         KeyCode::Up => {
-            if app.benchmark_mode == BenchmarkMode::Performance
-                && !app.benchmark_models.is_empty()
-                && app.benchmark_selected > 0
-            {
-                app.benchmark_selected -= 1;
+            match app.benchmark_mode {
+                BenchmarkMode::Performance => {
+                    if !app.benchmark_models.is_empty() && app.benchmark_selected > 0 {
+                        app.benchmark_selected -= 1;
+                    }
+                }
+                BenchmarkMode::CloudKeys if !app.cloud_keys_editing => {
+                    if app.cloud_keys_field > 0 {
+                        app.cloud_keys_field -= 1;
+                    }
+                }
+                _ => {}
             }
         }
         KeyCode::Down => {
-            if app.benchmark_mode == BenchmarkMode::Performance
-                && app.benchmark_selected + 1 < app.benchmark_models.len()
-            {
-                app.benchmark_selected += 1;
-            }
-        }
-        KeyCode::Char(' ') => {
-            if app.benchmark_mode == BenchmarkMode::Performance {
-                if let Some(toggled) = app.benchmark_toggled.get_mut(app.benchmark_selected) {
-                    *toggled = !*toggled;
+            match app.benchmark_mode {
+                BenchmarkMode::Performance => {
+                    if app.benchmark_selected + 1 < app.benchmark_models.len() {
+                        app.benchmark_selected += 1;
+                    }
                 }
+                BenchmarkMode::CloudKeys if !app.cloud_keys_editing => {
+                    if app.cloud_keys_field < 3 {
+                        app.cloud_keys_field += 1;
+                    }
+                }
+                _ => {}
             }
         }
         KeyCode::Enter => {
@@ -650,7 +690,42 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     start_model_tests(app);
                 }
                 BenchmarkMode::LoadTest => {
-                    // TODO: implement load test start
+                    start_load_test(app);
+                }
+                BenchmarkMode::CloudKeys => {
+                    app.cloud_keys_editing = !app.cloud_keys_editing;
+                }
+            }
+        }
+        KeyCode::Char(c) => {
+            if app.benchmark_mode == BenchmarkMode::CloudKeys {
+                if app.cloud_keys_editing {
+                    match app.cloud_keys_field {
+                        0 => app.cloud_keys_openai.push(c),
+                        1 => app.cloud_keys_bedrock_access.push(c),
+                        2 => app.cloud_keys_bedrock_secret.push(c),
+                        3 => app.cloud_keys_bedrock_region.push(c),
+                        _ => {}
+                    }
+                } else if c == 's' || c == 'S' {
+                    if !app.cloud_keys_saving {
+                        save_cloud_keys(app);
+                    }
+                }
+            } else if c == ' ' && app.benchmark_mode == BenchmarkMode::Performance {
+                if let Some(toggled) = app.benchmark_toggled.get_mut(app.benchmark_selected) {
+                    *toggled = !*toggled;
+                }
+            }
+        }
+        KeyCode::Backspace => {
+            if app.benchmark_mode == BenchmarkMode::CloudKeys && app.cloud_keys_editing {
+                match app.cloud_keys_field {
+                    0 => { app.cloud_keys_openai.pop(); }
+                    1 => { app.cloud_keys_bedrock_access.pop(); }
+                    2 => { app.cloud_keys_bedrock_secret.pop(); }
+                    3 => { app.cloud_keys_bedrock_region.pop(); }
+                    _ => {}
                 }
             }
         }
@@ -837,70 +912,6 @@ fn start_benchmark(app: &mut App) {
             }
             if !tps_values.is_empty() {
                 result.throughput_tps = Some(benchmark::median(&mut tps_values));
-            }
-
-            // --- Parallel Test ---
-            let _ = tx.send(BenchmarkUpdate::Log(format!(
-                "--- Parallel Test ({} concurrent, max_tokens={}) ---",
-                config.parallel_count, config.max_tokens_parallel
-            )));
-            let parallel_cmd = benchmark::build_parallel_curl_command(
-                &model_ip,
-                model.port,
-                model.api_model_name(),
-                &config.prompt,
-                config.max_tokens_parallel,
-                config.parallel_count,
-            );
-            match exec_curl(&parallel_cmd, is_remote, &ssh_details) {
-                Ok(output) => {
-                    let (responses, wall_ns) = benchmark::parse_parallel_output(&output);
-                    if responses.is_empty() {
-                        let _ = tx.send(BenchmarkUpdate::Log(
-                            "  ERROR: No valid responses from parallel test".into(),
-                        ));
-                    } else {
-                        let total_tokens: usize =
-                            responses.iter().map(|r| r.completion_tokens).sum();
-                        let mut latencies: Vec<f64> = responses
-                            .iter()
-                            .map(|r| r.elapsed_secs * 1000.0)
-                            .collect();
-                        let median_latency = benchmark::median(&mut latencies);
-
-                        let wall_secs = wall_ns
-                            .map(|ns| ns as f64 / 1_000_000_000.0)
-                            .unwrap_or_else(|| {
-                                responses
-                                    .iter()
-                                    .map(|r| r.elapsed_secs)
-                                    .fold(0.0_f64, f64::max)
-                            });
-
-                        let agg_tps = if wall_secs > 0.0 {
-                            total_tokens as f64 / wall_secs
-                        } else {
-                            0.0
-                        };
-
-                        result.parallel_tps = Some(agg_tps);
-                        result.parallel_latency_ms = Some(median_latency);
-
-                        let _ = tx.send(BenchmarkUpdate::Log(format!(
-                            "  ✓ {}/{} responses, {} total tokens",
-                            responses.len(),
-                            config.parallel_count,
-                            total_tokens
-                        )));
-                        let _ = tx.send(BenchmarkUpdate::Log(format!(
-                            "  ✓ {:.1} agg tok/s, {:.0} ms median latency",
-                            agg_tps, median_latency
-                        )));
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(BenchmarkUpdate::Log(format!("  ERROR: {e}")));
-                }
             }
 
             let _ = tx.send(BenchmarkUpdate::Result(result));
@@ -1289,6 +1300,729 @@ fn start_model_tests(app: &mut App) {
         ));
         let _ = tx.send(BenchmarkUpdate::Complete);
     });
+}
+
+struct AgentChatResult {
+    elapsed_ms: f64,
+    ttft_ms: f64,
+    success: bool,
+    error: Option<String>,
+}
+
+fn parse_agent_parallel_output(output: &str, count: usize) -> (Vec<AgentChatResult>, Option<f64>) {
+    let mut results = Vec::new();
+    for i in 0..count {
+        let start_marker = format!("---BENCH_REQ:{i}---");
+        let end_marker = format!("---BENCH_REQ_END:{i}---");
+        let start_pos = match output.find(&start_marker) {
+            Some(p) => p + start_marker.len(),
+            None => continue,
+        };
+        let end_pos = output[start_pos..].find(&end_marker)
+            .map(|p| start_pos + p)
+            .unwrap_or(output.len());
+        let block = &output[start_pos..end_pos];
+
+        let mut elapsed_ms = 0.0_f64;
+        let mut ttft_ms = 0.0_f64;
+        let mut success = false;
+        let mut error: Option<String> = None;
+
+        if let Some(tp) = block.find("---BENCH_TIME:") {
+            let after = &block[tp + "---BENCH_TIME:".len()..];
+            if let Some(end) = after.find("---") {
+                if let Ok(secs) = after[..end].trim().parse::<f64>() {
+                    elapsed_ms = secs * 1000.0;
+                }
+            }
+        }
+        if let Some(tp) = block.find("---BENCH_TTFT:") {
+            let after = &block[tp + "---BENCH_TTFT:".len()..];
+            if let Some(end) = after.find("---") {
+                if let Ok(secs) = after[..end].trim().parse::<f64>() {
+                    ttft_ms = secs * 1000.0;
+                }
+            }
+        }
+        // Check response body for success/error
+        let body = block.split("---BENCH_TIME:").next().unwrap_or(block).trim();
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
+            if json.get("message").is_some() || json.get("content").is_some() {
+                success = true;
+            } else if let Some(detail) = json.get("detail").and_then(|d| d.as_str()) {
+                error = Some(detail.chars().take(60).collect());
+            } else if let Some(msg) = json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+                error = Some(msg.chars().take(60).collect());
+            } else if elapsed_ms > 0.0 {
+                success = true; // got a response with timing, assume ok
+            }
+        } else if elapsed_ms > 0.0 && !body.contains("error") {
+            success = true;
+        } else if !body.is_empty() {
+            error = Some(body.chars().take(60).collect());
+        }
+
+        results.push(AgentChatResult { elapsed_ms, ttft_ms, success, error });
+    }
+
+    // Parse overall wall time
+    let wall_secs = output.find("---BENCH_WALL:").and_then(|p| {
+        let after = &output[p + "---BENCH_WALL:".len()..];
+        after.find("---").and_then(|end| after[..end].trim().parse::<f64>().ok())
+    }).map(|ns| ns / 1_000_000_000.0);
+
+    (results, wall_secs)
+}
+
+fn start_load_test(app: &mut App) {
+    app.benchmark_running = true;
+    app.benchmark_complete = false;
+    app.benchmark_log.clear();
+    app.benchmark_log_scroll = 0;
+    app.benchmark_tick = 0;
+
+    let is_remote = app
+        .active_profile()
+        .map(|(_, p)| p.remote)
+        .unwrap_or(false);
+
+    let is_proxmox = app
+        .active_profile()
+        .map(|(_, p)| p.backend == "proxmox")
+        .unwrap_or(false);
+
+    let vllm_network_base: String = app
+        .active_profile()
+        .map(|(_, p)| p.vllm_network_base().to_string())
+        .unwrap_or_else(|| "10.96.200".to_string());
+
+    let ssh_details: Option<(String, String, String)> = if is_remote {
+        app.active_profile().and_then(|(_, p)| {
+            p.effective_host().map(|host| {
+                (
+                    host.to_string(),
+                    p.effective_user().to_string(),
+                    p.effective_ssh_key().to_string(),
+                )
+            })
+        })
+    } else {
+        None
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.benchmark_rx = Some(rx);
+
+    std::thread::spawn(move || {
+        // Determine agent-api base URL
+        let agent_ip = if is_proxmox {
+            format!("{vllm_network_base}.207")
+        } else {
+            "localhost".to_string()
+        };
+        let agent_api_url = format!("http://{agent_ip}:8000");
+
+        // Read auth token from environment
+        let token = std::env::var("AUTH_TOKEN").unwrap_or_default();
+        if token.is_empty() {
+            let _ = tx.send(BenchmarkUpdate::Log(
+                "ERROR: AUTH_TOKEN env var not set.".into(),
+            ));
+            let _ = tx.send(BenchmarkUpdate::Log(
+                "  Set AUTH_TOKEN=<your_jwt> and restart the CLI to run load tests.".into(),
+            ));
+            let _ = tx.send(BenchmarkUpdate::Log(
+                "  Get a token from the Busibox portal or via /api/auth/token.".into(),
+            ));
+            let _ = tx.send(BenchmarkUpdate::Complete);
+            return;
+        }
+
+        let _ = tx.send(BenchmarkUpdate::Log(format!(
+            ">>> Agent API: {agent_api_url}"
+        )));
+        let _ = tx.send(BenchmarkUpdate::Log(
+            ">>> Concurrency levels: 1, 2, 4, 8 — 4 requests each".into(),
+        ));
+        let _ = tx.send(BenchmarkUpdate::Log(String::new()));
+
+        let prompt = "Summarize the status of our current projects in one sentence.";
+        let timeout_secs: u64 = 120;
+        let levels: &[usize] = &[1, 2, 4, 8];
+
+        for &concurrency in levels {
+            let _ = tx.send(BenchmarkUpdate::Log(format!(
+                "--- Concurrency: {concurrency} parallel requests ---"
+            )));
+
+            let cmd = benchmark::build_parallel_agent_chat_command(
+                &agent_api_url,
+                &token,
+                prompt,
+                concurrency,
+                timeout_secs,
+            );
+
+            match exec_curl(&cmd, is_remote, &ssh_details) {
+                Ok(output) => {
+                    let (results, wall_secs) = parse_agent_parallel_output(&output, concurrency);
+                    let successful = results.iter().filter(|r| r.success).count();
+                    let failed = concurrency - successful;
+
+                    let mut latencies: Vec<f64> =
+                        results.iter().filter(|r| r.success).map(|r| r.elapsed_ms).collect();
+                    let mut ttfts: Vec<f64> =
+                        results.iter().filter(|r| r.success && r.ttft_ms > 0.0).map(|r| r.ttft_ms).collect();
+
+                    let wall = wall_secs.unwrap_or_else(|| {
+                        latencies.iter().cloned().fold(0.0_f64, f64::max) / 1000.0
+                    });
+
+                    if successful == 0 {
+                        let _ = tx.send(BenchmarkUpdate::Log(format!(
+                            "  ERROR: 0/{concurrency} succeeded"
+                        )));
+                        for r in &results {
+                            if let Some(ref e) = r.error {
+                                let _ = tx.send(BenchmarkUpdate::Log(format!("    {e}")));
+                            }
+                        }
+                    } else {
+                        let p50_lat = benchmark::median(&mut latencies);
+                        let p95_lat = percentile(&mut latencies.clone(), 95);
+                        let ttft_p50 = if ttfts.is_empty() { 0.0 } else { benchmark::median(&mut ttfts) };
+                        let ttft_p95 = if ttfts.is_empty() { 0.0 } else { percentile(&mut ttfts.clone(), 95) };
+                        let rps = if wall > 0.0 { successful as f64 / wall } else { 0.0 };
+
+                        let _ = tx.send(BenchmarkUpdate::Log(format!(
+                            "  ✓ {successful}/{concurrency} ok  |  wall: {:.1}s  |  rps: {:.2}",
+                            wall, rps
+                        )));
+                        let _ = tx.send(BenchmarkUpdate::Log(format!(
+                            "    Latency  p50: {:.0}ms  p95: {:.0}ms",
+                            p50_lat, p95_lat
+                        )));
+                        if ttft_p50 > 0.0 {
+                            let _ = tx.send(BenchmarkUpdate::Log(format!(
+                                "    TTFT     p50: {:.0}ms  p95: {:.0}ms",
+                                ttft_p50, ttft_p95
+                            )));
+                        }
+                        if failed > 0 {
+                            let _ = tx.send(BenchmarkUpdate::Log(format!(
+                                "    Failures: {failed}"
+                            )));
+                        }
+                    }
+                    let _ = tx.send(BenchmarkUpdate::Log(String::new()));
+                }
+                Err(e) => {
+                    let _ = tx.send(BenchmarkUpdate::Log(format!(
+                        "  ERROR running concurrency={concurrency}: {e}"
+                    )));
+                    let _ = tx.send(BenchmarkUpdate::Log(String::new()));
+                }
+            }
+        }
+
+        let _ = tx.send(BenchmarkUpdate::Log("✓ Load test complete".into()));
+        let _ = tx.send(BenchmarkUpdate::Complete);
+    });
+}
+
+// =============================================================================
+// Cloud Keys Tab
+// =============================================================================
+
+const CLOUD_KEY_FIELDS: &[&str] = &[
+    "OpenAI API Key",
+    "Bedrock Access Key ID",
+    "Bedrock Secret Access Key",
+    "Bedrock Region",
+];
+
+fn render_cloud_keys(f: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // title
+            Constraint::Length(10), // fields
+            Constraint::Min(4),     // log
+            Constraint::Length(2),  // help bar
+        ])
+        .split(area);
+
+    let profile_name = app
+        .active_profile()
+        .map(|(id, _)| id.to_string())
+        .unwrap_or_else(|| "no profile".into());
+
+    let title = Paragraph::new(Line::from(vec![
+        Span::styled("  Cloud API Keys", theme::highlight()),
+        Span::styled(format!("  — profile: {profile_name}"), theme::dim()),
+    ]))
+    .block(Block::default().borders(Borders::BOTTOM).border_style(theme::dim()));
+    f.render_widget(title, chunks[0]);
+
+    // Fields
+    let field_values = [
+        app.cloud_keys_openai.as_str(),
+        app.cloud_keys_bedrock_access.as_str(),
+        app.cloud_keys_bedrock_secret.as_str(),
+        app.cloud_keys_bedrock_region.as_str(),
+    ];
+
+    let mut field_lines: Vec<Line> = Vec::new();
+    for (i, (label, value)) in CLOUD_KEY_FIELDS.iter().zip(field_values.iter()).enumerate() {
+        let is_focused = app.cloud_keys_field == i;
+        let is_editing = is_focused && app.cloud_keys_editing;
+
+        let label_style = if is_focused { theme::highlight() } else { theme::normal() };
+        let cursor = if is_editing { "█" } else { "" };
+
+        let display = if i == 2 && !value.is_empty() && !is_editing {
+            "*".repeat(value.len().min(20))
+        } else {
+            value.to_string()
+        };
+
+        let prefix = if is_focused { "▶ " } else { "  " };
+        let value_style = if is_editing {
+            theme::success()
+        } else if value.is_empty() {
+            theme::dim()
+        } else {
+            theme::normal()
+        };
+
+        field_lines.push(Line::from(vec![
+            Span::styled(format!("{prefix}{:<28}", label), label_style),
+            Span::styled(
+                if display.is_empty() { "<empty>".into() } else { display },
+                value_style,
+            ),
+            Span::styled(cursor, theme::success()),
+        ]));
+    }
+
+    let save_hint = if app.cloud_keys_saving {
+        Line::from(Span::styled("  Saving…", theme::info()))
+    } else if app.cloud_keys_save_complete {
+        Line::from(Span::styled("  ✓ Saved — LiteLLM redeploying", theme::success()))
+    } else {
+        Line::from(vec![
+            Span::styled("  [Enter] edit field   ", theme::dim()),
+            Span::styled("[s] Save & Redeploy LiteLLM", theme::highlight()),
+        ])
+    };
+    field_lines.push(Line::default());
+    field_lines.push(save_hint);
+
+    let fields_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::dim())
+        .title(Span::styled(" Provider Keys ", theme::dim()));
+    let fields_para = Paragraph::new(field_lines)
+        .block(fields_block)
+        .wrap(Wrap { trim: false });
+    f.render_widget(fields_para, chunks[1]);
+
+    // Log
+    let log_lines: Vec<Line> = app
+        .cloud_keys_log
+        .iter()
+        .map(|s| {
+            let style = if s.starts_with("ERROR") || s.starts_with("✗") {
+                theme::error()
+            } else if s.starts_with("✓") || s.starts_with("OK") {
+                theme::success()
+            } else if s.starts_with("---") || s.starts_with(">>>") {
+                theme::info()
+            } else {
+                theme::normal()
+            };
+            Line::from(Span::styled(s.clone(), style))
+        })
+        .collect();
+
+    let log_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::dim())
+        .title(Span::styled(" Save Log ", theme::dim()));
+    let log_height = chunks[2].height.saturating_sub(2) as usize;
+    let log_start = if app.cloud_keys_log.len() > log_height {
+        app.cloud_keys_log.len() - log_height
+    } else {
+        0
+    };
+    let visible_lines: Vec<Line> = log_lines
+        .into_iter()
+        .skip(app.cloud_keys_log_scroll.min(log_start))
+        .take(log_height + 1)
+        .collect();
+    let log_para = Paragraph::new(visible_lines).block(log_block);
+    f.render_widget(log_para, chunks[2]);
+
+    // Help bar
+    let help = Paragraph::new(Line::from(vec![
+        Span::styled("[↑↓] Navigate   ", theme::dim()),
+        Span::styled("[Enter] Edit/Confirm   ", theme::dim()),
+        Span::styled("[Backspace] Delete char   ", theme::dim()),
+        Span::styled("[s] Save & Redeploy   ", theme::dim()),
+        Span::styled("[Tab] Switch tab   ", theme::dim()),
+        Span::styled("[Esc] Back", theme::dim()),
+    ]));
+    f.render_widget(help, chunks[3]);
+}
+
+fn save_cloud_keys(app: &mut App) {
+    if app.cloud_keys_saving {
+        return;
+    }
+
+    let vault_prefix: String = app
+        .active_profile()
+        .and_then(|(id, p)| p.vault_prefix.clone().or(Some(id.to_string())))
+        .unwrap_or_else(|| "dev".into());
+
+    let vault_password = match &app.vault_password {
+        Some(p) => p.clone(),
+        None => {
+            app.cloud_keys_log.clear();
+            app.cloud_keys_log.push(
+                "ERROR: Vault not unlocked — restart busibox CLI to unlock vault first".into(),
+            );
+            return;
+        }
+    };
+
+    let repo_root = app.repo_root.clone();
+    let openai_key = app.cloud_keys_openai.clone();
+    let bedrock_access = app.cloud_keys_bedrock_access.clone();
+    let bedrock_secret = app.cloud_keys_bedrock_secret.clone();
+    let bedrock_region = app.cloud_keys_bedrock_region.clone();
+
+    let is_remote = app
+        .active_profile()
+        .map(|(_, p)| p.remote)
+        .unwrap_or(false);
+    let ssh_details: Option<(String, String, String)> = if is_remote {
+        app.active_profile().and_then(|(_, p)| {
+            p.effective_host().map(|h| {
+                (
+                    h.to_string(),
+                    p.effective_user().to_string(),
+                    p.effective_ssh_key().to_string(),
+                )
+            })
+        })
+    } else {
+        None
+    };
+    let remote_path: String = app
+        .active_profile()
+        .map(|(_, p)| p.effective_remote_path().to_string())
+        .unwrap_or_else(|| "~/busibox".to_string());
+
+    let profile_environment: String = app
+        .active_profile()
+        .map(|(_, p)| p.environment.clone())
+        .unwrap_or_else(|| "development".into());
+    let container_prefix: String = app
+        .active_profile()
+        .map(|(_, p)| super::install::env_to_prefix(&p.environment))
+        .unwrap_or_else(|| "dev".into());
+    let profile_backend: String = app
+        .active_profile()
+        .map(|(_, p)| p.backend.clone())
+        .unwrap_or_else(|| "docker".into());
+
+    app.cloud_keys_saving = true;
+    app.cloud_keys_save_complete = false;
+    app.cloud_keys_log.clear();
+    app.cloud_keys_log_scroll = 0;
+
+    let (tx, rx) = std::sync::mpsc::channel::<CloudKeysUpdate>();
+    app.cloud_keys_rx = Some(rx);
+
+    std::thread::spawn(move || {
+        let _ = tx.send(CloudKeysUpdate::Log(">>> Updating vault with API keys...".into()));
+
+        let vault_file = format!(
+            "provision/ansible/roles/secrets/vars/vault.{vault_prefix}.yml"
+        );
+
+        // Build Python script to update vault
+        // The bedrock key format expected by litellm.env.j2 is "ACCESS:SECRET"
+        let bedrock_combined = if !bedrock_access.is_empty() && !bedrock_secret.is_empty() {
+            format!("{}:{}", bedrock_access, bedrock_secret)
+        } else {
+            String::new()
+        };
+
+        let py_script = build_vault_update_script(
+            &vault_file,
+            &openai_key,
+            &bedrock_combined,
+            &bedrock_region,
+        );
+
+        let cmd = format!(
+            "ANSIBLE_VAULT_PASSWORD={} python3 -c {}",
+            shell_escape_str(&vault_password),
+            shell_escape_str(&py_script),
+        );
+
+        let update_ok = if is_remote {
+            if let Some((ref host, ref user, ref key)) = ssh_details {
+                let ssh = crate::modules::ssh::SshConnection::new(host, user, key);
+                if let Err(e) = crate::modules::remote::sync(&repo_root, host, user, key, &remote_path) {
+                    let _ = tx.send(CloudKeysUpdate::Log(format!("ERROR: rsync failed: {e}")));
+                    let _ = tx.send(CloudKeysUpdate::Complete { success: false });
+                    return;
+                }
+                let tx2 = tx.clone();
+                let full_cmd = format!(
+                    "cd {} && {}",
+                    remote_path.trim_end_matches('/'),
+                    cmd
+                );
+                let full_cmd_with_path = format!(
+                    "{}{}",
+                    crate::modules::remote::SHELL_PATH_PREAMBLE,
+                    full_cmd
+                );
+                match ssh.run(&full_cmd_with_path) {
+                    Ok(output) => {
+                        for line in output.lines() {
+                            let _ = tx2.send(CloudKeysUpdate::Log(format!("  {line}")));
+                        }
+                        !output.contains("ERROR")
+                    }
+                    Err(e) => {
+                        let _ = tx.send(CloudKeysUpdate::Log(format!("ERROR: {e}")));
+                        false
+                    }
+                }
+            } else {
+                let _ = tx.send(CloudKeysUpdate::Log("ERROR: No SSH credentials".into()));
+                let _ = tx.send(CloudKeysUpdate::Complete { success: false });
+                return;
+            }
+        } else {
+            let vault_path = repo_root.join(&vault_file);
+            if !vault_path.exists() {
+                let _ = tx.send(CloudKeysUpdate::Log(format!(
+                    "ERROR: Vault file not found: {}", vault_path.display()
+                )));
+                let _ = tx.send(CloudKeysUpdate::Complete { success: false });
+                return;
+            }
+
+            let local_py_script = build_vault_update_script(
+                &vault_path.to_string_lossy(),
+                &openai_key,
+                &bedrock_combined,
+                &bedrock_region,
+            );
+
+            let output = std::process::Command::new("python3")
+                .arg("-c")
+                .arg(&local_py_script)
+                .env("ANSIBLE_VAULT_PASSWORD", &vault_password)
+                .output();
+
+            match output {
+                Ok(out) => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    for line in stdout.lines() {
+                        let _ = tx.send(CloudKeysUpdate::Log(format!("  {line}")));
+                    }
+                    if !stderr.trim().is_empty() {
+                        for line in stderr.lines() {
+                            let _ = tx.send(CloudKeysUpdate::Log(format!("  STDERR: {line}")));
+                        }
+                    }
+                    out.status.success() && !stdout.contains("ERROR")
+                }
+                Err(e) => {
+                    let _ = tx.send(CloudKeysUpdate::Log(format!("ERROR: python3 exec failed: {e}")));
+                    false
+                }
+            }
+        };
+
+        if !update_ok {
+            let _ = tx.send(CloudKeysUpdate::Log("✗ Vault update failed".into()));
+            let _ = tx.send(CloudKeysUpdate::Complete { success: false });
+            return;
+        }
+
+        let _ = tx.send(CloudKeysUpdate::Log("✓ Vault updated".into()));
+
+        // Redeploy LiteLLM
+        let _ = tx.send(CloudKeysUpdate::Log(">>> Redeploying LiteLLM service...".into()));
+
+        let env_prefix = format!(
+            "ENV={profile_environment} \
+             BUSIBOX_ENV={profile_environment} \
+             BUSIBOX_BACKEND={profile_backend} \
+             CONTAINER_PREFIX={container_prefix} \
+             VAULT_PREFIX={vault_prefix} \
+             ANSIBLE_VAULT_PASSWORD={} ",
+            shell_escape_str(&vault_password),
+        );
+
+        let make_cmd = format!("{env_prefix} make install SERVICE=litellm");
+
+        let deploy_ok = if is_remote {
+            if let Some((ref host, ref user, ref key)) = ssh_details {
+                let ssh = crate::modules::ssh::SshConnection::new(host, user, key);
+                let full = format!(
+                    "{}cd {} && {}",
+                    crate::modules::remote::SHELL_PATH_PREAMBLE,
+                    remote_path.trim_end_matches('/'),
+                    make_cmd
+                );
+                match ssh.run(&full) {
+                    Ok(output) => {
+                        for line in output.lines() {
+                            let _ = tx.send(CloudKeysUpdate::Log(format!("  {line}")));
+                        }
+                        !output.to_lowercase().contains("error") || output.contains("PLAY RECAP")
+                    }
+                    Err(e) => {
+                        let _ = tx.send(CloudKeysUpdate::Log(format!("ERROR: {e}")));
+                        false
+                    }
+                }
+            } else {
+                false
+            }
+        } else {
+            let result = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&make_cmd)
+                .current_dir(&repo_root)
+                .env("ANSIBLE_VAULT_PASSWORD", &vault_password)
+                .output();
+            match result {
+                Ok(out) => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    for line in stdout.lines().take(40) {
+                        let _ = tx.send(CloudKeysUpdate::Log(format!("  {line}")));
+                    }
+                    if !stderr.trim().is_empty() {
+                        for line in stderr.lines().take(10) {
+                            let _ = tx.send(CloudKeysUpdate::Log(format!("  {line}")));
+                        }
+                    }
+                    out.status.success()
+                }
+                Err(e) => {
+                    let _ = tx.send(CloudKeysUpdate::Log(format!("ERROR: make failed: {e}")));
+                    false
+                }
+            }
+        };
+
+        if deploy_ok {
+            let _ = tx.send(CloudKeysUpdate::Log("✓ LiteLLM redeployed with new credentials".into()));
+            let _ = tx.send(CloudKeysUpdate::Complete { success: true });
+        } else {
+            let _ = tx.send(CloudKeysUpdate::Log("✗ LiteLLM redeploy failed — check logs".into()));
+            let _ = tx.send(CloudKeysUpdate::Complete { success: false });
+        }
+    });
+}
+
+/// Build the Python inline script that decrypts the vault, updates keys, and re-encrypts.
+fn build_vault_update_script(
+    vault_file: &str,
+    openai_key: &str,
+    bedrock_combined: &str,
+    bedrock_region: &str,
+) -> String {
+    let openai_escaped = openai_key.replace('\\', "\\\\").replace('\'', "\\'");
+    let bedrock_escaped = bedrock_combined.replace('\\', "\\\\").replace('\'', "\\'");
+    let region_escaped = bedrock_region.replace('\\', "\\\\").replace('\'', "\\'");
+    let vault_escaped = vault_file.replace('\\', "\\\\").replace('\'', "\\'");
+
+    format!(
+        r#"
+import subprocess, yaml, os, sys, tempfile
+
+vault_file = '{vault_escaped}'
+vault_pass = os.environ.get('ANSIBLE_VAULT_PASSWORD', '')
+if not vault_pass:
+    print('ERROR: ANSIBLE_VAULT_PASSWORD not set')
+    sys.exit(1)
+
+with tempfile.NamedTemporaryFile(mode='w', suffix='.tmp', delete=False) as f:
+    f.write(vault_pass)
+    tmp_pass = f.name
+
+try:
+    r = subprocess.run(
+        ['ansible-vault', 'decrypt', '--vault-password-file', tmp_pass, vault_file],
+        capture_output=True, text=True
+    )
+    if r.returncode != 0:
+        print('ERROR: decrypt failed: ' + r.stderr.strip())
+        sys.exit(1)
+
+    with open(vault_file) as f:
+        data = yaml.safe_load(f) or {{}}
+
+    secrets = data.setdefault('secrets', {{}})
+    openai_key = '{openai_escaped}'
+    bedrock_key = '{bedrock_escaped}'
+    region = '{region_escaped}'
+
+    if openai_key:
+        secrets.setdefault('openai', {{}})['api_key'] = openai_key
+        print('OK: OpenAI key updated')
+    if bedrock_key:
+        secrets.setdefault('bedrock', {{}})['api_key'] = bedrock_key
+        print('OK: Bedrock key updated')
+    if region:
+        secrets.setdefault('bedrock', {{}})['region'] = region
+        print('OK: Bedrock region updated')
+
+    with open(vault_file, 'w') as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+
+    r = subprocess.run(
+        ['ansible-vault', 'encrypt', '--vault-password-file', tmp_pass, vault_file],
+        capture_output=True, text=True
+    )
+    if r.returncode != 0:
+        print('ERROR: encrypt failed: ' + r.stderr.strip())
+        sys.exit(1)
+    print('OK: Vault re-encrypted')
+finally:
+    os.unlink(tmp_pass)
+"#,
+        vault_escaped = vault_escaped,
+        openai_escaped = openai_escaped,
+        bedrock_escaped = bedrock_escaped,
+        region_escaped = region_escaped,
+    )
+}
+
+fn shell_escape_str(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn percentile(sorted: &mut Vec<f64>, p: usize) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let idx = ((p as f64 / 100.0) * (sorted.len() as f64 - 1.0)).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
 }
 
 /// Execute a curl command locally or via SSH, returning the raw output.

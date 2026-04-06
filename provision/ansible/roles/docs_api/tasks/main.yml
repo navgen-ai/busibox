@@ -178,6 +178,22 @@
     enabled: true
   tags: [docs]
 
+- name: Write deployment version file
+  copy:
+    content: |
+      {
+        "git_commit": "{{ lookup('pipe', 'cd ' + playbook_dir + '/../.. && git rev-parse --short HEAD 2>/dev/null || echo unknown') }}",
+        "branch": "{{ lookup('pipe', 'cd ' + playbook_dir + '/../.. && git branch --show-current 2>/dev/null || echo unknown') }}",
+        "timestamp": "{{ now(utc=true).isoformat() }}",
+        "deployed_by": "ansible"
+      }
+    dest: /opt/docs-api/.deploy_version
+    owner: "{{ docs_user }}"
+    group: "{{ docs_group }}"
+    mode: "0644"
+  ignore_errors: true
+  tags: [docs]
+
 - name: Restart docs-api service (always restart on deploy)
   systemd:
     name: "{{ docs_service_name }}"

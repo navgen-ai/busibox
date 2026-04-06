@@ -6,6 +6,7 @@ pub enum BenchmarkMode {
     Performance,
     ModelTests,
     LoadTest,
+    CloudKeys,
 }
 
 #[derive(Debug, Clone)]
@@ -62,8 +63,6 @@ pub struct BenchmarkResult {
     pub port: u16,
     pub ttft_ms: Option<f64>,
     pub throughput_tps: Option<f64>,
-    pub parallel_tps: Option<f64>,
-    pub parallel_latency_ms: Option<f64>,
 }
 
 impl BenchmarkResult {
@@ -73,8 +72,6 @@ impl BenchmarkResult {
             port,
             ttft_ms: None,
             throughput_tps: None,
-            parallel_tps: None,
-            parallel_latency_ms: None,
         }
     }
 }
@@ -117,6 +114,7 @@ pub fn build_curl_command(
 /// Build a shell snippet that runs N parallel curl commands and collects all output.
 /// Each request's output is captured to a temp file to avoid interleaved output,
 /// then concatenated with ---BENCH_REQ:N--- / ---BENCH_REQ_END:N--- markers.
+#[allow(dead_code)]
 pub fn build_parallel_curl_command(
     vllm_ip: &str,
     port: u16,
@@ -202,6 +200,7 @@ pub fn parse_curl_response(output: &str) -> Option<CurlResponse> {
 
 /// Parse the output of a parallel curl run.
 /// Returns individual CurlResponses and the overall wall-clock nanoseconds (if available).
+#[allow(dead_code)]
 pub fn parse_parallel_output(output: &str) -> (Vec<CurlResponse>, Option<u64>) {
     let mut responses = Vec::new();
 
@@ -471,12 +470,12 @@ pub fn build_tts_curl_command(ip: &str, port: u16, api_key: &str) -> String {
 }
 
 /// Build a curl command to test image generation via LiteLLM.
+/// Uses a 300s timeout because image generation models can be slow.
 pub fn build_image_curl_command(ip: &str, port: u16, api_key: &str) -> String {
     let body = serde_json::json!({
         "model": "image",
         "prompt": "A simple red circle on white background",
         "n": 1,
-        "size": "256x256",
     });
     let body_str = body.to_string().replace('\'', "'\\''");
     let auth = if api_key.is_empty() {
@@ -488,7 +487,7 @@ pub fn build_image_curl_command(ip: &str, port: u16, api_key: &str) -> String {
         "curl -s -w '\\n---BENCH_TIME:%{{time_total}}---' \
          -H 'Content-Type: application/json' \
          {auth} \
-         --max-time 120 \
+         --max-time 300 \
          -d '{body_str}' \
          'http://{ip}:{port}/v1/images/generations'; true"
     )
@@ -608,9 +607,15 @@ pub fn parse_image_response(output: &str) -> ModelTestResult {
                 }
             } else if let Some(err) = json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
                 result.error = Some(err.to_string());
+            } else if let Some(detail) = json.get("detail").and_then(|d| d.as_str()) {
+                result.error = Some(format!("API error: {detail}"));
+            } else if let Some(msg) = json.get("message").and_then(|m| m.as_str()) {
+                result.error = Some(format!("API error: {msg}"));
             } else {
                 result.error = Some("No 'data' in response".to_string());
             }
+        } else if json_part.is_empty() {
+            result.error = Some("Empty response (timeout or connection refused)".to_string());
         } else {
             let preview: String = json_part.chars().take(120).collect();
             result.error = Some(format!("Could not parse JSON: {preview}"));
@@ -626,39 +631,6 @@ pub fn parse_image_response(output: &str) -> ModelTestResult {
 // =========================================================================
 // Load Test helpers — hit agent-api endpoints, not raw vLLM
 // =========================================================================
-
-#[derive(Debug, Clone)]
-pub struct LoadTestConfig {
-    pub concurrency_levels: Vec<usize>,
-    pub requests_per_level: usize,
-    pub prompt: String,
-    pub timeout_secs: u64,
-}
-
-impl Default for LoadTestConfig {
-    fn default() -> Self {
-        Self {
-            concurrency_levels: vec![1, 2, 4, 8],
-            requests_per_level: 4,
-            prompt: "What is the current status of our projects?".to_string(),
-            timeout_secs: 120,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct LoadTestResult {
-    pub concurrency: usize,
-    pub total_requests: usize,
-    pub successful: usize,
-    pub failed: usize,
-    pub ttft_p50_ms: f64,
-    pub ttft_p95_ms: f64,
-    pub latency_p50_ms: f64,
-    pub latency_p95_ms: f64,
-    pub wall_time_secs: f64,
-    pub throughput_rps: f64,
-}
 
 /// Build a curl command that hits the agent-api /chat/message endpoint
 /// (non-streaming) and captures timing.

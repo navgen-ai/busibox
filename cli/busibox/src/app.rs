@@ -209,6 +209,19 @@ pub struct App {
     pub cloud_provider_choice: usize,    // 0=OpenAI, 1=Anthropic, 2=Bedrock
     pub cloud_api_key_input: String,
 
+    // Cloud API Keys tab (ModelBenchmark → CloudKeys mode)
+    pub cloud_keys_field: usize,           // focused field index (0-3)
+    pub cloud_keys_editing: bool,          // text input active for current field
+    pub cloud_keys_openai: String,
+    pub cloud_keys_bedrock_access: String,
+    pub cloud_keys_bedrock_secret: String,
+    pub cloud_keys_bedrock_region: String,
+    pub cloud_keys_saving: bool,
+    pub cloud_keys_save_complete: bool,
+    pub cloud_keys_log: Vec<String>,
+    pub cloud_keys_log_scroll: usize,
+    pub cloud_keys_rx: Option<mpsc::Receiver<CloudKeysUpdate>>,
+
     // K8s setup state
     pub k8s_kubeconfig_input: String,
     pub k8s_overlay_input: String,
@@ -576,6 +589,11 @@ pub enum BenchmarkUpdate {
     Complete,
 }
 
+pub enum CloudKeysUpdate {
+    Log(String),
+    Complete { success: bool },
+}
+
 #[derive(Debug)]
 pub enum K8sManageUpdate {
     Log(String),
@@ -782,6 +800,17 @@ impl App {
             llm_mode_choice: 0,
             cloud_provider_choice: 0,
             cloud_api_key_input: String::new(),
+            cloud_keys_field: 0,
+            cloud_keys_editing: false,
+            cloud_keys_openai: String::new(),
+            cloud_keys_bedrock_access: String::new(),
+            cloud_keys_bedrock_secret: String::new(),
+            cloud_keys_bedrock_region: "us-east-1".into(),
+            cloud_keys_saving: false,
+            cloud_keys_save_complete: false,
+            cloud_keys_log: Vec::new(),
+            cloud_keys_log_scroll: 0,
+            cloud_keys_rx: None,
             k8s_kubeconfig_input: String::new(),
             k8s_overlay_input: "rackspace-spot".into(),
             k8s_spot_token_input: String::new(),

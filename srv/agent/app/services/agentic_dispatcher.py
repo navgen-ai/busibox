@@ -439,6 +439,7 @@ Choose the most appropriate single agent for the query.""",
         principal: Optional[Any] = None,
         metadata: Optional[Dict[str, Any]] = None,
         attachment_metadata: Optional[List[Dict[str, Any]]] = None,
+        insights_enabled: bool = True,
     ) -> AsyncGenerator[StreamEvent, None]:
         """
         Main entry point for agentic dispatch.
@@ -528,7 +529,7 @@ Choose the most appropriate single agent for the query.""",
             relevant_insights = []
             pending_questions: List[Dict[str, Any]] = []
             missing_profile_fields: List[str] = []
-            if user_id:
+            if user_id and insights_enabled:
                 try:
                     from app.api.insights import get_insights_service
                     
@@ -1010,6 +1011,7 @@ async def run_agentic_dispatcher(
     principal: Optional[Any] = None,
     metadata: Optional[Dict[str, Any]] = None,
     attachment_metadata: Optional[List[Dict[str, Any]]] = None,
+    insights_enabled: bool = True,
 ) -> AsyncGenerator[StreamEvent, None]:
     """
     Convenience function to run the agentic dispatcher.
@@ -1026,5 +1028,6 @@ async def run_agentic_dispatcher(
         principal=principal,
         metadata=metadata,
         attachment_metadata=attachment_metadata,
+        insights_enabled=insights_enabled,
     ):
         yield event

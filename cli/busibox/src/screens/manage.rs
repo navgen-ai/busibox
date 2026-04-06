@@ -70,6 +70,7 @@ fn service_to_deploy_version_path(display_name: &str) -> Option<&'static str> {
         "config" => Some("/opt/config/.deploy_version"),
         "minio" => Some("/opt/minio/.deploy_version"),
         "litellm" => Some("/opt/litellm/.deploy_version"),
+        "bridge" => Some("/opt/bridge/.deploy_version"),
         _ => None,
     }
 }
@@ -983,9 +984,32 @@ fn fetch_versions_docker(
         }
     }
 
-    let frontend_sub_apps = ["portal", "admin", "agents", "chat", "appbuilder", "media", "documents"];
+    // Services whose source_repo is busibox-frontend need the frontend HEAD, not
+    // the busibox GIT_COMMIT from the Docker label.
+    let frontend_services: &[&str] = &[
+        "core-apps", "portal", "admin", "agents", "chat", "appbuilder", "media", "documents",
+    ];
+
+    let frontend_head: Option<String> = frontend_dir.and_then(|fdir| {
+        let fpath = std::path::Path::new(fdir);
+        if fpath.join(".git").exists() {
+            std::process::Command::new("git")
+                .args(["rev-parse", "--short", "HEAD"])
+                .current_dir(fpath)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty())
+        } else {
+            None
+        }
+    });
 
     for (name, container_suffix) in &name_to_container {
+        if frontend_services.contains(&name.as_str()) {
+            continue; // handled below with frontend HEAD
+        }
         let deployed_commit = version_map.get(container_suffix.as_str()).cloned()
             .unwrap_or_else(|| {
                 if !is_remote { local_head.to_string() } else { String::new() }
@@ -1003,35 +1027,16 @@ fn fetch_versions_docker(
         });
     }
 
-    // Frontend sub-apps use busibox-frontend HEAD (not the core-apps Docker label,
-    // which is a busibox repo commit and would never match the frontend remote HEAD).
-    let frontend_head: Option<String> = frontend_dir.and_then(|fdir| {
-        let fpath = std::path::Path::new(fdir);
-        if fpath.join(".git").exists() {
-            std::process::Command::new("git")
-                .args(["rev-parse", "--short", "HEAD"])
-                .current_dir(fpath)
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .filter(|s| !s.is_empty())
-        } else {
-            None
-        }
-    });
-
+    // Frontend services get the busibox-frontend HEAD as their deployed version.
     if let Some(ref fe_head) = frontend_head {
-        for sub_app in &frontend_sub_apps {
-            if !name_to_container.iter().any(|(n, _)| n == sub_app) {
-                let _ = tx.send(ManageUpdate::VersionResult {
-                    name: sub_app.to_string(),
-                    version: fe_head.clone(),
-                    commits_behind: None,
-                    deployed_ref: None,
-                    deployed_type: None,
-                });
-            }
+        for svc_name in frontend_services {
+            let _ = tx.send(ManageUpdate::VersionResult {
+                name: svc_name.to_string(),
+                version: fe_head.clone(),
+                commits_behind: None,
+                deployed_ref: None,
+                deployed_type: None,
+            });
         }
     }
 }

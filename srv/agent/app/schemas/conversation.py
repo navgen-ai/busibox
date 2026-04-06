@@ -193,6 +193,7 @@ class ChatSettingsBase(BaseModel):
     model: Optional[str] = Field(None, description="Preferred model")
     temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0, description="Temperature setting")
     max_tokens: Optional[int] = Field(2000, ge=1, le=32000, description="Max tokens setting")
+    insights_enabled: Optional[bool] = Field(True, description="Enable AI insights and onboarding system")
 
     @field_validator('temperature')
     @classmethod

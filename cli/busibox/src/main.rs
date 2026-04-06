@@ -452,6 +452,42 @@ fn main() -> Result<()> {
             }
         }
 
+        // Drain cloud keys save updates
+        {
+            if let Some(rx) = app.cloud_keys_rx.take() {
+                use std::sync::mpsc::TryRecvError;
+                let mut put_back = true;
+                loop {
+                    match rx.try_recv() {
+                        Ok(app::CloudKeysUpdate::Log(msg)) => {
+                            let was_at_bottom = app.cloud_keys_log_scroll
+                                >= app.cloud_keys_log.len().saturating_sub(1);
+                            app.cloud_keys_log.push(msg);
+                            if was_at_bottom {
+                                app.cloud_keys_log_scroll =
+                                    app.cloud_keys_log.len().saturating_sub(1);
+                            }
+                        }
+                        Ok(app::CloudKeysUpdate::Complete { success }) => {
+                            app.cloud_keys_saving = false;
+                            app.cloud_keys_save_complete = success;
+                            put_back = false;
+                            break;
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            app.cloud_keys_saving = false;
+                            put_back = false;
+                            break;
+                        }
+                    }
+                }
+                if put_back {
+                    app.cloud_keys_rx = Some(rx);
+                }
+            }
+        }
+
         // Drain validate secrets updates
         if let Some(rx) = app.validate_secrets_rx.take() {
             use std::sync::mpsc::TryRecvError;
