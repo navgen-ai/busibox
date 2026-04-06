@@ -57,22 +57,31 @@ fn service_to_docker_container(display_name: &str) -> Option<&'static str> {
 
 /// Map display name → Proxmox `.deploy_version` file path.
 /// Only API services that Ansible deploys from the busibox repo have these.
-fn service_to_deploy_version_path(display_name: &str) -> Option<&'static str> {
+/// Returns (production_container_id, file_path) for each service with a `.deploy_version` file.
+/// On Proxmox the file lives *inside* the LXC container, so we need `pct exec <ctid>`.
+/// Production CTIDs are 2xx; staging adds +100 (3xx).
+fn service_to_deploy_version_info(display_name: &str) -> Option<(u32, &'static str)> {
     match display_name {
-        "authz" => Some("/opt/authz/.deploy_version"),
-        "agent" => Some("/opt/agent-api/.deploy_version"),
-        "data" => Some("/opt/data-api/.deploy_version"),
-        "data-worker" => Some("/opt/data-worker/.deploy_version"),
-        "search" => Some("/opt/search-api/.deploy_version"),
-        "deploy" => Some("/opt/deploy/.deploy_version"),
-        "docs" => Some("/opt/docs-api/.deploy_version"),
-        "embedding" => Some("/opt/embedding/.deploy_version"),
-        "config" => Some("/opt/config/.deploy_version"),
-        "minio" => Some("/opt/minio/.deploy_version"),
-        "litellm" => Some("/opt/litellm/.deploy_version"),
-        "bridge" => Some("/opt/bridge/.deploy_version"),
+        "authz"       => Some((210, "/opt/authz/.deploy_version")),
+        "agent"       => Some((202, "/opt/agent-api/.deploy_version")),
+        "data"        => Some((206, "/opt/data-api/.deploy_version")),
+        "data-worker" => Some((206, "/opt/data-worker/.deploy_version")),
+        "search"      => Some((206, "/opt/search-api/.deploy_version")),
+        "deploy"      => Some((206, "/opt/deploy/.deploy_version")),
+        "docs"        => Some((206, "/opt/docs-api/.deploy_version")),
+        "embedding"   => Some((202, "/opt/embedding/.deploy_version")),
+        "config"      => Some((210, "/opt/config/.deploy_version")),
+        "minio"       => Some((205, "/opt/minio/.deploy_version")),
+        "litellm"     => Some((207, "/opt/litellm/.deploy_version")),
+        "bridge"      => Some((211, "/opt/bridge/.deploy_version")),
         _ => None,
     }
+}
+
+/// Resolve the actual CTID for a service given the environment.
+/// Production uses base IDs (2xx), staging adds +100 (3xx).
+fn resolve_ctid(base_ctid: u32, is_staging: bool) -> u32 {
+    if is_staging { base_ctid + 100 } else { base_ctid }
 }
 
 /// Parsed deployment version info from a `.deploy_version` JSON blob.
@@ -106,10 +115,129 @@ fn extract_deploy_version_info(json_str: &str) -> Option<DeployVersionInfo> {
     }
 }
 
+/// Definition for querying upstream service versions.
+struct UpstreamVersionDef {
+    name: &'static str,
+    /// Production Proxmox CTID (staging adds +100).
+    ctid: u32,
+    /// Shell command to get the running version (run inside the container).
+    version_cmd: &'static str,
+    /// GitHub owner/repo for checking latest releases.
+    github_repo: &'static str,
+    /// Prefix to strip from GitHub release tags (e.g. "v" or "RELEASE.").
+    tag_prefix: &'static str,
+}
+
+const UPSTREAM_SERVICES: &[UpstreamVersionDef] = &[
+    UpstreamVersionDef {
+        name: "postgres",
+        ctid: 203,
+        version_cmd: "postgres --version 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+'",
+        github_repo: "postgres/postgres",
+        tag_prefix: "REL_",
+    },
+    UpstreamVersionDef {
+        name: "redis",
+        ctid: 206,
+        version_cmd: "redis-server --version 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+'",
+        github_repo: "redis/redis",
+        tag_prefix: "",
+    },
+    UpstreamVersionDef {
+        name: "minio",
+        ctid: 205,
+        version_cmd: "docker exec $(docker ps -q --filter name=minio) minio --version 2>/dev/null | grep -oE 'RELEASE\\.[0-9T-]+Z' | head -1",
+        github_repo: "minio/minio",
+        tag_prefix: "",
+    },
+    UpstreamVersionDef {
+        name: "milvus",
+        ctid: 204,
+        version_cmd: "docker exec $(docker ps -q --filter name=milvus-standalone) milvus version 2>/dev/null | head -1 | grep -oE 'v[0-9]+\\.[0-9]+\\.[0-9]+'",
+        github_repo: "milvus-io/milvus",
+        tag_prefix: "v",
+    },
+    UpstreamVersionDef {
+        name: "neo4j",
+        ctid: 213,
+        version_cmd: "docker exec $(docker ps -q --filter name=neo4j) neo4j version 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+'",
+        github_repo: "neo4j/neo4j",
+        tag_prefix: "",
+    },
+    UpstreamVersionDef {
+        name: "litellm",
+        ctid: 207,
+        version_cmd: "/opt/litellm/venv/bin/pip show litellm 2>/dev/null | grep -i '^Version:' | awk '{print $2}'",
+        github_repo: "BerriAI/litellm",
+        tag_prefix: "v",
+    },
+    UpstreamVersionDef {
+        name: "vllm",
+        ctid: 208,
+        version_cmd: "python3 -c 'import vllm; print(vllm.__version__)' 2>/dev/null || /opt/vllm/venv/bin/python -c 'import vllm; print(vllm.__version__)' 2>/dev/null",
+        github_repo: "vllm-project/vllm",
+        tag_prefix: "v",
+    },
+    UpstreamVersionDef {
+        name: "mlx",
+        ctid: 208,
+        version_cmd: "python3 -c 'import mlx_lm; print(mlx_lm.__version__)' 2>/dev/null || echo unknown",
+        github_repo: "ml-explore/mlx-lm",
+        tag_prefix: "v",
+    },
+    UpstreamVersionDef {
+        name: "proxy",
+        ctid: 200,
+        version_cmd: "nginx -v 2>&1 | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+'",
+        github_repo: "nginx/nginx",
+        tag_prefix: "release-",
+    },
+];
+
+/// Check if a service is an upstream (non-busibox) service.
+fn is_upstream_service(name: &str) -> bool {
+    UPSTREAM_SERVICES.iter().any(|u| u.name == name)
+}
+
+/// Parse a semver-like version string into (major, minor, patch) for comparison.
+/// Returns None if it can't be parsed.
+fn parse_semver(v: &str) -> Option<(u32, u32, u32)> {
+    let v = v.trim().trim_start_matches('v');
+    let parts: Vec<&str> = v.split('.').collect();
+    if parts.len() >= 2 {
+        let major = parts[0].parse().ok()?;
+        let minor = parts[1].parse().ok()?;
+        let patch = if parts.len() >= 3 { parts[2].parse().unwrap_or(0) } else { 0 };
+        Some((major, minor, patch))
+    } else {
+        None
+    }
+}
+
+/// Compare two semver versions. Returns true if `latest` is a newer minor/patch
+/// within the same major version as `current`.
+fn is_upstream_update_available(current: &str, latest: &str) -> bool {
+    match (parse_semver(current), parse_semver(latest)) {
+        (Some((cmaj, cmin, cpat)), Some((lmaj, lmin, lpat))) => {
+            if cmaj != lmaj {
+                return false; // different major - don't flag
+            }
+            (lmin, lpat) > (cmin, cpat)
+        }
+        _ => false,
+    }
+}
+
 /// Format the "Deployed" column text and style.
 fn format_deployed_cell(svc: &ServiceStatus) -> (String, Style) {
     if svc.version.is_empty() {
+        if svc.source_repo == "upstream" {
+            return ("…".to_string(), theme::dim());
+        }
         return ("—".to_string(), theme::dim());
+    }
+    if svc.source_repo == "upstream" {
+        return (svc.version.clone(), theme::muted());
     }
     if !svc.deployed_ref.is_empty() {
         (format!("{}@{}", svc.deployed_ref, svc.version), theme::muted())
@@ -120,6 +248,9 @@ fn format_deployed_cell(svc: &ServiceStatus) -> (String, Style) {
 
 /// Format the "Available" column text and style.
 fn format_available_cell(svc: &ServiceStatus) -> (String, Style) {
+    if svc.source_repo == "upstream" {
+        return format_available_cell_upstream(svc);
+    }
     if svc.available_version.is_empty() {
         return ("…".to_string(), theme::dim());
     }
@@ -154,16 +285,32 @@ fn format_available_cell(svc: &ServiceStatus) -> (String, Style) {
     }
 }
 
+fn format_available_cell_upstream(svc: &ServiceStatus) -> (String, Style) {
+    if svc.available_version.is_empty() {
+        return ("…".to_string(), theme::dim());
+    }
+    if svc.version.is_empty() {
+        return (format!("latest: {}", svc.available_version), theme::dim());
+    }
+    if svc.version == svc.available_version {
+        return ("✓ current".to_string(), theme::success());
+    }
+    if is_upstream_update_available(&svc.version, &svc.available_version) {
+        return (format!("↑ {}", svc.available_version), theme::warning());
+    }
+    ("✓ current".to_string(), theme::success())
+}
+
 /// (group, name, source_repo)
 fn get_all_services(app: &App) -> Vec<(&'static str, String, &'static str)> {
     use crate::modules::hardware::LlmBackend;
 
     let mut services: Vec<(&str, String, &str)> = vec![
-        ("Infrastructure", "postgres".to_string(), "busibox"),
-        ("Infrastructure", "redis".to_string(), "busibox"),
-        ("Infrastructure", "minio".to_string(), "busibox"),
-        ("Infrastructure", "milvus".to_string(), "busibox"),
-        ("Infrastructure", "neo4j".to_string(), "busibox"),
+        ("Infrastructure", "postgres".to_string(), "upstream"),
+        ("Infrastructure", "redis".to_string(), "upstream"),
+        ("Infrastructure", "minio".to_string(), "upstream"),
+        ("Infrastructure", "milvus".to_string(), "upstream"),
+        ("Infrastructure", "neo4j".to_string(), "upstream"),
         ("APIs", "authz".to_string(), "busibox"),
         ("APIs", "agent".to_string(), "busibox"),
         ("APIs", "data".to_string(), "busibox"),
@@ -189,14 +336,14 @@ fn get_all_services(app: &App) -> Vec<(&'static str, String, &'static str)> {
         .map(|h| matches!(h.llm_backend, LlmBackend::Mlx))
         .unwrap_or(false);
 
-    services.push(("LLM", "litellm".to_string(), "busibox"));
+    services.push(("LLM", "litellm".to_string(), "upstream"));
     if is_mlx {
-        services.push(("LLM", "mlx".to_string(), "busibox"));
+        services.push(("LLM", "mlx".to_string(), "upstream"));
     } else {
-        services.push(("LLM", "vllm".to_string(), "busibox"));
+        services.push(("LLM", "vllm".to_string(), "upstream"));
     }
 
-    services.push(("Frontend", "proxy".to_string(), "busibox"));
+    services.push(("Frontend", "proxy".to_string(), "upstream"));
     services.push(("Frontend", "core-apps".to_string(), "busibox-frontend"));
     services.push(("Frontend", "user-apps".to_string(), "busibox"));
     services.push(("Frontend", "portal".to_string(), "busibox-frontend"));
@@ -397,16 +544,26 @@ pub fn render(f: &mut Frame, app: &App) {
     if app.manage_services.is_empty() {
         help_spans.push(Span::styled(" Enter Load  Esc Back", theme::muted()));
     } else {
-        let update_count: usize = app.manage_services.iter().filter(|s| s.needs_update).count();
-        help_spans.push(Span::styled(
-            "f Fetch  u Update  ",
-            theme::muted(),
-        ));
+        let update_count: usize = app.manage_services.iter()
+            .filter(|s| s.needs_update && (s.source_repo != "upstream" || is_busibox_managed_upstream(&s.name)))
+            .count();
+        let undeployed_count: usize = app.manage_services.iter()
+            .filter(|s| s.source_repo != "upstream" && s.version.is_empty() && !s.source_repo.is_empty() && s.source_repo != "docker-image")
+            .count();
+        let actionable = update_count + undeployed_count;
+        help_spans.push(Span::styled("f Fetch  u Update  ", theme::muted()));
         if update_count > 0 {
             help_spans.push(Span::styled(
                 format!("U Update All ({update_count})  "),
                 theme::warning(),
             ));
+        } else if actionable > 0 {
+            help_spans.push(Span::styled(
+                format!("U Update All ({actionable} undeployed)  "),
+                theme::dim(),
+            ));
+        } else {
+            help_spans.push(Span::styled("U Update All  ", theme::dim()));
         }
         help_spans.push(Span::styled(
             "r Restart  l Logs  s Stop/Start  t Tunnel  Esc Back",
@@ -768,6 +925,8 @@ pub fn load_service_status(app: &mut App) {
         sibling.filter(|p| p.exists()).map(|p| p.to_string_lossy().to_string())
     };
 
+    let is_staging = profile.environment.contains("staging");
+
     // Clone values needed by the version check thread
     let version_tx = tx.clone();
     let version_service_names = service_names.clone();
@@ -777,6 +936,15 @@ pub fn load_service_status(app: &mut App) {
     let version_prefix = prefix.clone();
     let version_repo_root = repo_root.clone();
     let version_frontend_dir = frontend_dir.clone();
+    let version_is_staging = is_staging;
+
+    // Clone values needed by the upstream version threads
+    let upstream_tx = tx.clone();
+    let upstream_service_names = service_names.clone();
+    let upstream_ssh_details = ssh_details.clone();
+    let upstream_prefix = prefix.clone();
+    let latest_tx = tx.clone();
+    let latest_service_names = service_names.clone();
 
     // Thread 1: health checks (existing logic)
     let health_tx = tx.clone();
@@ -856,6 +1024,7 @@ pub fn load_service_status(app: &mut App) {
             &version_prefix,
             &version_repo_root,
             version_frontend_dir.as_deref(),
+            version_is_staging,
         );
     });
 
@@ -875,16 +1044,37 @@ pub fn load_service_status(app: &mut App) {
         );
     });
 
+    // Thread 4: upstream service running versions (pct exec / docker exec)
+    let upstream_is_proxmox = is_proxmox;
+    let upstream_is_staging = is_staging;
+    let upstream_handle = std::thread::spawn(move || {
+        fetch_upstream_running_versions(
+            &upstream_service_names,
+            &upstream_tx,
+            upstream_ssh_details.as_ref(),
+            upstream_is_proxmox,
+            upstream_is_staging,
+            &upstream_prefix,
+        );
+    });
+
+    // Thread 5: upstream latest versions from GitHub API (parallel per-service)
+    let latest_handle = std::thread::spawn(move || {
+        fetch_upstream_latest_versions(&latest_service_names, &latest_tx);
+    });
+
     // Coordinator thread: wait for all, then send Complete
     std::thread::spawn(move || {
         let _ = health_handle.join();
         let _ = version_handle.join();
         let _ = remote_handle.join();
+        let _ = upstream_handle.join();
+        let _ = latest_handle.join();
         let _ = tx.send(ManageUpdate::Complete { success: true });
     });
 }
 
-/// Fetch deployed version info for all services and send VersionResult updates.
+/// Fetch deployed version info for busibox-managed services (skips upstream).
 fn fetch_service_versions(
     service_names: &[String],
     tx: &std::sync::mpsc::Sender<ManageUpdate>,
@@ -894,8 +1084,17 @@ fn fetch_service_versions(
     prefix: &str,
     repo_root: &std::path::Path,
     frontend_dir: Option<&str>,
+    is_staging: bool,
 ) {
-    // Get the local HEAD commit for comparison
+    let non_upstream: Vec<String> = service_names
+        .iter()
+        .filter(|n| !is_upstream_service(n))
+        .cloned()
+        .collect();
+    if non_upstream.is_empty() {
+        return;
+    }
+
     let local_head = std::process::Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .current_dir(repo_root)
@@ -911,9 +1110,9 @@ fn fetch_service_versions(
         .unwrap_or_default();
 
     if is_proxmox {
-        fetch_versions_proxmox(service_names, tx, ssh_details, &local_head, repo_root);
+        fetch_versions_proxmox(&non_upstream, tx, ssh_details, &local_head, repo_root, is_staging);
     } else {
-        fetch_versions_docker(service_names, tx, is_remote, ssh_details, prefix, &local_head, repo_root, frontend_dir);
+        fetch_versions_docker(&non_upstream, tx, is_remote, ssh_details, prefix, &local_head, repo_root, frontend_dir);
     }
 }
 
@@ -1048,22 +1247,23 @@ fn fetch_versions_proxmox(
     ssh_details: Option<&(String, String, String)>,
     local_head: &str,
     repo_root: &std::path::Path,
+    is_staging: bool,
 ) {
     let (host, user, key) = match ssh_details {
         Some(d) => (&d.0, &d.1, &d.2),
         None => return,
     };
 
-    // Build a single command that cats all deploy_version files
+    // Build a single command that reads all deploy_version files via pct exec
+    // (each file lives inside the respective LXC container, not on the Proxmox host).
     let mut cat_parts: Vec<String> = Vec::new();
-    let mut name_to_path: Vec<(String, String)> = Vec::new();
 
     for name in service_names {
-        if let Some(path) = service_to_deploy_version_path(name) {
+        if let Some((base_ctid, path)) = service_to_deploy_version_info(name) {
+            let ctid = resolve_ctid(base_ctid, is_staging);
             cat_parts.push(format!(
-                "echo \"DEPLOY_VERSION_START:{name}\"; cat '{path}' 2>/dev/null || echo '{{}}'; echo \"DEPLOY_VERSION_END:{name}\""
+                "echo \"DEPLOY_VERSION_START:{name}\"; pct exec {ctid} -- cat '{path}' 2>/dev/null || echo '{{}}'; echo \"DEPLOY_VERSION_END:{name}\""
             ));
-            name_to_path.push((name.clone(), path.to_string()));
         }
     }
 
@@ -1108,6 +1308,215 @@ fn fetch_versions_proxmox(
             current_json.push_str(line);
         }
     }
+}
+
+/// Fetch running versions for upstream services via pct exec (Proxmox) or docker exec.
+/// Runs a single batched SSH command to get all versions in parallel.
+fn fetch_upstream_running_versions(
+    service_names: &[String],
+    tx: &std::sync::mpsc::Sender<ManageUpdate>,
+    ssh_details: Option<&(String, String, String)>,
+    is_proxmox: bool,
+    is_staging: bool,
+    prefix: &str,
+) {
+    let upstream_names: Vec<&String> = service_names
+        .iter()
+        .filter(|n| UPSTREAM_SERVICES.iter().any(|u| u.name == n.as_str()))
+        .collect();
+    if upstream_names.is_empty() {
+        return;
+    }
+
+    let mut cmd_parts: Vec<String> = Vec::new();
+    for name in &upstream_names {
+        if let Some(def) = UPSTREAM_SERVICES.iter().find(|u| u.name == name.as_str()) {
+            let version_cmd = if is_proxmox {
+                let ctid = resolve_ctid(def.ctid, is_staging);
+                format!(
+                    "echo \"UPSTREAM_START:{name}\"; pct exec {ctid} -- sh -c '{cmd}' 2>/dev/null || echo 'unknown'; echo \"UPSTREAM_END:{name}\"",
+                    cmd = def.version_cmd.replace('\'', "'\\''"),
+                )
+            } else {
+                let docker_cmd = match name.as_str() {
+                    "postgres" => format!("docker exec {prefix}-postgres postgres --version 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+'"),
+                    "redis" => format!("docker exec {prefix}-redis redis-server --version 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+'"),
+                    "milvus" => format!("docker exec {prefix}-milvus-standalone milvus version 2>/dev/null | head -1 | grep -oE 'v[0-9]+\\.[0-9]+\\.[0-9]+'"),
+                    "neo4j" => format!("docker exec {prefix}-neo4j neo4j version 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+'"),
+                    "minio" => format!("docker exec {prefix}-minio minio --version 2>/dev/null | grep -oE 'RELEASE\\.[0-9T-]+Z' | head -1"),
+                    "litellm" => format!("docker exec {prefix}-litellm pip show litellm 2>/dev/null | grep -i '^Version:' | awk '{{print $2}}'"),
+                    "vllm" => format!("docker exec {prefix}-vllm python3 -c 'import vllm; print(vllm.__version__)' 2>/dev/null"),
+                    "mlx" => format!("docker exec {prefix}-mlx python3 -c 'import mlx_lm; print(mlx_lm.__version__)' 2>/dev/null"),
+                    "proxy" => format!("docker exec {prefix}-nginx nginx -v 2>&1 | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+'"),
+                    _ => continue,
+                };
+                format!(
+                    "echo \"UPSTREAM_START:{name}\"; {docker_cmd} || echo 'unknown'; echo \"UPSTREAM_END:{name}\""
+                )
+            };
+            cmd_parts.push(version_cmd);
+        }
+    }
+
+    if cmd_parts.is_empty() {
+        return;
+    }
+
+    let batch_cmd = cmd_parts.join("; ");
+    let output = if let Some((host, user, key)) = ssh_details {
+        let ssh = crate::modules::ssh::SshConnection::new(host, user, key);
+        let full_cmd = format!("{}{batch_cmd}", crate::modules::remote::SHELL_PATH_PREAMBLE);
+        ssh.run(&full_cmd).unwrap_or_default()
+    } else {
+        std::process::Command::new("sh")
+            .args(["-c", &batch_cmd])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default()
+    };
+
+    let mut current_name: Option<String> = None;
+    let mut current_version = String::new();
+
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("UPSTREAM_START:") {
+            current_name = Some(rest.trim().to_string());
+            current_version.clear();
+        } else if let Some(rest) = line.strip_prefix("UPSTREAM_END:") {
+            let end_name = rest.trim();
+            if current_name.as_deref() == Some(end_name) {
+                let ver = current_version.trim().to_string();
+                if !ver.is_empty() && ver != "unknown" {
+                    let clean_ver = ver.trim_start_matches('v').to_string();
+                    let _ = tx.send(ManageUpdate::VersionResult {
+                        name: end_name.to_string(),
+                        version: clean_ver,
+                        commits_behind: None,
+                        deployed_ref: None,
+                        deployed_type: None,
+                    });
+                }
+            }
+            current_name = None;
+            current_version.clear();
+        } else if current_name.is_some() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() && current_version.is_empty() {
+                current_version = trimmed.to_string();
+            }
+        }
+    }
+}
+
+/// Fetch latest upstream release versions from GitHub API (runs in parallel for each service).
+fn fetch_upstream_latest_versions(
+    service_names: &[String],
+    tx: &std::sync::mpsc::Sender<ManageUpdate>,
+) {
+    let upstream_names: Vec<&String> = service_names
+        .iter()
+        .filter(|n| UPSTREAM_SERVICES.iter().any(|u| u.name == n.as_str()))
+        .collect();
+
+    let handles: Vec<_> = upstream_names
+        .iter()
+        .filter_map(|name| {
+            UPSTREAM_SERVICES.iter().find(|u| u.name == name.as_str()).map(|def| {
+                let name = name.to_string();
+                let github_repo = def.github_repo.to_string();
+                let tag_prefix = def.tag_prefix.to_string();
+                let tx = tx.clone();
+                std::thread::spawn(move || {
+                    if let Some(version) = fetch_github_latest_release(&github_repo, &tag_prefix, &name) {
+                        let _ = tx.send(ManageUpdate::UpstreamLatestResult {
+                            name,
+                            latest_version: version,
+                        });
+                    }
+                })
+            })
+        })
+        .collect();
+
+    for h in handles {
+        let _ = h.join();
+    }
+}
+
+/// Fetch the latest release tag from a GitHub repo.
+/// Returns the version string with the tag prefix stripped.
+fn fetch_github_latest_release(repo: &str, tag_prefix: &str, name: &str) -> Option<String> {
+    let url = format!("https://api.github.com/repos/{repo}/releases/latest");
+    let output = std::process::Command::new("curl")
+        .args([
+            "-s", "-f", "--max-time", "10",
+            "-H", "Accept: application/vnd.github+json",
+            &url,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        // Fallback: try tags endpoint for repos that don't use GitHub Releases
+        return fetch_github_latest_tag(repo, tag_prefix, name);
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let tag = v.get("tag_name")?.as_str()?;
+
+    let version = if !tag_prefix.is_empty() {
+        tag.strip_prefix(tag_prefix).unwrap_or(tag)
+    } else {
+        tag
+    };
+    // Special case for postgres: REL_16_4 -> 16.4
+    let version = if name == "postgres" {
+        version.replace('_', ".")
+    } else {
+        version.trim_start_matches('v').to_string()
+    };
+    if version.is_empty() { None } else { Some(version) }
+}
+
+/// Fallback: fetch the latest tag (sorted semver) from a GitHub repo.
+fn fetch_github_latest_tag(repo: &str, tag_prefix: &str, name: &str) -> Option<String> {
+    let url = format!("https://api.github.com/repos/{repo}/tags?per_page=20");
+    let output = std::process::Command::new("curl")
+        .args([
+            "-s", "-f", "--max-time", "10",
+            "-H", "Accept: application/vnd.github+json",
+            &url,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let tags: Vec<serde_json::Value> = serde_json::from_str(&body).ok()?;
+
+    let mut versions: Vec<(u32, u32, u32, String)> = Vec::new();
+    for tag_obj in &tags {
+        let tag = tag_obj.get("name")?.as_str()?;
+        let stripped = if !tag_prefix.is_empty() {
+            match tag.strip_prefix(tag_prefix) {
+                Some(s) => s.to_string(),
+                None => continue,
+            }
+        } else {
+            tag.to_string()
+        };
+        let clean = if name == "postgres" {
+            stripped.replace('_', ".")
+        } else {
+            stripped.trim_start_matches('v').to_string()
+        };
+        if let Some((maj, min, pat)) = parse_semver(&clean) {
+            versions.push((maj, min, pat, clean));
+        }
+    }
+    versions.sort_by(|a, b| (b.0, b.1, b.2).cmp(&(a.0, a.1, a.2)));
+    versions.into_iter().next().map(|(_, _, _, v)| v)
 }
 
 /// Count how many commits `deployed_commit` is behind `local_head`.
@@ -1229,6 +1638,13 @@ fn fetch_remote_versions_and_changes(
                     false
                 }
             }
+            "upstream" if is_busibox_managed_upstream(name) => {
+                if let Some(ref available) = busibox_available {
+                    check_paths_changed(repo_root, available, &paths.iter().map(|s| *s).collect::<Vec<_>>())
+                } else {
+                    false
+                }
+            }
             _ => false,
         };
 
@@ -1241,6 +1657,12 @@ fn fetch_remote_versions_and_changes(
 
 fn is_api_service(name: &str) -> bool {
     matches!(name, "authz" | "agent" | "data" | "data-worker" | "search" | "deploy" | "docs" | "embedding" | "bridge" | "config")
+}
+
+/// Upstream services that also have busibox Ansible roles managing their config.
+/// These track both upstream package version AND busibox config changes.
+fn is_busibox_managed_upstream(name: &str) -> bool {
+    matches!(name, "litellm" | "proxy" | "postgres" | "redis" | "minio" | "milvus" | "neo4j" | "vllm" | "mlx")
 }
 
 /// Run `git fetch origin` then `git rev-parse --short origin/<branch>` in the given repo.
@@ -1330,12 +1752,21 @@ fn run_update_selected(app: &mut App) {
     spawn_update_worker(app, &make_name);
 }
 
-/// Update all services that need updating (where needs_update == true).
+/// Update all services that need updating or have never been deployed.
 fn run_update_all(app: &mut App) {
     let services_to_update: Vec<String> = app
         .manage_services
         .iter()
-        .filter(|s| s.needs_update)
+        .filter(|s| {
+            if s.source_repo == "upstream" {
+                s.needs_update && is_busibox_managed_upstream(&s.name)
+            } else {
+                s.needs_update
+                    || (s.version.is_empty()
+                        && !s.source_repo.is_empty()
+                        && s.source_repo != "docker-image")
+            }
+        })
         .map(|s| service_to_make_name(&s.name).to_string())
         .collect();
 

@@ -66,14 +66,18 @@ pub fn init_screen(app: &mut App, preselect_port: Option<u16>) {
 pub fn render(f: &mut Frame, app: &App) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(1),  // spacer for profile infobar overlay
+            Constraint::Length(2),  // tab bar
+            Constraint::Min(0),     // content
+        ])
         .split(f.area());
-    render_tab_bar(f, app, outer[0]);
+    render_tab_bar(f, app, outer[1]);
     match app.benchmark_mode {
-        BenchmarkMode::Performance => render_performance(f, app, outer[1]),
-        BenchmarkMode::ModelTests => render_model_tests(f, app, outer[1]),
-        BenchmarkMode::LoadTest => render_load_test(f, app, outer[1]),
-        BenchmarkMode::CloudKeys => render_cloud_keys(f, app, outer[1]),
+        BenchmarkMode::Performance => render_performance(f, app, outer[2]),
+        BenchmarkMode::ModelTests => render_model_tests(f, app, outer[2]),
+        BenchmarkMode::LoadTest => render_load_test(f, app, outer[2]),
+        BenchmarkMode::CloudKeys => render_cloud_keys(f, app, outer[2]),
     }
 }
 
@@ -108,38 +112,58 @@ fn render_load_test(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // title
+            Constraint::Length(3),  // level selector
             Constraint::Length(5),  // info
-            Constraint::Min(6),    // log
+            Constraint::Min(6),     // log
         ])
         .split(area);
 
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled("  Load Test ", theme::highlight()),
+    // Level selector bar
+    const LEVELS: &[&str] = &[" Engine ", " LiteLLM ", " Agent-API "];
+    let mut level_spans: Vec<Span> = Vec::new();
+    for (i, label) in LEVELS.iter().enumerate() {
+        let style = if i == app.load_test_level { theme::highlight() } else { theme::dim() };
+        level_spans.push(Span::styled(*label, style));
+        if i + 1 < LEVELS.len() {
+            level_spans.push(Span::styled(" │ ", theme::muted()));
+        }
+    }
+    let status_span = if app.benchmark_running {
         Span::styled(
-            " (agent-api chat endpoint) ",
-            theme::dim(),
-        ),
-        if app.benchmark_running {
-            Span::styled(
-                format!(" {} Running... ", SPINNER[app.benchmark_tick % SPINNER.len()]),
-                theme::warning(),
-            )
-        } else if app.benchmark_complete {
-            Span::styled(" ✓ Complete ", theme::success())
-        } else {
-            Span::styled(" Press Enter to start ", theme::dim())
-        },
-    ]))
-    .block(Block::default().borders(Borders::ALL).border_style(theme::dim()));
-    f.render_widget(title, chunks[0]);
+            format!("   {} Running...", SPINNER[app.benchmark_tick % SPINNER.len()]),
+            theme::warning(),
+        )
+    } else if app.benchmark_complete {
+        Span::styled("   ✓ Complete", theme::success())
+    } else {
+        Span::styled("   ◀ ▶ select  Enter to start", theme::dim())
+    };
+    level_spans.push(status_span);
 
-    let info = Paragraph::new(vec![
-        Line::from("  Hits the agent-api /chat/message endpoint at increasing concurrency"),
-        Line::from("  levels (1, 2, 4, 8) and reports TTFT/latency degradation."),
-        Line::from("  Requires AGENT_API_URL and AUTH_TOKEN environment variables."),
-    ])
-    .block(Block::default().borders(Borders::ALL).title(" Info ").border_style(theme::dim()));
+    let selector = Paragraph::new(Line::from(level_spans))
+        .block(Block::default().borders(Borders::ALL).title(" Load Test Level ").border_style(theme::dim()));
+    f.render_widget(selector, chunks[0]);
+
+    // Per-level info
+    let info_lines: Vec<Line> = match app.load_test_level {
+        0 => vec![
+            Line::from("  Hits the model engine directly — /v1/chat/completions (OpenAI-compatible)."),
+            Line::from("  Tests ALL deployed models: MLX (.211:8080) and vLLM (.208:8000) on Proxmox."),
+            Line::from("  No authentication required."),
+        ],
+        1 => vec![
+            Line::from("  Hits LiteLLM proxy at /v1/chat/completions."),
+            Line::from("  Target: .207:4000 on Proxmox / localhost:4000 on Docker."),
+            Line::from("  Auth: litellm_api_key read automatically from vault."),
+        ],
+        _ => vec![
+            Line::from("  Hits agent-api /chat/message at concurrency 1, 2, 4, 8."),
+            Line::from("  Target: .202:8000 on Proxmox / localhost:8000 on Docker."),
+            Line::from("  Auth: delegation token from vault → exchanged for JWT via authz."),
+        ],
+    };
+    let info = Paragraph::new(info_lines)
+        .block(Block::default().borders(Borders::ALL).title(" Info ").border_style(theme::dim()));
     f.render_widget(info, chunks[1]);
 
     let log_height = chunks[2].height.saturating_sub(2) as usize;
@@ -676,6 +700,16 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     }
                 }
                 _ => {}
+            }
+        }
+        KeyCode::Left | KeyCode::Right => {
+            if app.benchmark_mode == BenchmarkMode::LoadTest && !app.benchmark_running {
+                app.load_test_level = match key.code {
+                    KeyCode::Left => app.load_test_level.saturating_sub(1),
+                    _ => (app.load_test_level + 1).min(2),
+                };
+                app.benchmark_log.clear();
+                app.benchmark_complete = false;
             }
         }
         KeyCode::Enter => {
@@ -1375,159 +1409,605 @@ fn parse_agent_parallel_output(output: &str, count: usize) -> (Vec<AgentChatResu
 }
 
 fn start_load_test(app: &mut App) {
+    match app.load_test_level {
+        0 => start_engine_load_test(app),
+        1 => start_litellm_load_test(app),
+        _ => start_agent_load_test(app),
+    }
+}
+
+// =============================================================================
+// Shared concurrency runner
+// =============================================================================
+
+fn log_concurrency_results(
+    tx: &std::sync::mpsc::Sender<BenchmarkUpdate>,
+    concurrency: usize,
+    results: Vec<AgentChatResult>,
+    wall_secs: Option<f64>,
+) {
+    let successful = results.iter().filter(|r| r.success).count();
+    let failed = concurrency - successful;
+    let mut latencies: Vec<f64> = results.iter().filter(|r| r.success).map(|r| r.elapsed_ms).collect();
+    let mut ttfts: Vec<f64> = results.iter().filter(|r| r.success && r.ttft_ms > 0.0).map(|r| r.ttft_ms).collect();
+    let wall = wall_secs.unwrap_or_else(|| latencies.iter().cloned().fold(0.0_f64, f64::max) / 1000.0);
+
+    if successful == 0 {
+        let _ = tx.send(BenchmarkUpdate::Log(format!("  ERROR: 0/{concurrency} succeeded")));
+        for r in &results {
+            if let Some(ref e) = r.error {
+                let _ = tx.send(BenchmarkUpdate::Log(format!("    {e}")));
+            }
+        }
+    } else {
+        let p50_lat = benchmark::median(&mut latencies);
+        let p95_lat = percentile(&mut latencies.clone(), 95);
+        let ttft_p50 = if ttfts.is_empty() { 0.0 } else { benchmark::median(&mut ttfts) };
+        let ttft_p95 = if ttfts.is_empty() { 0.0 } else { percentile(&mut ttfts.clone(), 95) };
+        let rps = if wall > 0.0 { successful as f64 / wall } else { 0.0 };
+        let _ = tx.send(BenchmarkUpdate::Log(format!(
+            "  ✓ {successful}/{concurrency} ok  |  wall: {:.1}s  |  rps: {:.2}", wall, rps
+        )));
+        let _ = tx.send(BenchmarkUpdate::Log(format!(
+            "    Latency  p50: {:.0}ms  p95: {:.0}ms", p50_lat, p95_lat
+        )));
+        if ttft_p50 > 0.0 {
+            let _ = tx.send(BenchmarkUpdate::Log(format!(
+                "    TTFT     p50: {:.0}ms  p95: {:.0}ms", ttft_p50, ttft_p95
+            )));
+        }
+        if failed > 0 {
+            let _ = tx.send(BenchmarkUpdate::Log(format!("    Failures: {failed}")));
+        }
+    }
+    let _ = tx.send(BenchmarkUpdate::Log(String::new()));
+}
+
+fn run_openai_concurrency_levels(
+    base_url: &str,
+    model_name: &str,
+    auth_header: &str,
+    is_remote: bool,
+    ssh_details: &Option<(String, String, String)>,
+    tx: &std::sync::mpsc::Sender<BenchmarkUpdate>,
+) {
+    let prompt = "Reply in one sentence.";
+    let timeout_secs: u64 = 90;
+    let levels: &[usize] = &[1, 2, 4, 8];
+
+    for &concurrency in levels {
+        let _ = tx.send(BenchmarkUpdate::Log(format!("--- Concurrency: {concurrency} ---")));
+        let body = format!(
+            r#"{{"model":"{model_name}","messages":[{{"role":"user","content":"{prompt}"}}],"stream":false}}"#
+        );
+        let single = format!(
+            r#"(S=$(date +%s%N 2>/dev/null||echo 0); curl -sS --max-time {timeout_secs} {auth_header} -H 'Content-Type: application/json' -d '{body}' '{base_url}/v1/chat/completions'; E=$(date +%s%N 2>/dev/null||echo 0); echo "---BENCH_TIME:$(echo "scale=6;($E-$S)/1000000000"|bc)---")"#
+        );
+        let cmd = build_parallel_shell_cmd(&single, concurrency);
+        match exec_curl(&cmd, is_remote, ssh_details) {
+            Ok(output) => {
+                let (results, wall_secs) = parse_agent_parallel_output(&output, concurrency);
+                log_concurrency_results(tx, concurrency, results, wall_secs);
+            }
+            Err(e) => {
+                let _ = tx.send(BenchmarkUpdate::Log(format!("  ERROR: {e}")));
+                let _ = tx.send(BenchmarkUpdate::Log(String::new()));
+            }
+        }
+    }
+}
+
+fn build_parallel_shell_cmd(single_cmd: &str, count: usize) -> String {
+    let mut s = String::new();
+    s.push_str("_BD=$(mktemp -d); WALL_START=$(date +%s%N 2>/dev/null||echo 0); ");
+    for i in 0..count {
+        s.push_str(&format!("( {single_cmd} > \"$_BD/{i}.out\" 2>&1 ) & "));
+    }
+    s.push_str("wait; WALL_END=$(date +%s%N 2>/dev/null||echo 0); ");
+    for i in 0..count {
+        s.push_str(&format!(
+            "echo '---BENCH_REQ:{i}---'; cat \"$_BD/{i}.out\"; echo ''; echo '---BENCH_REQ_END:{i}---'; "
+        ));
+    }
+    s.push_str("echo \"---BENCH_WALL:$(( WALL_END - WALL_START ))---\"; rm -rf \"$_BD\"");
+    s
+}
+
+// =============================================================================
+// Level 0: Direct model engine (MLX / vLLM) — tests ALL deployed models
+// =============================================================================
+
+fn start_engine_load_test(app: &mut App) {
     app.benchmark_running = true;
     app.benchmark_complete = false;
     app.benchmark_log.clear();
     app.benchmark_log_scroll = 0;
     app.benchmark_tick = 0;
 
-    let is_remote = app
-        .active_profile()
-        .map(|(_, p)| p.remote)
-        .unwrap_or(false);
-
-    let is_proxmox = app
-        .active_profile()
-        .map(|(_, p)| p.backend == "proxmox")
-        .unwrap_or(false);
-
+    let is_remote = app.active_profile().map(|(_, p)| p.remote).unwrap_or(false);
+    let is_proxmox = app.active_profile().map(|(_, p)| p.backend == "proxmox").unwrap_or(false);
     let vllm_network_base: String = app
         .active_profile()
         .map(|(_, p)| p.vllm_network_base().to_string())
         .unwrap_or_else(|| "10.96.200".to_string());
+    let ssh_details = get_ssh_details(app);
 
-    let ssh_details: Option<(String, String, String)> = if is_remote {
-        app.active_profile().and_then(|(_, p)| {
-            p.effective_host().map(|host| {
-                (
-                    host.to_string(),
-                    p.effective_user().to_string(),
-                    p.effective_ssh_key().to_string(),
-                )
-            })
-        })
+    // Collect unique base URLs (one per engine type on Proxmox, one per port on Docker)
+    let mut unique_urls: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for m in &app.benchmark_models {
+        let base_url = if is_proxmox {
+            if m.provider == "vllm" {
+                format!("http://{vllm_network_base}.208:8000")
+            } else {
+                format!("http://{vllm_network_base}.211:8080")
+            }
+        } else {
+            format!("http://localhost:{}", m.port)
+        };
+        unique_urls.entry(base_url).or_insert_with(|| m.provider.to_uppercase());
+    }
+
+    if unique_urls.is_empty() {
+        app.benchmark_log.push("ERROR: No deployed models found. Deploy a model first.".into());
+        app.benchmark_running = false;
+        app.benchmark_complete = true;
+        return;
+    }
+
+    let base_urls: Vec<(String, String)> = unique_urls.into_iter().collect();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.benchmark_rx = Some(rx);
+
+    std::thread::spawn(move || {
+        let _ = tx.send(BenchmarkUpdate::Log(format!(
+            ">>> Testing {} engine(s) directly — querying /v1/models for actual model names",
+            base_urls.len()
+        )));
+        let _ = tx.send(BenchmarkUpdate::Log(String::new()));
+
+        for (base_url, provider_label) in &base_urls {
+            // Query the engine for its actual served model names
+            let models_url = format!("{base_url}/v1/models");
+            let curl_cmd = format!("curl -s --max-time 5 '{models_url}'");
+            let raw = exec_curl(&curl_cmd, is_remote, &ssh_details).unwrap_or_default();
+            let served_models: Vec<String> = serde_json::from_str::<serde_json::Value>(&raw)
+                .ok()
+                .and_then(|v| v["data"].as_array().cloned())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|m| m["id"].as_str().map(|s| s.to_string()))
+                .collect();
+
+            if served_models.is_empty() {
+                let _ = tx.send(BenchmarkUpdate::Log(format!(
+                    "WARN: {provider_label} at {base_url} — /v1/models returned no models (engine may be down)"
+                )));
+                continue;
+            }
+
+            for model_name in &served_models {
+                let _ = tx.send(BenchmarkUpdate::Log(format!(
+                    "=== {provider_label}: {model_name} @ {base_url} ===",
+                )));
+                run_openai_concurrency_levels(
+                    base_url,
+                    model_name,
+                    "",
+                    is_remote,
+                    &ssh_details,
+                    &tx,
+                );
+            }
+        }
+
+        let _ = tx.send(BenchmarkUpdate::Log("✓ Engine load test complete".into()));
+        let _ = tx.send(BenchmarkUpdate::Complete);
+    });
+}
+
+// =============================================================================
+// Level 1: LiteLLM proxy
+// =============================================================================
+
+fn start_litellm_load_test(app: &mut App) {
+    app.benchmark_running = true;
+    app.benchmark_complete = false;
+    app.benchmark_log.clear();
+    app.benchmark_log_scroll = 0;
+    app.benchmark_tick = 0;
+
+    let is_remote = app.active_profile().map(|(_, p)| p.remote).unwrap_or(false);
+    let is_proxmox = app.active_profile().map(|(_, p)| p.backend == "proxmox").unwrap_or(false);
+    let vllm_network_base: String = app
+        .active_profile()
+        .map(|(_, p)| p.vllm_network_base().to_string())
+        .unwrap_or_else(|| "10.96.200".to_string());
+    let ssh_details = get_ssh_details(app);
+
+    let vault_prefix: String = app
+        .active_profile()
+        .and_then(|(id, p)| p.vault_prefix.clone().or(Some(id.to_string())))
+        .unwrap_or_else(|| "dev".into());
+    let vault_password = app.vault_password.clone();
+    let repo_root = app.repo_root.clone();
+    let remote_path: String = app
+        .active_profile()
+        .map(|(_, p)| p.effective_remote_path().to_string())
+        .unwrap_or_else(|| "~/busibox".to_string());
+
+    let model_name = app
+        .benchmark_models
+        .first()
+        .map(|m| m.model_key.clone())
+        .unwrap_or_else(|| "agent-model".to_string());
+
+    let base_url = if is_proxmox {
+        format!("http://{vllm_network_base}.207:4000")
     } else {
-        None
+        "http://localhost:4000".to_string()
     };
 
     let (tx, rx) = std::sync::mpsc::channel();
     app.benchmark_rx = Some(rx);
 
     std::thread::spawn(move || {
-        // Determine agent-api base URL
-        let agent_ip = if is_proxmox {
-            format!("{vllm_network_base}.207")
-        } else {
-            "localhost".to_string()
+        let vault_password = match vault_password {
+            None => {
+                let _ = tx.send(BenchmarkUpdate::Log(
+                    "ERROR: Vault not unlocked — restart the CLI to unlock vault.".into(),
+                ));
+                let _ = tx.send(BenchmarkUpdate::Complete);
+                return;
+            }
+            Some(p) => p,
         };
-        let agent_api_url = format!("http://{agent_ip}:8000");
 
-        // Read auth token from environment
-        let token = std::env::var("AUTH_TOKEN").unwrap_or_default();
-        if token.is_empty() {
+        let vault_file_rel = format!("provision/ansible/roles/secrets/vars/vault.{vault_prefix}.yml");
+        let py = build_vault_read_script("litellm_api_key");
+
+        let api_key = match run_vault_read(
+            &py, &vault_password, &vault_file_rel, &repo_root,
+            is_remote, &ssh_details, &remote_path, &tx,
+        ) {
+            Ok(v) => v,
+            Err(_) => {
+                let _ = tx.send(BenchmarkUpdate::Complete);
+                return;
+            }
+        };
+
+        if api_key.is_empty() {
             let _ = tx.send(BenchmarkUpdate::Log(
-                "ERROR: AUTH_TOKEN env var not set.".into(),
+                "WARN: litellm_api_key not set in vault — proceeding without auth".into(),
+            ));
+        } else {
+            let _ = tx.send(BenchmarkUpdate::Log(">>> litellm_api_key loaded from vault".into()));
+        }
+
+        let auth_header = if api_key.is_empty() {
+            String::new()
+        } else {
+            format!("-H 'Authorization: Bearer {api_key}'")
+        };
+
+        let _ = tx.send(BenchmarkUpdate::Log(format!(">>> LiteLLM: {base_url}")));
+        let _ = tx.send(BenchmarkUpdate::Log(format!(">>> Model:   {model_name}")));
+        let _ = tx.send(BenchmarkUpdate::Log(String::new()));
+
+        run_openai_concurrency_levels(&base_url, &model_name, &auth_header, is_remote, &ssh_details, &tx);
+        let _ = tx.send(BenchmarkUpdate::Log("✓ LiteLLM load test complete".into()));
+        let _ = tx.send(BenchmarkUpdate::Complete);
+    });
+}
+
+// =============================================================================
+// Level 2: Agent-API (auto-fetch JWT from vault delegation token)
+// =============================================================================
+
+fn start_agent_load_test(app: &mut App) {
+    app.benchmark_running = true;
+    app.benchmark_complete = false;
+    app.benchmark_log.clear();
+    app.benchmark_log_scroll = 0;
+    app.benchmark_tick = 0;
+
+    let is_remote = app.active_profile().map(|(_, p)| p.remote).unwrap_or(false);
+    let is_proxmox = app.active_profile().map(|(_, p)| p.backend == "proxmox").unwrap_or(false);
+    let network_base: String = app
+        .active_profile()
+        .map(|(_, p)| p.effective_network_base().to_string())
+        .unwrap_or_else(|| "10.96.200".to_string());
+    let ssh_details = get_ssh_details(app);
+
+    let vault_prefix: String = app
+        .active_profile()
+        .and_then(|(id, p)| p.vault_prefix.clone().or(Some(id.to_string())))
+        .unwrap_or_else(|| "dev".into());
+    let vault_password = app.vault_password.clone();
+    let repo_root = app.repo_root.clone();
+    let remote_path: String = app
+        .active_profile()
+        .map(|(_, p)| p.effective_remote_path().to_string())
+        .unwrap_or_else(|| "~/busibox".to_string());
+
+    let agent_api_url = if is_proxmox {
+        format!("http://{network_base}.202:8000")
+    } else {
+        "http://localhost:8000".to_string()
+    };
+    let authz_ip = if is_proxmox {
+        format!("{network_base}.210")
+    } else {
+        "localhost".to_string()
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.benchmark_rx = Some(rx);
+
+    std::thread::spawn(move || {
+        let vault_password = match vault_password {
+            None => {
+                let _ = tx.send(BenchmarkUpdate::Log(
+                    "ERROR: Vault not unlocked — restart the CLI to unlock vault.".into(),
+                ));
+                let _ = tx.send(BenchmarkUpdate::Complete);
+                return;
+            }
+            Some(p) => p,
+        };
+
+        let vault_file_rel = format!("provision/ansible/roles/secrets/vars/vault.{vault_prefix}.yml");
+        let py = build_vault_read_script("secrets.bridge.delegation_token");
+
+        let delegation_token = match run_vault_read(
+            &py, &vault_password, &vault_file_rel, &repo_root,
+            is_remote, &ssh_details, &remote_path, &tx,
+        ) {
+            Ok(v) => v,
+            Err(_) => {
+                let _ = tx.send(BenchmarkUpdate::Complete);
+                return;
+            }
+        };
+
+        if delegation_token.is_empty() {
+            let _ = tx.send(BenchmarkUpdate::Log(
+                "ERROR: No delegation token in vault.".into(),
             ));
             let _ = tx.send(BenchmarkUpdate::Log(
-                "  Set AUTH_TOKEN=<your_jwt> and restart the CLI to run load tests.".into(),
+                "  Create one: POST /oauth/delegation with an admin session JWT".into(),
             ));
             let _ = tx.send(BenchmarkUpdate::Log(
-                "  Get a token from the Busibox portal or via /api/auth/token.".into(),
+                "  then store it at secrets.bridge.delegation_token in the vault.".into(),
             ));
             let _ = tx.send(BenchmarkUpdate::Complete);
             return;
         }
 
-        let _ = tx.send(BenchmarkUpdate::Log(format!(
-            ">>> Agent API: {agent_api_url}"
-        )));
         let _ = tx.send(BenchmarkUpdate::Log(
-            ">>> Concurrency levels: 1, 2, 4, 8 — 4 requests each".into(),
+            ">>> delegation_token loaded, exchanging for agent-api JWT...".into(),
+        ));
+
+        // Exchange delegation token → short-lived JWT via authz
+        let exchange_py = build_token_exchange_script(&authz_ip, &delegation_token);
+        let exchange_cmd = format!("python3 -c {}", shell_escape_str(&exchange_py));
+        let jwt = match exec_curl(&exchange_cmd, is_remote, &ssh_details) {
+            Ok(out) => {
+                let t = out.trim().to_string();
+                if t.is_empty() || t.starts_with("ERROR") {
+                    let _ = tx.send(BenchmarkUpdate::Log(format!(
+                        "ERROR: token exchange failed: {t}"
+                    )));
+                    let _ = tx.send(BenchmarkUpdate::Complete);
+                    return;
+                }
+                t
+            }
+            Err(e) => {
+                let _ = tx.send(BenchmarkUpdate::Log(format!(
+                    "ERROR: token exchange request failed: {e}"
+                )));
+                let _ = tx.send(BenchmarkUpdate::Complete);
+                return;
+            }
+        };
+
+        let _ = tx.send(BenchmarkUpdate::Log(">>> agent-api JWT obtained".into()));
+        let _ = tx.send(BenchmarkUpdate::Log(format!(">>> Agent API: {agent_api_url}")));
+        let _ = tx.send(BenchmarkUpdate::Log(
+            ">>> Concurrency levels: 1, 2, 4, 8".into(),
         ));
         let _ = tx.send(BenchmarkUpdate::Log(String::new()));
 
-        let prompt = "Summarize the status of our current projects in one sentence.";
+        let prompt = "Reply in one sentence.";
         let timeout_secs: u64 = 120;
         let levels: &[usize] = &[1, 2, 4, 8];
 
         for &concurrency in levels {
-            let _ = tx.send(BenchmarkUpdate::Log(format!(
-                "--- Concurrency: {concurrency} parallel requests ---"
-            )));
-
+            let _ = tx.send(BenchmarkUpdate::Log(format!("--- Concurrency: {concurrency} ---")));
             let cmd = benchmark::build_parallel_agent_chat_command(
                 &agent_api_url,
-                &token,
+                &jwt,
                 prompt,
                 concurrency,
                 timeout_secs,
             );
-
             match exec_curl(&cmd, is_remote, &ssh_details) {
                 Ok(output) => {
                     let (results, wall_secs) = parse_agent_parallel_output(&output, concurrency);
-                    let successful = results.iter().filter(|r| r.success).count();
-                    let failed = concurrency - successful;
-
-                    let mut latencies: Vec<f64> =
-                        results.iter().filter(|r| r.success).map(|r| r.elapsed_ms).collect();
-                    let mut ttfts: Vec<f64> =
-                        results.iter().filter(|r| r.success && r.ttft_ms > 0.0).map(|r| r.ttft_ms).collect();
-
-                    let wall = wall_secs.unwrap_or_else(|| {
-                        latencies.iter().cloned().fold(0.0_f64, f64::max) / 1000.0
-                    });
-
-                    if successful == 0 {
-                        let _ = tx.send(BenchmarkUpdate::Log(format!(
-                            "  ERROR: 0/{concurrency} succeeded"
-                        )));
-                        for r in &results {
-                            if let Some(ref e) = r.error {
-                                let _ = tx.send(BenchmarkUpdate::Log(format!("    {e}")));
-                            }
-                        }
-                    } else {
-                        let p50_lat = benchmark::median(&mut latencies);
-                        let p95_lat = percentile(&mut latencies.clone(), 95);
-                        let ttft_p50 = if ttfts.is_empty() { 0.0 } else { benchmark::median(&mut ttfts) };
-                        let ttft_p95 = if ttfts.is_empty() { 0.0 } else { percentile(&mut ttfts.clone(), 95) };
-                        let rps = if wall > 0.0 { successful as f64 / wall } else { 0.0 };
-
-                        let _ = tx.send(BenchmarkUpdate::Log(format!(
-                            "  ✓ {successful}/{concurrency} ok  |  wall: {:.1}s  |  rps: {:.2}",
-                            wall, rps
-                        )));
-                        let _ = tx.send(BenchmarkUpdate::Log(format!(
-                            "    Latency  p50: {:.0}ms  p95: {:.0}ms",
-                            p50_lat, p95_lat
-                        )));
-                        if ttft_p50 > 0.0 {
-                            let _ = tx.send(BenchmarkUpdate::Log(format!(
-                                "    TTFT     p50: {:.0}ms  p95: {:.0}ms",
-                                ttft_p50, ttft_p95
-                            )));
-                        }
-                        if failed > 0 {
-                            let _ = tx.send(BenchmarkUpdate::Log(format!(
-                                "    Failures: {failed}"
-                            )));
-                        }
-                    }
-                    let _ = tx.send(BenchmarkUpdate::Log(String::new()));
+                    log_concurrency_results(&tx, concurrency, results, wall_secs);
                 }
                 Err(e) => {
-                    let _ = tx.send(BenchmarkUpdate::Log(format!(
-                        "  ERROR running concurrency={concurrency}: {e}"
-                    )));
+                    let _ = tx.send(BenchmarkUpdate::Log(format!("  ERROR: {e}")));
                     let _ = tx.send(BenchmarkUpdate::Log(String::new()));
                 }
             }
         }
 
-        let _ = tx.send(BenchmarkUpdate::Log("✓ Load test complete".into()));
+        let _ = tx.send(BenchmarkUpdate::Log("✓ Agent-API load test complete".into()));
         let _ = tx.send(BenchmarkUpdate::Complete);
     });
+}
+
+// =============================================================================
+// Load test helpers
+// =============================================================================
+
+fn get_ssh_details(app: &App) -> Option<(String, String, String)> {
+    if app.active_profile().map(|(_, p)| p.remote).unwrap_or(false) {
+        app.active_profile().and_then(|(_, p)| {
+            p.effective_host().map(|h| {
+                (h.to_string(), p.effective_user().to_string(), p.effective_ssh_key().to_string())
+            })
+        })
+    } else {
+        None
+    }
+}
+
+/// Build a Python script that decrypts the vault and prints the value at `dotted.key.path`
+/// under the top-level `secrets` map.  The vault file path is injected at runtime by the caller
+/// via the ANSIBLE_VAULT_FILEPATH env var, so the script itself is path-agnostic.
+fn build_vault_read_script(dotted_key: &str) -> String {
+    let key_escaped = dotted_key.replace('\'', "\\'");
+    format!(
+        r#"
+import subprocess, yaml, os, sys, tempfile
+vault_file = os.environ.get('ANSIBLE_VAULT_FILEPATH', '')
+vault_pass = os.environ.get('ANSIBLE_VAULT_PASSWORD', '')
+if not vault_pass:
+    print('ERROR: ANSIBLE_VAULT_PASSWORD not set'); sys.exit(1)
+if not vault_file:
+    print('ERROR: ANSIBLE_VAULT_FILEPATH not set'); sys.exit(1)
+with tempfile.NamedTemporaryFile(mode='w', suffix='.tmp', delete=False) as f:
+    f.write(vault_pass); tmp = f.name
+try:
+    r = subprocess.run(
+        ['ansible-vault', 'decrypt', '--output', '-', '--vault-password-file', tmp, vault_file],
+        capture_output=True, text=True)
+    if r.returncode != 0:
+        print('ERROR: decrypt failed: ' + r.stderr.strip()); sys.exit(1)
+    data = yaml.safe_load(r.stdout) or {{}}
+    val = data.get('secrets', {{}})
+    for part in '{key_escaped}'.split('.'):
+        val = val.get(part, '') if isinstance(val, dict) else ''
+    print(val or '')
+finally:
+    os.unlink(tmp)
+"#,
+        key_escaped = key_escaped,
+    )
+}
+
+/// Run a vault-read python script, setting ANSIBLE_VAULT_FILEPATH correctly for both
+/// local (absolute path) and remote (relative, run inside remote_path) cases.
+/// Returns the trimmed output string, or an Err after logging to `tx`.
+fn run_vault_read(
+    py_script: &str,
+    vault_password: &str,
+    vault_file_rel: &str,
+    repo_root: &std::path::Path,
+    is_remote: bool,
+    ssh_details: &Option<(String, String, String)>,
+    remote_path: &str,
+    tx: &std::sync::mpsc::Sender<BenchmarkUpdate>,
+) -> Result<String, ()> {
+    if is_remote {
+        let Some((ref host, ref user, ref key)) = ssh_details else {
+            let _ = tx.send(BenchmarkUpdate::Log("ERROR: No SSH credentials".into()));
+            return Err(());
+        };
+        let ssh = crate::modules::ssh::SshConnection::new(host, user, key);
+        // Expand ~/... to $HOME/... so double-quoting lets the shell expand $HOME.
+        // shell_escape_str uses single quotes which prevent tilde expansion.
+        let path_clean = remote_path.trim_end_matches('/');
+        let cd_path = if path_clean.starts_with("~/") {
+            format!("\"$HOME{}\"", &path_clean[1..])
+        } else {
+            shell_escape_str(path_clean)
+        };
+        let cmd = format!(
+            "cd {} && ANSIBLE_VAULT_PASSWORD={} ANSIBLE_VAULT_FILEPATH={} python3 -c {}",
+            cd_path,
+            shell_escape_str(vault_password),
+            shell_escape_str(vault_file_rel),
+            shell_escape_str(py_script),
+        );
+        let full_cmd = format!("{}{}", crate::modules::remote::SHELL_PATH_PREAMBLE, cmd);
+        match ssh.run(&full_cmd).map_err(|e| format!("SSH exec failed: {e}")) {
+            Ok(out) => {
+                let v = out.trim().to_string();
+                if v.starts_with("ERROR") {
+                    let _ = tx.send(BenchmarkUpdate::Log(format!("ERROR: vault read: {v}")));
+                    return Err(());
+                }
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = tx.send(BenchmarkUpdate::Log(format!("ERROR: vault read failed: {e}")));
+                Err(())
+            }
+        }
+    } else {
+        let vault_abs = repo_root.join(vault_file_rel);
+        if !vault_abs.exists() {
+            let _ = tx.send(BenchmarkUpdate::Log(format!(
+                "ERROR: vault file not found: {}", vault_abs.display()
+            )));
+            return Err(());
+        }
+        let out = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(py_script)
+            .env("ANSIBLE_VAULT_PASSWORD", vault_password)
+            .env("ANSIBLE_VAULT_FILEPATH", vault_abs.to_string_lossy().as_ref())
+            .output()
+            .map_err(|e| format!("exec failed: {e}"));
+        match out {
+            Ok(o) => {
+                let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if v.starts_with("ERROR") {
+                    let _ = tx.send(BenchmarkUpdate::Log(format!("ERROR: vault read: {v}")));
+                    return Err(());
+                }
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = tx.send(BenchmarkUpdate::Log(format!("ERROR: vault python failed: {e}")));
+                Err(())
+            }
+        }
+    }
+}
+
+/// Python script to exchange a delegation token for an agent-api JWT via authz.
+fn build_token_exchange_script(authz_ip: &str, delegation_token: &str) -> String {
+    let authz_escaped = authz_ip.replace('\'', "\\'");
+    let token_escaped = delegation_token.replace('\'', "\\'");
+    format!(
+        r#"
+import urllib.request, json, sys
+payload = json.dumps({{
+    'grant_type': 'urn:ietf:params:oauth:grant-type:token-exchange',
+    'subject_token': '{token_escaped}',
+    'audience': 'agent-api'
+}}).encode()
+req = urllib.request.Request(
+    'http://{authz_escaped}:8010/oauth/token',
+    data=payload, method='POST',
+    headers={{'Content-Type': 'application/json'}}
+)
+try:
+    resp = urllib.request.urlopen(req, timeout=15)
+    data = json.loads(resp.read())
+    print(data.get('access_token', ''))
+except Exception as e:
+    print('ERROR: ' + str(e)); sys.exit(1)
+"#,
+        authz_escaped = authz_escaped,
+        token_escaped = token_escaped,
+    )
 }
 
 // =============================================================================

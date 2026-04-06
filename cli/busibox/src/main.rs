@@ -306,6 +306,13 @@ fn main() -> Result<()> {
                                 }
                             }
                         }
+                        Ok(app::ManageUpdate::UpstreamLatestResult { name, latest_version }) => {
+                            if let Some(svc) =
+                                app.manage_services.iter_mut().find(|s| s.name == name)
+                            {
+                                svc.available_version = latest_version;
+                            }
+                        }
                         Ok(app::ManageUpdate::NeedsUpdateResult { name, needs_update }) => {
                             if let Some(svc) =
                                 app.manage_services.iter_mut().find(|s| s.name == name)

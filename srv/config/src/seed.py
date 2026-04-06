@@ -68,6 +68,17 @@ DEFAULT_APPS = [
     },
 ]
 
+DEFAULT_PLATFORM_CONFIG = [
+    {
+        "key": "insights_enabled",
+        "value": "true",
+        "scope": "platform",
+        "tier": "public",
+        "category": "chat",
+        "description": "Enable AI insights and onboarding system",
+    },
+]
+
 DEFAULT_BRANDING = {
     "companyName": ("Busibox Portal", "Portal branding: company name"),
     "siteName": ("Busibox Portal", "Portal branding: site name"),
@@ -141,3 +152,29 @@ async def seed_defaults(conn) -> None:
 
     if brand_count:
         print(f"[CONFIG-API] Seeded {brand_count} default branding entries")
+
+    # --- Platform config ---
+    platform_count = 0
+    for cfg in DEFAULT_PLATFORM_CONFIG:
+        exists = await conn.fetchval(
+            "SELECT 1 FROM config_entries WHERE key = $1 AND app_id IS NULL",
+            cfg["key"],
+        )
+        if exists:
+            continue
+        await conn.execute(
+            """
+            INSERT INTO config_entries (key, value, scope, tier, category, description)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            """,
+            cfg["key"],
+            cfg["value"],
+            cfg["scope"],
+            cfg["tier"],
+            cfg["category"],
+            cfg["description"],
+        )
+        platform_count += 1
+
+    if platform_count:
+        print(f"[CONFIG-API] Seeded {platform_count} default platform config entries")

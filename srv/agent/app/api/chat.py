@@ -28,6 +28,7 @@ from app.auth.dependencies import get_principal
 from app.db.session import get_session
 from app.models.domain import Conversation, Message, ChatAttachment, ChatSettings
 from app.schemas.auth import Principal
+from app.services.platform_config import get_platform_insights_enabled
 from app.schemas.conversation import Attachment, MessageRead
 from app.schemas.dispatcher import DispatcherRequest, FileAttachment, UserSettings, RoutingDecision
 from app.services.dispatcher_service import route_query
@@ -663,15 +664,14 @@ async def send_chat_message(
             )
             message_count = count_result.scalar_one()
             
-            insights_enabled = user_settings.insights_enabled if user_settings else True
+            insights_enabled = get_platform_insights_enabled() and (user_settings.insights_enabled if user_settings else True)
             if insights_enabled and should_generate_insights(conversation, message_count):
-                # Generate insights asynchronously (don't wait)
                 asyncio.create_task(
                     _generate_insights_background(
                         conversation,
                         history_messages + [user_message, assistant_message],
                         principal.sub,
-                        principal.token  # Zero Trust: pass user's token
+                        principal.token
                     )
                 )
                 logger.info(
@@ -1163,7 +1163,7 @@ async def send_chat_message_stream_agentic(
                 principal=principal,
                 metadata=dispatcher_metadata,
                 attachment_metadata=attachment_metadata,
-                insights_enabled=user_settings.insights_enabled if user_settings else True,
+                insights_enabled=get_platform_insights_enabled() and (user_settings.insights_enabled if user_settings else True),
             ):
                 # Yield event to client (hide verbose thinking events for bridge channels)
                 if not (suppress_thinking_events and event.type in BRIDGE_FILTERED_AGENTIC_EVENTS):
@@ -1274,7 +1274,7 @@ async def send_chat_message_stream_agentic(
                     select(func.count()).select_from(Message).where(Message.conversation_id == conversation.id)
                 )
                 message_count = count_result.scalar_one()
-                insights_enabled = user_settings.insights_enabled if user_settings else True
+                insights_enabled = get_platform_insights_enabled() and (user_settings.insights_enabled if user_settings else True)
                 if insights_enabled and should_generate_insights(conversation, message_count):
                     pending_follow_up_question = await _generate_insights_and_pending_question(
                         conversation=conversation,
@@ -1377,6 +1377,12 @@ async def generate_conversation_insights(
     Returns:
         Dict with insights count
     """
+    if not get_platform_insights_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insights system is disabled by administrator"
+        )
+
     try:
         # Verify conversation exists and user owns it
         result = await session.execute(

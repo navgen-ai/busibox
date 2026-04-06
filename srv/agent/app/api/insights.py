@@ -25,6 +25,7 @@ from app.schemas.insights import (
 from app.services.insights_service import InsightsService, ChatInsight as ServiceChatInsight
 from app.auth.dependencies import get_principal
 from app.schemas.auth import Principal
+from app.services.platform_config import get_platform_insights_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,12 @@ async def insert_insights(
     Requires authentication via Bearer token.
     The authenticated user is automatically set as the insight owner.
     """
+    if not get_platform_insights_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="Insights system is disabled by administrator"
+        )
+
     import time
     import uuid
     

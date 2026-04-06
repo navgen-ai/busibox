@@ -151,6 +151,8 @@ pub struct App {
     pub benchmark_config: BenchmarkConfig,
     pub benchmark_mode: benchmark::BenchmarkMode,
     pub benchmark_model_test_results: Vec<benchmark::ModelTestResult>,
+    pub load_test_level: usize,  // 0=Engine, 1=LiteLLM, 2=Agent-API
+    pub load_test_model_idx: usize, // selected model for engine load test
 
     // Install state
     pub install_services: Vec<ServiceInstallState>,
@@ -507,6 +509,11 @@ pub enum ManageUpdate {
         available_version: String,
         available_ref: String,
     },
+    /// Per-service upstream latest version (from GitHub API).
+    UpstreamLatestResult {
+        name: String,
+        latest_version: String,
+    },
     /// Per-service change detection result.
     NeedsUpdateResult { name: String, needs_update: bool },
     Complete { success: bool },
@@ -757,6 +764,8 @@ impl App {
             benchmark_config: BenchmarkConfig::default(),
             benchmark_mode: benchmark::BenchmarkMode::Performance,
             benchmark_model_test_results: Vec::new(),
+            load_test_level: 0,
+            load_test_model_idx: 0,
             install_services: Vec::new(),
             install_log: Vec::new(),
             install_log_visible: false,

@@ -760,6 +760,12 @@ class TaskSchedulerService:
         This stores the output summary in Milvus so future executions can
         check for similar results and avoid sending duplicates.
         """
+        # Check platform-level insights toggle
+        from app.services.platform_config import get_platform_insights_enabled
+        if not get_platform_insights_enabled():
+            logger.debug("Insights disabled at platform level, skipping task insight")
+            return
+
         # Check if insights are enabled for this task
         insights_config = task.insights_config or {}
         if not insights_config.get("enabled", True):

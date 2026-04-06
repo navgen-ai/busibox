@@ -11,6 +11,7 @@ from app.services.agent_registry import agent_registry
 from app.services.scheduler import task_scheduler, run_scheduler
 from app.utils.logging import setup_logging, setup_tracing, instrument_fastapi
 from app.api.insights import init_insights_service
+from app.services.platform_config import init_platform_config, shutdown_platform_config
 
 settings = get_settings()
 
@@ -43,6 +44,9 @@ async def lifespan(app: FastAPI):
     init_insights_service(insights_config)
     logger.info("Insights service initialized")
     
+    # Initialize platform config (reads feature flags from config-api)
+    await init_platform_config(settings.config_api_url)
+
     # Initialize task scheduler and restore task schedules from database
     try:
         await task_scheduler.restore_task_schedules(SessionLocal)
@@ -61,6 +65,7 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Application shutting down")
+    await shutdown_platform_config()
     run_scheduler.shutdown(wait=False)
 
 

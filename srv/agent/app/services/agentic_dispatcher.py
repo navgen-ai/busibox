@@ -529,7 +529,8 @@ Choose the most appropriate single agent for the query.""",
             relevant_insights = []
             pending_questions: List[Dict[str, Any]] = []
             missing_profile_fields: List[str] = []
-            if user_id and insights_enabled:
+            from app.services.platform_config import get_platform_insights_enabled
+            if user_id and insights_enabled and get_platform_insights_enabled():
                 try:
                     from app.api.insights import get_insights_service
                     
