@@ -30,6 +30,11 @@ fn service_to_make_name(display_name: &str) -> &str {
 /// Returns None for services that don't have a single container (e.g. infra or frontend sub-apps).
 fn service_to_docker_container(display_name: &str) -> Option<&'static str> {
     match display_name {
+        "postgres" => Some("postgres"),
+        "redis" => Some("redis"),
+        "minio" => Some("minio"),
+        "milvus" => Some("milvus"),
+        "neo4j" => Some("neo4j"),
         "authz" => Some("authz-api"),
         "agent" => Some("agent-api"),
         "data" => Some("data-api"),
@@ -56,76 +61,119 @@ fn service_to_deploy_version_path(display_name: &str) -> Option<&'static str> {
     match display_name {
         "authz" => Some("/opt/authz/.deploy_version"),
         "agent" => Some("/opt/agent-api/.deploy_version"),
-        "data" | "data-worker" => Some("/opt/data-api/.deploy_version"),
+        "data" => Some("/opt/data-api/.deploy_version"),
+        "data-worker" => Some("/opt/data-worker/.deploy_version"),
         "search" => Some("/opt/search-api/.deploy_version"),
         "deploy" => Some("/opt/deploy/.deploy_version"),
         "docs" => Some("/opt/docs-api/.deploy_version"),
         "embedding" => Some("/opt/embedding/.deploy_version"),
         "config" => Some("/opt/config/.deploy_version"),
+        "minio" => Some("/opt/minio/.deploy_version"),
+        "litellm" => Some("/opt/litellm/.deploy_version"),
         _ => None,
     }
 }
 
-/// Extract the git commit SHA from a `.deploy_version` JSON blob.
-/// Tries `git_commit` first (agent uses a content-hash for `commit`), then `commit`.
-fn extract_git_commit_from_deploy_version(json_str: &str) -> Option<String> {
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
-        if let Some(gc) = v.get("git_commit").and_then(|v| v.as_str()) {
-            let gc = gc.trim();
-            if !gc.is_empty() && gc != "unknown" {
-                return Some(gc.to_string());
-            }
-        }
-        if let Some(c) = v.get("commit").and_then(|v| v.as_str()) {
-            let c = c.trim();
-            if !c.is_empty() && c != "unknown" {
-                return Some(c.to_string());
-            }
-        }
-    }
-    None
+/// Parsed deployment version info from a `.deploy_version` JSON blob.
+struct DeployVersionInfo {
+    commit: String,
+    branch: String,
 }
 
-/// Format the version cell text and style for a service.
-fn format_version_cell(svc: &ServiceStatus) -> (String, Style) {
+/// Extract the git commit SHA and branch from a `.deploy_version` JSON blob.
+/// Tries `git_commit` first (agent uses a content-hash for `commit`), then `commit`.
+fn extract_deploy_version_info(json_str: &str) -> Option<DeployVersionInfo> {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+        let commit = v.get("git_commit")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty() && s.trim() != "unknown")
+            .or_else(|| v.get("commit")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty() && s.trim() != "unknown"))
+            .map(|s| s.trim().to_string())?;
+
+        let branch = v.get("branch")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty() && s.trim() != "unknown")
+            .unwrap_or("main")
+            .trim()
+            .to_string();
+
+        Some(DeployVersionInfo { commit, branch })
+    } else {
+        None
+    }
+}
+
+/// Format the "Deployed" column text and style.
+fn format_deployed_cell(svc: &ServiceStatus) -> (String, Style) {
     if svc.version.is_empty() {
         return ("—".to_string(), theme::dim());
     }
-    match svc.commits_behind {
-        Some(0) => {
-            (format!("{} ✓", svc.version), theme::success())
-        }
-        Some(n) if n > 0 => {
-            (format!("{} ↑{}", svc.version, n), theme::warning())
-        }
-        _ => {
-            (svc.version.clone(), theme::muted())
-        }
+    if !svc.deployed_ref.is_empty() {
+        (format!("{}@{}", svc.deployed_ref, svc.version), theme::muted())
+    } else {
+        (svc.version.clone(), theme::muted())
     }
 }
 
-fn get_all_services(app: &App) -> Vec<(&'static str, String)> {
+/// Format the "Available" column text and style.
+fn format_available_cell(svc: &ServiceStatus) -> (String, Style) {
+    if svc.available_version.is_empty() {
+        return ("…".to_string(), theme::dim());
+    }
+    if svc.version.is_empty() {
+        let text = if !svc.available_ref.is_empty() {
+            format!("{}@{}", svc.available_ref, svc.available_version)
+        } else {
+            svc.available_version.clone()
+        };
+        return (text, theme::dim());
+    }
+    // Check if same SHA
+    let version_matches = svc.version.starts_with(&svc.available_version)
+        || svc.available_version.starts_with(&svc.version);
+    if version_matches {
+        return ("✓ current".to_string(), theme::success());
+    }
+    // New release available
+    if !svc.available_ref.is_empty() && svc.available_ref != svc.deployed_ref {
+        return (format!("↑ {}", svc.available_ref), theme::warning());
+    }
+    // Behind on same branch
+    let text = if !svc.available_ref.is_empty() {
+        format!("{}@{}", svc.available_ref, svc.available_version)
+    } else {
+        svc.available_version.clone()
+    };
+    match svc.commits_behind {
+        Some(n) if n > 0 => (format!("{text} (↑{n})"), theme::warning()),
+        _ => (text, theme::warning()),
+    }
+}
+
+/// (group, name, source_repo)
+fn get_all_services(app: &App) -> Vec<(&'static str, String, &'static str)> {
     use crate::modules::hardware::LlmBackend;
 
-    let mut services = vec![
-        ("Infrastructure", "postgres".to_string()),
-        ("Infrastructure", "redis".to_string()),
-        ("Infrastructure", "minio".to_string()),
-        ("Infrastructure", "milvus".to_string()),
-        ("Infrastructure", "neo4j".to_string()),
-        ("APIs", "authz".to_string()),
-        ("APIs", "agent".to_string()),
-        ("APIs", "data".to_string()),
-        ("APIs", "data-worker".to_string()),
-        ("APIs", "search".to_string()),
-        ("APIs", "deploy".to_string()),
-        ("APIs", "docs".to_string()),
-        ("APIs", "embedding".to_string()),
-        ("APIs", "bridge".to_string()),
-        ("APIs", "config".to_string()),
+    let mut services: Vec<(&str, String, &str)> = vec![
+        ("Infrastructure", "postgres".to_string(), "busibox"),
+        ("Infrastructure", "redis".to_string(), "busibox"),
+        ("Infrastructure", "minio".to_string(), "busibox"),
+        ("Infrastructure", "milvus".to_string(), "busibox"),
+        ("Infrastructure", "neo4j".to_string(), "busibox"),
+        ("APIs", "authz".to_string(), "busibox"),
+        ("APIs", "agent".to_string(), "busibox"),
+        ("APIs", "data".to_string(), "busibox"),
+        ("APIs", "data-worker".to_string(), "busibox"),
+        ("APIs", "search".to_string(), "busibox"),
+        ("APIs", "deploy".to_string(), "busibox"),
+        ("APIs", "docs".to_string(), "busibox"),
+        ("APIs", "embedding".to_string(), "busibox"),
+        ("APIs", "bridge".to_string(), "busibox"),
+        ("APIs", "config".to_string(), "busibox"),
     ];
 
-    // LLM services based on hardware backend
     let profile = app.active_profile().map(|(_, p)| p);
     let is_remote = profile.map(|p| p.remote).unwrap_or(false);
     let hw = if is_remote {
@@ -139,25 +187,63 @@ fn get_all_services(app: &App) -> Vec<(&'static str, String)> {
         .map(|h| matches!(h.llm_backend, LlmBackend::Mlx))
         .unwrap_or(false);
 
-    services.push(("LLM", "litellm".to_string()));
+    services.push(("LLM", "litellm".to_string(), "busibox"));
     if is_mlx {
-        services.push(("LLM", "mlx".to_string()));
+        services.push(("LLM", "mlx".to_string(), "busibox"));
     } else {
-        services.push(("LLM", "vllm".to_string()));
+        services.push(("LLM", "vllm".to_string(), "busibox"));
     }
 
-    services.push(("Frontend", "proxy".to_string()));
-    services.push(("Frontend", "core-apps".to_string()));
-    services.push(("Frontend", "user-apps".to_string()));
-    services.push(("Frontend", "portal".to_string()));
-    services.push(("Frontend", "admin".to_string()));
-    services.push(("Frontend", "agents".to_string()));
-    services.push(("Frontend", "chat".to_string()));
-    services.push(("Frontend", "appbuilder".to_string()));
-    services.push(("Frontend", "media".to_string()));
-    services.push(("Frontend", "documents".to_string()));
+    services.push(("Frontend", "proxy".to_string(), "busibox"));
+    services.push(("Frontend", "core-apps".to_string(), "busibox-frontend"));
+    services.push(("Frontend", "user-apps".to_string(), "busibox"));
+    services.push(("Frontend", "portal".to_string(), "busibox-frontend"));
+    services.push(("Frontend", "admin".to_string(), "busibox-frontend"));
+    services.push(("Frontend", "agents".to_string(), "busibox-frontend"));
+    services.push(("Frontend", "chat".to_string(), "busibox-frontend"));
+    services.push(("Frontend", "appbuilder".to_string(), "busibox-frontend"));
+    services.push(("Frontend", "media".to_string(), "busibox-frontend"));
+    services.push(("Frontend", "documents".to_string(), "busibox-frontend"));
+
+    services.push(("CLI", "busibox-cli".to_string(), "busibox"));
     services
 }
+
+/// Map a service display name to the subdirectory paths to check for changes.
+/// Returns paths relative to the repo root. If shared code changed, caller must cascade.
+fn service_to_source_paths(name: &str) -> Vec<&'static str> {
+    match name {
+        "authz" => vec!["srv/authz/", "provision/ansible/roles/authz/"],
+        "agent" => vec!["srv/agent/", "provision/ansible/roles/agent_api/"],
+        "data" | "data-worker" => vec!["srv/data/", "provision/ansible/roles/data_api/"],
+        "search" => vec!["srv/search/", "provision/ansible/roles/search_api/"],
+        "deploy" => vec!["srv/deploy/", "provision/ansible/roles/deploy_api/"],
+        "docs" => vec!["srv/docs/", "provision/ansible/roles/docs_api/"],
+        "embedding" => vec!["srv/embedding/", "provision/ansible/roles/embedding_api/"],
+        "bridge" => vec!["srv/bridge/"],
+        "config" => vec!["srv/config/", "provision/ansible/roles/config_api/"],
+        "litellm" => vec!["provision/ansible/roles/litellm/"],
+        "vllm" | "mlx" => vec!["provision/ansible/roles/vllm/", "provision/ansible/roles/mlx/"],
+        "postgres" => vec!["provision/ansible/roles/postgres/"],
+        "redis" => vec!["provision/ansible/roles/redis/"],
+        "minio" => vec!["provision/ansible/roles/minio/"],
+        "milvus" => vec!["provision/ansible/roles/milvus/"],
+        "neo4j" => vec!["provision/ansible/roles/neo4j/"],
+        "proxy" => vec!["provision/ansible/roles/proxy/"],
+        // Frontend apps - paths in busibox-frontend repo
+        "portal" => vec!["apps/portal/"],
+        "admin" => vec!["apps/admin/"],
+        "agents" => vec!["apps/agents/"],
+        "chat" => vec!["apps/chat/"],
+        "appbuilder" => vec!["apps/appbuilder/"],
+        "media" => vec!["apps/media/"],
+        "documents" => vec!["apps/documents/"],
+        "core-apps" => vec!["apps/", "packages/"],
+        "busibox-cli" => vec!["cli/"],
+        _ => vec![],
+    }
+}
+
 
 pub fn render(f: &mut Frame, app: &App) {
     if app.manage_log_visible {
@@ -193,6 +279,8 @@ pub fn render(f: &mut Frame, app: &App) {
             );
         f.render_widget(msg, chunks[1]);
     } else {
+        let update_count: usize = app.manage_services.iter().filter(|s| s.needs_update).count();
+
         let rows: Vec<Row> = app
             .manage_services
             .iter()
@@ -210,7 +298,8 @@ pub fn render(f: &mut Frame, app: &App) {
                     theme::muted()
                 };
 
-                let (version_text, version_style) = format_version_cell(svc);
+                let (deployed_text, deployed_style) = format_deployed_cell(svc);
+                let (available_text, available_style) = format_available_cell(svc);
 
                 let row_style = if i == app.manage_selected {
                     theme::selected()
@@ -222,14 +311,14 @@ pub fn render(f: &mut Frame, app: &App) {
                     Cell::from(svc.group.clone()).style(theme::muted()),
                     Cell::from(svc.name.clone()).style(theme::normal()),
                     Cell::from(svc.status.clone()).style(status_style),
-                    Cell::from(version_text).style(version_style),
+                    Cell::from(deployed_text).style(deployed_style),
+                    Cell::from(available_text).style(available_style),
                 ])
                 .style(row_style)
             })
             .collect();
 
-        // Calculate visible window to follow selection
-        let table_height = chunks[1].height.saturating_sub(4) as usize; // borders + header + margin
+        let table_height = chunks[1].height.saturating_sub(4) as usize;
         let total_rows = rows.len();
         let scroll_offset = if app.manage_selected >= table_height {
             app.manage_selected - table_height + 1
@@ -253,13 +342,20 @@ pub fn render(f: &mut Frame, app: &App) {
             String::new()
         };
 
+        let title_suffix = if update_count > 0 {
+            format!(" — {update_count} update(s) available")
+        } else {
+            String::new()
+        };
+
         let table = Table::new(
             visible_rows,
             [
                 Constraint::Length(16),
-                Constraint::Min(16),
                 Constraint::Length(14),
-                Constraint::Length(16),
+                Constraint::Length(10),
+                Constraint::Length(10),
+                Constraint::Min(14),
             ],
         )
         .header(
@@ -267,7 +363,8 @@ pub fn render(f: &mut Frame, app: &App) {
                 Cell::from("Group").style(theme::muted()),
                 Cell::from("Service").style(theme::muted()),
                 Cell::from("Status").style(theme::muted()),
-                Cell::from("Version").style(theme::muted()),
+                Cell::from("Deployed").style(theme::muted()),
+                Cell::from("Available").style(theme::muted()),
             ])
             .bottom_margin(1),
         )
@@ -275,7 +372,7 @@ pub fn render(f: &mut Frame, app: &App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(theme::dim())
-                .title(format!(" Services{scroll_info}"))
+                .title(format!(" Services{scroll_info}{title_suffix}"))
                 .title_style(theme::heading()),
         );
         f.render_widget(table, chunks[1]);
@@ -298,8 +395,19 @@ pub fn render(f: &mut Frame, app: &App) {
     if app.manage_services.is_empty() {
         help_spans.push(Span::styled(" Enter Load  Esc Back", theme::muted()));
     } else {
+        let update_count: usize = app.manage_services.iter().filter(|s| s.needs_update).count();
         help_spans.push(Span::styled(
-            " r Restart  l Tail logs  s Stop/Start  d Redeploy  t Tunnel  Enter Refresh  Esc Back",
+            "f Fetch  u Deploy  ",
+            theme::muted(),
+        ));
+        if update_count > 0 {
+            help_spans.push(Span::styled(
+                format!("U Deploy All ({update_count})  "),
+                theme::warning(),
+            ));
+        }
+        help_spans.push(Span::styled(
+            "r Restart  l Logs  s Stop/Start  d Redeploy  t Tunnel  Esc Back",
             theme::muted(),
         ));
     }
@@ -470,7 +578,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 app.manage_selected += 1;
             }
         }
-        KeyCode::Enter => {
+        KeyCode::Enter | KeyCode::Char('f') => {
             load_service_status(app);
         }
         KeyCode::Char('r') => {
@@ -497,6 +605,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('d') => {
             run_action(app, "redeploy");
+        }
+        KeyCode::Char('u') => {
+            run_update_selected(app);
+        }
+        KeyCode::Char('U') => {
+            run_update_all(app);
         }
         KeyCode::Char('t') => {
             app.toggle_ssh_tunnel();
@@ -577,15 +691,22 @@ pub fn load_service_status(app: &mut App) {
     use crate::modules::hardware::LlmBackend;
     use crate::screens::install::env_to_prefix;
 
-    // Populate with "checking..." immediately
     app.manage_services.clear();
-    for (group, name) in get_all_services(app) {
+    for (group, name, source_repo) in get_all_services(app) {
+        let is_cli = name == "busibox-cli";
+        let cli_sha = if is_cli { env!("GIT_COMMIT") } else { "" };
         app.manage_services.push(ServiceStatus {
             name,
             group: group.to_string(),
-            status: "checking...".into(),
-            version: String::new(),
+            status: if is_cli { "running".into() } else { "checking...".into() },
+            version: if is_cli { cli_sha.to_string() } else { String::new() },
+            deployed_ref: String::new(),
+            deployed_type: String::new(),
+            available_version: String::new(),
+            available_ref: String::new(),
             commits_behind: None,
+            needs_update: false,
+            source_repo: source_repo.to_string(),
         });
     }
 
@@ -718,7 +839,7 @@ pub fn load_service_status(app: &mut App) {
         }
     });
 
-    // Thread 2: version checks (new - runs in parallel with health)
+    // Thread 2: version checks (runs in parallel with health)
     let version_handle = std::thread::spawn(move || {
         fetch_service_versions(
             &version_service_names,
@@ -731,10 +852,31 @@ pub fn load_service_status(app: &mut App) {
         );
     });
 
-    // Coordinator thread: wait for both, then send Complete
+    // Thread 3: fetch remote available versions and per-service change detection
+    let remote_tx = tx.clone();
+    let remote_repo_root = repo_root.clone();
+    let remote_service_names: Vec<String> = app.manage_services.iter().map(|s| s.name.clone()).collect();
+    let remote_source_repos: Vec<String> = app.manage_services.iter().map(|s| s.source_repo.clone()).collect();
+    let frontend_dir = {
+        let sibling = app.repo_root.parent().map(|p| p.join("busibox-frontend"));
+        sibling.filter(|p| p.exists()).map(|p| p.to_string_lossy().to_string())
+    };
+
+    let remote_handle = std::thread::spawn(move || {
+        fetch_remote_versions_and_changes(
+            &remote_tx,
+            &remote_repo_root,
+            frontend_dir.as_deref(),
+            &remote_service_names,
+            &remote_source_repos,
+        );
+    });
+
+    // Coordinator thread: wait for all, then send Complete
     std::thread::spawn(move || {
         let _ = health_handle.join();
         let _ = version_handle.join();
+        let _ = remote_handle.join();
         let _ = tx.send(ManageUpdate::Complete { success: true });
     });
 }
@@ -786,11 +928,18 @@ fn fetch_versions_docker(
     let mut inspect_parts: Vec<String> = Vec::new();
     let mut name_to_container: Vec<(String, String)> = Vec::new();
 
+    let infra_containers: &[&str] = &["postgres", "redis", "minio", "milvus", "neo4j"];
+
     for name in service_names {
         if let Some(container_suffix) = service_to_docker_container(name) {
             let container_name = format!("{prefix}-{container_suffix}");
+            let label = if infra_containers.contains(&container_suffix) {
+                "config_version"
+            } else {
+                "version"
+            };
             inspect_parts.push(format!(
-                "echo \"{container_suffix}|$(docker inspect --format '{{{{index .Config.Labels \"version\"}}}}' '{container_name}' 2>/dev/null || echo '')\""
+                "echo \"{container_suffix}|$(docker inspect --format '{{{{index .Config.Labels \"{label}\"}}}}' '{container_name}' 2>/dev/null || echo '')\""
             ));
             name_to_container.push((name.clone(), container_suffix.to_string()));
         }
@@ -830,14 +979,46 @@ fn fetch_versions_docker(
         }
     }
 
+    // Frontend sub-apps (portal, admin, etc.) inherit core-apps container version
+    let core_apps_version = version_map.get("core-apps").cloned();
+    let frontend_sub_apps = ["portal", "admin", "agents", "chat", "appbuilder", "media", "documents"];
+
     for (name, container_suffix) in &name_to_container {
-        if let Some(deployed_commit) = version_map.get(container_suffix.as_str()) {
-            let commits_behind = count_commits_behind(deployed_commit, local_head, repo_root);
-            let _ = tx.send(ManageUpdate::VersionResult {
-                name: name.clone(),
-                version: deployed_commit.clone(),
-                commits_behind,
+        let deployed_commit = version_map.get(container_suffix.as_str()).cloned()
+            .unwrap_or_else(|| {
+                // Label was unknown/empty — for local Docker, use local git HEAD
+                if !is_remote { local_head.to_string() } else { String::new() }
             });
+        if deployed_commit.is_empty() {
+            continue;
+        }
+        let commits_behind = count_commits_behind(&deployed_commit, local_head, repo_root);
+        let _ = tx.send(ManageUpdate::VersionResult {
+            name: name.clone(),
+            version: deployed_commit,
+            commits_behind,
+            deployed_ref: None,
+            deployed_type: None,
+        });
+    }
+
+    // Propagate core-apps version to frontend sub-apps that don't have their own container
+    let effective_core_version = core_apps_version
+        .or_else(|| if !is_remote { Some(local_head.to_string()) } else { None });
+    if let Some(ref core_version) = effective_core_version {
+        if !core_version.is_empty() {
+            for sub_app in &frontend_sub_apps {
+                if !name_to_container.iter().any(|(n, _)| n == sub_app) {
+                    let commits_behind = count_commits_behind(core_version, local_head, repo_root);
+                    let _ = tx.send(ManageUpdate::VersionResult {
+                        name: sub_app.to_string(),
+                        version: core_version.clone(),
+                        commits_behind,
+                        deployed_ref: None,
+                        deployed_type: None,
+                    });
+                }
+            }
         }
     }
 }
@@ -888,12 +1069,15 @@ fn fetch_versions_proxmox(
         } else if let Some(rest) = line.strip_prefix("DEPLOY_VERSION_END:") {
             let end_name = rest.trim();
             if current_name.as_deref() == Some(end_name) {
-                if let Some(deployed_commit) = extract_git_commit_from_deploy_version(&current_json) {
-                    let commits_behind = count_commits_behind(&deployed_commit, local_head, repo_root);
+                if let Some(info) = extract_deploy_version_info(&current_json) {
+                    let commits_behind = count_commits_behind(&info.commit, local_head, repo_root);
+                    let is_tag = info.branch.starts_with('v') && info.branch.contains('.');
                     let _ = tx.send(ManageUpdate::VersionResult {
                         name: end_name.to_string(),
-                        version: deployed_commit,
+                        version: info.commit,
                         commits_behind,
+                        deployed_ref: Some(info.branch),
+                        deployed_type: Some(if is_tag { "release".to_string() } else { "branch".to_string() }),
                     });
                 }
             }
@@ -931,6 +1115,354 @@ fn count_commits_behind(deployed_commit: &str, local_head: &str, repo_root: &std
     } else {
         None
     }
+}
+
+/// Fetch remote available versions for both repos, then run per-service change detection.
+fn fetch_remote_versions_and_changes(
+    tx: &std::sync::mpsc::Sender<ManageUpdate>,
+    repo_root: &std::path::Path,
+    frontend_dir: Option<&str>,
+    service_names: &[String],
+    source_repos: &[String],
+) {
+    // 1) Fetch + get remote HEAD for busibox repo
+    let busibox_available = fetch_remote_head(repo_root, "origin", "main");
+    if let Some(ref sha) = busibox_available {
+        let _ = tx.send(ManageUpdate::RemoteVersionResult {
+            repo: "busibox".to_string(),
+            available_version: sha.clone(),
+            available_ref: "main".to_string(),
+        });
+    }
+
+    // Check for latest release tag in busibox repo
+    let busibox_latest_tag = get_latest_release_tag(repo_root);
+    if let Some(ref tag) = busibox_latest_tag {
+        // If services are deployed from a release, send the new release info
+        let tag_sha = resolve_ref_to_short_sha(repo_root, tag);
+        if let Some(ref sha) = tag_sha {
+            // Only send if it differs from current main — this enriches the available info
+            // for services that were deployed from a release tag
+            let _ = tx.send(ManageUpdate::RemoteVersionResult {
+                repo: "busibox".to_string(),
+                available_version: sha.clone(),
+                available_ref: tag.clone(),
+            });
+        }
+    }
+
+    // 2) Fetch + get remote HEAD for busibox-frontend repo (if available)
+    let frontend_available = if let Some(fdir) = frontend_dir {
+        let fpath = std::path::Path::new(fdir);
+        if fpath.join(".git").exists() {
+            fetch_remote_head(fpath, "origin", "main")
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if let Some(ref sha) = frontend_available {
+        let _ = tx.send(ManageUpdate::RemoteVersionResult {
+            repo: "busibox-frontend".to_string(),
+            available_version: sha.clone(),
+            available_ref: "main".to_string(),
+        });
+    }
+
+    // 3) Per-service change detection: check if srv/shared/ changed (cascades to all APIs)
+    let shared_changed_busibox = if let Some(ref available) = busibox_available {
+        check_paths_changed(repo_root, available, &["srv/shared/", "provision/ansible/roles/common/"])
+    } else {
+        false
+    };
+
+    let shared_changed_frontend = if let (Some(ref available), Some(fdir)) = (&frontend_available, frontend_dir) {
+        let fpath = std::path::Path::new(fdir);
+        check_paths_changed(fpath, available, &["packages/app/", "packages/tsconfig/"])
+    } else {
+        false
+    };
+
+    for (i, name) in service_names.iter().enumerate() {
+        let repo = &source_repos[i];
+        let paths = service_to_source_paths(name);
+        if paths.is_empty() {
+            continue;
+        }
+
+        let needs_update = match repo.as_str() {
+            "busibox" => {
+                if shared_changed_busibox && is_api_service(name) {
+                    true
+                } else if let Some(ref available) = busibox_available {
+                    check_paths_changed(repo_root, available, &paths.iter().map(|s| *s).collect::<Vec<_>>())
+                } else {
+                    false
+                }
+            }
+            "busibox-frontend" => {
+                if shared_changed_frontend {
+                    true
+                } else if let (Some(ref available), Some(fdir)) = (&frontend_available, frontend_dir) {
+                    let fpath = std::path::Path::new(fdir);
+                    check_paths_changed(fpath, available, &paths.iter().map(|s| *s).collect::<Vec<_>>())
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+
+        let _ = tx.send(ManageUpdate::NeedsUpdateResult {
+            name: name.clone(),
+            needs_update,
+        });
+    }
+}
+
+fn is_api_service(name: &str) -> bool {
+    matches!(name, "authz" | "agent" | "data" | "data-worker" | "search" | "deploy" | "docs" | "embedding" | "bridge" | "config")
+}
+
+/// Run `git fetch origin` then `git rev-parse --short origin/<branch>` in the given repo.
+fn fetch_remote_head(repo_root: &std::path::Path, remote: &str, branch: &str) -> Option<String> {
+    let _ = std::process::Command::new("git")
+        .args(["fetch", remote, "--quiet"])
+        .current_dir(repo_root)
+        .output();
+
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--short", &format!("{remote}/{branch}")])
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !sha.is_empty() { Some(sha) } else { None }
+    } else {
+        None
+    }
+}
+
+/// Get the latest release tag (semver-style vX.Y.Z) from the repo.
+fn get_latest_release_tag(repo_root: &std::path::Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["tag", "--sort=-version:refname", "-l", "v*"])
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.lines().next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    } else {
+        None
+    }
+}
+
+/// Resolve a ref (tag or branch) to a short SHA.
+fn resolve_ref_to_short_sha(repo_root: &std::path::Path, refname: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--short", refname])
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !sha.is_empty() { Some(sha) } else { None }
+    } else {
+        None
+    }
+}
+
+/// Check if any of the given paths have changes between HEAD and the given available ref.
+/// Uses `git diff --quiet HEAD..<available> -- <paths>` to detect changes.
+fn check_paths_changed(repo_root: &std::path::Path, available_sha: &str, paths: &[&str]) -> bool {
+    if paths.is_empty() {
+        return false;
+    }
+    let mut args: Vec<&str> = vec!["diff", "--quiet", &format!("HEAD..{available_sha}"), "--"];
+    // We need to build a range string that lives long enough
+    let range = format!("HEAD..{available_sha}");
+    args = vec!["diff", "--quiet", &range, "--"];
+    for p in paths {
+        args.push(p);
+    }
+    let output = std::process::Command::new("git")
+        .args(&args)
+        .current_dir(repo_root)
+        .output();
+
+    match output {
+        Ok(o) => !o.status.success(), // exit code 1 = differences found
+        Err(_) => false,
+    }
+}
+
+/// Update a single selected service (redeploy via make install).
+fn run_update_selected(app: &mut App) {
+    let svc = match app.manage_services.get(app.manage_selected) {
+        Some(s) => s.clone(),
+        None => return,
+    };
+    let make_name = service_to_make_name(&svc.name).to_string();
+    spawn_update_worker(app, &make_name);
+}
+
+/// Update all services that need updating (where needs_update == true).
+fn run_update_all(app: &mut App) {
+    let services_to_update: Vec<String> = app
+        .manage_services
+        .iter()
+        .filter(|s| s.needs_update)
+        .map(|s| service_to_make_name(&s.name).to_string())
+        .collect();
+
+    if services_to_update.is_empty() {
+        app.set_message("All services are up to date", crate::app::MessageKind::Info);
+        return;
+    }
+
+    let service_list = services_to_update.join(",");
+    spawn_update_worker(app, &service_list);
+}
+
+/// Spawn a background worker that runs `make install SERVICE=<services>` for updates.
+fn spawn_update_worker(app: &mut App, service_list: &str) {
+    use crate::modules::hardware::LlmBackend;
+
+    kill_log_stream(app);
+
+    let (tx, rx) = std::sync::mpsc::channel::<ManageUpdate>();
+    app.manage_rx = Some(rx);
+    app.manage_log.clear();
+    app.manage_log_visible = true;
+    app.manage_log_scroll = 0;
+    app.manage_log_autoscroll = true;
+    app.manage_log_streaming = false;
+    app.manage_action_running = true;
+    app.manage_action_complete = false;
+
+    let is_remote = app.active_profile().map(|(_, p)| p.remote).unwrap_or(false);
+    let repo_root = app.repo_root.clone();
+    let services = service_list.to_string();
+    let vault_password = app.vault_password.clone();
+    let profile_env: Option<String> = app.active_profile().map(|(_, p)| p.environment.clone());
+    let profile_backend: Option<String> = app.active_profile().map(|(_, p)| p.backend.to_lowercase());
+
+    let ssh_details: Option<(String, String, String)> = if is_remote {
+        app.active_profile().and_then(|(_, p)| {
+            p.effective_host().map(|h| (
+                h.to_string(),
+                p.effective_user().to_string(),
+                p.effective_ssh_key().to_string(),
+            ))
+        })
+    } else {
+        None
+    };
+
+    let profile_remote_path: Option<String> = app.active_profile().map(|(_, p)| p.effective_remote_path().to_string());
+    let profile_host: Option<String> = app.active_profile().and_then(|(_, p)| p.effective_host().map(|s| s.to_string()));
+    let profile_vault_prefix: Option<String> = app.active_profile().and_then(|(id, p)| p.vault_prefix.clone().or(Some(id.to_string())));
+    let profile_site_domain: Option<String> = app.active_profile().and_then(|(_, p)| p.site_domain.clone()).filter(|v| !v.trim().is_empty());
+    let profile_llm_backend: Option<String> = app.active_profile().and_then(|(_, p)| {
+        p.hardware.as_ref().map(|h| match h.llm_backend {
+            LlmBackend::Mlx => "mlx".to_string(),
+            LlmBackend::Vllm => "vllm".to_string(),
+            LlmBackend::Cloud => "cloud".to_string(),
+        })
+    });
+    let profile_admin_email: Option<String> = app.active_profile().and_then(|(_, p)| p.admin_email.clone());
+    let profile_allowed_email_domains: Option<String> = app.active_profile().and_then(|(_, p)| p.allowed_email_domains.clone());
+
+    std::thread::spawn(move || {
+        let remote_path = profile_remote_path.as_deref().unwrap_or("~/busibox").to_string();
+
+        let _ = tx.send(ManageUpdate::Log(format!("Updating: {services}")));
+
+        // Sync if remote
+        if is_remote {
+            if let Some((ref host, ref user, ref key)) = ssh_details {
+                let display_host = profile_host.as_deref().unwrap_or(host);
+                let _ = tx.send(ManageUpdate::Log(format!("Syncing files to {display_host}:{remote_path}...")));
+                let ssh = crate::modules::ssh::SshConnection::new(display_host, user, key);
+                if let Err(e) = remote::ensure_remote_dir(&ssh, &remote_path) {
+                    let _ = tx.send(ManageUpdate::Log(format!("ERROR: {e}")));
+                    let _ = tx.send(ManageUpdate::Complete { success: false });
+                    return;
+                }
+                if let Err(e) = remote::sync(&repo_root, display_host, user, key, &remote_path) {
+                    let _ = tx.send(ManageUpdate::Log(format!("ERROR: rsync failed: {e}")));
+                    let _ = tx.send(ManageUpdate::Complete { success: false });
+                    return;
+                }
+                let _ = tx.send(ManageUpdate::Log("✓ Files synced".into()));
+
+                if let Some(ref vp) = profile_vault_prefix {
+                    if let Err(e) = remote::sync_vault_file(&repo_root, display_host, user, key, &remote_path, vp) {
+                        let _ = tx.send(ManageUpdate::Log(format!("WARNING: vault push failed: {e}")));
+                    }
+                }
+                let _ = remote::cleanup_remote_state(&ssh, &remote_path);
+            }
+        }
+
+        let env_val = profile_env.as_deref().unwrap_or("development");
+        let backend_val = profile_backend.as_deref().unwrap_or("docker");
+        let site_domain_export = profile_site_domain.as_deref().map(|d| format!("SITE_DOMAIN={d} ")).unwrap_or_default();
+        let llm_backend_export = profile_llm_backend.as_deref().map(|b| format!("LLM_BACKEND={b} ")).unwrap_or_default();
+        let vault_prefix_export = profile_vault_prefix.as_deref().map(|vp| format!("VAULT_PREFIX={vp} ")).unwrap_or_default();
+        let admin_email_export = profile_admin_email.as_deref().map(|e| format!("ADMIN_EMAIL={e} ")).unwrap_or_default();
+        let allowed_domains_export = profile_allowed_email_domains.as_deref().map(|d| format!("ALLOWED_DOMAINS={d} ")).unwrap_or_default();
+
+        let make_args = format!(
+            "{site_domain_export}{llm_backend_export}{vault_prefix_export}{admin_email_export}{allowed_domains_export}install SERVICE={services} ENV={env_val} BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
+        );
+        let _ = tx.send(ManageUpdate::Log(format!("Running: make {make_args}")));
+
+        let stream_tx = tx.clone();
+        let on_line = move |line: &str| {
+            let _ = stream_tx.send(ManageUpdate::Log(format!("  {line}")));
+        };
+
+        let result: color_eyre::Result<i32> = if is_remote {
+            if let Some((ref host, ref user, ref key)) = ssh_details {
+                let ssh = crate::modules::ssh::SshConnection::new(
+                    profile_host.as_deref().unwrap_or(host), user, key,
+                );
+                if let Some(ref vp) = vault_password {
+                    remote::exec_make_quiet_with_vault_streaming(&ssh, &remote_path, &make_args, vp, on_line)
+                } else {
+                    remote::exec_make_quiet_streaming(&ssh, &remote_path, &make_args, on_line)
+                }
+            } else {
+                Err(color_eyre::eyre::eyre!("No SSH connection"))
+            }
+        } else if let Some(ref vp) = vault_password {
+            remote::run_local_make_quiet_with_vault_streaming(&repo_root, &make_args, vp, on_line)
+        } else {
+            remote::run_local_make_quiet_streaming(&repo_root, &make_args, on_line)
+        };
+
+        match result {
+            Ok(0) => {
+                let _ = tx.send(ManageUpdate::Log(format!("✓ Update {services} successful")));
+                let _ = tx.send(ManageUpdate::Complete { success: true });
+            }
+            Ok(code) => {
+                let _ = tx.send(ManageUpdate::Log(format!("FAILED: update {services} (exit code {code})")));
+                let _ = tx.send(ManageUpdate::Complete { success: false });
+            }
+            Err(e) => {
+                let _ = tx.send(ManageUpdate::Log(format!("ERROR: update {services}: {e}")));
+                let _ = tx.send(ManageUpdate::Complete { success: false });
+            }
+        }
+    });
 }
 
 /// Resolve which model_config.yml to use for a LiteLLM deploy.

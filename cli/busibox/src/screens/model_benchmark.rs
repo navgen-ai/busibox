@@ -82,23 +82,23 @@ fn render_load_test(f: &mut Frame, app: &App) {
         .split(f.area());
 
     let title = Paragraph::new(Line::from(vec![
-        Span::styled("  Load Test ", Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled("  Load Test ", theme::highlight()),
         Span::styled(
             " (agent-api chat endpoint) ",
-            Style::default().fg(theme::TEXT_DIM),
+            theme::dim(),
         ),
         if app.benchmark_running {
             Span::styled(
                 format!(" {} Running... ", SPINNER[app.benchmark_tick % SPINNER.len()]),
-                Style::default().fg(theme::WARNING),
+                theme::warning(),
             )
         } else if app.benchmark_complete {
-            Span::styled(" ✓ Complete ", Style::default().fg(theme::SUCCESS))
+            Span::styled(" ✓ Complete ", theme::success())
         } else {
-            Span::styled(" Press Enter to start ", Style::default().fg(theme::TEXT_DIM))
+            Span::styled(" Press Enter to start ", theme::dim())
         },
     ]))
-    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(theme::BORDER)));
+    .block(Block::default().borders(Borders::ALL).border_style(theme::dim()));
     f.render_widget(title, chunks[0]);
 
     let info = Paragraph::new(vec![
@@ -106,7 +106,7 @@ fn render_load_test(f: &mut Frame, app: &App) {
         Line::from("  levels (1, 2, 4, 8) and reports TTFT/latency degradation."),
         Line::from("  Requires AGENT_API_URL and AUTH_TOKEN environment variables."),
     ])
-    .block(Block::default().borders(Borders::ALL).title(" Info ").border_style(Style::default().fg(theme::BORDER)));
+    .block(Block::default().borders(Borders::ALL).title(" Info ").border_style(theme::dim()));
     f.render_widget(info, chunks[1]);
 
     let log_height = chunks[2].height.saturating_sub(2) as usize;
@@ -125,7 +125,7 @@ fn render_load_test(f: &mut Frame, app: &App) {
         .collect();
 
     let log = Paragraph::new(log_lines)
-        .block(Block::default().borders(Borders::ALL).title(" Log ").border_style(Style::default().fg(theme::BORDER)));
+        .block(Block::default().borders(Borders::ALL).title(" Log ").border_style(theme::dim()));
     f.render_widget(log, chunks[2]);
 }
 
@@ -648,6 +648,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 }
                 BenchmarkMode::ModelTests => {
                     start_model_tests(app);
+                }
+                BenchmarkMode::LoadTest => {
+                    // TODO: implement load test start
                 }
             }
         }

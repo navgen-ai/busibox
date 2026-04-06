@@ -482,7 +482,20 @@ pub enum InstallUpdate {
 pub enum ManageUpdate {
     Log(String),
     StatusResult { name: String, status: String },
-    VersionResult { name: String, version: String, commits_behind: Option<i32> },
+    VersionResult {
+        name: String,
+        version: String,
+        commits_behind: Option<i32>,
+        deployed_ref: Option<String>,
+        deployed_type: Option<String>,
+    },
+    RemoteVersionResult {
+        repo: String,
+        available_version: String,
+        available_ref: String,
+    },
+    /// Per-service change detection result.
+    NeedsUpdateResult { name: String, needs_update: bool },
     Complete { success: bool },
     /// Worker pauses and asks a yes/no question.
     /// The user's answer (true = yes/overwrite, false = no/keep) is sent back.
@@ -632,8 +645,20 @@ pub struct ServiceStatus {
     pub status: String,
     /// Deployed git commit (short SHA), or empty if unknown.
     pub version: String,
-    /// How many commits behind HEAD this deploy is. None = unknown/checking.
+    /// Tracking ref when deployed (e.g. "main" or "v1.2.3").
+    pub deployed_ref: String,
+    /// "branch" or "release" -- how the deployment was tracking.
+    pub deployed_type: String,
+    /// Latest commit available on the remote for the tracked ref.
+    pub available_version: String,
+    /// Available ref (e.g. "v1.3.0" if a new release exists), or same as deployed_ref.
+    pub available_ref: String,
+    /// How many commits behind the remote this deploy is. None = unknown/checking.
     pub commits_behind: Option<i32>,
+    /// Whether this specific service's source code changed between deployed and available.
+    pub needs_update: bool,
+    /// Which repo this service tracks ("busibox" or "busibox-frontend").
+    pub source_repo: String,
 }
 
 impl App {
@@ -986,13 +1011,13 @@ impl App {
                 vec!["Install"]
             }
             DeploymentState::Partial(_) => {
-                vec!["Continue Install", "Manage Services", "Update", "Clean Install"]
+                vec!["Continue Install", "Manage Services", "Clean Install"]
             }
             DeploymentState::BootstrapComplete => {
-                vec!["Continue Install (Web)", "Admin Login", "Manage Services", "Update", "Clean Install"]
+                vec!["Continue Install (Web)", "Admin Login", "Manage Services", "Clean Install"]
             }
             DeploymentState::Complete => {
-                vec!["Admin Login", "Manage Services", "Benchmark Models", "Update", "Clean Install"]
+                vec!["Admin Login", "Manage Services", "Benchmark Models", "Clean Install"]
             }
         };
 

@@ -53,16 +53,6 @@ pub fn render(f: &mut Frame, app: &App) {
             Span::styled("█", Style::default().fg(Color::White)),
         ]);
         f.render_widget(Paragraph::new(prompt), chunks[3]);
-    } else if app.pending_update_confirm {
-        let prompt = Line::from(vec![
-            Span::styled(
-                " ⚠ Update redeploys all services. Type 'update' to confirm: ",
-                theme::warning(),
-            ),
-            Span::styled(&app.update_confirm_input, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled("█", Style::default().fg(Color::White)),
-        ]);
-        f.render_widget(Paragraph::new(prompt), chunks[3]);
     } else {
         let status_text = if let Some((msg, kind)) = &app.status_message {
             let style = match kind {
@@ -878,43 +868,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         }
         return;
     }
-    // Update confirmation prompt
-    if app.pending_update_confirm {
-        match key.code {
-            KeyCode::Esc => {
-                app.pending_update_confirm = false;
-                app.update_confirm_input.clear();
-                app.clear_message();
-            }
-            KeyCode::Enter => {
-                if app.update_confirm_input.trim().eq_ignore_ascii_case("update") {
-                    app.pending_update_confirm = false;
-                    app.update_confirm_input.clear();
-                    app.is_update = true;
-                    app.set_message(
-                        "⠋ Preparing update (all services)...",
-                        crate::app::MessageKind::Info,
-                    );
-                    app.pending_resume_install = true;
-                } else {
-                    app.pending_update_confirm = false;
-                    app.update_confirm_input.clear();
-                    app.set_message(
-                        "Update cancelled.",
-                        crate::app::MessageKind::Info,
-                    );
-                }
-            }
-            KeyCode::Backspace => {
-                app.update_confirm_input.pop();
-            }
-            KeyCode::Char(c) => {
-                app.update_confirm_input.push(c);
-            }
-            _ => {}
-        }
-        return;
-    }
+    // (Update flow moved to Manage Services screen)
 
     let actions = app.contextual_actions();
     let action_count = actions.len();
@@ -1027,10 +981,6 @@ fn handle_action_select(app: &mut App, action: &str) {
                 crate::app::MessageKind::Info,
             );
             app.pending_resume_install = true;
-        }
-        "Update" => {
-            app.pending_update_confirm = true;
-            app.update_confirm_input.clear();
         }
         "Continue Install (Web)" => {
             app.set_message(

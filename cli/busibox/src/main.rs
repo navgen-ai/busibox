@@ -284,12 +284,33 @@ fn main() -> Result<()> {
                                 svc.status = status;
                             }
                         }
-                        Ok(app::ManageUpdate::VersionResult { name, version, commits_behind }) => {
+                        Ok(app::ManageUpdate::VersionResult { name, version, commits_behind, deployed_ref, deployed_type }) => {
                             if let Some(svc) =
                                 app.manage_services.iter_mut().find(|s| s.name == name)
                             {
                                 svc.version = version;
                                 svc.commits_behind = commits_behind;
+                                if let Some(r) = deployed_ref {
+                                    svc.deployed_ref = r;
+                                }
+                                if let Some(t) = deployed_type {
+                                    svc.deployed_type = t;
+                                }
+                            }
+                        }
+                        Ok(app::ManageUpdate::RemoteVersionResult { repo, available_version, available_ref }) => {
+                            for svc in app.manage_services.iter_mut() {
+                                if svc.source_repo == repo {
+                                    svc.available_version = available_version.clone();
+                                    svc.available_ref = available_ref.clone();
+                                }
+                            }
+                        }
+                        Ok(app::ManageUpdate::NeedsUpdateResult { name, needs_update }) => {
+                            if let Some(svc) =
+                                app.manage_services.iter_mut().find(|s| s.name == name)
+                            {
+                                svc.needs_update = needs_update;
                             }
                         }
                         Ok(app::ManageUpdate::WaitForConfirm { prompt, response }) => {
