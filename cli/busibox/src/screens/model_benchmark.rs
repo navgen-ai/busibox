@@ -1458,48 +1458,7 @@ fn start_load_test(app: &mut App) {
 // Shared concurrency runner
 // =============================================================================
 
-fn log_concurrency_results(
-    tx: &std::sync::mpsc::Sender<BenchmarkUpdate>,
-    concurrency: usize,
-    results: Vec<AgentChatResult>,
-    wall_secs: Option<f64>,
-) {
-    let successful = results.iter().filter(|r| r.success).count();
-    let failed = concurrency - successful;
-    let mut latencies: Vec<f64> = results.iter().filter(|r| r.success).map(|r| r.elapsed_ms).collect();
-    let mut ttfts: Vec<f64> = results.iter().filter(|r| r.success && r.ttft_ms > 0.0).map(|r| r.ttft_ms).collect();
-    let wall = wall_secs.unwrap_or_else(|| latencies.iter().cloned().fold(0.0_f64, f64::max) / 1000.0);
-
-    if successful == 0 {
-        let _ = tx.send(BenchmarkUpdate::Log(format!("  ERROR: 0/{concurrency} succeeded")));
-        for r in &results {
-            if let Some(ref e) = r.error {
-                let _ = tx.send(BenchmarkUpdate::Log(format!("    {e}")));
-            }
-        }
-    } else {
-        let p50_lat = benchmark::median(&mut latencies);
-        let p95_lat = percentile(&mut latencies.clone(), 95);
-        let ttft_p50 = if ttfts.is_empty() { 0.0 } else { benchmark::median(&mut ttfts) };
-        let ttft_p95 = if ttfts.is_empty() { 0.0 } else { percentile(&mut ttfts.clone(), 95) };
-        let rps = if wall > 0.0 { successful as f64 / wall } else { 0.0 };
-        let _ = tx.send(BenchmarkUpdate::Log(format!(
-            "  ✓ {successful}/{concurrency} ok  |  wall: {:.1}s  |  rps: {:.2}", wall, rps
-        )));
-        let _ = tx.send(BenchmarkUpdate::Log(format!(
-            "    Latency  p50: {:.0}ms  p95: {:.0}ms", p50_lat, p95_lat
-        )));
-        if ttft_p50 > 0.0 {
-            let _ = tx.send(BenchmarkUpdate::Log(format!(
-                "    TTFT     p50: {:.0}ms  p95: {:.0}ms", ttft_p50, ttft_p95
-            )));
-        }
-        if failed > 0 {
-            let _ = tx.send(BenchmarkUpdate::Log(format!("    Failures: {failed}")));
-        }
-    }
-    let _ = tx.send(BenchmarkUpdate::Log(String::new()));
-}
+const SUSTAIN_SECS: u64 = 30;
 
 fn run_openai_concurrency_levels(
     base_url: &str,
@@ -1514,24 +1473,81 @@ fn run_openai_concurrency_levels(
     let levels: &[usize] = &[1, 2, 4, 8];
 
     for &concurrency in levels {
-        let _ = tx.send(BenchmarkUpdate::Log(format!("--- Concurrency: {concurrency} ---")));
+        let _ = tx.send(BenchmarkUpdate::Log(format!(
+            "--- Concurrency: {concurrency} (sustain {}s) ---", SUSTAIN_SECS
+        )));
         let body = format!(
             r#"{{"model":"{model_name}","messages":[{{"role":"user","content":"{prompt}"}}],"stream":false}}"#
         );
         let single = format!(
             r#"(S=$(date +%s%N 2>/dev/null||echo 0); curl -sS --max-time {timeout_secs} {auth_header} -H 'Content-Type: application/json' -d '{body}' '{base_url}/v1/chat/completions'; E=$(date +%s%N 2>/dev/null||echo 0); echo "---BENCH_TIME:$(echo "scale=6;($E-$S)/1000000000"|bc)---")"#
         );
-        let cmd = build_parallel_shell_cmd(&single, concurrency);
-        match exec_curl(&cmd, is_remote, ssh_details) {
-            Ok(output) => {
-                let (results, wall_secs) = parse_agent_parallel_output(&output, concurrency);
-                log_concurrency_results(tx, concurrency, results, wall_secs);
-            }
-            Err(e) => {
-                let _ = tx.send(BenchmarkUpdate::Log(format!("  ERROR: {e}")));
-                let _ = tx.send(BenchmarkUpdate::Log(String::new()));
+
+        let start = std::time::Instant::now();
+        let mut all_results: Vec<AgentChatResult> = Vec::new();
+        let mut batch_num = 0u32;
+        let mut had_failures = false;
+
+        while start.elapsed() < std::time::Duration::from_secs(SUSTAIN_SECS) {
+            batch_num += 1;
+            let cmd = build_parallel_shell_cmd(&single, concurrency);
+            match exec_curl(&cmd, is_remote, ssh_details) {
+                Ok(output) => {
+                    let (results, _wall) = parse_agent_parallel_output(&output, concurrency);
+                    let failed = results.iter().filter(|r| !r.success).count();
+                    if failed > concurrency / 2 {
+                        let _ = tx.send(BenchmarkUpdate::Log(format!(
+                            "  batch {batch_num}: {}/{concurrency} failed — stopping early",
+                            failed,
+                        )));
+                        all_results.extend(results);
+                        had_failures = true;
+                        break;
+                    }
+                    all_results.extend(results);
+                }
+                Err(e) => {
+                    let _ = tx.send(BenchmarkUpdate::Log(format!("  batch {batch_num}: ERROR: {e}")));
+                    had_failures = true;
+                    break;
+                }
             }
         }
+
+        let wall_secs = start.elapsed().as_secs_f64();
+        let total = all_results.len();
+        let successful = all_results.iter().filter(|r| r.success).count();
+        let rps = if wall_secs > 0.0 { successful as f64 / wall_secs } else { 0.0 };
+        let mut latencies: Vec<f64> = all_results.iter().filter(|r| r.success).map(|r| r.elapsed_ms).collect();
+        let mut ttfts: Vec<f64> = all_results.iter().filter(|r| r.success && r.ttft_ms > 0.0).map(|r| r.ttft_ms).collect();
+
+        if successful == 0 {
+            let _ = tx.send(BenchmarkUpdate::Log(format!(
+                "  ERROR: 0/{total} succeeded in {batch_num} batch(es)"
+            )));
+        } else {
+            let p50_lat = benchmark::median(&mut latencies);
+            let p95_lat = percentile(&mut latencies.clone(), 95);
+            let stop_reason = if had_failures { " (stopped early)" } else { "" };
+            let _ = tx.send(BenchmarkUpdate::Log(format!(
+                "  ✓ {successful}/{total} ok in {batch_num} batches  |  wall: {wall_secs:.1}s  |  rps: {rps:.2}{stop_reason}"
+            )));
+            let _ = tx.send(BenchmarkUpdate::Log(format!(
+                "    Latency  p50: {p50_lat:.0}ms  p95: {p95_lat:.0}ms"
+            )));
+            if !ttfts.is_empty() {
+                let ttft_p50 = benchmark::median(&mut ttfts);
+                let ttft_p95 = percentile(&mut ttfts.clone(), 95);
+                let _ = tx.send(BenchmarkUpdate::Log(format!(
+                    "    TTFT     p50: {ttft_p50:.0}ms  p95: {ttft_p95:.0}ms"
+                )));
+            }
+            let failed = total - successful;
+            if failed > 0 {
+                let _ = tx.send(BenchmarkUpdate::Log(format!("    Failures: {failed}")));
+            }
+        }
+        let _ = tx.send(BenchmarkUpdate::Log(String::new()));
     }
 }
 
@@ -1673,10 +1689,10 @@ fn start_litellm_load_test(app: &mut App) {
         .map(|(_, p)| p.effective_remote_path().to_string())
         .unwrap_or_else(|| "~/busibox".to_string());
 
-    let model_name = app
-        .benchmark_models
-        .first()
-        .map(|m| m.model_key.clone())
+    let selected = app.benchmark_models.get(app.load_test_model_idx).cloned();
+    let model_name = selected
+        .as_ref()
+        .map(|m| if m.model_key.is_empty() { m.model_name.clone() } else { m.model_key.clone() })
         .unwrap_or_else(|| "agent-model".to_string());
 
     let base_url = if is_proxmox {
@@ -1852,9 +1868,9 @@ fn start_agent_load_test(app: &mut App) {
 
         let _ = tx.send(BenchmarkUpdate::Log(">>> agent-api JWT obtained".into()));
         let _ = tx.send(BenchmarkUpdate::Log(format!(">>> Agent API: {agent_api_url}")));
-        let _ = tx.send(BenchmarkUpdate::Log(
-            ">>> Concurrency levels: 1, 2, 4, 8".into(),
-        ));
+        let _ = tx.send(BenchmarkUpdate::Log(format!(
+            ">>> Concurrency levels: 1, 2, 4, 8 — sustain {SUSTAIN_SECS}s each"
+        )));
         let _ = tx.send(BenchmarkUpdate::Log(String::new()));
 
         let prompt = "Reply in one sentence.";
@@ -1862,24 +1878,80 @@ fn start_agent_load_test(app: &mut App) {
         let levels: &[usize] = &[1, 2, 4, 8];
 
         for &concurrency in levels {
-            let _ = tx.send(BenchmarkUpdate::Log(format!("--- Concurrency: {concurrency} ---")));
-            let cmd = benchmark::build_parallel_agent_chat_command(
-                &agent_api_url,
-                &jwt,
-                prompt,
-                concurrency,
-                timeout_secs,
-            );
-            match exec_curl(&cmd, is_remote, &ssh_details) {
-                Ok(output) => {
-                    let (results, wall_secs) = parse_agent_parallel_output(&output, concurrency);
-                    log_concurrency_results(&tx, concurrency, results, wall_secs);
-                }
-                Err(e) => {
-                    let _ = tx.send(BenchmarkUpdate::Log(format!("  ERROR: {e}")));
-                    let _ = tx.send(BenchmarkUpdate::Log(String::new()));
+            let _ = tx.send(BenchmarkUpdate::Log(format!(
+                "--- Concurrency: {concurrency} (sustain {SUSTAIN_SECS}s) ---"
+            )));
+
+            let start = std::time::Instant::now();
+            let mut all_results: Vec<AgentChatResult> = Vec::new();
+            let mut batch_num = 0u32;
+            let mut had_failures = false;
+
+            while start.elapsed() < std::time::Duration::from_secs(SUSTAIN_SECS) {
+                batch_num += 1;
+                let cmd = benchmark::build_parallel_agent_chat_command(
+                    &agent_api_url,
+                    &jwt,
+                    prompt,
+                    concurrency,
+                    timeout_secs,
+                );
+                match exec_curl(&cmd, is_remote, &ssh_details) {
+                    Ok(output) => {
+                        let (results, _wall) = parse_agent_parallel_output(&output, concurrency);
+                        let failed = results.iter().filter(|r| !r.success).count();
+                        if failed > concurrency / 2 {
+                            let _ = tx.send(BenchmarkUpdate::Log(format!(
+                                "  batch {batch_num}: {failed}/{concurrency} failed — stopping early"
+                            )));
+                            all_results.extend(results);
+                            had_failures = true;
+                            break;
+                        }
+                        all_results.extend(results);
+                    }
+                    Err(e) => {
+                        let _ = tx.send(BenchmarkUpdate::Log(format!("  batch {batch_num}: ERROR: {e}")));
+                        had_failures = true;
+                        break;
+                    }
                 }
             }
+
+            let wall_secs = start.elapsed().as_secs_f64();
+            let total = all_results.len();
+            let successful = all_results.iter().filter(|r| r.success).count();
+            let rps = if wall_secs > 0.0 { successful as f64 / wall_secs } else { 0.0 };
+            let mut latencies: Vec<f64> = all_results.iter().filter(|r| r.success).map(|r| r.elapsed_ms).collect();
+            let mut ttfts: Vec<f64> = all_results.iter().filter(|r| r.success && r.ttft_ms > 0.0).map(|r| r.ttft_ms).collect();
+
+            if successful == 0 {
+                let _ = tx.send(BenchmarkUpdate::Log(format!(
+                    "  ERROR: 0/{total} succeeded in {batch_num} batch(es)"
+                )));
+            } else {
+                let p50_lat = benchmark::median(&mut latencies);
+                let p95_lat = percentile(&mut latencies.clone(), 95);
+                let stop_reason = if had_failures { " (stopped early)" } else { "" };
+                let _ = tx.send(BenchmarkUpdate::Log(format!(
+                    "  ✓ {successful}/{total} ok in {batch_num} batches  |  wall: {wall_secs:.1}s  |  rps: {rps:.2}{stop_reason}"
+                )));
+                let _ = tx.send(BenchmarkUpdate::Log(format!(
+                    "    Latency  p50: {p50_lat:.0}ms  p95: {p95_lat:.0}ms"
+                )));
+                if !ttfts.is_empty() {
+                    let ttft_p50 = benchmark::median(&mut ttfts);
+                    let ttft_p95 = percentile(&mut ttfts.clone(), 95);
+                    let _ = tx.send(BenchmarkUpdate::Log(format!(
+                        "    TTFT     p50: {ttft_p50:.0}ms  p95: {ttft_p95:.0}ms"
+                    )));
+                }
+                let failed = total - successful;
+                if failed > 0 {
+                    let _ = tx.send(BenchmarkUpdate::Log(format!("    Failures: {failed}")));
+                }
+            }
+            let _ = tx.send(BenchmarkUpdate::Log(String::new()));
         }
 
         let _ = tx.send(BenchmarkUpdate::Log("✓ Agent-API load test complete".into()));
