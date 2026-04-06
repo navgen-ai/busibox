@@ -1083,6 +1083,12 @@ async def send_chat_message_stream_agentic(
             session.add(user_message)
             await session.flush()
 
+            # Get user's chat settings
+            settings_result = await session.execute(
+                select(ChatSettings).where(ChatSettings.user_id == principal.sub)
+            )
+            user_settings = settings_result.scalar_one_or_none()
+
             # Load uploaded chat-attachments and link them to the user message
             attachment_metadata: List[Dict[str, Any]] = []
             if payload.attachment_ids:
