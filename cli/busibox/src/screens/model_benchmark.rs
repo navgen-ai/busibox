@@ -67,7 +67,66 @@ pub fn render(f: &mut Frame, app: &App) {
     match app.benchmark_mode {
         BenchmarkMode::Performance => render_performance(f, app),
         BenchmarkMode::ModelTests => render_model_tests(f, app),
+        BenchmarkMode::LoadTest => render_load_test(f, app),
     }
+}
+
+fn render_load_test(f: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // title
+            Constraint::Length(5),  // info
+            Constraint::Min(6),    // log
+        ])
+        .split(f.area());
+
+    let title = Paragraph::new(Line::from(vec![
+        Span::styled("  Load Test ", Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " (agent-api chat endpoint) ",
+            Style::default().fg(theme::TEXT_DIM),
+        ),
+        if app.benchmark_running {
+            Span::styled(
+                format!(" {} Running... ", SPINNER[app.benchmark_tick % SPINNER.len()]),
+                Style::default().fg(theme::WARNING),
+            )
+        } else if app.benchmark_complete {
+            Span::styled(" ✓ Complete ", Style::default().fg(theme::SUCCESS))
+        } else {
+            Span::styled(" Press Enter to start ", Style::default().fg(theme::TEXT_DIM))
+        },
+    ]))
+    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(theme::BORDER)));
+    f.render_widget(title, chunks[0]);
+
+    let info = Paragraph::new(vec![
+        Line::from("  Hits the agent-api /chat/message endpoint at increasing concurrency"),
+        Line::from("  levels (1, 2, 4, 8) and reports TTFT/latency degradation."),
+        Line::from("  Requires AGENT_API_URL and AUTH_TOKEN environment variables."),
+    ])
+    .block(Block::default().borders(Borders::ALL).title(" Info ").border_style(Style::default().fg(theme::BORDER)));
+    f.render_widget(info, chunks[1]);
+
+    let log_height = chunks[2].height.saturating_sub(2) as usize;
+    let total = app.benchmark_log.len();
+    let skip = if total > log_height {
+        total - log_height - app.benchmark_log_scroll.min(total.saturating_sub(log_height))
+    } else {
+        0
+    };
+    let log_lines: Vec<Line> = app
+        .benchmark_log
+        .iter()
+        .skip(skip)
+        .take(log_height)
+        .map(|s| Line::from(s.as_str()))
+        .collect();
+
+    let log = Paragraph::new(log_lines)
+        .block(Block::default().borders(Borders::ALL).title(" Log ").border_style(Style::default().fg(theme::BORDER)));
+    f.render_widget(log, chunks[2]);
 }
 
 fn render_performance(f: &mut Frame, app: &App) {
@@ -547,7 +606,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Tab | KeyCode::BackTab => {
             app.benchmark_mode = match app.benchmark_mode {
                 BenchmarkMode::Performance => BenchmarkMode::ModelTests,
-                BenchmarkMode::ModelTests => BenchmarkMode::Performance,
+                BenchmarkMode::ModelTests => BenchmarkMode::LoadTest,
+                BenchmarkMode::LoadTest => BenchmarkMode::Performance,
             };
             // Clear results when switching modes
             app.benchmark_results.clear();

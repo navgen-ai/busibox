@@ -163,6 +163,11 @@ async def execute_deployment(
     app_is_custom = manifest.appMode == "custom"
     
     try:
+        # Port assigned by the container executor for user apps (may differ
+        # from manifest.defaultPort to avoid conflicts).  Initialized to None
+        # so the variable exists regardless of which deploy branch executes.
+        user_app_port = None
+        
         if app_is_custom:
             app_type_label = "Custom service"
         elif app_is_core:
@@ -268,13 +273,13 @@ async def execute_deployment(
             await broadcast_status(deployment_id)
             
             try:
-                success = await container_deploy_app(
+                success, user_app_port = await container_deploy_app(
                     manifest,
                     deploy_config,
                     database_url,
                     deploy_logs
                 )
-                logger.info(f"container_deploy_app returned: success={success}, logs={len(deploy_logs)}")
+                logger.info(f"container_deploy_app returned: success={success}, port={user_app_port}, logs={len(deploy_logs)}")
             except Exception as e:
                 logger.error(f"container_deploy_app raised exception: {e}", exc_info=True)
                 raise
@@ -325,14 +330,14 @@ async def execute_deployment(
             
             if is_docker_environment():
                 # Docker: use service name
-                nginx_success, nginx_msg = await configurator.configure_app(manifest, None)
+                nginx_success, nginx_msg = await configurator.configure_app(manifest, None, port_override=user_app_port)
             else:
                 # LXC: use container IP
                 if deploy_config.environment == 'staging':
                     container_ip = config.user_apps_container_ip_staging
                 else:
                     container_ip = config.user_apps_container_ip
-                nginx_success, nginx_msg = await configurator.configure_app(manifest, container_ip)
+                nginx_success, nginx_msg = await configurator.configure_app(manifest, container_ip, port_override=user_app_port)
             
             status.logs.append(f"[{datetime.utcnow().isoformat()}] {nginx_msg}")
             await broadcast_status(deployment_id)

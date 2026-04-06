@@ -55,6 +55,7 @@ from typing import Tuple, List, Optional, Dict, Set
 from .models import BusiboxManifest, DeploymentConfig
 from .config import config
 from .env_generator import generate_env_vars
+from .port_allocator import allocate_port, release_port
 
 logger = logging.getLogger(__name__)
 
@@ -1239,14 +1240,15 @@ async def create_systemd_service(
     app_path: str,
     env_vars: dict,
     logs: List[str],
-    dev_mode: bool = False
+    dev_mode: bool = False,
+    port_override: Optional[int] = None,
 ) -> bool:
     """Create systemd service file for the app"""
     logs.append("🔧 Creating systemd service...")
     
     app_id = manifest.id
     app_name = manifest.name
-    port = manifest.defaultPort
+    port = port_override if port_override is not None else manifest.defaultPort
     
     # Use dev command for dev mode, otherwise use the manifest's start command
     if dev_mode:
@@ -1645,6 +1647,9 @@ rm -f /tmp/{app_id}.pid 2>/dev/null || true
             else:
                 logs.append(f"⚠️ Artifact cleanup had issues: {stderr}")
         
+        # Release the port assignment so it can be reused by other apps
+        release_port(app_id)
+        
         logs.append(f"✅ Undeploy completed for {app_id}")
         return True
         
@@ -1775,10 +1780,11 @@ async def deploy_app(
     deploy_config: DeploymentConfig,
     database_url: Optional[str],
     logs: List[str]
-) -> bool:
+) -> Tuple[bool, Optional[int]]:
     """
     Full deployment flow:
-    0. Stop any existing instance (prevent port conflicts)
+    0. Allocate a conflict-free port
+    0b. Stop any existing instance (prevent port conflicts)
     1. Clone/update repo (or use dev-apps path)
     2. Install dependencies (skip for dev mode)
     3. Build (skip for dev mode)
@@ -1786,14 +1792,24 @@ async def deploy_app(
     5. Create/update systemd service
     6. Start app
     7. Health check
+    
+    Returns:
+        Tuple of (success, assigned_port). assigned_port is the port
+        the app is actually listening on (may differ from manifest).
     """
     
     is_dev_mode = deploy_config.devMode
     
-    # Step 0: Stop any existing instance to prevent port conflicts
-    # This is important for re-deployments
+    # Step 0: Allocate a conflict-free port
+    try:
+        assigned_port = allocate_port(manifest.id, manifest.defaultPort, logs)
+    except RuntimeError as e:
+        logs.append(f"❌ {e}")
+        return False, None
+    
+    # Step 0b: Stop any existing instance to prevent port conflicts
     logs.append(f"🛑 Stopping any existing instance of {manifest.id}...")
-    await stop_app(manifest.id, logs, port=manifest.defaultPort)
+    await stop_app(manifest.id, logs, port=assigned_port)
     
     # Check if Docker environment - log appropriate context
     if is_docker_environment():
@@ -1804,7 +1820,7 @@ async def deploy_app(
         container_ok, container_msg = await ensure_user_apps_container_running()
         if not container_ok:
             logs.append(f"❌ Failed to start user-apps container: {container_msg}")
-            return False
+            return False, assigned_port
         logs.append(f"✅ {USER_APPS_CONTAINER} container ready")
         
         if is_dev_mode:
@@ -1817,12 +1833,12 @@ async def deploy_app(
         # Ensure LXC container has git, node, npm, etc. before we try to deploy.
         # This is a no-op if tools are already installed.
         if not await ensure_container_prerequisites(logs):
-            return False
+            return False, assigned_port
     
     # Step 1: Clone/update repo (or get dev-apps path)
     success, app_path = await clone_or_update_repo(manifest, deploy_config, logs)
     if not success:
-        return False
+        return False, assigned_port
 
     # Portal URL for auth redirects (used both at build-time and runtime)
     portal_url = os.environ.get("NEXT_PUBLIC_BUSIBOX_PORTAL_URL", "")
@@ -1846,7 +1862,7 @@ async def deploy_app(
         logs.append(f"📦 Setting up app volumes for {dev_app_dir} (node_modules and .next cache)...")
         if not await ensure_app_volumes_mounted(dev_app_dir, logs):
             logs.append("❌ Failed to set up app volumes")
-            return False
+            return False, assigned_port
         
         # Clear the entire .next cache to prevent Turbopack corruption errors
         # Turbopack uses SST files that can become corrupted and cause panics
@@ -1880,12 +1896,12 @@ async def deploy_app(
     if is_dev_mode and is_docker_environment():
         logs.append("📦 Installing dependencies to Docker volume (Linux-native binaries)...")
         if not await install_dependencies(app_path, logs, github_token=github_token):
-            return False
+            return False, assigned_port
     elif is_dev_mode:
         logs.append("⏭️ Skipping npm install (dev mode - use local node_modules)")
     else:
         if not await install_dependencies(app_path, logs, github_token=github_token):
-            return False
+            return False, assigned_port
     
     # Step 3: Build (skip for dev mode - use local dev server)
     if is_dev_mode:
@@ -1906,15 +1922,15 @@ async def deploy_app(
             "SSO_AUDIENCE": ",".join(sso_audience_values),
         }
         if not await run_build(app_path, manifest.buildCommand, logs, env_vars=build_env):
-            return False
+            return False, assigned_port
     
     # Step 4: Migrations
     if not await run_migrations(app_path, manifest, database_url, logs):
-        return False
+        return False, assigned_port
     
     # Build environment variables using centralized generator
     # This ensures all apps get proper service endpoints (DATA_API_URL, AGENT_API_URL, etc.)
-    env_vars = generate_env_vars(manifest, deploy_config, database_url)
+    env_vars = generate_env_vars(manifest, deploy_config, database_url, port_override=assigned_port)
     
     # Add portal URL for auth redirects (not in env_generator since it's deployment-specific)
     env_vars["NEXT_PUBLIC_BUSIBOX_PORTAL_URL"] = portal_url
@@ -1936,14 +1952,14 @@ async def deploy_app(
     
     # Step 5: Create systemd service (only for LXC, not Docker)
     if not is_docker_environment():
-        if not await create_systemd_service(manifest, app_path, env_vars, logs, dev_mode=is_dev_mode):
-            return False
+        if not await create_systemd_service(manifest, app_path, env_vars, logs, dev_mode=is_dev_mode, port_override=assigned_port):
+            return False, assigned_port
     else:
         logs.append("⏭️ Skipping systemd service (Docker - will use supervisord)")
     
     # Step 6: Start app
     if not await start_app(manifest.id, logs, app_path=app_path, start_command=start_command, env_vars=env_vars):
-        return False
+        return False, assigned_port
     
     # Step 7: Health check
     # IMPORTANT: For internal/direct requests to the Next.js dev server, we do NOT include basePath.
@@ -1953,7 +1969,7 @@ async def deploy_app(
     
     if not await check_app_health(
         manifest.id,
-        manifest.defaultPort,
+        assigned_port,
         health_endpoint,
         logs,
         base_path=manifest.defaultPath,
@@ -1961,5 +1977,5 @@ async def deploy_app(
         logs.append("⚠️ App started but health check failed - check logs")
         # Don't fail deployment for health check - app might just be slow to start
     
-    logs.append(f"🎉 Deployment completed! App available at {manifest.defaultPath}")
-    return True
+    logs.append(f"🎉 Deployment completed! App available at {manifest.defaultPath} (port {assigned_port})")
+    return True, assigned_port

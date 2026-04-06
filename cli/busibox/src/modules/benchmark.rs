@@ -5,6 +5,7 @@ use std::collections::HashMap;
 pub enum BenchmarkMode {
     Performance,
     ModelTests,
+    LoadTest,
 }
 
 #[derive(Debug, Clone)]
@@ -620,6 +621,99 @@ pub fn parse_image_response(output: &str) -> ModelTestResult {
     }
 
     result
+}
+
+// =========================================================================
+// Load Test helpers — hit agent-api endpoints, not raw vLLM
+// =========================================================================
+
+#[derive(Debug, Clone)]
+pub struct LoadTestConfig {
+    pub concurrency_levels: Vec<usize>,
+    pub requests_per_level: usize,
+    pub prompt: String,
+    pub timeout_secs: u64,
+}
+
+impl Default for LoadTestConfig {
+    fn default() -> Self {
+        Self {
+            concurrency_levels: vec![1, 2, 4, 8],
+            requests_per_level: 4,
+            prompt: "What is the current status of our projects?".to_string(),
+            timeout_secs: 120,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadTestResult {
+    pub concurrency: usize,
+    pub total_requests: usize,
+    pub successful: usize,
+    pub failed: usize,
+    pub ttft_p50_ms: f64,
+    pub ttft_p95_ms: f64,
+    pub latency_p50_ms: f64,
+    pub latency_p95_ms: f64,
+    pub wall_time_secs: f64,
+    pub throughput_rps: f64,
+}
+
+/// Build a curl command that hits the agent-api /chat/message endpoint
+/// (non-streaming) and captures timing.
+pub fn build_agent_chat_curl(
+    agent_api_url: &str,
+    token: &str,
+    prompt: &str,
+    timeout_secs: u64,
+) -> String {
+    let body = serde_json::json!({
+        "message": prompt,
+        "model": "auto",
+        "enable_web_search": false,
+        "enable_doc_search": false,
+    });
+    let body_str = body.to_string().replace('\'', "'\\''");
+
+    format!(
+        "curl -s -w '\\n---BENCH_TIME:%{{time_total}}---\\n---BENCH_TTFT:%{{time_starttransfer}}---' \
+         -H 'Content-Type: application/json' \
+         -H 'Authorization: Bearer {}' \
+         --max-time {} \
+         -d '{}' \
+         '{}/chat/message'; true",
+        token, timeout_secs, body_str, agent_api_url
+    )
+}
+
+/// Build a shell snippet that runs N parallel agent-api chat requests.
+pub fn build_parallel_agent_chat_command(
+    agent_api_url: &str,
+    token: &str,
+    prompt: &str,
+    count: usize,
+    timeout_secs: u64,
+) -> String {
+    let single = build_agent_chat_curl(agent_api_url, token, prompt, timeout_secs);
+    let mut script = String::new();
+    script.push_str("_BENCH_DIR=$(mktemp -d); ");
+    script.push_str("OVERALL_START=$(date +%s%N 2>/dev/null || echo 0); ");
+    for i in 0..count {
+        script.push_str(&format!(
+            "( {single} > \"$_BENCH_DIR/{i}.out\" 2>&1 ) & "
+        ));
+    }
+    script.push_str("wait; ");
+    script.push_str("OVERALL_END=$(date +%s%N 2>/dev/null || echo 0); ");
+    for i in 0..count {
+        script.push_str(&format!(
+            "echo '---BENCH_REQ:{i}---'; cat \"$_BENCH_DIR/{i}.out\"; echo ''; echo '---BENCH_REQ_END:{i}---'; "
+        ));
+    }
+    script.push_str("echo \"---BENCH_WALL:$(( (OVERALL_END - OVERALL_START) ))---\"; ");
+    script.push_str("rm -rf \"$_BENCH_DIR\"");
+    script
 }
 
 /// Parse an STT transcription response — look for text field.

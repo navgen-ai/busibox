@@ -85,7 +85,8 @@ def get_service_endpoints(environment: str = 'production') -> Dict[str, str]:
 def generate_env_vars(
     manifest: BusiboxManifest,
     deploy_config: DeploymentConfig,
-    database_url: Optional[str] = None
+    database_url: Optional[str] = None,
+    port_override: Optional[int] = None,
 ) -> Dict[str, str]:
     """
     Generate environment variables for an app deployment.
@@ -94,6 +95,7 @@ def generate_env_vars(
         manifest: App manifest from busibox.json
         deploy_config: Deployment configuration
         database_url: Provisioned database URL (if applicable)
+        port_override: If set, use this port instead of manifest.defaultPort
     
     Returns:
         Dictionary of environment variables
@@ -102,7 +104,7 @@ def generate_env_vars(
     
     # Base environment
     env['NODE_ENV'] = 'production' if deploy_config.environment == 'production' else 'development'
-    env['PORT'] = str(manifest.defaultPort)
+    env['PORT'] = str(port_override if port_override is not None else manifest.defaultPort)
     # Use stable app identity for auth audience checks.
     env['APP_NAME'] = manifest.id
     

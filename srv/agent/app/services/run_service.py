@@ -30,6 +30,7 @@ from app.services.agent_registry import agent_registry
 from app.services.token_service import get_or_exchange_token
 from app.services.version_isolation import capture_definition_snapshot
 from app.services.run_provenance import build_run_provenance
+from app.services.load_monitor import get_load_monitor
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)

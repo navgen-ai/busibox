@@ -28,6 +28,22 @@ class Settings(BaseSettings):
         "frontier",
         description="Most capable model for complex tasks (research, analysis, reports)",
     )
+    fallback_model: str = Field(
+        "fallback",
+        description="Fast cloud model used when local models are at capacity under load",
+    )
+    load_fallback_threshold: int = Field(
+        6,
+        description="Active LLM request count at which to switch to the fallback model (should be below vLLM max_num_seqs)",
+    )
+    data_api_max_concurrent: int = Field(
+        20,
+        description="Max concurrent outbound HTTP requests to data-api",
+    )
+    tool_parallel_limit: int = Field(
+        5,
+        description="Max concurrent tool calls per agent run in parallel mode",
+    )
     litellm_base_url: AnyHttpUrl = Field(
         "http://10.96.200.207:4000/v1",
         description="Base URL for LiteLLM proxy (OpenAI-compatible endpoint)",

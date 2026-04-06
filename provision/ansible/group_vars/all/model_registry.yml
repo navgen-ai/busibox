@@ -364,6 +364,9 @@ default_purposes:
   frontier: "claude-sonnet-4-5"
   frontier-fast: "claude-haiku-4-5"
 
+  # --- Fallback (cloud, used when local model is at capacity) ---
+  fallback: "claude-haiku-4-5"
+
   # --- Media ---
   image: "flux2-klein-4b-mlx"
   video: "sora-2"
@@ -398,6 +401,7 @@ model_purposes:
   vision: "agent"
   parsing: "chat"
   cleanup: "chat"
+  fallback: "claude-haiku-4-5"
   reranking: "bge-reranker-v2-m3-cpu"
   image: "flux2-klein-4b-gpu"
   transcribe: "whisper-large-v3-gpu"

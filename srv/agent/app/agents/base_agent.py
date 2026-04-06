@@ -1325,11 +1325,16 @@ class BaseStreamingAgent(StreamingAgent):
         cancel: asyncio.Event,
         context: AgentContext,
     ) -> None:
-        """Execute multiple pipeline steps in parallel."""
-        tasks = [
-            self._execute_step(step, stream, cancel, context)
-            for step in steps
-        ]
+        """Execute multiple pipeline steps in parallel with concurrency cap."""
+        from app.config.settings import get_settings
+        _limit = get_settings().tool_parallel_limit
+        sem = asyncio.Semaphore(_limit)
+
+        async def _bounded(step: PipelineStep) -> Optional[Any]:
+            async with sem:
+                return await self._execute_step(step, stream, cancel, context)
+
+        tasks = [_bounded(step) for step in steps]
         await asyncio.gather(*tasks, return_exceptions=True)
     
     async def _execute_step(
@@ -1783,6 +1788,11 @@ class BaseStreamingAgent(StreamingAgent):
         
         # Stream events in real-time: thinking blocks, tool calls, and
         # content arrive incrementally instead of waiting for full completion.
+        # Track active LLM requests for load-aware fallback.
+        from app.services.load_monitor import get_load_monitor
+        _lm = get_load_monitor()
+        _purpose = self.config.model or "agent"
+        await _lm.acquire(_purpose)
         try:
             t_llm = time.monotonic()
             full_text = await self._stream_llm_events(
@@ -1807,6 +1817,8 @@ class BaseStreamingAgent(StreamingAgent):
                 source=self.name,
                 message=f"Error: {str(e)}"
             ))
+        finally:
+            await _lm.release(_purpose)
     
     async def _stream_llm_events(
         self,

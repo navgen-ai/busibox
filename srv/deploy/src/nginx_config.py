@@ -42,13 +42,15 @@ class NginxConfigurator:
     def generate_location_config(
         self,
         manifest: BusiboxManifest,
-        container_ip: str
+        container_ip: str,
+        port_override: Optional[int] = None,
     ) -> str:
         """Generate nginx location block for app
         
         Args:
             manifest: App manifest
             container_ip: Either an IP address (10.x.x.x) or Docker service name (user-apps)
+            port_override: If set, use this port instead of manifest.defaultPort
         
         Note: Uses nginx variable for proxy_pass to enable dynamic DNS resolution.
         This allows nginx to start even if the backend service isn't running yet,
@@ -58,6 +60,8 @@ class NginxConfigurator:
         # Remove trailing slash from path
         path = manifest.defaultPath.rstrip('/')
         
+        effective_port = port_override if port_override is not None else manifest.defaultPort
+        
         # For Docker service names, include the port in the proxy_pass
         # For IPs, it's already formatted
         if ':' in container_ip:
@@ -65,7 +69,7 @@ class NginxConfigurator:
             backend = container_ip
         else:
             # IP address - add port
-            backend = f"{container_ip}:{manifest.defaultPort}"
+            backend = f"{container_ip}:{effective_port}"
         
         # Create a variable name from the app ID (replace dashes with underscores)
         var_name = manifest.id.replace('-', '_')
@@ -205,11 +209,12 @@ location ^~ {path} {{
     async def write_config(
         self,
         manifest: BusiboxManifest,
-        container_ip: str
+        container_ip: str,
+        port_override: Optional[int] = None,
     ) -> Tuple[bool, str]:
         """Write nginx configuration file via SSH"""
         
-        config_content = self.generate_location_config(manifest, container_ip)
+        config_content = self.generate_location_config(manifest, container_ip, port_override=port_override)
         config_path = f"{self.config_dir}/{manifest.id}.conf"
         
         # Escape for shell
@@ -374,7 +379,8 @@ NGINX_EOF
     async def configure_app(
         self,
         manifest: BusiboxManifest,
-        container_ip: Optional[str] = None
+        container_ip: Optional[str] = None,
+        port_override: Optional[int] = None,
     ) -> Tuple[bool, str]:
         """Configure nginx for app (write, validate, enable, reload)"""
         if self._is_core_app_route(manifest):
@@ -403,10 +409,11 @@ NGINX_EOF
             
             # For Docker, use the user-apps container as the backend
             # Container name resolution via Docker DNS
-            backend = f"user-apps:{manifest.defaultPort}"
+            effective_port = port_override if port_override is not None else manifest.defaultPort
+            backend = f"user-apps:{effective_port}"
             
             # Generate config
-            config_content = self.generate_location_config(manifest, backend)
+            config_content = self.generate_location_config(manifest, backend, port_override=port_override)
             
             # Write to mounted directory (accessible from deploy-api container)
             # The busibox directory is mounted at BUSIBOX_HOST_PATH inside deploy-api
@@ -474,7 +481,7 @@ NGINX_EOF
             container_ip = self.apps_container_ip
         
         # Write configuration (location snippet to app-locations/ directory)
-        success, msg = await self.write_config(manifest, container_ip)
+        success, msg = await self.write_config(manifest, container_ip, port_override=port_override)
         if not success:
             return False, f"Failed to write nginx configuration: {msg}"
         

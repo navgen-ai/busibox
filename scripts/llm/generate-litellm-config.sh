@@ -285,7 +285,7 @@ model_list:
 EOF
 
     # Define purposes to include (order matters for readability)
-    local purposes=("default" "test" "fast" "classify" "cleanup" "parsing" "agent" "chat" "research" "frontier" "tool_calling" "video" "image" "transcribe" "voice")
+    local purposes=("default" "test" "fast" "classify" "cleanup" "parsing" "agent" "chat" "research" "frontier" "fallback" "tool_calling" "video" "image" "transcribe" "voice")
     local unique_model_keys=""
     
     for purpose in "${purposes[@]}"; do

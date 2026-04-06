@@ -44,6 +44,7 @@ from app.services.insights_service import ChatInsight
 from app.api.insights import get_insights_service
 from app.config.settings import get_settings
 from app.auth.token_exchange import exchange_token_zero_trust
+from app.services.load_monitor import get_load_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -535,6 +536,17 @@ async def send_chat_message(
             }
         )
         
+        # Load-aware model fallback for non-streaming path
+        load_monitor = get_load_monitor()
+        if load_monitor.should_fallback(selected_model):
+            settings = get_settings()
+            logger.info(
+                "Load fallback (non-streaming): %s -> %s",
+                selected_model, settings.fallback_model,
+                extra={"user_sub": principal.sub},
+            )
+            selected_model = settings.fallback_model
+
         # Execute tools and agents
         execution_result = await execute_chat(
             query=payload.message,
@@ -832,6 +844,21 @@ async def send_chat_message_stream(
             if not suppress_thinking_events:
                 yield f"event: routing_decision\ndata: {json.dumps(decision.model_dump())}\n\n"
             
+            # Load-aware model fallback: switch to cloud model when local
+            # inference server is near capacity.
+            load_monitor = get_load_monitor()
+            original_model = selected_model
+            if load_monitor.should_fallback(selected_model):
+                settings = get_settings()
+                selected_model = settings.fallback_model
+                logger.info(
+                    "Load fallback: %s -> %s (active LLM load at threshold)",
+                    original_model, selected_model,
+                    extra={"user_sub": principal.sub},
+                )
+                if not suppress_thinking_events:
+                    yield f"event: load_fallback\ndata: {json.dumps({'original_model': original_model, 'fallback_model': selected_model})}\n\n"
+
             # Execute tools and agents with streaming
             full_content = []
             tool_calls = []

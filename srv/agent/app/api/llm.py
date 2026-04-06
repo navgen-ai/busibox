@@ -238,7 +238,7 @@ BEDROCK_CURATED_MODELS = [
 
 # Purposes that can be overridden via the UI
 CONFIGURABLE_PURPOSES = [
-    "fast", "agent", "chat", "frontier", "tool_calling", "test", "default",
+    "fast", "agent", "chat", "frontier", "fallback", "tool_calling", "test", "default",
     "cleanup", "parsing", "classify", "vision",
     "video", "image", "transcribe", "voice",
 ]
@@ -1727,6 +1727,21 @@ async def llm_health(
         litellm_url=base_url,
         models_available=models_count,
     )
+
+
+@router.get("/load")
+async def llm_load(
+    principal: Principal = Depends(get_principal),
+) -> Dict[str, Any]:
+    """
+    Return current LLM load metrics.
+
+    Shows active request counts per purpose, the fallback threshold,
+    and whether fallback is currently active.
+    """
+    from app.services.load_monitor import get_load_monitor
+    monitor = get_load_monitor()
+    return monitor.get_metrics()
 
 
 # =============================================================================

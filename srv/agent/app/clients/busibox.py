@@ -13,6 +13,34 @@ _RETRYABLE_STATUS_CODES = {502, 503, 504}
 _MAX_RETRIES = 3
 _RETRY_BACKOFF_BASE = 0.5  # seconds
 
+# Global concurrency gate for outbound data-api requests.
+# Prevents a thundering herd of tool calls from overwhelming the data-api.
+_data_api_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_data_api_semaphore() -> asyncio.Semaphore:
+    global _data_api_semaphore
+    if _data_api_semaphore is None:
+        _data_api_semaphore = asyncio.Semaphore(settings.data_api_max_concurrent)
+    return _data_api_semaphore
+
+
+# Shared httpx client for connection pooling (created lazily).
+_shared_client: Optional[httpx.AsyncClient] = None
+
+
+def _get_shared_client() -> httpx.AsyncClient:
+    global _shared_client
+    if _shared_client is None or _shared_client.is_closed:
+        _shared_client = httpx.AsyncClient(
+            limits=httpx.Limits(
+                max_connections=settings.data_api_max_concurrent,
+                max_keepalive_connections=10,
+            ),
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
+    return _shared_client
+
 
 class BusiboxClient:
     """
@@ -62,10 +90,12 @@ class BusiboxClient:
         base_url = str(settings.data_api_url).rstrip('/')
         url = f"{base_url}{path}"
         last_exc: Exception | None = None
+        sem = _get_data_api_semaphore()
+        client = _get_shared_client()
 
-        for attempt in range(_MAX_RETRIES):
-            try:
-                async with httpx.AsyncClient() as client:
+        async with sem:
+            for attempt in range(_MAX_RETRIES):
+                try:
                     resp = await client.request(
                         method=method,
                         url=url,
@@ -74,24 +104,24 @@ class BusiboxClient:
                         headers=self._headers_for("data-api"),
                         timeout=timeout,
                     )
-                if resp.status_code not in _RETRYABLE_STATUS_CODES:
-                    resp.raise_for_status()
-                    return resp.json()
+                    if resp.status_code not in _RETRYABLE_STATUS_CODES:
+                        resp.raise_for_status()
+                        return resp.json()
 
-                last_exc = httpx.HTTPStatusError(
-                    f"Server error {resp.status_code}",
-                    request=resp.request,
-                    response=resp,
+                    last_exc = httpx.HTTPStatusError(
+                        f"Server error {resp.status_code}",
+                        request=resp.request,
+                        response=resp,
+                    )
+                except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
+                    last_exc = exc
+
+                wait = _RETRY_BACKOFF_BASE * (2 ** attempt)
+                logger.warning(
+                    "Retrying %s %s (attempt %d/%d) after %.1fs: %s",
+                    method, path, attempt + 1, _MAX_RETRIES, wait, last_exc,
                 )
-            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
-                last_exc = exc
-
-            wait = _RETRY_BACKOFF_BASE * (2 ** attempt)
-            logger.warning(
-                "Retrying %s %s (attempt %d/%d) after %.1fs: %s",
-                method, path, attempt + 1, _MAX_RETRIES, wait, last_exc,
-            )
-            await asyncio.sleep(wait)
+                await asyncio.sleep(wait)
 
         raise last_exc  # type: ignore[misc]
 
