@@ -130,9 +130,10 @@ fn format_available_cell(svc: &ServiceStatus) -> (String, Style) {
         };
         return (text, theme::dim());
     }
-    // Check if same SHA
-    let version_matches = svc.version.starts_with(&svc.available_version)
-        || svc.available_version.starts_with(&svc.version);
+    // Check if same SHA (normalize to shorter length for prefix comparison)
+    let min_len = svc.version.len().min(svc.available_version.len());
+    let version_matches = min_len >= 7
+        && svc.version[..min_len] == svc.available_version[..min_len];
     if version_matches {
         return ("✓ current".to_string(), theme::success());
     }
@@ -397,17 +398,17 @@ pub fn render(f: &mut Frame, app: &App) {
     } else {
         let update_count: usize = app.manage_services.iter().filter(|s| s.needs_update).count();
         help_spans.push(Span::styled(
-            "f Fetch  u Deploy  ",
+            "f Fetch  u Update  ",
             theme::muted(),
         ));
         if update_count > 0 {
             help_spans.push(Span::styled(
-                format!("U Deploy All ({update_count})  "),
+                format!("U Update All ({update_count})  "),
                 theme::warning(),
             ));
         }
         help_spans.push(Span::styled(
-            "r Restart  l Logs  s Stop/Start  d Redeploy  t Tunnel  Esc Back",
+            "r Restart  l Logs  s Stop/Start  t Tunnel  Esc Back",
             theme::muted(),
         ));
     }
@@ -603,9 +604,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 run_action(app, "start");
             }
         }
-        KeyCode::Char('d') => {
-            run_action(app, "redeploy");
-        }
         KeyCode::Char('u') => {
             run_update_selected(app);
         }
@@ -763,6 +761,12 @@ pub fn load_service_status(app: &mut App) {
     let vllm_network_base = profile.vllm_network_base().to_string();
     let repo_root = app.repo_root.clone();
 
+    // Resolve busibox-frontend sibling directory (shared by version + remote threads)
+    let frontend_dir: Option<String> = {
+        let sibling = app.repo_root.parent().map(|p| p.join("busibox-frontend"));
+        sibling.filter(|p| p.exists()).map(|p| p.to_string_lossy().to_string())
+    };
+
     // Clone values needed by the version check thread
     let version_tx = tx.clone();
     let version_service_names = service_names.clone();
@@ -771,6 +775,7 @@ pub fn load_service_status(app: &mut App) {
     let version_ssh_details = ssh_details.clone();
     let version_prefix = prefix.clone();
     let version_repo_root = repo_root.clone();
+    let version_frontend_dir = frontend_dir.clone();
 
     // Thread 1: health checks (existing logic)
     let health_tx = tx.clone();
@@ -849,6 +854,7 @@ pub fn load_service_status(app: &mut App) {
             version_ssh_details.as_ref(),
             &version_prefix,
             &version_repo_root,
+            version_frontend_dir.as_deref(),
         );
     });
 
@@ -857,10 +863,6 @@ pub fn load_service_status(app: &mut App) {
     let remote_repo_root = repo_root.clone();
     let remote_service_names: Vec<String> = app.manage_services.iter().map(|s| s.name.clone()).collect();
     let remote_source_repos: Vec<String> = app.manage_services.iter().map(|s| s.source_repo.clone()).collect();
-    let frontend_dir = {
-        let sibling = app.repo_root.parent().map(|p| p.join("busibox-frontend"));
-        sibling.filter(|p| p.exists()).map(|p| p.to_string_lossy().to_string())
-    };
 
     let remote_handle = std::thread::spawn(move || {
         fetch_remote_versions_and_changes(
@@ -890,6 +892,7 @@ fn fetch_service_versions(
     ssh_details: Option<&(String, String, String)>,
     prefix: &str,
     repo_root: &std::path::Path,
+    frontend_dir: Option<&str>,
 ) {
     // Get the local HEAD commit for comparison
     let local_head = std::process::Command::new("git")
@@ -909,7 +912,7 @@ fn fetch_service_versions(
     if is_proxmox {
         fetch_versions_proxmox(service_names, tx, ssh_details, &local_head, repo_root);
     } else {
-        fetch_versions_docker(service_names, tx, is_remote, ssh_details, prefix, &local_head, repo_root);
+        fetch_versions_docker(service_names, tx, is_remote, ssh_details, prefix, &local_head, repo_root, frontend_dir);
     }
 }
 
@@ -922,6 +925,7 @@ fn fetch_versions_docker(
     prefix: &str,
     local_head: &str,
     repo_root: &std::path::Path,
+    frontend_dir: Option<&str>,
 ) {
     // Build a single shell command that reads version labels from all containers at once.
     // Output: one line per container: "container_suffix|version_label"
@@ -979,14 +983,11 @@ fn fetch_versions_docker(
         }
     }
 
-    // Frontend sub-apps (portal, admin, etc.) inherit core-apps container version
-    let core_apps_version = version_map.get("core-apps").cloned();
     let frontend_sub_apps = ["portal", "admin", "agents", "chat", "appbuilder", "media", "documents"];
 
     for (name, container_suffix) in &name_to_container {
         let deployed_commit = version_map.get(container_suffix.as_str()).cloned()
             .unwrap_or_else(|| {
-                // Label was unknown/empty — for local Docker, use local git HEAD
                 if !is_remote { local_head.to_string() } else { String::new() }
             });
         if deployed_commit.is_empty() {
@@ -1002,22 +1003,34 @@ fn fetch_versions_docker(
         });
     }
 
-    // Propagate core-apps version to frontend sub-apps that don't have their own container
-    let effective_core_version = core_apps_version
-        .or_else(|| if !is_remote { Some(local_head.to_string()) } else { None });
-    if let Some(ref core_version) = effective_core_version {
-        if !core_version.is_empty() {
-            for sub_app in &frontend_sub_apps {
-                if !name_to_container.iter().any(|(n, _)| n == sub_app) {
-                    let commits_behind = count_commits_behind(core_version, local_head, repo_root);
-                    let _ = tx.send(ManageUpdate::VersionResult {
-                        name: sub_app.to_string(),
-                        version: core_version.clone(),
-                        commits_behind,
-                        deployed_ref: None,
-                        deployed_type: None,
-                    });
-                }
+    // Frontend sub-apps use busibox-frontend HEAD (not the core-apps Docker label,
+    // which is a busibox repo commit and would never match the frontend remote HEAD).
+    let frontend_head: Option<String> = frontend_dir.and_then(|fdir| {
+        let fpath = std::path::Path::new(fdir);
+        if fpath.join(".git").exists() {
+            std::process::Command::new("git")
+                .args(["rev-parse", "--short", "HEAD"])
+                .current_dir(fpath)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty())
+        } else {
+            None
+        }
+    });
+
+    if let Some(ref fe_head) = frontend_head {
+        for sub_app in &frontend_sub_apps {
+            if !name_to_container.iter().any(|(n, _)| n == sub_app) {
+                let _ = tx.send(ManageUpdate::VersionResult {
+                    name: sub_app.to_string(),
+                    version: fe_head.clone(),
+                    commits_behind: None,
+                    deployed_ref: None,
+                    deployed_type: None,
+                });
             }
         }
     }

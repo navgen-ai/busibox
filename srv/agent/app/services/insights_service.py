@@ -316,9 +316,54 @@ class InsightsService:
         
         logger.info(f"Collection {COLLECTION_NAME} created and loaded")
     
+    @staticmethod
+    def _normalize_content(content: str) -> str:
+        """Normalize content for dedup comparison: lowercase, collapse whitespace, strip punctuation."""
+        text = content.lower().strip()
+        text = re.sub(r'[^\w\s]', '', text)
+        text = re.sub(r'\s+', ' ', text)
+        return text
+
+    def _find_exact_duplicates(self, insights: List[ChatInsight]) -> List[ChatInsight]:
+        """Filter out insights whose normalized content already exists for the same user."""
+        if not insights:
+            return []
+
+        user_ids = list({i.user_id for i in insights})
+        if len(user_ids) != 1:
+            return insights
+
+        user_id = user_ids[0]
+        try:
+            existing_results = self.collection.query(
+                expr=f'userId == "{user_id}"',
+                output_fields=["content"],
+            )
+            existing_normalized = {
+                self._normalize_content(str(r.get("content", "")))
+                for r in existing_results
+            }
+        except Exception as e:
+            logger.warning(f"Dedup query failed, inserting all: {e}")
+            return insights
+
+        deduped = []
+        for insight in insights:
+            norm = self._normalize_content(insight.content)
+            if norm in existing_normalized:
+                logger.debug(f"Skipping duplicate insight: {insight.content[:60]}...")
+                continue
+            existing_normalized.add(norm)
+            deduped.append(insight)
+
+        skipped = len(insights) - len(deduped)
+        if skipped:
+            logger.info(f"Dedup filtered out {skipped} duplicate insight(s)")
+        return deduped
+
     def insert_insights(self, insights: List[ChatInsight]):
         """
-        Insert insights into Milvus.
+        Insert insights into Milvus, skipping exact duplicates.
         
         Args:
             insights: List of ChatInsight objects to insert
@@ -386,6 +431,12 @@ class InsightsService:
         
         if not valid_insights:
             logger.warning("No valid insights to insert after dimension validation")
+            return
+
+        # Exact-content dedup against existing Milvus rows
+        valid_insights = self._find_exact_duplicates(valid_insights)
+        if not valid_insights:
+            logger.info("All insights filtered as duplicates, nothing to insert")
             return
         
         # Prepare data for insertion (order must match schema field order)
@@ -817,12 +868,20 @@ class InsightsService:
         results.sort(key=lambda x: x.get("analyzedAt", 0), reverse=True)
         return results[: max(1, min(limit, 50))]
     
-    def get_category_counts(self, user_id: str) -> Dict[str, int]:
+    def get_category_counts(
+        self,
+        user_id: str,
+        conversation_id: Optional[str] = None,
+    ) -> Dict[str, int]:
         """
         Get insight counts by category for a user.
         
+        When conversation_id is provided, thread-scoped categories (goal, context)
+        are filtered to that conversation, matching the list_user_insights behaviour.
+        
         Args:
             user_id: User ID
+            conversation_id: Optional conversation ID for thread-scoped filtering
             
         Returns:
             Dictionary mapping category to count
@@ -840,28 +899,87 @@ class InsightsService:
         # Check if category field exists
         available_fields = {field.name for field in self.collection.schema.fields}
         if "category" not in available_fields:
-            # No category field - return empty
             return {}
         
-        # Ensure collection is loaded for queries
         try:
             self.collection.load()
         except Exception as e:
             logger.debug(f"Collection load (may already be loaded): {e}")
         
-        # Query all insights for user with category field
+        output_fields = ["category", "conversationId"] if conversation_id else ["category"]
         results = self.collection.query(
             expr=f'userId == "{user_id}"',
-            output_fields=["category"],
+            output_fields=output_fields,
         )
+
+        _THREAD_SCOPED = {"goal", "context"}
+        if conversation_id:
+            results = [
+                r for r in results
+                if r.get("category") not in _THREAD_SCOPED
+                or r.get("conversationId", "") == conversation_id
+            ]
         
-        # Count by category
         counts: Dict[str, int] = {}
         for r in results:
             cat = r.get("category", "other")
             counts[cat] = counts.get(cat, 0) + 1
         
         return counts
+
+    def deduplicate_user_insights(self, user_id: str) -> int:
+        """
+        Remove exact-duplicate insights for a user, keeping the newest of each.
+        
+        Returns:
+            Number of duplicates removed
+        """
+        self.connect()
+
+        if not utility.has_collection(COLLECTION_NAME, using="insights"):
+            return 0
+
+        if not self.collection:
+            self.collection = Collection(COLLECTION_NAME, using="insights")
+
+        try:
+            self.collection.load()
+        except Exception:
+            pass
+
+        results = self.collection.query(
+            expr=f'userId == "{user_id}"',
+            output_fields=["id", "content", "analyzedAt", "category"],
+        )
+
+        seen: Dict[str, Dict[str, Any]] = {}
+        ids_to_delete: List[str] = []
+
+        for r in results:
+            norm = self._normalize_content(str(r.get("content", "")))
+            existing = seen.get(norm)
+            if existing is None:
+                seen[norm] = r
+            else:
+                # Keep the newer one (higher analyzedAt)
+                if r.get("analyzedAt", 0) > existing.get("analyzedAt", 0):
+                    ids_to_delete.append(str(existing.get("id", "")))
+                    seen[norm] = r
+                else:
+                    ids_to_delete.append(str(r.get("id", "")))
+
+        for insight_id in ids_to_delete:
+            if insight_id:
+                try:
+                    self.collection.delete(expr=f'id == "{insight_id}"')
+                except Exception as exc:
+                    logger.warning(f"Failed to delete duplicate insight {insight_id}: {exc}")
+
+        if ids_to_delete:
+            self.collection.flush()
+            logger.info(f"Deduplicated {len(ids_to_delete)} insights for user {user_id}")
+
+        return len(ids_to_delete)
     
     def update_insight(
         self,

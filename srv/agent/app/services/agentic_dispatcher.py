@@ -156,6 +156,35 @@ AGENT_DESCRIPTIONS = {
 UUID_PATTERN = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
 
 
+def _generate_browser_context_insights(
+    browser_context: Dict[str, Any],
+    user_id: str,
+    existing_insights: List[Dict[str, Any]],
+) -> List[Dict[str, str]]:
+    """
+    Generate profile fact insights from browser-supplied context (timezone,
+    locale, user name) if they are not already captured.
+    """
+    existing_content_lower = {
+        str(i.get("content", "")).lower() for i in existing_insights
+    }
+    new_insights: List[Dict[str, str]] = []
+
+    tz = browser_context.get("timezone")  # e.g. "America/New_York"
+    if tz and not any("timezone" in c for c in existing_content_lower):
+        new_insights.append({"content": f"User's timezone is {tz}."})
+
+    locale = browser_context.get("locale")  # e.g. "en-US"
+    if locale and not any("language" in c or "locale" in c for c in existing_content_lower):
+        new_insights.append({"content": f"User's locale/language preference is {locale}."})
+
+    name = browser_context.get("name") or browser_context.get("display_name")
+    if name and not any("name is" in c for c in existing_content_lower):
+        new_insights.append({"content": f"User's name is {name}."})
+
+    return new_insights
+
+
 class AgenticDispatcher:
     """
     Orchestrates streaming agents in an autonomous loop.
@@ -572,6 +601,43 @@ Choose the most appropriate single agent for the query.""",
                         user_id=user_id,
                         limit=250,
                     )
+
+                    # Auto-populate profile from browser context (timezone, locale, name)
+                    # sent as metadata by the frontend.
+                    browser_context = metadata.get("user_context", {}) if metadata else {}
+                    if browser_context:
+                        _auto_insights = _generate_browser_context_insights(
+                            browser_context, user_id, all_insights
+                        )
+                        if _auto_insights:
+                            for ai_insight in _auto_insights:
+                                try:
+                                    emb = await insights_service.generate_embedding(
+                                        ai_insight["content"],
+                                        user_id=user_id,
+                                        authorization=principal.token if principal else None,
+                                    )
+                                    from app.schemas.milvus import ChatInsight
+                                    import uuid as _uuid
+                                    from datetime import datetime as _dt, timezone as _tz
+                                    chat_ins = ChatInsight(
+                                        id=str(_uuid.uuid4()),
+                                        user_id=user_id,
+                                        content=ai_insight["content"],
+                                        embedding=emb,
+                                        conversation_id="browser_context",
+                                        analyzed_at=int(_dt.now(_tz.utc).timestamp()),
+                                        category="fact",
+                                    )
+                                    insights_service.insert_insights([chat_ins])
+                                    all_insights.append({
+                                        "content": ai_insight["content"],
+                                        "category": "fact",
+                                    })
+                                    logger.info("Auto-created browser context insight: %s", ai_insight["content"][:60])
+                                except Exception as exc:
+                                    logger.warning("Failed to store browser context insight: %s", exc)
+
                     completeness = get_profile_completeness(all_insights)
                     missing_profile_fields = completeness.get("missing_fields", [])
                     if pending_questions:

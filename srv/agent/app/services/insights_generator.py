@@ -305,11 +305,40 @@ def extract_profile_insights_from_messages(
             language = language_match.group(1).capitalize()
             add_insight(f"User's preferred language is {language}.", category="fact", importance=0.85)
 
-        # Timezone/local time preference
+        # Timezone/local time preference -- formal patterns
         timezone_match = re.search(r"\b(?:timezone|time zone)\s*(?:is|=)?\s*([A-Za-z0-9_+\-/:]{2,20})", text, flags=re.IGNORECASE)
         if timezone_match:
             tz = timezone_match.group(1).strip().rstrip(".!?")
             add_insight(f"User's timezone is {tz}.", category="fact", importance=0.85)
+
+        # Timezone -- colloquial region / abbreviation patterns
+        tz_colloquial = re.search(
+            r"\b(east(?:ern)?\s*(?:coast|time|standard|daylight)?(?:\s+usa)?|"
+            r"west(?:ern)?\s*(?:coast|time|standard|daylight)?(?:\s+usa)?|"
+            r"central\s*(?:time|standard|daylight)?(?:\s+usa)?|"
+            r"mountain\s*(?:time|standard|daylight)?(?:\s+usa)?|"
+            r"pacific\s*(?:time|standard|daylight)?|"
+            r"(?:US/)?\b(?:EST|EDT|CST|CDT|MST|MDT|PST|PDT|ET|CT|MT|PT)\b(?:\s+usa)?|"
+            r"america/[a-z_]+)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if tz_colloquial:
+            raw = tz_colloquial.group(1).strip().rstrip(".!?")
+            tz_map: Dict[str, str] = {
+                "eastern": "US/Eastern (ET)", "east coast": "US/Eastern (ET)",
+                "eastern time": "US/Eastern (ET)", "eastern standard": "US/Eastern (ET)",
+                "est": "US/Eastern (ET)", "edt": "US/Eastern (ET)", "et": "US/Eastern (ET)",
+                "central": "US/Central (CT)", "central time": "US/Central (CT)",
+                "cst": "US/Central (CT)", "cdt": "US/Central (CT)", "ct": "US/Central (CT)",
+                "mountain": "US/Mountain (MT)", "mountain time": "US/Mountain (MT)",
+                "mst": "US/Mountain (MT)", "mdt": "US/Mountain (MT)", "mt": "US/Mountain (MT)",
+                "pacific": "US/Pacific (PT)", "pacific time": "US/Pacific (PT)",
+                "west coast": "US/Pacific (PT)", "western": "US/Pacific (PT)",
+                "pst": "US/Pacific (PT)", "pdt": "US/Pacific (PT)", "pt": "US/Pacific (PT)",
+            }
+            normalized_tz = tz_map.get(raw.lower().rstrip(" usa"), raw)
+            add_insight(f"User's timezone is {normalized_tz}.", category="fact", importance=0.85)
 
     return extracted
 
@@ -405,11 +434,13 @@ def get_profile_completeness(existing_insights: List[Dict[str, Any]]) -> Dict[st
         "timezone": [
             r"\btimezone\b",
             r"\btime zone\b",
-            r"\best\b",
-            r"\bpst\b",
-            r"\bcst\b",
+            r"\b(?:us/)?(?:eastern|pacific|central|mountain)\b",
+            r"\beast(?:ern)?\s*(?:coast|time)\b",
+            r"\bwest(?:ern)?\s*(?:coast|time)\b",
+            r"\b(?:est|edt|pst|pdt|cst|cdt|mst|mdt|et|ct|mt|pt)\b",
             r"\bgmt\b",
             r"\butc\b",
+            r"\bamerica/\b",
         ],
         "key_interests": [
             r"\binterested in\b",
@@ -431,6 +462,24 @@ def get_profile_completeness(existing_insights: List[Dict[str, Any]]) -> Dict[st
             missing_fields.append(field_name)
             if field_meta.get("required"):
                 required_missing_fields.append(field_name)
+
+    # Cross-field inference: known location implies timezone
+    if "timezone" in missing_fields and "location" in completed_fields:
+        _LOCATION_TZ_HINTS = {
+            r"\b(?:boston|new york|nyc|philadelphia|washington|dc|miami|atlanta|charlotte|pittsburgh|hartford|providence|new jersey|connecticut|maine|vermont|maryland|virginia|florida|georgia|carolina)\b": "US/Eastern",
+            r"\b(?:chicago|dallas|houston|san antonio|austin|minneapolis|milwaukee|st\.?\s*louis|nashville|memphis|new orleans|oklahoma|kansas|iowa|nebraska|wisconsin|illinois|indiana|texas|louisiana|tennessee)\b": "US/Central",
+            r"\b(?:denver|phoenix|salt lake|albuquerque|colorado|arizona|utah|montana|wyoming|new mexico)\b": "US/Mountain",
+            r"\b(?:los angeles|san francisco|seattle|portland|san diego|sacramento|bay area|silicon valley|california|oregon|washington state|nevada|hawaii)\b": "US/Pacific",
+            r"\b(?:london|uk|united kingdom|england|britain)\b": "Europe/London",
+            r"\b(?:paris|france|germany|berlin|madrid|spain|rome|italy|amsterdam|netherlands|europe)\b": "Europe (CET)",
+        }
+        for pattern, _tz in _LOCATION_TZ_HINTS.items():
+            if re.search(pattern, corpus, re.IGNORECASE):
+                missing_fields.remove("timezone")
+                completed_fields.append("timezone")
+                if "timezone" in required_missing_fields:
+                    required_missing_fields.remove("timezone")
+                break
 
     total_fields = max(1, len(PROFILE_FIELDS))
     required_fields = [name for name, meta in PROFILE_FIELDS.items() if meta.get("required")]
@@ -475,14 +524,19 @@ async def resolve_pending_question(
         f'Question: "{pending_question_content}"\n\n'
         "Here are the user's recent messages:\n"
         f"{user_text}\n\n"
-        "Does any message contain an answer (even partial) to the question?\n\n"
+        "Does any message contain an answer (even partial or indirect) to the question?\n"
+        "IMPORTANT: Answers can be colloquial or indirect. Examples:\n"
+        "  - Question about timezone: 'east coast usa' → User's timezone is US/Eastern (ET)\n"
+        "  - Question about timezone: 'EST' or 'pacific time' → timezone answer\n"
+        "  - Question about location: 'Boston' → User is based in Boston\n"
+        "  - Question about work: 'construction' → User works in construction\n\n"
         "If YES, respond with JSON:\n"
-        "  For factual information (location, job, name, etc.):\n"
+        "  For factual information (location, job, timezone, etc.):\n"
         "    {\"answered\": true, \"insight\": \"User is based in Boston\", \"category\": \"fact\"}\n"
-        "  For preferences or style choices (communication style, format preferences, etc.):\n"
+        "  For preferences or style choices:\n"
         "    {\"answered\": true, \"insight\": \"User prefers detailed responses\", \"category\": \"preference\"}\n\n"
         "Choose the category that best matches the answer:\n"
-        "  - 'fact' for verifiable personal information (location, role, experience, etc.)\n"
+        "  - 'fact' for verifiable personal information (location, role, timezone, experience, etc.)\n"
         "  - 'preference' for subjective choices and style (preferred format, communication style, interests, etc.)\n\n"
         "If NO answer is found, respond with: {\"answered\": false}\n"
         "Return ONLY valid JSON."
@@ -560,6 +614,20 @@ async def identify_knowledge_gaps(
     if not missing_fields:
         return None
 
+    # Suppress profile questions during the first few turns of a conversation --
+    # let the user establish context before probing for profile info.
+    # Exception: if the user explicitly asked to set up their profile ("learn about me").
+    user_messages = [m for m in messages if m.role == "user"]
+    user_message_count = len(user_messages)
+    _ONBOARDING_TRIGGERS = {"learn about me", "set up my profile", "personalize my experience"}
+    is_onboarding = any(
+        any(trigger in str(m.content or "").lower() for trigger in _ONBOARDING_TRIGGERS)
+        for m in user_messages[:2]
+    )
+    if user_message_count < 3 and not is_onboarding:
+        logger.info("Skipping knowledge gap question: conversation too young (%d user messages)", user_message_count)
+        return None
+
     # Avoid creating multiple unresolved follow-up prompts.
     existing_pending = [
         i for i in existing
@@ -584,6 +652,7 @@ async def identify_knowledge_gaps(
         "what language should i default",
         "what timezone should i assume",
         "what topics do you most want",
+        "learn about me",
     ]
     for assistant_msg in recent_assistant_messages:
         if any(marker in assistant_msg for marker in profile_question_markers):

@@ -333,8 +333,8 @@ async def list_my_insights(
             limit=limit,
         )
         
-        # Get category counts
-        category_counts = service.get_category_counts(user_id)
+        # Thread-scoped category counts (matches list filtering)
+        category_counts = service.get_category_counts(user_id, conversation_id=conversation_id)
         
         # Convert to frontend format
         api_results = [
@@ -375,27 +375,30 @@ async def list_my_insights(
 async def get_my_stats(
     principal: Principal = Depends(get_principal),
     service: InsightsService = Depends(get_insights_service),
+    conversation_id: Optional[str] = Query(None, description="Conversation ID for thread-scoped counts"),
 ):
     """
     Get statistics for the authenticated user's insights.
     
     Requires authentication. Returns stats for the current user.
+    When conversation_id is provided, thread-scoped categories (goal, context)
+    are filtered to that conversation.
     Returns format compatible with frontend: { total, by_category }.
     """
     user_id = principal.sub
     
     try:
-        count = service.get_user_insight_count(user_id)
+        category_counts = service.get_category_counts(user_id, conversation_id=conversation_id)
+        total = sum(category_counts.values()) if category_counts else service.get_user_insight_count(user_id)
         stats = service.get_collection_stats()
-        category_counts = service.get_category_counts(user_id)
         
         return InsightStatsResponse(
             # Frontend expected format
-            total=count,
+            total=total,
             by_category=category_counts,
             # Legacy fields
             userId=user_id,
-            count=count,
+            count=total,
             collectionName=stats.get("collectionName", "chat_insights"),
         )
     
@@ -563,4 +566,28 @@ async def flush_collection(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to flush collection: {str(e)}",
+        )
+
+
+@router.post("/deduplicate")
+async def deduplicate_insights(
+    principal: Principal = Depends(get_principal),
+    service: InsightsService = Depends(get_insights_service),
+):
+    """
+    Remove exact-duplicate insights for the authenticated user, keeping the newest of each.
+    """
+    user_id = principal.sub
+    try:
+        removed = service.deduplicate_user_insights(user_id)
+        return {
+            "message": f"Removed {removed} duplicate insight(s)",
+            "removed": removed,
+            "userId": user_id,
+        }
+    except Exception as e:
+        logger.error(f"Failed to deduplicate insights: user_id={user_id}, error={e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to deduplicate insights: {str(e)}",
         )

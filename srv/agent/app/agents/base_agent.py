@@ -593,6 +593,8 @@ class AgentContext:
     # Optional runtime JSON Schema used for deterministic structured output.
     # This is typically provided by programmatic workflow-style invocations.
     response_schema: Optional[Dict[str, Any]] = None
+    # The current user query (set during run_with_streaming)
+    current_query: Optional[str] = None
     # Optional per-run token budget override.
     max_tokens: Optional[int] = None
     # Deduplication cache for tool calls: maps (tool_name, args_json) -> result
@@ -868,6 +870,7 @@ class BaseStreamingAgent(StreamingAgent):
         agent_context = await self._setup_context(context, stream, query)
         if agent_context is None:
             return "Authentication or session error. Please sign in and try again."
+        agent_context.current_query = query
         logger.info(f"{self.name} context setup: {round((time.monotonic() - t_ctx) * 1000)}ms")
 
         t_att = time.monotonic()
@@ -2346,11 +2349,37 @@ class BaseStreamingAgent(StreamingAgent):
         if context.pending_questions:
             parts.append("")
             parts.append("## Pending Follow-up Questions")
-            parts.append("Ask at most ONE of these naturally when relevant, then continue helping with the current request:")
+            parts.append(
+                "RULES: Only ask ONE of these if it is DIRECTLY relevant to what the user is currently discussing. "
+                "Do NOT ask a profile question if the user's request is unrelated to it. "
+                "Do NOT interrupt the user's task with a profile question. "
+                "If the user is asking about a specific topic, answer that first — "
+                "only append a profile question at the end if it naturally fits the conversation."
+            )
             for item in context.pending_questions[:3]:
                 question = str(item.get("content", "")).strip()
                 if question:
                     parts.append(f"- {question}")
+
+        if context.missing_profile_fields:
+            _onboarding_triggers = {"learn about me", "set up my profile", "personalize my experience"}
+            all_user_msgs = [
+                str(msg.get("content", "")).lower()
+                for msg in (context.conversation_history or context.recent_messages or [])
+                if msg.get("role") == "user"
+            ]
+            if context.current_query:
+                all_user_msgs.append(context.current_query.lower())
+            if any(any(t in m for t in _onboarding_triggers) for m in all_user_msgs[:5]):
+                parts.append("")
+                parts.append("## Onboarding Mode")
+                parts.append(
+                    "The user has asked you to learn about them. Start a friendly, conversational "
+                    "profile-building session. Ask about the following fields ONE AT A TIME, using "
+                    "quick-reply buttons where possible. After each answer, acknowledge it and ask "
+                    "the next question. Keep it brief and friendly."
+                )
+                parts.append("Missing profile fields: " + ", ".join(context.missing_profile_fields))
 
         attachment_section = self._build_attachment_context_section(context)
         if attachment_section:

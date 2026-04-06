@@ -155,7 +155,6 @@ async def _generate_insights_and_pending_question(
             limit=250,
         )
         # Before deleting pending questions, check if the user answered any of them.
-        # Run resolution in parallel with the rest of the flow for efficiency.
         non_pending_insights: List[Dict[str, Any]] = []
         pending_questions_to_resolve: List[Dict[str, Any]] = []
         for insight in all_insights:
@@ -205,9 +204,39 @@ async def _generate_insights_and_pending_question(
                     resolved.content[:80],
                 )
 
-        # Now delete all old pending question insights.
+        # Track how many times each question has been asked (encoded in conversationId
+        # as "pending:<conv_id>:ask<N>"). If a question was not resolved after 2 asks,
+        # drop it permanently instead of recreating.
+        _MAX_ASK_COUNT = 2
+        previously_asked_fields: set = set()
         for pq in pending_questions_to_resolve:
             pq_id = str(pq.get("id", ""))
+            pq_conv = str(pq.get("conversationId", ""))
+            pq_content_norm = pq.get("content", "").strip().lower()
+
+            # Extract ask count from conversationId (format: "pending:<id>:ask<N>")
+            ask_count = 1
+            if ":ask" in pq_conv:
+                try:
+                    ask_count = int(pq_conv.split(":ask")[-1])
+                except (ValueError, IndexError):
+                    ask_count = 1
+
+            was_resolved = any(
+                r.content.strip().lower() != pq_content_norm
+                for r in resolved_insights
+            ) if resolved_insights else False
+
+            if not was_resolved and ask_count >= _MAX_ASK_COUNT:
+                logger.info(
+                    "Dropping pending question after %d unanswered asks: %s",
+                    ask_count, pq_content_norm[:60],
+                )
+                # Remember which field this was about so we don't re-create it
+                for field_name in ("timezone", "location", "occupation", "response_style", "interests", "language"):
+                    if field_name in pq_content_norm:
+                        previously_asked_fields.add(field_name)
+
             if pq_id:
                 try:
                     insights_service.delete_insight(insight_id=pq_id, user_id=user_id)
@@ -223,6 +252,31 @@ async def _generate_insights_and_pending_question(
         if not pending_question:
             return None
 
+        # Don't re-create a question about a field that was already asked too many times.
+        pq_content_lower = pending_question.content.strip().lower()
+        for suppressed_field in previously_asked_fields:
+            if suppressed_field in pq_content_lower:
+                logger.info("Suppressing re-creation of pending question about '%s'", suppressed_field)
+                return None
+
+        # Encode the ask count into the conversationId for tracking across turns.
+        prev_ask_count = 0
+        for pq in pending_questions_to_resolve:
+            old_content = str(pq.get("content", "")).strip().lower()
+            if old_content == pq_content_lower:
+                pq_conv = str(pq.get("conversationId", ""))
+                if ":ask" in pq_conv:
+                    try:
+                        prev_ask_count = int(pq_conv.split(":ask")[-1])
+                    except (ValueError, IndexError):
+                        prev_ask_count = 1
+                else:
+                    prev_ask_count = 1
+                break
+
+        new_ask_count = prev_ask_count + 1
+        tracked_conv_id = f"pending:{conversation.id}:ask{new_ask_count}"
+
         embedding = await insights_service.generate_embedding(
             pending_question.content,
             user_id=user_id,
@@ -233,13 +287,14 @@ async def _generate_insights_and_pending_question(
             user_id=user_id,
             content=pending_question.content,
             embedding=embedding,
-            conversation_id=pending_question.conversation_id,
+            conversation_id=tracked_conv_id,
             analyzed_at=int(datetime.now(timezone.utc).timestamp()),
             category="pending_question",
         )
         insights_service.insert_insights([pending_insight])
         logger.info(
-            "Created pending follow-up question insight",
+            "Created pending follow-up question insight (ask #%d)",
+            new_ask_count,
             extra={
                 "conversation_id": str(conversation.id),
                 "user_id": user_id,
