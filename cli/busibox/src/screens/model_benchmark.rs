@@ -109,12 +109,20 @@ fn render_tab_bar(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_load_test(f: &mut Frame, app: &App, area: Rect) {
+    let show_model_picker = app.load_test_level == 0 && !app.benchmark_models.is_empty();
+    let model_rows = if show_model_picker {
+        (app.benchmark_models.len() as u16 + 2).min(8)
+    } else {
+        0
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // level selector
-            Constraint::Length(5),  // info
-            Constraint::Min(6),     // log
+            Constraint::Length(3),           // level selector
+            Constraint::Length(model_rows),   // model picker (engine only)
+            Constraint::Length(5),           // info
+            Constraint::Min(6),             // log
         ])
         .split(area);
 
@@ -144,29 +152,49 @@ fn render_load_test(f: &mut Frame, app: &App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title(" Load Test Level ").border_style(theme::dim()));
     f.render_widget(selector, chunks[0]);
 
+    // Model picker (engine level only)
+    if show_model_picker {
+        let model_lines: Vec<Line> = app.benchmark_models.iter().enumerate().map(|(i, m)| {
+            let marker = if i == app.load_test_model_idx { "▸ " } else { "  " };
+            let style = if i == app.load_test_model_idx { theme::highlight() } else { theme::dim() };
+            Line::from(Span::styled(
+                format!("{marker}{} ({}, port {})", m.model_name, m.provider.to_uppercase(), m.port),
+                style,
+            ))
+        }).collect();
+        let model_block = Paragraph::new(model_lines)
+            .block(Block::default().borders(Borders::ALL).title(" Model ▲▼ ").border_style(theme::dim()));
+        f.render_widget(model_block, chunks[1]);
+    }
+
     // Per-level info
     let info_lines: Vec<Line> = match app.load_test_level {
-        0 => vec![
-            Line::from("  Hits the model engine directly — /v1/chat/completions (OpenAI-compatible)."),
-            Line::from("  Tests ALL deployed models: MLX (.211:8080) and vLLM (.208:8000) on Proxmox."),
-            Line::from("  No authentication required."),
-        ],
+        0 => {
+            let model_hint = app.benchmark_models.get(app.load_test_model_idx)
+                .map(|m| format!("  Selected: {} ({})", m.model_name, m.provider.to_uppercase()))
+                .unwrap_or_else(|| "  No models loaded.".to_string());
+            vec![
+                Line::from("  Hits model engine /v1/chat/completions — queries /v1/models for served name."),
+                Line::from(model_hint),
+                Line::from("  No authentication required. Sustains each concurrency level for 30s."),
+            ]
+        }
         1 => vec![
             Line::from("  Hits LiteLLM proxy at /v1/chat/completions."),
             Line::from("  Target: .207:4000 on Proxmox / localhost:4000 on Docker."),
-            Line::from("  Auth: litellm_api_key read automatically from vault."),
+            Line::from("  Auth: litellm_api_key read automatically from vault. Sustains for 30s."),
         ],
         _ => vec![
             Line::from("  Hits agent-api /chat/message at concurrency 1, 2, 4, 8."),
             Line::from("  Target: .202:8000 on Proxmox / localhost:8000 on Docker."),
-            Line::from("  Auth: delegation token from vault → exchanged for JWT via authz."),
+            Line::from("  Auth: delegation token from vault → exchanged for JWT via authz. Sustains for 30s."),
         ],
     };
     let info = Paragraph::new(info_lines)
         .block(Block::default().borders(Borders::ALL).title(" Info ").border_style(theme::dim()));
-    f.render_widget(info, chunks[1]);
+    f.render_widget(info, chunks[2]);
 
-    let log_height = chunks[2].height.saturating_sub(2) as usize;
+    let log_height = chunks[3].height.saturating_sub(2) as usize;
     let total = app.benchmark_log.len();
     let skip = if total > log_height {
         total - log_height - app.benchmark_log_scroll.min(total.saturating_sub(log_height))
@@ -183,7 +211,7 @@ fn render_load_test(f: &mut Frame, app: &App, area: Rect) {
 
     let log = Paragraph::new(log_lines)
         .block(Block::default().borders(Borders::ALL).title(" Log ").border_style(theme::dim()));
-    f.render_widget(log, chunks[2]);
+    f.render_widget(log, chunks[3]);
 }
 
 fn render_performance(f: &mut Frame, app: &App, area: Rect) {
@@ -679,6 +707,11 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                         app.benchmark_selected -= 1;
                     }
                 }
+                BenchmarkMode::LoadTest if app.load_test_level == 0 => {
+                    if app.load_test_model_idx > 0 {
+                        app.load_test_model_idx -= 1;
+                    }
+                }
                 BenchmarkMode::CloudKeys if !app.cloud_keys_editing => {
                     if app.cloud_keys_field > 0 {
                         app.cloud_keys_field -= 1;
@@ -692,6 +725,11 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 BenchmarkMode::Performance => {
                     if app.benchmark_selected + 1 < app.benchmark_models.len() {
                         app.benchmark_selected += 1;
+                    }
+                }
+                BenchmarkMode::LoadTest if app.load_test_level == 0 => {
+                    if app.load_test_model_idx + 1 < app.benchmark_models.len() {
+                        app.load_test_model_idx += 1;
                     }
                 }
                 BenchmarkMode::CloudKeys if !app.cloud_keys_editing => {
@@ -1532,74 +1570,73 @@ fn start_engine_load_test(app: &mut App) {
         .unwrap_or_else(|| "10.96.200".to_string());
     let ssh_details = get_ssh_details(app);
 
-    // Collect unique base URLs (one per engine type on Proxmox, one per port on Docker)
-    let mut unique_urls: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for m in &app.benchmark_models {
-        let base_url = if is_proxmox {
-            if m.provider == "vllm" {
-                format!("http://{vllm_network_base}.208:8000")
-            } else {
-                format!("http://{vllm_network_base}.211:8080")
-            }
+    let selected = match app.benchmark_models.get(app.load_test_model_idx) {
+        Some(m) => m.clone(),
+        None => {
+            app.benchmark_log.push("ERROR: No deployed models found. Deploy a model first.".into());
+            app.benchmark_running = false;
+            app.benchmark_complete = true;
+            return;
+        }
+    };
+
+    let base_url = if is_proxmox {
+        if selected.provider == "vllm" {
+            format!("http://{vllm_network_base}.208:{}", selected.port)
         } else {
-            format!("http://localhost:{}", m.port)
-        };
-        unique_urls.entry(base_url).or_insert_with(|| m.provider.to_uppercase());
-    }
+            format!("http://{vllm_network_base}.211:{}", selected.port)
+        }
+    } else {
+        format!("http://localhost:{}", selected.port)
+    };
 
-    if unique_urls.is_empty() {
-        app.benchmark_log.push("ERROR: No deployed models found. Deploy a model first.".into());
-        app.benchmark_running = false;
-        app.benchmark_complete = true;
-        return;
-    }
-
-    let base_urls: Vec<(String, String)> = unique_urls.into_iter().collect();
+    let provider_label = selected.provider.to_uppercase();
+    let config_model_name = selected.model_name.clone();
 
     let (tx, rx) = std::sync::mpsc::channel();
     app.benchmark_rx = Some(rx);
 
     std::thread::spawn(move || {
         let _ = tx.send(BenchmarkUpdate::Log(format!(
-            ">>> Testing {} engine(s) directly — querying /v1/models for actual model names",
-            base_urls.len()
+            ">>> Engine: {provider_label} — {config_model_name} @ {base_url}"
+        )));
+        let _ = tx.send(BenchmarkUpdate::Log(
+            ">>> Querying /v1/models for actual served model name...".into()
+        ));
+
+        let models_url = format!("{base_url}/v1/models");
+        let curl_cmd = format!("curl -s --max-time 5 '{models_url}'");
+        let raw = exec_curl(&curl_cmd, is_remote, &ssh_details).unwrap_or_default();
+        let served_models: Vec<String> = serde_json::from_str::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|v| v["data"].as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|m| m["id"].as_str().map(|s| s.to_string()))
+            .collect();
+
+        if served_models.is_empty() {
+            let _ = tx.send(BenchmarkUpdate::Log(format!(
+                "ERROR: /v1/models at {base_url} returned no models (engine may be down)"
+            )));
+            let _ = tx.send(BenchmarkUpdate::Complete);
+            return;
+        }
+
+        let model_name = &served_models[0];
+        let _ = tx.send(BenchmarkUpdate::Log(format!(
+            ">>> Served model: {model_name}"
         )));
         let _ = tx.send(BenchmarkUpdate::Log(String::new()));
 
-        for (base_url, provider_label) in &base_urls {
-            // Query the engine for its actual served model names
-            let models_url = format!("{base_url}/v1/models");
-            let curl_cmd = format!("curl -s --max-time 5 '{models_url}'");
-            let raw = exec_curl(&curl_cmd, is_remote, &ssh_details).unwrap_or_default();
-            let served_models: Vec<String> = serde_json::from_str::<serde_json::Value>(&raw)
-                .ok()
-                .and_then(|v| v["data"].as_array().cloned())
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|m| m["id"].as_str().map(|s| s.to_string()))
-                .collect();
-
-            if served_models.is_empty() {
-                let _ = tx.send(BenchmarkUpdate::Log(format!(
-                    "WARN: {provider_label} at {base_url} — /v1/models returned no models (engine may be down)"
-                )));
-                continue;
-            }
-
-            for model_name in &served_models {
-                let _ = tx.send(BenchmarkUpdate::Log(format!(
-                    "=== {provider_label}: {model_name} @ {base_url} ===",
-                )));
-                run_openai_concurrency_levels(
-                    base_url,
-                    model_name,
-                    "",
-                    is_remote,
-                    &ssh_details,
-                    &tx,
-                );
-            }
-        }
+        run_openai_concurrency_levels(
+            &base_url,
+            model_name,
+            "",
+            is_remote,
+            &ssh_details,
+            &tx,
+        );
 
         let _ = tx.send(BenchmarkUpdate::Log("✓ Engine load test complete".into()));
         let _ = tx.send(BenchmarkUpdate::Complete);
@@ -1758,7 +1795,7 @@ fn start_agent_load_test(app: &mut App) {
         };
 
         let vault_file_rel = format!("provision/ansible/roles/secrets/vars/vault.{vault_prefix}.yml");
-        let py = build_vault_read_script("secrets.bridge.delegation_token");
+        let py = build_vault_read_script("bridge.delegation_token");
 
         let delegation_token = match run_vault_read(
             &py, &vault_password, &vault_file_rel, &repo_root,
