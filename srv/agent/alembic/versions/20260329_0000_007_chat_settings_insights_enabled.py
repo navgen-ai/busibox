@@ -21,16 +21,22 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Add insights_enabled column to chat_settings."""
-    op.add_column(
-        'chat_settings',
-        sa.Column(
-            'insights_enabled',
-            sa.Boolean(),
-            nullable=False,
-            server_default='true',
-            comment='When false, skip AI insight generation and injection',
-        ),
-    )
+    conn = op.get_bind()
+    result = conn.execute(sa.text(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'chat_settings' AND column_name = 'insights_enabled'"
+    ))
+    if result.fetchone() is None:
+        op.add_column(
+            'chat_settings',
+            sa.Column(
+                'insights_enabled',
+                sa.Boolean(),
+                nullable=False,
+                server_default='true',
+                comment='When false, skip AI insight generation and injection',
+            ),
+        )
 
 
 def downgrade() -> None:

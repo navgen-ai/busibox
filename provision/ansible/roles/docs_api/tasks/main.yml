@@ -187,7 +187,7 @@
         "timestamp": "{{ now(utc=true).isoformat() }}",
         "deployed_by": "ansible"
       }
-    dest: /opt/docs-api/.deploy_version
+    dest: "{{ docs_base_dir }}/.deploy_version"
     owner: "{{ docs_user }}"
     group: "{{ docs_group }}"
     mode: "0644"

@@ -22,15 +22,21 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Add mcp_servers column to agent_definitions."""
-    op.add_column(
-        'agent_definitions',
-        sa.Column(
-            'mcp_servers',
-            sa.JSON(),
-            nullable=True,
-            comment='External MCP server configs [{name, transport, url/command, ...}]',
-        ),
-    )
+    conn = op.get_bind()
+    result = conn.execute(sa.text(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'agent_definitions' AND column_name = 'mcp_servers'"
+    ))
+    if result.fetchone() is None:
+        op.add_column(
+            'agent_definitions',
+            sa.Column(
+                'mcp_servers',
+                sa.JSON(),
+                nullable=True,
+                comment='External MCP server configs [{name, transport, url/command, ...}]',
+            ),
+        )
 
 
 def downgrade() -> None:

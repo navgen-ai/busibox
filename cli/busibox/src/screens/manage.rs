@@ -264,7 +264,7 @@ fn format_available_cell(svc: &ServiceStatus) -> (String, Style) {
     }
     // Check if same SHA (normalize to shorter length for prefix comparison)
     let min_len = svc.version.len().min(svc.available_version.len());
-    let version_matches = min_len >= 7
+    let version_matches = min_len >= 4
         && svc.version[..min_len] == svc.available_version[..min_len];
     if version_matches {
         return ("✓ current".to_string(), theme::success());
@@ -547,20 +547,11 @@ pub fn render(f: &mut Frame, app: &App) {
         let update_count: usize = app.manage_services.iter()
             .filter(|s| s.needs_update && (s.source_repo != "upstream" || is_busibox_managed_upstream(&s.name)))
             .count();
-        let undeployed_count: usize = app.manage_services.iter()
-            .filter(|s| s.source_repo != "upstream" && s.version.is_empty() && !s.source_repo.is_empty() && s.source_repo != "docker-image")
-            .count();
-        let actionable = update_count + undeployed_count;
         help_spans.push(Span::styled("f Fetch  u Update  ", theme::muted()));
         if update_count > 0 {
             help_spans.push(Span::styled(
                 format!("U Update All ({update_count})  "),
                 theme::warning(),
-            ));
-        } else if actionable > 0 {
-            help_spans.push(Span::styled(
-                format!("U Update All ({actionable} undeployed)  "),
-                theme::dim(),
             ));
         } else {
             help_spans.push(Span::styled("U Update All  ", theme::dim()));
@@ -1530,9 +1521,21 @@ fn count_commits_behind(deployed_commit: &str, local_head: &str, repo_root: &std
     if deployed_commit.starts_with(local_head) || local_head.starts_with(deployed_commit) {
         return Some(0);
     }
-    // Count commits between deployed and HEAD: git rev-list --count deployed..HEAD
+    // Resolve the deployed short SHA to a full SHA for unambiguous comparison
+    let resolved = std::process::Command::new("git")
+        .args(["rev-parse", deployed_commit])
+        .current_dir(repo_root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let full_commit = match resolved {
+        Some(ref c) if !c.is_empty() => c.as_str(),
+        _ => return None,
+    };
+    // Count commits between deployed and HEAD: git rev-list --count <full>..HEAD
     let output = std::process::Command::new("git")
-        .args(["rev-list", "--count", &format!("{deployed_commit}..HEAD")])
+        .args(["rev-list", "--count", &format!("{full_commit}..HEAD")])
         .current_dir(repo_root)
         .output()
         .ok()?;
@@ -1762,9 +1765,6 @@ fn run_update_all(app: &mut App) {
                 s.needs_update && is_busibox_managed_upstream(&s.name)
             } else {
                 s.needs_update
-                    || (s.version.is_empty()
-                        && !s.source_repo.is_empty()
-                        && s.source_repo != "docker-image")
             }
         })
         .map(|s| service_to_make_name(&s.name).to_string())

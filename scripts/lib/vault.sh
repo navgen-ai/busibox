@@ -719,7 +719,6 @@ _generate_replacement_for_key() {
 validate_vault_secrets() {
     local required_secrets=(
         "secrets.postgresql.password"
-        "secrets.minio.root_user"
         "secrets.minio.root_password"
         "secrets.jwt_secret"
         "secrets.authz_master_key"
@@ -727,6 +726,13 @@ validate_vault_secrets() {
         "secrets.session_secret"
         "secrets.encryption_key"
         "secrets.neo4j.password"
+    )
+    
+    # Secrets that must exist but should NEVER be auto-replaced because they are
+    # identifiers (usernames) for already-running services. Changing them in the
+    # vault without also updating the running service causes auth failures.
+    local warn_only_secrets=(
+        "secrets.minio.root_user"
     )
     
     local optional_secrets=(
@@ -755,6 +761,20 @@ validate_vault_secrets() {
         elif ! has_vault_secret "$key"; then
             to_fix+=("$key")
             echo -e "  ${_V_YELLOW}○${_V_NC} $short_key - insecure default (will auto-fix)"
+        else
+            echo -e "  ${_V_GREEN}✓${_V_NC} $short_key - configured"
+        fi
+    done
+    
+    for key in "${warn_only_secrets[@]}"; do
+        local value=$(get_vault_secret "$key")
+        local short_key="${key##*.}"
+        
+        if [[ -z "$value" ]] || [[ "$value" == "null" ]]; then
+            echo -e "  ${_V_RED}✗${_V_NC} $short_key - MISSING (set manually; cannot auto-generate service usernames)"
+            missing+=("$key")
+        elif ! has_vault_secret "$key"; then
+            echo -e "  ${_V_YELLOW}⚠${_V_NC} $short_key - uses default value (update in vault if changed on server)"
         else
             echo -e "  ${_V_GREEN}✓${_V_NC} $short_key - configured"
         fi
@@ -798,6 +818,12 @@ validate_vault_secrets() {
             return 1
         fi
         echo ""
+    fi
+    
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        _vault_error "Missing required secrets that cannot be auto-generated."
+        _vault_error "Set them manually in: $VAULT_FILE"
+        return 1
     fi
     
     _vault_success "All required vault secrets validated"

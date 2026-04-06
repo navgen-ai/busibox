@@ -1,4 +1,4 @@
-use crate::app::{App, BenchmarkUpdate, CloudKeysUpdate, Screen};
+use crate::app::{App, BenchmarkUpdate, CloudKeysUpdate, MessageKind, Screen};
 use crate::modules::benchmark::{
     self, BenchmarkConfig, BenchmarkMode, BenchmarkResult, ModelTestTier,
 };
@@ -10,6 +10,58 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+fn wrap_line(line: &str, width: usize) -> Vec<String> {
+    if width == 0 || line.len() <= width {
+        return vec![line.to_string()];
+    }
+    let mut result = Vec::new();
+    let mut remaining = line;
+    while remaining.len() > width {
+        let split_at = remaining[..width]
+            .rfind(' ')
+            .unwrap_or(width);
+        let split_at = if split_at == 0 { width } else { split_at };
+        result.push(remaining[..split_at].to_string());
+        remaining = remaining[split_at..].trim_start();
+    }
+    if !remaining.is_empty() {
+        result.push(remaining.to_string());
+    }
+    result
+}
+
+fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    #[cfg(target_os = "macos")]
+    let mut child = Command::new("pbcopy")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    #[cfg(target_os = "linux")]
+    let mut child = Command::new("xclip")
+        .args(["-selection", "clipboard"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    return Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "clipboard not supported",
+    ));
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes())?;
+    }
+    child.wait()?;
+    Ok(())
+}
 
 /// Populate the benchmark screen with deployed LLM models (vLLM or MLX).
 /// If `preselect_port` is Some, toggle that model on by default.
@@ -110,18 +162,24 @@ fn render_tab_bar(f: &mut Frame, app: &App, area: Rect) {
 
 fn render_load_test(f: &mut Frame, app: &App, area: Rect) {
     let show_model_picker = app.load_test_level == 0 && !app.benchmark_models.is_empty();
-    let model_rows = if show_model_picker {
+    let show_purpose_picker = app.load_test_level == 1 && !app.load_test_purposes.is_empty();
+    let picker_rows = if show_model_picker {
         (app.benchmark_models.len() as u16 + 2).min(8)
+    } else if show_purpose_picker {
+        (app.load_test_purposes.len() as u16 + 2).min(8)
     } else {
         0
     };
+
+    let concurrency_seq = build_concurrency_sequence(app.load_test_max_concurrency);
+    let conc_label = concurrency_seq.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", ");
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),           // level selector
-            Constraint::Length(model_rows),   // model picker (engine only)
-            Constraint::Length(5),           // info
+            Constraint::Length(picker_rows),  // model/purpose picker
+            Constraint::Length(6),           // info + concurrency
             Constraint::Min(6),             // log
         ])
         .split(area);
@@ -152,7 +210,7 @@ fn render_load_test(f: &mut Frame, app: &App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title(" Load Test Level ").border_style(theme::dim()));
     f.render_widget(selector, chunks[0]);
 
-    // Model picker (engine level only)
+    // Model picker (engine) or purpose picker (litellm)
     if show_model_picker {
         let model_lines: Vec<Line> = app.benchmark_models.iter().enumerate().map(|(i, m)| {
             let marker = if i == app.load_test_model_idx { "▸ " } else { "  " };
@@ -165,9 +223,21 @@ fn render_load_test(f: &mut Frame, app: &App, area: Rect) {
         let model_block = Paragraph::new(model_lines)
             .block(Block::default().borders(Borders::ALL).title(" Model ▲▼ ").border_style(theme::dim()));
         f.render_widget(model_block, chunks[1]);
+    } else if show_purpose_picker {
+        let purpose_lines: Vec<Line> = app.load_test_purposes.iter().enumerate().map(|(i, (purpose, model_key))| {
+            let marker = if i == app.load_test_purpose_idx { "▸ " } else { "  " };
+            let style = if i == app.load_test_purpose_idx { theme::highlight() } else { theme::dim() };
+            Line::from(Span::styled(
+                format!("{marker}{purpose} → {model_key}"),
+                style,
+            ))
+        }).collect();
+        let purpose_block = Paragraph::new(purpose_lines)
+            .block(Block::default().borders(Borders::ALL).title(" Purpose ▲▼ ").border_style(theme::dim()));
+        f.render_widget(purpose_block, chunks[1]);
     }
 
-    // Per-level info
+    // Per-level info + concurrency config
     let info_lines: Vec<Line> = match app.load_test_level {
         0 => {
             let model_hint = app.benchmark_models.get(app.load_test_model_idx)
@@ -177,41 +247,72 @@ fn render_load_test(f: &mut Frame, app: &App, area: Rect) {
                 Line::from("  Hits model engine /v1/chat/completions — queries /v1/models for served name."),
                 Line::from(model_hint),
                 Line::from("  No authentication required. Sustains each concurrency level for 30s."),
+                Line::from(format!("  Concurrency: [{conc_label}]   (+/- to adjust max)")),
             ]
         }
-        1 => vec![
-            Line::from("  Hits LiteLLM proxy at /v1/chat/completions."),
-            Line::from("  Target: .207:4000 on Proxmox / localhost:4000 on Docker."),
-            Line::from("  Auth: litellm_api_key read automatically from vault. Sustains for 30s."),
-        ],
+        1 => {
+            let purpose_hint = app.load_test_purposes.get(app.load_test_purpose_idx)
+                .map(|(p, k)| format!("  Purpose: {p} → {k}"))
+                .unwrap_or_else(|| "  No purposes loaded (model_config.yml missing?)".to_string());
+            vec![
+                Line::from("  Hits LiteLLM proxy at /v1/chat/completions (.207:4000 / localhost:4000)."),
+                Line::from(purpose_hint),
+                Line::from("  Auth: litellm_api_key from vault. Sustains for 30s."),
+                Line::from(format!("  Concurrency: [{conc_label}]   (+/- to adjust max)")),
+            ]
+        }
         _ => vec![
-            Line::from("  Hits agent-api /chat/message at concurrency 1, 2, 4, 8."),
-            Line::from("  Target: .202:8000 on Proxmox / localhost:8000 on Docker."),
-            Line::from("  Auth: delegation token from vault → exchanged for JWT via authz. Sustains for 30s."),
+            Line::from("  Hits agent-api /chat/message (.202:8000 / localhost:8000)."),
+            Line::from("  Auth: delegation token from vault → JWT via authz."),
+            Line::from("  Sustains each level for 30s."),
+            Line::from(format!("  Concurrency: [{conc_label}]   (+/- to adjust max)")),
         ],
     };
     let info = Paragraph::new(info_lines)
         .block(Block::default().borders(Borders::ALL).title(" Info ").border_style(theme::dim()));
     f.render_widget(info, chunks[2]);
 
+    let log_inner_width = chunks[3].width.saturating_sub(2) as usize;
+    let wrapped: Vec<String> = app
+        .benchmark_log
+        .iter()
+        .flat_map(|s| {
+            if s.is_empty() {
+                vec![String::new()]
+            } else {
+                wrap_line(s, log_inner_width)
+            }
+        })
+        .collect();
     let log_height = chunks[3].height.saturating_sub(2) as usize;
-    let total = app.benchmark_log.len();
+    let total = wrapped.len();
     let skip = if total > log_height {
         total - log_height - app.benchmark_log_scroll.min(total.saturating_sub(log_height))
     } else {
         0
     };
-    let log_lines: Vec<Line> = app
-        .benchmark_log
+    let log_lines: Vec<Line> = wrapped
         .iter()
         .skip(skip)
         .take(log_height)
         .map(|s| Line::from(s.as_str()))
         .collect();
 
+    let hint = if app.benchmark_log.is_empty() { " Log " } else { " Log (c=copy) " };
     let log = Paragraph::new(log_lines)
-        .block(Block::default().borders(Borders::ALL).title(" Log ").border_style(theme::dim()));
+        .block(Block::default().borders(Borders::ALL).title(hint).border_style(theme::dim()));
     f.render_widget(log, chunks[3]);
+}
+
+fn build_concurrency_sequence(max: usize) -> Vec<usize> {
+    let mut seq = Vec::new();
+    let mut c = 1usize;
+    while c <= max {
+        seq.push(c);
+        if c == 0 { break; }
+        c *= 2;
+    }
+    seq
 }
 
 fn render_performance(f: &mut Frame, app: &App, area: Rect) {
@@ -672,6 +773,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     app.benchmark_log_scroll += 1;
                 }
             }
+            KeyCode::Char('c') => {
+                if !app.benchmark_log.is_empty() {
+                    let log_text = app.benchmark_log.join("\n");
+                    let _ = copy_to_clipboard(&log_text);
+                    app.set_message("Log copied to clipboard", MessageKind::Info);
+                }
+            }
             _ => {}
         }
         return;
@@ -707,9 +815,19 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                         app.benchmark_selected -= 1;
                     }
                 }
-                BenchmarkMode::LoadTest if app.load_test_level == 0 => {
-                    if app.load_test_model_idx > 0 {
-                        app.load_test_model_idx -= 1;
+                BenchmarkMode::LoadTest => {
+                    match app.load_test_level {
+                        0 => {
+                            if app.load_test_model_idx > 0 {
+                                app.load_test_model_idx -= 1;
+                            }
+                        }
+                        1 => {
+                            if app.load_test_purpose_idx > 0 {
+                                app.load_test_purpose_idx -= 1;
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 BenchmarkMode::CloudKeys if !app.cloud_keys_editing => {
@@ -727,9 +845,19 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                         app.benchmark_selected += 1;
                     }
                 }
-                BenchmarkMode::LoadTest if app.load_test_level == 0 => {
-                    if app.load_test_model_idx + 1 < app.benchmark_models.len() {
-                        app.load_test_model_idx += 1;
+                BenchmarkMode::LoadTest => {
+                    match app.load_test_level {
+                        0 => {
+                            if app.load_test_model_idx + 1 < app.benchmark_models.len() {
+                                app.load_test_model_idx += 1;
+                            }
+                        }
+                        1 => {
+                            if app.load_test_purpose_idx + 1 < app.load_test_purposes.len() {
+                                app.load_test_purpose_idx += 1;
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 BenchmarkMode::CloudKeys if !app.cloud_keys_editing => {
@@ -748,6 +876,20 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 };
                 app.benchmark_log.clear();
                 app.benchmark_complete = false;
+            }
+        }
+        KeyCode::Char('+') | KeyCode::Char('=') => {
+            if app.benchmark_mode == BenchmarkMode::LoadTest && !app.benchmark_running {
+                if app.load_test_max_concurrency < 128 {
+                    app.load_test_max_concurrency *= 2;
+                }
+            }
+        }
+        KeyCode::Char('-') => {
+            if app.benchmark_mode == BenchmarkMode::LoadTest && !app.benchmark_running {
+                if app.load_test_max_concurrency > 1 {
+                    app.load_test_max_concurrency /= 2;
+                }
             }
         }
         KeyCode::Enter => {
@@ -783,11 +925,19 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     if !app.cloud_keys_saving {
                         save_cloud_keys(app);
                     }
+                } else if c == 'c' && !app.benchmark_log.is_empty() {
+                    let log_text = app.benchmark_log.join("\n");
+                    let _ = copy_to_clipboard(&log_text);
+                    app.set_message("Log copied to clipboard", MessageKind::Info);
                 }
             } else if c == ' ' && app.benchmark_mode == BenchmarkMode::Performance {
                 if let Some(toggled) = app.benchmark_toggled.get_mut(app.benchmark_selected) {
                     *toggled = !*toggled;
                 }
+            } else if c == 'c' && !app.benchmark_log.is_empty() {
+                let log_text = app.benchmark_log.join("\n");
+                let _ = copy_to_clipboard(&log_text);
+                app.set_message("Log copied to clipboard", MessageKind::Info);
             }
         }
         KeyCode::Backspace => {
@@ -1379,6 +1529,8 @@ struct AgentChatResult {
     ttft_ms: f64,
     success: bool,
     error: Option<String>,
+    prompt_tokens: usize,
+    completion_tokens: usize,
 }
 
 fn parse_agent_parallel_output(output: &str, count: usize) -> (Vec<AgentChatResult>, Option<f64>) {
@@ -1399,6 +1551,8 @@ fn parse_agent_parallel_output(output: &str, count: usize) -> (Vec<AgentChatResu
         let mut ttft_ms = 0.0_f64;
         let mut success = false;
         let mut error: Option<String> = None;
+        let mut prompt_tokens = 0usize;
+        let mut completion_tokens = 0usize;
 
         if let Some(tp) = block.find("---BENCH_TIME:") {
             let after = &block[tp + "---BENCH_TIME:".len()..];
@@ -1416,17 +1570,20 @@ fn parse_agent_parallel_output(output: &str, count: usize) -> (Vec<AgentChatResu
                 }
             }
         }
-        // Check response body for success/error
         let body = block.split("---BENCH_TIME:").next().unwrap_or(block).trim();
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
-            if json.get("message").is_some() || json.get("content").is_some() {
+            if let Some(usage) = json.get("usage") {
+                prompt_tokens = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                completion_tokens = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            }
+            if json.get("choices").is_some() || json.get("message").is_some() || json.get("content").is_some() {
                 success = true;
             } else if let Some(detail) = json.get("detail").and_then(|d| d.as_str()) {
                 error = Some(detail.chars().take(60).collect());
             } else if let Some(msg) = json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
                 error = Some(msg.chars().take(60).collect());
             } else if elapsed_ms > 0.0 {
-                success = true; // got a response with timing, assume ok
+                success = true;
             }
         } else if elapsed_ms > 0.0 && !body.contains("error") {
             success = true;
@@ -1434,7 +1591,7 @@ fn parse_agent_parallel_output(output: &str, count: usize) -> (Vec<AgentChatResu
             error = Some(body.chars().take(60).collect());
         }
 
-        results.push(AgentChatResult { elapsed_ms, ttft_ms, success, error });
+        results.push(AgentChatResult { elapsed_ms, ttft_ms, success, error, prompt_tokens, completion_tokens });
     }
 
     // Parse overall wall time
@@ -1447,10 +1604,47 @@ fn parse_agent_parallel_output(output: &str, count: usize) -> (Vec<AgentChatResu
 }
 
 fn start_load_test(app: &mut App) {
+    // Load purposes for LiteLLM if not yet loaded
+    if app.load_test_purposes.is_empty() {
+        load_purposes_into_app(app);
+    }
     match app.load_test_level {
         0 => start_engine_load_test(app),
         1 => start_litellm_load_test(app),
         _ => start_agent_load_test(app),
+    }
+}
+
+fn load_purposes_into_app(app: &mut App) {
+    let is_remote = app.active_profile().map(|(_, p)| p.remote).unwrap_or(false);
+    let ssh_details: Option<(String, String, String)> = if is_remote {
+        app.active_profile().and_then(|(_, p)| {
+            p.effective_host().map(|h| {
+                (h.to_string(), p.effective_user().to_string(), p.effective_ssh_key().to_string())
+            })
+        })
+    } else {
+        None
+    };
+    let repo_root = app.repo_root.clone();
+    let config_path = repo_root.join("provision/ansible/group_vars/all/model_config.yml");
+    let config_contents = if is_remote {
+        if let Some((ref host, ref user, ref key)) = ssh_details {
+            let ssh = crate::modules::ssh::SshConnection::new(host, user, key);
+            let cmd = "cat ~/busibox/provision/ansible/group_vars/all/model_config.yml 2>/dev/null";
+            ssh.run(cmd).unwrap_or_default()
+        } else {
+            std::fs::read_to_string(&config_path).unwrap_or_default()
+        }
+    } else {
+        std::fs::read_to_string(&config_path).unwrap_or_default()
+    };
+    let purposes = benchmark::parse_model_purposes(&config_contents);
+    let mut sorted: Vec<(String, String)> = purposes.into_iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    app.load_test_purposes = sorted;
+    if app.load_test_purpose_idx >= app.load_test_purposes.len() {
+        app.load_test_purpose_idx = 0;
     }
 }
 
@@ -1460,6 +1654,46 @@ fn start_load_test(app: &mut App) {
 
 const SUSTAIN_SECS: u64 = 30;
 
+#[derive(Clone)]
+struct ConcurrencyStats {
+    concurrency: usize,
+    total_requests: usize,
+    successful: usize,
+    failed: usize,
+    wall_secs: f64,
+    rps: f64,
+    p50_lat: f64,
+    p95_lat: f64,
+    avg_tokens_in: f64,
+    avg_tokens_out: f64,
+    total_completion_tokens: usize,
+    system_tps: f64,
+    per_user_tps: f64,
+}
+
+const LOAD_TEST_PROMPTS: &[&str] = &[
+    "What is the capital of France? Reply in one sentence.",
+    "Explain photosynthesis briefly.",
+    "Name three programming languages and their uses.",
+    "What causes tides in the ocean?",
+    "Describe the water cycle in a few sentences.",
+    "How does a combustion engine work?",
+    "What is the difference between TCP and UDP?",
+    "Explain how a neural network learns.",
+    "What are the primary colors of light?",
+    "How do vaccines work? Be concise.",
+    "Describe the structure of an atom.",
+    "What is the Pythagorean theorem?",
+    "Explain supply and demand in economics.",
+    "How does DNS resolution work?",
+    "What is the greenhouse effect?",
+    "Describe the phases of the moon.",
+];
+
+fn pick_prompt(batch: u32, index: usize) -> &'static str {
+    LOAD_TEST_PROMPTS[((batch as usize) * 7 + index * 13) % LOAD_TEST_PROMPTS.len()]
+}
+
 fn run_openai_concurrency_levels(
     base_url: &str,
     model_name: &str,
@@ -1467,21 +1701,15 @@ fn run_openai_concurrency_levels(
     is_remote: bool,
     ssh_details: &Option<(String, String, String)>,
     tx: &std::sync::mpsc::Sender<BenchmarkUpdate>,
-) {
-    let prompt = "Reply in one sentence.";
+    levels: &[usize],
+) -> Vec<ConcurrencyStats> {
     let timeout_secs: u64 = 90;
-    let levels: &[usize] = &[1, 2, 4, 8];
+    let mut all_stats: Vec<ConcurrencyStats> = Vec::new();
 
     for &concurrency in levels {
         let _ = tx.send(BenchmarkUpdate::Log(format!(
             "--- Concurrency: {concurrency} (sustain {}s) ---", SUSTAIN_SECS
         )));
-        let body = format!(
-            r#"{{"model":"{model_name}","messages":[{{"role":"user","content":"{prompt}"}}],"stream":false}}"#
-        );
-        let single = format!(
-            r#"(S=$(date +%s%N 2>/dev/null||echo 0); curl -sS --max-time {timeout_secs} {auth_header} -H 'Content-Type: application/json' -d '{body}' '{base_url}/v1/chat/completions'; E=$(date +%s%N 2>/dev/null||echo 0); echo "---BENCH_TIME:$(echo "scale=6;($E-$S)/1000000000"|bc)---")"#
-        );
 
         let start = std::time::Instant::now();
         let mut all_results: Vec<AgentChatResult> = Vec::new();
@@ -1490,7 +1718,16 @@ fn run_openai_concurrency_levels(
 
         while start.elapsed() < std::time::Duration::from_secs(SUSTAIN_SECS) {
             batch_num += 1;
-            let cmd = build_parallel_shell_cmd(&single, concurrency);
+            let cmds: Vec<String> = (0..concurrency).map(|i| {
+                let prompt = pick_prompt(batch_num, i);
+                let body = format!(
+                    r#"{{"model":"{model_name}","messages":[{{"role":"user","content":"{prompt}"}}],"stream":false}}"#
+                );
+                format!(
+                    r#"(S=$(date +%s%N 2>/dev/null||echo 0); curl -sS --max-time {timeout_secs} {auth_header} -H 'Content-Type: application/json' -d '{body}' '{base_url}/v1/chat/completions'; E=$(date +%s%N 2>/dev/null||echo 0); echo "---BENCH_TIME:$(echo "scale=6;($E-$S)/1000000000"|bc)---")"#
+                )
+            }).collect();
+            let cmd = build_parallel_shell_cmd_multi(&cmds);
             match exec_curl(&cmd, is_remote, ssh_details) {
                 Ok(output) => {
                     let (results, _wall) = parse_agent_parallel_output(&output, concurrency);
@@ -1517,17 +1754,34 @@ fn run_openai_concurrency_levels(
         let wall_secs = start.elapsed().as_secs_f64();
         let total = all_results.len();
         let successful = all_results.iter().filter(|r| r.success).count();
+        let failed_count = total - successful;
         let rps = if wall_secs > 0.0 { successful as f64 / wall_secs } else { 0.0 };
         let mut latencies: Vec<f64> = all_results.iter().filter(|r| r.success).map(|r| r.elapsed_ms).collect();
         let mut ttfts: Vec<f64> = all_results.iter().filter(|r| r.success && r.ttft_ms > 0.0).map(|r| r.ttft_ms).collect();
+
+        let ok_results: Vec<&AgentChatResult> = all_results.iter().filter(|r| r.success).collect();
+        let total_prompt_tokens: usize = ok_results.iter().map(|r| r.prompt_tokens).sum();
+        let total_completion_tokens: usize = ok_results.iter().map(|r| r.completion_tokens).sum();
+        let avg_tokens_in = if successful > 0 { total_prompt_tokens as f64 / successful as f64 } else { 0.0 };
+        let avg_tokens_out = if successful > 0 { total_completion_tokens as f64 / successful as f64 } else { 0.0 };
+        let system_tps = if wall_secs > 0.0 { total_completion_tokens as f64 / wall_secs } else { 0.0 };
+
+        let (p50_lat, p95_lat) = if successful == 0 {
+            (0.0, 0.0)
+        } else {
+            (benchmark::median(&mut latencies), percentile(&mut latencies.clone(), 95))
+        };
+
+        let avg_lat_secs = if successful > 0 {
+            latencies.iter().sum::<f64>() / (successful as f64 * 1000.0)
+        } else { 0.0 };
+        let per_user_tps = if avg_lat_secs > 0.0 { avg_tokens_out / avg_lat_secs } else { 0.0 };
 
         if successful == 0 {
             let _ = tx.send(BenchmarkUpdate::Log(format!(
                 "  ERROR: 0/{total} succeeded in {batch_num} batch(es)"
             )));
         } else {
-            let p50_lat = benchmark::median(&mut latencies);
-            let p95_lat = percentile(&mut latencies.clone(), 95);
             let stop_reason = if had_failures { " (stopped early)" } else { "" };
             let _ = tx.send(BenchmarkUpdate::Log(format!(
                 "  ✓ {successful}/{total} ok in {batch_num} batches  |  wall: {wall_secs:.1}s  |  rps: {rps:.2}{stop_reason}"
@@ -1542,20 +1796,43 @@ fn run_openai_concurrency_levels(
                     "    TTFT     p50: {ttft_p50:.0}ms  p95: {ttft_p95:.0}ms"
                 )));
             }
-            let failed = total - successful;
-            if failed > 0 {
-                let _ = tx.send(BenchmarkUpdate::Log(format!("    Failures: {failed}")));
+            if total_completion_tokens > 0 {
+                let _ = tx.send(BenchmarkUpdate::Log(format!(
+                    "    Tokens   in: {avg_tokens_in:.0} avg  out: {avg_tokens_out:.0} avg  |  per-user: {per_user_tps:.1} tok/s  |  system: {system_tps:.1} tok/s"
+                )));
+            }
+            if failed_count > 0 {
+                let _ = tx.send(BenchmarkUpdate::Log(format!("    Failures: {failed_count}")));
             }
         }
         let _ = tx.send(BenchmarkUpdate::Log(String::new()));
+
+        all_stats.push(ConcurrencyStats {
+            concurrency,
+            total_requests: total,
+            successful,
+            failed: failed_count,
+            wall_secs,
+            rps,
+            p50_lat,
+            p95_lat,
+            avg_tokens_in,
+            avg_tokens_out,
+            total_completion_tokens,
+            system_tps,
+            per_user_tps,
+        });
     }
+
+    all_stats
 }
 
-fn build_parallel_shell_cmd(single_cmd: &str, count: usize) -> String {
+fn build_parallel_shell_cmd_multi(cmds: &[String]) -> String {
+    let count = cmds.len();
     let mut s = String::new();
     s.push_str("_BD=$(mktemp -d); WALL_START=$(date +%s%N 2>/dev/null||echo 0); ");
-    for i in 0..count {
-        s.push_str(&format!("( {single_cmd} > \"$_BD/{i}.out\" 2>&1 ) & "));
+    for (i, cmd) in cmds.iter().enumerate() {
+        s.push_str(&format!("( {cmd} > \"$_BD/{i}.out\" 2>&1 ) & "));
     }
     s.push_str("wait; WALL_END=$(date +%s%N 2>/dev/null||echo 0); ");
     for i in 0..count {
@@ -1585,6 +1862,7 @@ fn start_engine_load_test(app: &mut App) {
         .map(|(_, p)| p.vllm_network_base().to_string())
         .unwrap_or_else(|| "10.96.200".to_string());
     let ssh_details = get_ssh_details(app);
+    let levels = build_concurrency_sequence(app.load_test_max_concurrency);
 
     let selected = match app.benchmark_models.get(app.load_test_model_idx) {
         Some(m) => m.clone(),
@@ -1608,6 +1886,23 @@ fn start_engine_load_test(app: &mut App) {
 
     let provider_label = selected.provider.to_uppercase();
     let config_model_name = selected.model_name.clone();
+
+    // LiteLLM connection details for AI summary report
+    let litellm_base_url = if is_proxmox {
+        format!("http://{vllm_network_base}.207:4000")
+    } else {
+        "http://localhost:4000".to_string()
+    };
+    let vault_prefix: String = app
+        .active_profile()
+        .and_then(|(id, p)| p.vault_prefix.clone().or(Some(id.to_string())))
+        .unwrap_or_else(|| "dev".into());
+    let vault_password = app.vault_password.clone();
+    let repo_root = app.repo_root.clone();
+    let remote_path: String = app
+        .active_profile()
+        .map(|(_, p)| p.effective_remote_path().to_string())
+        .unwrap_or_else(|| "~/busibox".to_string());
 
     let (tx, rx) = std::sync::mpsc::channel();
     app.benchmark_rx = Some(rx);
@@ -1645,13 +1940,20 @@ fn start_engine_load_test(app: &mut App) {
         )));
         let _ = tx.send(BenchmarkUpdate::Log(String::new()));
 
-        run_openai_concurrency_levels(
+        let stats = run_openai_concurrency_levels(
             &base_url,
             model_name,
             "",
             is_remote,
             &ssh_details,
             &tx,
+            &levels,
+        );
+
+        generate_ai_report(
+            &stats, &format!("{config_model_name} (Engine)"), &base_url,
+            &litellm_base_url, &vault_prefix, &vault_password, &repo_root,
+            is_remote, &ssh_details, &remote_path, &tx,
         );
 
         let _ = tx.send(BenchmarkUpdate::Log("✓ Engine load test complete".into()));
@@ -1677,6 +1979,7 @@ fn start_litellm_load_test(app: &mut App) {
         .map(|(_, p)| p.vllm_network_base().to_string())
         .unwrap_or_else(|| "10.96.200".to_string());
     let ssh_details = get_ssh_details(app);
+    let levels = build_concurrency_sequence(app.load_test_max_concurrency);
 
     let vault_prefix: String = app
         .active_profile()
@@ -1689,11 +1992,9 @@ fn start_litellm_load_test(app: &mut App) {
         .map(|(_, p)| p.effective_remote_path().to_string())
         .unwrap_or_else(|| "~/busibox".to_string());
 
-    let selected = app.benchmark_models.get(app.load_test_model_idx).cloned();
-    let model_name = selected
-        .as_ref()
-        .map(|m| if m.model_key.is_empty() { m.model_name.clone() } else { m.model_key.clone() })
-        .unwrap_or_else(|| "agent-model".to_string());
+    let model_name = app.load_test_purposes.get(app.load_test_purpose_idx)
+        .map(|(purpose, _)| purpose.clone())
+        .unwrap_or_else(|| "fast".to_string());
 
     let base_url = if is_proxmox {
         format!("http://{vllm_network_base}.207:4000")
@@ -1745,10 +2046,17 @@ fn start_litellm_load_test(app: &mut App) {
         };
 
         let _ = tx.send(BenchmarkUpdate::Log(format!(">>> LiteLLM: {base_url}")));
-        let _ = tx.send(BenchmarkUpdate::Log(format!(">>> Model:   {model_name}")));
+        let _ = tx.send(BenchmarkUpdate::Log(format!(">>> Purpose: {model_name}")));
         let _ = tx.send(BenchmarkUpdate::Log(String::new()));
 
-        run_openai_concurrency_levels(&base_url, &model_name, &auth_header, is_remote, &ssh_details, &tx);
+        let stats = run_openai_concurrency_levels(&base_url, &model_name, &auth_header, is_remote, &ssh_details, &tx, &levels);
+
+        generate_ai_report(
+            &stats, &format!("{model_name} (LiteLLM)"), &base_url,
+            &base_url, &vault_prefix, &Some(vault_password), &repo_root,
+            is_remote, &ssh_details, &remote_path, &tx,
+        );
+
         let _ = tx.send(BenchmarkUpdate::Log("✓ LiteLLM load test complete".into()));
         let _ = tx.send(BenchmarkUpdate::Complete);
     });
@@ -1771,7 +2079,12 @@ fn start_agent_load_test(app: &mut App) {
         .active_profile()
         .map(|(_, p)| p.effective_network_base().to_string())
         .unwrap_or_else(|| "10.96.200".to_string());
+    let vllm_network_base: String = app
+        .active_profile()
+        .map(|(_, p)| p.vllm_network_base().to_string())
+        .unwrap_or_else(|| "10.96.200".to_string());
     let ssh_details = get_ssh_details(app);
+    let levels = build_concurrency_sequence(app.load_test_max_concurrency);
 
     let vault_prefix: String = app
         .active_profile()
@@ -1793,6 +2106,11 @@ fn start_agent_load_test(app: &mut App) {
         format!("{network_base}.210")
     } else {
         "localhost".to_string()
+    };
+    let litellm_base_url = if is_proxmox {
+        format!("http://{vllm_network_base}.207:4000")
+    } else {
+        "http://localhost:4000".to_string()
     };
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -1842,7 +2160,6 @@ fn start_agent_load_test(app: &mut App) {
             ">>> delegation_token loaded, exchanging for agent-api JWT...".into(),
         ));
 
-        // Exchange delegation token → short-lived JWT via authz
         let exchange_py = build_token_exchange_script(&authz_ip, &delegation_token);
         let exchange_cmd = format!("python3 -c {}", shell_escape_str(&exchange_py));
         let jwt = match exec_curl(&exchange_cmd, is_remote, &ssh_details) {
@@ -1866,18 +2183,18 @@ fn start_agent_load_test(app: &mut App) {
             }
         };
 
+        let conc_label = levels.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", ");
         let _ = tx.send(BenchmarkUpdate::Log(">>> agent-api JWT obtained".into()));
         let _ = tx.send(BenchmarkUpdate::Log(format!(">>> Agent API: {agent_api_url}")));
         let _ = tx.send(BenchmarkUpdate::Log(format!(
-            ">>> Concurrency levels: 1, 2, 4, 8 — sustain {SUSTAIN_SECS}s each"
+            ">>> Concurrency levels: [{conc_label}] — sustain {SUSTAIN_SECS}s each"
         )));
         let _ = tx.send(BenchmarkUpdate::Log(String::new()));
 
-        let prompt = "Reply in one sentence.";
         let timeout_secs: u64 = 120;
-        let levels: &[usize] = &[1, 2, 4, 8];
+        let mut all_stats: Vec<ConcurrencyStats> = Vec::new();
 
-        for &concurrency in levels {
+        for &concurrency in &levels {
             let _ = tx.send(BenchmarkUpdate::Log(format!(
                 "--- Concurrency: {concurrency} (sustain {SUSTAIN_SECS}s) ---"
             )));
@@ -1889,13 +2206,11 @@ fn start_agent_load_test(app: &mut App) {
 
             while start.elapsed() < std::time::Duration::from_secs(SUSTAIN_SECS) {
                 batch_num += 1;
-                let cmd = benchmark::build_parallel_agent_chat_command(
-                    &agent_api_url,
-                    &jwt,
-                    prompt,
-                    concurrency,
-                    timeout_secs,
-                );
+                let cmds: Vec<String> = (0..concurrency).map(|i| {
+                    let p = pick_prompt(batch_num, i);
+                    benchmark::build_agent_chat_curl(&agent_api_url, &jwt, p, timeout_secs)
+                }).collect();
+                let cmd = build_parallel_shell_cmd_multi(&cmds);
                 match exec_curl(&cmd, is_remote, &ssh_details) {
                     Ok(output) => {
                         let (results, _wall) = parse_agent_parallel_output(&output, concurrency);
@@ -1921,17 +2236,29 @@ fn start_agent_load_test(app: &mut App) {
             let wall_secs = start.elapsed().as_secs_f64();
             let total = all_results.len();
             let successful = all_results.iter().filter(|r| r.success).count();
+            let failed_count = total - successful;
             let rps = if wall_secs > 0.0 { successful as f64 / wall_secs } else { 0.0 };
             let mut latencies: Vec<f64> = all_results.iter().filter(|r| r.success).map(|r| r.elapsed_ms).collect();
             let mut ttfts: Vec<f64> = all_results.iter().filter(|r| r.success && r.ttft_ms > 0.0).map(|r| r.ttft_ms).collect();
+
+            let ok_results: Vec<&AgentChatResult> = all_results.iter().filter(|r| r.success).collect();
+            let total_prompt_tokens: usize = ok_results.iter().map(|r| r.prompt_tokens).sum();
+            let total_completion_tokens: usize = ok_results.iter().map(|r| r.completion_tokens).sum();
+            let avg_tokens_in = if successful > 0 { total_prompt_tokens as f64 / successful as f64 } else { 0.0 };
+            let avg_tokens_out = if successful > 0 { total_completion_tokens as f64 / successful as f64 } else { 0.0 };
+            let tps = if wall_secs > 0.0 { total_completion_tokens as f64 / wall_secs } else { 0.0 };
+
+            let (p50_lat, p95_lat) = if successful == 0 {
+                (0.0, 0.0)
+            } else {
+                (benchmark::median(&mut latencies), percentile(&mut latencies.clone(), 95))
+            };
 
             if successful == 0 {
                 let _ = tx.send(BenchmarkUpdate::Log(format!(
                     "  ERROR: 0/{total} succeeded in {batch_num} batch(es)"
                 )));
             } else {
-                let p50_lat = benchmark::median(&mut latencies);
-                let p95_lat = percentile(&mut latencies.clone(), 95);
                 let stop_reason = if had_failures { " (stopped early)" } else { "" };
                 let _ = tx.send(BenchmarkUpdate::Log(format!(
                     "  ✓ {successful}/{total} ok in {batch_num} batches  |  wall: {wall_secs:.1}s  |  rps: {rps:.2}{stop_reason}"
@@ -1946,13 +2273,38 @@ fn start_agent_load_test(app: &mut App) {
                         "    TTFT     p50: {ttft_p50:.0}ms  p95: {ttft_p95:.0}ms"
                     )));
                 }
-                let failed = total - successful;
-                if failed > 0 {
-                    let _ = tx.send(BenchmarkUpdate::Log(format!("    Failures: {failed}")));
+                if total_completion_tokens > 0 {
+                    let _ = tx.send(BenchmarkUpdate::Log(format!(
+                        "    Tokens   in: {avg_tokens_in:.0} avg  out: {avg_tokens_out:.0} avg  |  total out: {total_completion_tokens}  |  TPS: {tps:.1}"
+                    )));
+                }
+                if failed_count > 0 {
+                    let _ = tx.send(BenchmarkUpdate::Log(format!("    Failures: {failed_count}")));
                 }
             }
             let _ = tx.send(BenchmarkUpdate::Log(String::new()));
+
+            all_stats.push(ConcurrencyStats {
+                concurrency,
+                total_requests: total,
+                successful,
+                failed: failed_count,
+                wall_secs,
+                rps,
+                p50_lat,
+                p95_lat,
+                avg_tokens_in,
+                avg_tokens_out,
+                total_completion_tokens,
+                tps,
+            });
         }
+
+        generate_ai_report(
+            &all_stats, "Agent-API", &agent_api_url,
+            &litellm_base_url, &vault_prefix, &Some(vault_password), &repo_root,
+            is_remote, &ssh_details, &remote_path, &tx,
+        );
 
         let _ = tx.send(BenchmarkUpdate::Log("✓ Agent-API load test complete".into()));
         let _ = tx.send(BenchmarkUpdate::Complete);
@@ -2117,6 +2469,100 @@ except Exception as e:
         authz_escaped = authz_escaped,
         token_escaped = token_escaped,
     )
+}
+
+// =============================================================================
+// AI Summary Report
+// =============================================================================
+
+fn generate_ai_report(
+    stats: &[ConcurrencyStats],
+    model_label: &str,
+    endpoint: &str,
+    litellm_base_url: &str,
+    vault_prefix: &str,
+    vault_password: &Option<String>,
+    repo_root: &std::path::Path,
+    is_remote: bool,
+    ssh_details: &Option<(String, String, String)>,
+    remote_path: &str,
+    tx: &std::sync::mpsc::Sender<BenchmarkUpdate>,
+) {
+    if stats.is_empty() || stats.iter().all(|s| s.successful == 0) {
+        return;
+    }
+
+    let _ = tx.send(BenchmarkUpdate::Log("--- Generating AI analysis... ---".into()));
+
+    // Build stats table for the prompt
+    let mut table = String::from("Conc | Reqs | OK | Fail | Wall(s) | RPS | p50(ms) | p95(ms) | AvgIn | AvgOut | TPS\n");
+    for s in stats {
+        table.push_str(&format!(
+            "{:4} | {:4} | {:3} | {:4} | {:7.1} | {:5.2} | {:7.0} | {:7.0} | {:5.0} | {:6.0} | {:5.1}\n",
+            s.concurrency, s.total_requests, s.successful, s.failed,
+            s.wall_secs, s.rps, s.p50_lat, s.p95_lat,
+            s.avg_tokens_in, s.avg_tokens_out, s.tps,
+        ));
+    }
+
+    let prompt = format!(
+        "Analyze these load test results for {model_label} at {endpoint}.\n\n\
+         {table}\n\
+         Provide: 1) Overall throughput assessment, 2) Concurrency sweet spot, \
+         3) Latency degradation pattern, 4) Token throughput analysis, \
+         5) Recommendations for production capacity planning.\n\
+         Keep it concise (5-8 lines)."
+    );
+
+    // Try to get LiteLLM API key for the report request
+    let api_key = if let Some(ref vp) = vault_password {
+        let vault_file_rel = format!("provision/ansible/roles/secrets/vars/vault.{vault_prefix}.yml");
+        let py = build_vault_read_script("litellm_api_key");
+        run_vault_read(&py, vp, &vault_file_rel, repo_root, is_remote, ssh_details, remote_path, tx).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let auth_header = if api_key.is_empty() {
+        String::new()
+    } else {
+        format!("-H 'Authorization: Bearer {api_key}'")
+    };
+
+    let escaped_prompt = prompt.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+    let body = format!(
+        r#"{{"model":"fast","messages":[{{"role":"user","content":"{escaped_prompt}"}}],"stream":false,"max_tokens":512}}"#
+    );
+    let curl_cmd = format!(
+        "curl -sS --max-time 60 {auth_header} -H 'Content-Type: application/json' -d '{body}' '{litellm_base_url}/v1/chat/completions'"
+    );
+
+    match exec_curl(&curl_cmd, is_remote, ssh_details) {
+        Ok(output) => {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(output.trim()) {
+                if let Some(content) = json.pointer("/choices/0/message/content").and_then(|v| v.as_str()) {
+                    let _ = tx.send(BenchmarkUpdate::Log(String::new()));
+                    let _ = tx.send(BenchmarkUpdate::Log("═══ AI Analysis ═══".into()));
+                    for line in content.lines() {
+                        let _ = tx.send(BenchmarkUpdate::Log(format!("  {line}")));
+                    }
+                    let _ = tx.send(BenchmarkUpdate::Log("═══════════════════".into()));
+                } else if let Some(err) = json.pointer("/error/message").and_then(|v| v.as_str()) {
+                    let _ = tx.send(BenchmarkUpdate::Log(format!("AI report error: {err}")));
+                } else {
+                    let _ = tx.send(BenchmarkUpdate::Log("AI report: unexpected response format".into()));
+                }
+            } else {
+                let preview: String = output.chars().take(100).collect();
+                let _ = tx.send(BenchmarkUpdate::Log(format!("AI report: could not parse response: {preview}")));
+            }
+        }
+        Err(e) => {
+            let _ = tx.send(BenchmarkUpdate::Log(format!("AI report: request failed: {e}")));
+        }
+    }
+
+    let _ = tx.send(BenchmarkUpdate::Log(String::new()));
 }
 
 // =============================================================================

@@ -153,6 +153,9 @@ pub struct App {
     pub benchmark_model_test_results: Vec<benchmark::ModelTestResult>,
     pub load_test_level: usize,  // 0=Engine, 1=LiteLLM, 2=Agent-API
     pub load_test_model_idx: usize, // selected model for engine load test
+    pub load_test_purposes: Vec<(String, String)>, // (purpose_name, model_key) for LiteLLM
+    pub load_test_purpose_idx: usize,
+    pub load_test_max_concurrency: usize, // max concurrency (power-of-2 doubling from 1)
 
     // Install state
     pub install_services: Vec<ServiceInstallState>,
@@ -766,6 +769,9 @@ impl App {
             benchmark_model_test_results: Vec::new(),
             load_test_level: 0,
             load_test_model_idx: 0,
+            load_test_purposes: Vec::new(),
+            load_test_purpose_idx: 0,
+            load_test_max_concurrency: 8,
             install_services: Vec::new(),
             install_log: Vec::new(),
             install_log_visible: false,
