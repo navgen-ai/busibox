@@ -76,7 +76,8 @@ available_models:
     tensor_parallel_size: 2
     max_model_len: 32768        # Good balance of context and concurrency
     max_num_seqs: 16            # MoE handles concurrency well
-    max_num_batched_tokens: 4096  # Balanced latency for chat
+    max_num_batched_tokens: 8192  # Balanced latency for chat
+    enable_chunked_prefill: true
     cpu_offload_gb: 0
     enable_prefix_caching: true  # Shared system prompts across users
     tool_calling: true
@@ -90,6 +91,7 @@ available_models:
     model: "qwen3.5-27b"
     model_name: "Qwen/Qwen3.5-27B"
     description: "Large deep reasoning agent for vLLM (27B total)"
+    enable_chunked_prefill: true
     gpu_memory_utilization: 0.9
     max_model_len: 32000
     max_num_seqs: 8

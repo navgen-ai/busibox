@@ -2246,13 +2246,18 @@ fn start_agent_load_test(app: &mut App) {
             let total_completion_tokens: usize = ok_results.iter().map(|r| r.completion_tokens).sum();
             let avg_tokens_in = if successful > 0 { total_prompt_tokens as f64 / successful as f64 } else { 0.0 };
             let avg_tokens_out = if successful > 0 { total_completion_tokens as f64 / successful as f64 } else { 0.0 };
-            let tps = if wall_secs > 0.0 { total_completion_tokens as f64 / wall_secs } else { 0.0 };
+            let system_tps = if wall_secs > 0.0 { total_completion_tokens as f64 / wall_secs } else { 0.0 };
 
             let (p50_lat, p95_lat) = if successful == 0 {
                 (0.0, 0.0)
             } else {
                 (benchmark::median(&mut latencies), percentile(&mut latencies.clone(), 95))
             };
+
+            let avg_lat_secs = if successful > 0 {
+                latencies.iter().sum::<f64>() / (successful as f64 * 1000.0)
+            } else { 0.0 };
+            let per_user_tps = if avg_lat_secs > 0.0 { avg_tokens_out / avg_lat_secs } else { 0.0 };
 
             if successful == 0 {
                 let _ = tx.send(BenchmarkUpdate::Log(format!(
@@ -2275,7 +2280,7 @@ fn start_agent_load_test(app: &mut App) {
                 }
                 if total_completion_tokens > 0 {
                     let _ = tx.send(BenchmarkUpdate::Log(format!(
-                        "    Tokens   in: {avg_tokens_in:.0} avg  out: {avg_tokens_out:.0} avg  |  total out: {total_completion_tokens}  |  TPS: {tps:.1}"
+                        "    Tokens   in: {avg_tokens_in:.0} avg  out: {avg_tokens_out:.0} avg  |  per-user: {per_user_tps:.1} tok/s  |  system: {system_tps:.1} tok/s"
                     )));
                 }
                 if failed_count > 0 {
@@ -2296,7 +2301,8 @@ fn start_agent_load_test(app: &mut App) {
                 avg_tokens_in,
                 avg_tokens_out,
                 total_completion_tokens,
-                tps,
+                system_tps,
+                per_user_tps,
             });
         }
 
@@ -2495,21 +2501,23 @@ fn generate_ai_report(
     let _ = tx.send(BenchmarkUpdate::Log("--- Generating AI analysis... ---".into()));
 
     // Build stats table for the prompt
-    let mut table = String::from("Conc | Reqs | OK | Fail | Wall(s) | RPS | p50(ms) | p95(ms) | AvgIn | AvgOut | TPS\n");
+    let mut table = String::from("Conc | Reqs | OK | Fail | Wall(s) | RPS | p50(ms) | p95(ms) | AvgIn | AvgOut | User t/s | Sys t/s\n");
     for s in stats {
         table.push_str(&format!(
-            "{:4} | {:4} | {:3} | {:4} | {:7.1} | {:5.2} | {:7.0} | {:7.0} | {:5.0} | {:6.0} | {:5.1}\n",
+            "{:4} | {:4} | {:3} | {:4} | {:7.1} | {:5.2} | {:7.0} | {:7.0} | {:5.0} | {:6.0} | {:8.1} | {:7.1}\n",
             s.concurrency, s.total_requests, s.successful, s.failed,
             s.wall_secs, s.rps, s.p50_lat, s.p95_lat,
-            s.avg_tokens_in, s.avg_tokens_out, s.tps,
+            s.avg_tokens_in, s.avg_tokens_out, s.per_user_tps, s.system_tps,
         ));
     }
 
     let prompt = format!(
-        "Analyze these load test results for {model_label} at {endpoint}.\n\n\
+        "Analyze these load test results for {model_label} at {endpoint}.\n\
+         'User t/s' = per-user tok/s (avg_completion_tokens / avg_latency_secs per request).\n\
+         'Sys t/s' = aggregate system throughput (total_completion_tokens / wall_clock_secs).\n\n\
          {table}\n\
          Provide: 1) Overall throughput assessment, 2) Concurrency sweet spot, \
-         3) Latency degradation pattern, 4) Token throughput analysis, \
+         3) Latency degradation pattern, 4) Token throughput analysis (user vs system), \
          5) Recommendations for production capacity planning.\n\
          Keep it concise (5-8 lines)."
     );

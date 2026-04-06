@@ -39,6 +39,8 @@
       - deploy_path must be absolute path (starts with /)
       - health_endpoint must start with /
     success_msg: "Application '{{ item.name }}' configuration valid"
+    # Suppress per-iteration ok output (default callback still prints full item dict otherwise)
+    quiet: true
   loop: "{{ applications }}"
   loop_control:
     label: "{{ item.name | default('UNNAMED') }}"
@@ -113,10 +115,8 @@
       - subdomain type requires 'subdomain' field
       - path type requires 'path' and 'domain' fields
       - path must start with / and cannot be / alone
-  with_subelements:
-    - "{{ applications }}"
-    - routes
-    - skip_missing: yes
+    quiet: true
+  loop: "{{ applications | subelements('routes', {'skip_missing': True}) }}"
   loop_control:
     label: "{{ item.0.name }} - {{ item.1.type | default('INVALID') }}"
   when: applications | length > 0
@@ -126,6 +126,7 @@
     that:
       - item.process_manager is defined and item.process_manager == 'systemd' or item.process_manager is not defined
     fail_msg: "Application '{{ item.name }}' has invalid process_manager. Must be 'systemd'"
+    quiet: true
   loop: "{{ applications }}"
   loop_control:
     label: "{{ item.name }}"
