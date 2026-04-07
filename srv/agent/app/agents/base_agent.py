@@ -584,6 +584,8 @@ class AgentContext:
     missing_profile_fields: List[str] = field(default_factory=list)
     # Follow-up profile questions that should be asked naturally when relevant
     pending_questions: List[Dict[str, Any]] = field(default_factory=list)
+    # Whether the platform-level insights system is enabled
+    insights_enabled: bool = True
     # Application context metadata (e.g. projectId, appName) from the chat request
     metadata: Dict[str, Any] = field(default_factory=dict)
     # Raw attachment metadata from chat request (unresolved)
@@ -973,6 +975,7 @@ class BaseStreamingAgent(StreamingAgent):
             agent_context.conversation_history = context.get("conversation_history", [])
             agent_context.missing_profile_fields = context.get("missing_profile_fields", []) or []
             agent_context.pending_questions = context.get("pending_questions", []) or []
+            agent_context.insights_enabled = context.get("insights_enabled", True)
             agent_context.metadata = context.get("metadata") or {}
             agent_context.attachment_metadata = context.get("attachment_metadata", []) or []
             agent_context.response_schema = context.get("response_schema")
@@ -2330,56 +2333,67 @@ class BaseStreamingAgent(StreamingAgent):
                 else:
                     parts.append(f"- **{key}**: {value}")
 
-        if context.relevant_insights:
-            parts.append("")
-            parts.append("## Relevant User Context (from past conversations)")
-            parts.append("These are relevant facts, preferences, and context learned from the user's past conversations:")
-            for insight in context.relevant_insights:
-                category = insight.get("category", "context")
-                ins_content = insight.get("content", "")
-                parts.append(f"- [{category}] {ins_content}")
-
-        if context.missing_profile_fields:
-            parts.append("")
-            parts.append("## Missing Profile Context")
-            parts.append("These profile details are still missing and may improve future assistance:")
-            for field_name in context.missing_profile_fields:
-                parts.append(f"- {field_name}")
-
-        if context.pending_questions:
-            parts.append("")
-            parts.append("## Pending Follow-up Questions")
-            parts.append(
-                "RULES: Only ask ONE of these if it is DIRECTLY relevant to what the user is currently discussing. "
-                "Do NOT ask a profile question if the user's request is unrelated to it. "
-                "Do NOT interrupt the user's task with a profile question. "
-                "If the user is asking about a specific topic, answer that first — "
-                "only append a profile question at the end if it naturally fits the conversation."
-            )
-            for item in context.pending_questions[:3]:
-                question = str(item.get("content", "")).strip()
-                if question:
-                    parts.append(f"- {question}")
-
-        if context.missing_profile_fields:
-            _onboarding_triggers = {"learn about me", "set up my profile", "personalize my experience"}
-            all_user_msgs = [
-                str(msg.get("content", "")).lower()
-                for msg in (context.conversation_history or context.recent_messages or [])
-                if msg.get("role") == "user"
-            ]
-            if context.current_query:
-                all_user_msgs.append(context.current_query.lower())
-            if any(any(t in m for t in _onboarding_triggers) for m in all_user_msgs[:5]):
+        if context.insights_enabled:
+            if context.relevant_insights:
                 parts.append("")
-                parts.append("## Onboarding Mode")
+                parts.append("## Relevant User Context (from past conversations)")
+                parts.append("These are relevant facts, preferences, and context learned from the user's past conversations:")
+                for insight in context.relevant_insights:
+                    category = insight.get("category", "context")
+                    ins_content = insight.get("content", "")
+                    parts.append(f"- [{category}] {ins_content}")
+
+            if context.missing_profile_fields:
+                parts.append("")
+                parts.append("## Missing Profile Context")
+                parts.append("These profile details are still missing and may improve future assistance:")
+                for field_name in context.missing_profile_fields:
+                    parts.append(f"- {field_name}")
+
+            if context.pending_questions:
+                parts.append("")
+                parts.append("## Pending Follow-up Questions")
                 parts.append(
-                    "The user has asked you to learn about them. Start a friendly, conversational "
-                    "profile-building session. Ask about the following fields ONE AT A TIME, using "
-                    "quick-reply buttons where possible. After each answer, acknowledge it and ask "
-                    "the next question. Keep it brief and friendly."
+                    "RULES: Only ask ONE of these if it is DIRECTLY relevant to what the user is currently discussing. "
+                    "Do NOT ask a profile question if the user's request is unrelated to it. "
+                    "Do NOT interrupt the user's task with a profile question. "
+                    "If the user is asking about a specific topic, answer that first — "
+                    "only append a profile question at the end if it naturally fits the conversation."
                 )
-                parts.append("Missing profile fields: " + ", ".join(context.missing_profile_fields))
+                for item in context.pending_questions[:3]:
+                    question = str(item.get("content", "")).strip()
+                    if question:
+                        parts.append(f"- {question}")
+
+            if context.missing_profile_fields:
+                _onboarding_triggers = {"learn about me", "set up my profile", "personalize my experience"}
+                all_user_msgs = [
+                    str(msg.get("content", "")).lower()
+                    for msg in (context.conversation_history or context.recent_messages or [])
+                    if msg.get("role") == "user"
+                ]
+                if context.current_query:
+                    all_user_msgs.append(context.current_query.lower())
+                if any(any(t in m for t in _onboarding_triggers) for m in all_user_msgs[:5]):
+                    parts.append("")
+                    parts.append("## Onboarding Mode")
+                    parts.append(
+                        "The user has asked you to learn about them. Start a friendly, conversational "
+                        "profile-building session. Ask about the following fields ONE AT A TIME, using "
+                        "quick-reply buttons where possible. After each answer, acknowledge it and ask "
+                        "the next question. Keep it brief and friendly."
+                    )
+                    parts.append("Missing profile fields: " + ", ".join(context.missing_profile_fields))
+
+        if any(t in self.config.tools for t in ("document_search", "web_search")):
+            parts.append("")
+            parts.append("## Search Result Relevance")
+            parts.append(
+                "When you receive results from document_search or web_search, critically evaluate "
+                "whether they are actually relevant to the user's query. If the results are about "
+                "a completely different topic, IGNORE them — do not summarize or reference irrelevant "
+                "results. Only use results that genuinely answer or inform the user's question."
+            )
 
         attachment_section = self._build_attachment_context_section(context)
         if attachment_section:
@@ -2492,31 +2506,31 @@ class BaseStreamingAgent(StreamingAgent):
                 parts.append(f"- **{key}**: {value}")
             parts.append("")
         
-        # Add relevant insights (agent memories) if present
-        if context.relevant_insights:
-            parts.append("## Relevant User Context (from past conversations)")
-            parts.append("These are relevant facts, preferences, and context learned from the user's past conversations:")
-            for insight in context.relevant_insights:
-                category = insight.get("category", "context")
-                content = insight.get("content", "")
-                parts.append(f"- [{category}] {content}")
-            parts.append("")
+        if context.insights_enabled:
+            if context.relevant_insights:
+                parts.append("## Relevant User Context (from past conversations)")
+                parts.append("These are relevant facts, preferences, and context learned from the user's past conversations:")
+                for insight in context.relevant_insights:
+                    category = insight.get("category", "context")
+                    content = insight.get("content", "")
+                    parts.append(f"- [{category}] {content}")
+                parts.append("")
 
-        if context.missing_profile_fields:
-            parts.append("## Missing Profile Context")
-            parts.append("These profile details are still missing and may improve future assistance:")
-            for field_name in context.missing_profile_fields:
-                parts.append(f"- {field_name}")
-            parts.append("")
+            if context.missing_profile_fields:
+                parts.append("## Missing Profile Context")
+                parts.append("These profile details are still missing and may improve future assistance:")
+                for field_name in context.missing_profile_fields:
+                    parts.append(f"- {field_name}")
+                parts.append("")
 
-        if context.pending_questions:
-            parts.append("## Pending Follow-up Questions")
-            parts.append("Ask at most ONE of these naturally when relevant, then continue helping with the current request:")
-            for item in context.pending_questions[:3]:
-                question = str(item.get("content", "")).strip()
-                if question:
-                    parts.append(f"- {question}")
-            parts.append("")
+            if context.pending_questions:
+                parts.append("## Pending Follow-up Questions")
+                parts.append("Ask at most ONE of these naturally when relevant, then continue helping with the current request:")
+                for item in context.pending_questions[:3]:
+                    question = str(item.get("content", "")).strip()
+                    if question:
+                        parts.append(f"- {question}")
+                parts.append("")
         
         # Add compressed history summary if present
         if context.compressed_history_summary:
@@ -2543,18 +2557,15 @@ class BaseStreamingAgent(StreamingAgent):
         parts.append("## Current Query")
         parts.append(query)
         
-        # Add guidance about using context
         has_context = (
             context.recent_messages
             or context.compressed_history_summary
-            or context.relevant_insights
-            or context.missing_profile_fields
-            or context.pending_questions
+            or (context.insights_enabled and context.relevant_insights)
             or context.metadata
         )
         if has_context:
             parts.append("")
-            parts.append("Please respond to the current query using all available context above. Use the user context to personalize your response, the conversation history to understand follow-up references (like 'it', 'that', 'this topic'), and make informed decisions about which tools to use.")
+            parts.append("Please respond to the current query using all available context above. Use the conversation history to understand follow-up references (like 'it', 'that', 'this topic'), and make informed decisions about which tools to use.")
         
         return "\n".join(parts)
     
@@ -2692,31 +2703,31 @@ class BaseStreamingAgent(StreamingAgent):
         except Exception as e:
             logger.debug(f"Failed to render skills prompt: {e}")
         
-        # 1. Add relevant insights (user memories) if present
-        if context.relevant_insights:
-            parts.append("## Relevant User Context (from past conversations)")
-            parts.append("These are relevant facts, preferences, and context learned from the user's past conversations:")
-            for insight in context.relevant_insights:
-                category = insight.get("category", "context")
-                content = insight.get("content", "")
-                parts.append(f"- [{category}] {content}")
-            parts.append("")
+        if context.insights_enabled:
+            if context.relevant_insights:
+                parts.append("## Relevant User Context (from past conversations)")
+                parts.append("These are relevant facts, preferences, and context learned from the user's past conversations:")
+                for insight in context.relevant_insights:
+                    category = insight.get("category", "context")
+                    content = insight.get("content", "")
+                    parts.append(f"- [{category}] {content}")
+                parts.append("")
 
-        if context.missing_profile_fields:
-            parts.append("## Missing Profile Context")
-            parts.append("These details are missing and would improve personalization:")
-            for field_name in context.missing_profile_fields:
-                parts.append(f"- {field_name}")
-            parts.append("")
+            if context.missing_profile_fields:
+                parts.append("## Missing Profile Context")
+                parts.append("These details are missing and would improve personalization:")
+                for field_name in context.missing_profile_fields:
+                    parts.append(f"- {field_name}")
+                parts.append("")
 
-        if context.pending_questions:
-            parts.append("## Optional Profile Follow-ups (low priority)")
-            parts.append("After fully answering the user's request, you may optionally append ONE of these questions. NEVER replace or skip the user's request to ask these instead:")
-            for item in context.pending_questions[:3]:
-                question = str(item.get("content", "")).strip()
-                if question:
-                    parts.append(f"- {question}")
-            parts.append("")
+            if context.pending_questions:
+                parts.append("## Optional Profile Follow-ups (low priority)")
+                parts.append("After fully answering the user's request, you may optionally append ONE of these questions. NEVER replace or skip the user's request to ask these instead:")
+                for item in context.pending_questions[:3]:
+                    question = str(item.get("content", "")).strip()
+                    if question:
+                        parts.append(f"- {question}")
+                parts.append("")
         
         # 2. Add compressed history summary if present
         if context.compressed_history_summary:
@@ -2769,7 +2780,7 @@ class BaseStreamingAgent(StreamingAgent):
                     parts.append(f"\n### {tool_name}\n{result}")
             parts.append("")
         
-        parts.append("Please answer the user's question based on all available context (user insights, conversation history, and tool results). Be conversational and reference relevant context when appropriate.")
+        parts.append("Please answer the user's question based on all available context. Be conversational and reference relevant context when appropriate. If any tool results above are not relevant to the user's query, ignore them completely.")
         return "\n".join(parts)
     
     def _build_fallback_response(self, query: str, context: AgentContext) -> str:

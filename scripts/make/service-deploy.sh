@@ -307,6 +307,14 @@ deploy_service() {
     # containers running with stale/placeholder env vars.
     local cmd="ansible-playbook -i ${inventory} ${playbook} --tags ${tag}"
 
+    # If this is an individual core sub-app (busibox-*), pass deploy_app so Ansible
+    # only deploys that specific app instead of all apps on the core-apps container.
+    case "$service" in
+        busibox-portal|busibox-admin|busibox-agents|busibox-chat|busibox-appbuilder|busibox-media|busibox-documents)
+            cmd="${cmd} -e deploy_app=${service}"
+            ;;
+    esac
+
     # Override deployment_environment so Ansible roles load the correct vault file.
     # The inventory may define deployment_environment as "staging" or "prod", but
     # the actual vault file on disk uses the profile's vault_prefix (e.g.

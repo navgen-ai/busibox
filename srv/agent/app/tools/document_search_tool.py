@@ -17,7 +17,7 @@ class DocumentSearchInput(BaseModel):
     """Input schema for document search tool."""
     query: str = Field(description="Search query to find relevant documents")
     limit: int = Field(default=10, description="Maximum number of results (default 10, max 50)")
-    min_score: float = Field(default=0.1, description="Minimum relevancy score to include (0-1, default 0.1)")
+    min_score: float = Field(default=0.35, description="Minimum relevancy score to include (0-1, default 0.35)")
     mode: str = Field(default="hybrid", description="Search mode: hybrid, semantic, or keyword")
     file_ids: Optional[List[str]] = Field(default=None, description="Optional list of file IDs to filter")
     expand_graph: bool = Field(default=False, description="Expand graph relationships (adds latency, default false)")
@@ -47,7 +47,7 @@ async def search_documents(
     ctx: RunContext[BusiboxDeps],
     query: str,
     limit: int = 10,
-    min_score: float = 0.1,
+    min_score: float = 0.35,
     mode: str = "hybrid",
     file_ids: Optional[List[str]] = None,
     expand_graph: bool = False,
@@ -66,7 +66,7 @@ async def search_documents(
         ctx: RunContext with authenticated BusiboxClient
         query: Search query string
         limit: Maximum number of results (default: 10, max: 50)
-        min_score: Minimum relevancy score to include (default: 0.1)
+        min_score: Minimum relevancy score to include (default: 0.35)
         mode: Search mode - "hybrid" (recommended), "semantic", or "keyword"
         file_ids: Optional list of file IDs to restrict search
         expand_graph: Whether to expand graph relationships (default: False)
@@ -190,9 +190,15 @@ async def search_documents(
                 f"--- Source {idx} [{source_ref}] (score:{score:.2f}, file_id:{fid}) ---\n{result.get('text', '')}"
             )
         
-        full_context = "\n\n".join(context_parts)
+        full_context = (
+            "CRITICAL: Before using ANY of these search results, verify they are "
+            "actually relevant to the user's query. If the documents below are about "
+            "a completely different topic than what the user asked, do NOT use them — "
+            "say you didn't find relevant documents instead.\n\n"
+        )
+        full_context += "\n\n".join(context_parts)
         full_context += (
-            "\n\nIMPORTANT: When citing information from these sources, always include "
+            "\n\nWhen citing information from these sources, always include "
             "a citation using this format: [Source: filename, p.N](doc:file_id) — "
             "for example: [Source: report.pdf, p.5](doc:abc-123-def)"
         )

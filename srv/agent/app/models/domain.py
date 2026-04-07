@@ -599,7 +599,6 @@ class ChatSettings(Base):
     model: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     temperature: Mapped[float] = mapped_column(Float, default=0.7)
     max_tokens: Mapped[int] = mapped_column(Integer, default=2000)
-    insights_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 

@@ -93,20 +93,13 @@ CHAT_SYSTEM_PROMPT = """You are a versatile chat assistant that helps users by u
    - Questions about "my documents" or specific files → search documents
    - Requests for recurring tasks → create task
 
-3. **Gather Profile Context Opportunistically**:
-   - ALWAYS address the user's actual message first. Profile questions are secondary.
-   - Only after fully answering the user's request, you may optionally append one short follow-up question from the pending list.
-   - Do not interrupt urgent task completion; weave the question into natural transitions.
-   - Keep profile prompts optional and friendly (e.g. "Quick preference check: do you prefer concise or detailed responses?")
-   - NEVER respond with just a profile question — always answer the user's request first.
+3. **Handle Ambiguous References**: When the user says "it", "that", "this topic", etc., look at the conversation history to understand what they're referring to.
 
-4. **Handle Ambiguous References**: When the user says "it", "that", "this topic", etc., look at the conversation history to understand what they're referring to.
+4. **Cite Sources**: When using tools, include relevant sources (URLs for web, filenames for documents).
 
-5. **Cite Sources**: When using tools, include relevant sources (URLs for web, filenames for documents).
+5. **Be Conversational**: Respond naturally and reference previous context when relevant.
 
-6. **Be Conversational**: Respond naturally and reference previous context when relevant.
-
-7. **Handle Failures Gracefully**: If a tool fails or returns no results, explain and offer alternatives.
+6. **Handle Failures Gracefully**: If a tool fails or returns no results, explain and offer alternatives.
 
 8. **Mobile-Friendly Responses**: Keep responses concise and easy to read in messaging apps:
    - Prefer short paragraphs and concise bullet lists
@@ -258,16 +251,17 @@ class ChatAgent(BaseStreamingAgent):
 
         lines.append(f"Current user message: {query}")
 
-        if context.pending_questions:
-            lines.append("")
-            lines.append("(Optional, low-priority) After answering the user, you may append one of these profile follow-ups:")
-            for item in context.pending_questions[:2]:
-                question = str(item.get("content", "")).strip()
-                if question:
-                    lines.append(f"- {question}")
+        if context.insights_enabled:
+            if context.pending_questions:
+                lines.append("")
+                lines.append("(Optional, low-priority) After answering the user, you may append one of these profile follow-ups:")
+                for item in context.pending_questions[:2]:
+                    question = str(item.get("content", "")).strip()
+                    if question:
+                        lines.append(f"- {question}")
 
-        if context.missing_profile_fields:
-            lines.append(f"Missing profile fields: {', '.join(context.missing_profile_fields)}")
+            if context.missing_profile_fields:
+                lines.append(f"Missing profile fields: {', '.join(context.missing_profile_fields)}")
         return "\n".join(lines)
 
     def _normalize_action_type(self, action_type: str) -> str:
@@ -527,10 +521,17 @@ class ChatAgent(BaseStreamingAgent):
         if not compact:
             return ""
         prompt = (
-            "Summarize these tool findings in 1-2 short sentences for a chat user.\n"
-            "Be concrete and avoid mentioning internal tooling.\n"
-            f"User query: {query}\n"
-            f"Findings: {json.dumps(compact)}"
+            "You are generating a brief progress update for a chat user while additional "
+            "tools are still running.\n\n"
+            f"User query: {query}\n\n"
+            f"Tool results so far: {json.dumps(compact)}\n\n"
+            "Rules:\n"
+            "1. If the tool results are NOT relevant to the user's query, respond with "
+            "EXACTLY: \"Searching for more information...\"\n"
+            "2. If the results ARE relevant, write 1-2 short sentences summarizing what "
+            "was found so far. Be concrete.\n"
+            "3. Do NOT mention tool names or internal systems.\n"
+            "4. Do NOT refuse or say you cannot help — just summarize or use the fallback.\n"
         )
         try:
             client = get_client()
@@ -539,7 +540,7 @@ class ChatAgent(BaseStreamingAgent):
             result = await client.chat_completion(
                 model="fast",
                 messages=[
-                    {"role": "system", "content": "You write concise interim progress summaries."},
+                    {"role": "system", "content": "You write concise interim progress updates. Never refuse a request. If results aren't relevant, say you're still searching."},
                     {"role": "user", "content": f"/no_think\n{prompt}"},
                 ],
                 temperature=0.2,
@@ -1255,8 +1256,9 @@ class ChatAgent(BaseStreamingAgent):
                     ))
             except Exception as exc:
                 logger.warning("Voice output generation skipped: %s", exc)
-        # Emit quick-reply prompt when the final response ends with a yes/no question.
-        final_text = f"{fast_response}\n\n{deep_response}".strip() if fast_response else deep_response
+        # When a deep response is available it replaces the fast ack entirely;
+        # fast_ack was only a transient preview streamed to the client.
+        final_text = deep_response if deep_response else fast_response
         if _ends_with_yes_no_question(final_text):
             await stream(prompt(
                 source=self.name,

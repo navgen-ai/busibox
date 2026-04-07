@@ -762,6 +762,7 @@ Choose the most appropriate single agent for the query.""",
                         "relevant_insights": relevant_insights,  # Agent memories from dispatcher
                         "missing_profile_fields": missing_profile_fields,
                         "pending_questions": pending_questions,
+                        "insights_enabled": insights_enabled and get_platform_insights_enabled(),
                         "metadata": metadata,  # Application context (e.g. projectId)
                         "attachment_metadata": attachment_metadata or [],
                     }

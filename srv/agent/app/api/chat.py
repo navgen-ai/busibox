@@ -664,8 +664,7 @@ async def send_chat_message(
             )
             message_count = count_result.scalar_one()
             
-            insights_enabled = get_platform_insights_enabled() and (user_settings.insights_enabled if user_settings else True)
-            if insights_enabled and should_generate_insights(conversation, message_count):
+            if get_platform_insights_enabled() and should_generate_insights(conversation, message_count):
                 asyncio.create_task(
                     _generate_insights_background(
                         conversation,
@@ -1083,12 +1082,6 @@ async def send_chat_message_stream_agentic(
             session.add(user_message)
             await session.flush()
 
-            # Get user's chat settings
-            settings_result = await session.execute(
-                select(ChatSettings).where(ChatSettings.user_id == principal.sub)
-            )
-            user_settings = settings_result.scalar_one_or_none()
-
             # Load uploaded chat-attachments and link them to the user message
             attachment_metadata: List[Dict[str, Any]] = []
             if payload.attachment_ids:
@@ -1169,7 +1162,7 @@ async def send_chat_message_stream_agentic(
                 principal=principal,
                 metadata=dispatcher_metadata,
                 attachment_metadata=attachment_metadata,
-                insights_enabled=get_platform_insights_enabled() and (user_settings.insights_enabled if user_settings else True),
+                insights_enabled=get_platform_insights_enabled(),
             ):
                 # Yield event to client (hide verbose thinking events for bridge channels)
                 if not (suppress_thinking_events and event.type in BRIDGE_FILTERED_AGENTIC_EVENTS):
@@ -1177,7 +1170,13 @@ async def send_chat_message_stream_agentic(
                 
                 # Collect content and thoughts
                 if event.type == "content":
-                    full_content.append(event.message)
+                    phase = event.data.get("phase") if isinstance(event.data, dict) else None
+                    if phase == "fast_ack":
+                        fast_ack_content = event.message
+                    elif phase == "interim":
+                        pass  # interim previews are streamed but not stored
+                    else:
+                        full_content.append(event.message)
                 elif event.type in ("thought", "tool_start", "tool_result", "plan", "progress"):
                     thought_item = {
                         "type": event.type,
@@ -1280,8 +1279,7 @@ async def send_chat_message_stream_agentic(
                     select(func.count()).select_from(Message).where(Message.conversation_id == conversation.id)
                 )
                 message_count = count_result.scalar_one()
-                insights_enabled = get_platform_insights_enabled() and (user_settings.insights_enabled if user_settings else True)
-                if insights_enabled and should_generate_insights(conversation, message_count):
+                if get_platform_insights_enabled() and should_generate_insights(conversation, message_count):
                     pending_follow_up_question = await _generate_insights_and_pending_question(
                         conversation=conversation,
                         messages=history_messages + [user_message, assistant_message],
