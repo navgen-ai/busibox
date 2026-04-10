@@ -1077,6 +1077,33 @@ npm cache clean --force 2>/dev/null || true
             stdout, stderr, code = await _run_npm_install(2, extra_flags="--force")
             combined = _combine_command_output(stdout, stderr)
 
+        # Lock file sync errors (EUSAGE): the lock file was generated with a
+        # different npm version (e.g. dev machine on Node 24 / npm 11, container
+        # on Node 20 / npm 10). Fall back to `npm install` which regenerates the
+        # lock file to match the container's npm version.
+        if code != 0 and "EUSAGE" in combined:
+            logs.append("⚠️ Lock file out of sync with container npm version; falling back to npm install...")
+            retry_cleanup = f"""
+rm -rf {app_path}/node_modules 2>/dev/null || true
+rm -rf {app_path}/node_modules/* \
+       {app_path}/node_modules/.[!.]* \
+       {app_path}/node_modules/..?* \
+       2>/dev/null || true
+rm -rf /root/.npm/_cacache /root/.npm/_logs 2>/dev/null || true
+"""
+            await execute_in_container(retry_cleanup)
+            fallback_cmd = f"""
+cd {app_path} && \
+{token_env}npm install --legacy-peer-deps --include=dev 2>&1; NPM_EXIT=$?
+if [ $NPM_EXIT -ne 0 ]; then
+    echo "NPM_FAILED_WITH_EXIT_CODE=$NPM_EXIT" >&2
+fi
+exit $NPM_EXIT
+"""
+            logs.append("📦 Running npm install (fallback, 2/2)...")
+            stdout, stderr, code = await execute_in_container(fallback_cmd, timeout=600)
+            combined = _combine_command_output(stdout, stderr)
+
     if code != 0:
         # Filter out warning-only lines to show the actual error
         combined = _combine_command_output(stdout, stderr)

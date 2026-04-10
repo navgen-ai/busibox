@@ -522,6 +522,11 @@ main() {
         error "Update your vault file and re-encrypt before deploying."
         exit 1
     fi
+
+    # Sync protected config (admin_email, allowed_domains) from env vars into
+    # the vault so Ansible renders .env files with the correct values.
+    # The TUI passes ADMIN_EMAIL / ALLOWED_DOMAINS in the process environment.
+    sync_secrets_to_vault 2>/dev/null || true
     
     # Expand and validate services
     local services

@@ -21,12 +21,46 @@
   when: deployment_environment is defined and deployment_environment in ['staging', 'prod', 'production']
   tags: [nginx, nginx_configure, nginx_ssl, apps]
 
-- name: Install NGINX
+- name: Install prerequisites for nginx.org repo
+  apt:
+    name:
+      - curl
+      - gnupg2
+      - ca-certificates
+      - lsb-release
+    state: present
+    update_cache: yes
+  tags: [nginx, nginx_install]
+
+- name: Add nginx.org signing key
+  ansible.builtin.apt_key:
+    url: https://nginx.org/keys/nginx_signing.key
+    state: present
+  tags: [nginx, nginx_install]
+
+- name: Add nginx.org stable repository
+  ansible.builtin.apt_repository:
+    repo: "deb https://nginx.org/packages/debian {{ ansible_distribution_release }} nginx"
+    state: present
+    filename: nginx-official
+  tags: [nginx, nginx_install]
+
+- name: Pin nginx.org packages over distro packages
+  copy:
+    content: |
+      Package: nginx*
+      Pin: origin nginx.org
+      Pin-Priority: 900
+    dest: /etc/apt/preferences.d/99-nginx
+    mode: "0644"
+  tags: [nginx, nginx_install]
+
+- name: Install NGINX from official repo (auto-upgrade patch versions)
   apt:
     name:
       - nginx
       - ssl-cert
-    state: present
+    state: latest
     update_cache: yes
   tags: [nginx, nginx_install]
 
@@ -135,10 +169,32 @@
     msg: "{{ nginx_test.stderr_lines }}"
   tags: [nginx, nginx_configure, nginx_test]
 
+- name: Get installed NGINX version
+  shell: "nginx -v 2>&1 | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+'"
+  register: nginx_installed_version
+  changed_when: false
+  tags: [nginx, nginx_configure]
+
+- name: Write deployment version file for NGINX
+  copy:
+    content: |
+      {
+        "commit": "{{ git_deploy_commit | default(lookup('pipe', 'cd ' + playbook_dir + '/../.. && git rev-parse --short HEAD 2>/dev/null || echo unknown'), true) }}",
+        "branch": "{{ git_deploy_branch | default(lookup('pipe', 'cd ' + playbook_dir + '/../.. && git branch --show-current 2>/dev/null || echo unknown'), true) }}",
+        "timestamp": "{{ now(utc=true).isoformat() }}",
+        "deployed_by": "ansible",
+        "nginx_version": "{{ nginx_installed_version.stdout | default('unknown') }}"
+      }
+    dest: /etc/nginx/.deploy_version
+    mode: "0644"
+  ignore_errors: true
+  tags: [nginx, nginx_configure]
+
 - name: Display NGINX configuration summary
   debug:
     msg: |
       NGINX configuration complete
+      - NGINX version: {{ nginx_installed_version.stdout | default('unknown') }}
       - SSL Mode: {{ ssl_mode_used | default('auto-discovered') }}
       - Applications configured: {{ applications | selectattr('routes', 'defined') | selectattr('routes', 'ne', []) | list | length }}
       - HTTP to HTTPS redirect: enabled

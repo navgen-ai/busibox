@@ -1739,8 +1739,14 @@ async def authenticate_with_idp(request: Request):
 
     email = idp_data.email.lower().strip()
 
-    # Validate email domain
-    if config.allowed_email_domains:
+    # Skip email domain check for configured IdP providers — the IdP itself
+    # controls who can authenticate (e.g. EntraID tenant membership).
+    # Only apply the domain allowlist for non-IdP flows (magic link, etc.).
+    idp_is_configured = False
+    if idp_data.idp_provider == "microsoft" and config.microsoft_enabled:
+        idp_is_configured = True
+
+    if not idp_is_configured and config.allowed_email_domains:
         domain = email.split("@")[-1].lower()
         if domain not in config.allowed_email_domains:
             raise HTTPException(

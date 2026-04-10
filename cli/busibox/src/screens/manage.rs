@@ -136,6 +136,9 @@ struct UpstreamVersionDef {
     github_repo: &'static str,
     /// Prefix to strip from GitHub release tags (e.g. "v" or "RELEASE.").
     tag_prefix: &'static str,
+    /// If true, only consider stable releases (even minor version numbers).
+    /// Used for nginx where odd = mainline, even = stable.
+    stable_only: bool,
 }
 
 const UPSTREAM_SERVICES: &[UpstreamVersionDef] = &[
@@ -145,6 +148,7 @@ const UPSTREAM_SERVICES: &[UpstreamVersionDef] = &[
         version_cmd: "postgres --version 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+'",
         github_repo: "postgres/postgres",
         tag_prefix: "REL_",
+        stable_only: false,
     },
     UpstreamVersionDef {
         name: "redis",
@@ -152,6 +156,7 @@ const UPSTREAM_SERVICES: &[UpstreamVersionDef] = &[
         version_cmd: "redis-server --version 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+'",
         github_repo: "redis/redis",
         tag_prefix: "",
+        stable_only: false,
     },
     UpstreamVersionDef {
         name: "minio",
@@ -159,6 +164,7 @@ const UPSTREAM_SERVICES: &[UpstreamVersionDef] = &[
         version_cmd: "docker exec $(docker ps -q --filter name=minio) minio --version 2>/dev/null | grep -oE 'RELEASE\\.[0-9T-]+Z' | head -1",
         github_repo: "minio/minio",
         tag_prefix: "",
+        stable_only: false,
     },
     UpstreamVersionDef {
         name: "milvus",
@@ -166,6 +172,7 @@ const UPSTREAM_SERVICES: &[UpstreamVersionDef] = &[
         version_cmd: "docker exec $(docker ps -q --filter name=milvus-standalone) milvus version 2>/dev/null | head -1 | grep -oE 'v[0-9]+\\.[0-9]+\\.[0-9]+'",
         github_repo: "milvus-io/milvus",
         tag_prefix: "v",
+        stable_only: false,
     },
     UpstreamVersionDef {
         name: "neo4j",
@@ -173,6 +180,7 @@ const UPSTREAM_SERVICES: &[UpstreamVersionDef] = &[
         version_cmd: "docker exec $(docker ps -q --filter name=neo4j) neo4j version 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+'",
         github_repo: "neo4j/neo4j",
         tag_prefix: "",
+        stable_only: false,
     },
     UpstreamVersionDef {
         name: "litellm",
@@ -180,6 +188,7 @@ const UPSTREAM_SERVICES: &[UpstreamVersionDef] = &[
         version_cmd: "/opt/litellm/venv/bin/pip show litellm 2>/dev/null | grep -i '^Version:' | awk '{print $2}'",
         github_repo: "BerriAI/litellm",
         tag_prefix: "v",
+        stable_only: false,
     },
     UpstreamVersionDef {
         name: "vllm",
@@ -187,6 +196,7 @@ const UPSTREAM_SERVICES: &[UpstreamVersionDef] = &[
         version_cmd: "python3 -c 'import vllm; print(vllm.__version__)' 2>/dev/null || /opt/vllm/venv/bin/python -c 'import vllm; print(vllm.__version__)' 2>/dev/null",
         github_repo: "vllm-project/vllm",
         tag_prefix: "v",
+        stable_only: false,
     },
     UpstreamVersionDef {
         name: "mlx",
@@ -194,6 +204,7 @@ const UPSTREAM_SERVICES: &[UpstreamVersionDef] = &[
         version_cmd: "python3 -c 'import mlx_lm; print(mlx_lm.__version__)' 2>/dev/null || echo unknown",
         github_repo: "ml-explore/mlx-lm",
         tag_prefix: "v",
+        stable_only: false,
     },
     UpstreamVersionDef {
         name: "proxy",
@@ -201,6 +212,7 @@ const UPSTREAM_SERVICES: &[UpstreamVersionDef] = &[
         version_cmd: "nginx -v 2>&1 | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+'",
         github_repo: "nginx/nginx",
         tag_prefix: "release-",
+        stable_only: true,
     },
 ];
 
@@ -1459,9 +1471,15 @@ fn fetch_upstream_latest_versions(
                 let name = name.to_string();
                 let github_repo = def.github_repo.to_string();
                 let tag_prefix = def.tag_prefix.to_string();
+                let stable_only = def.stable_only;
                 let tx = tx.clone();
                 std::thread::spawn(move || {
-                    if let Some(version) = fetch_github_latest_release(&github_repo, &tag_prefix, &name) {
+                    let version = if stable_only {
+                        fetch_github_latest_stable_release(&github_repo, &tag_prefix, &name)
+                    } else {
+                        fetch_github_latest_release(&github_repo, &tag_prefix, &name)
+                    };
+                    if let Some(version) = version {
                         let _ = tx.send(ManageUpdate::UpstreamLatestResult {
                             name,
                             latest_version: version,
@@ -1546,6 +1564,50 @@ fn fetch_github_latest_tag(repo: &str, tag_prefix: &str, name: &str) -> Option<S
         };
         if let Some((maj, min, pat)) = parse_semver(&clean) {
             versions.push((maj, min, pat, clean));
+        }
+    }
+    versions.sort_by(|a, b| (b.0, b.1, b.2).cmp(&(a.0, a.1, a.2)));
+    versions.into_iter().next().map(|(_, _, _, v)| v)
+}
+
+/// Fetch the latest *stable* release from a GitHub repo (even minor version numbers).
+/// Used for nginx where odd minor = mainline, even minor = stable.
+fn fetch_github_latest_stable_release(repo: &str, tag_prefix: &str, name: &str) -> Option<String> {
+    let url = format!("https://api.github.com/repos/{repo}/tags?per_page=50");
+    let output = std::process::Command::new("curl")
+        .args([
+            "-s", "-f", "--max-time", "10",
+            "-H", "Accept: application/vnd.github+json",
+            &url,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let tags: Vec<serde_json::Value> = serde_json::from_str(&body).ok()?;
+
+    let mut versions: Vec<(u32, u32, u32, String)> = Vec::new();
+    for tag_obj in &tags {
+        let tag = tag_obj.get("name")?.as_str()?;
+        let stripped = if !tag_prefix.is_empty() {
+            match tag.strip_prefix(tag_prefix) {
+                Some(s) => s.to_string(),
+                None => continue,
+            }
+        } else {
+            tag.to_string()
+        };
+        let clean = if name == "postgres" {
+            stripped.replace('_', ".")
+        } else {
+            stripped.trim_start_matches('v').to_string()
+        };
+        if let Some((maj, min, pat)) = parse_semver(&clean) {
+            if min % 2 == 0 {
+                versions.push((maj, min, pat, clean));
+            }
         }
     }
     versions.sort_by(|a, b| (b.0, b.1, b.2).cmp(&(a.0, a.1, a.2)));
