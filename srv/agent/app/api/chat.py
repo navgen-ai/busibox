@@ -1271,8 +1271,9 @@ async def send_chat_message_stream_agentic(
             await session.commit()
             await session.refresh(assistant_message)
 
-            # Trigger insights generation + pending follow-up question for the agentic path.
-            pending_follow_up_question: Optional[str] = None
+            # Trigger background insights generation (pending questions are
+            # picked up by the agent on the next turn via dispatcher context,
+            # not emitted as a separate SSE event).
             try:
                 from sqlalchemy import func
                 count_result = await session.execute(
@@ -1280,7 +1281,7 @@ async def send_chat_message_stream_agentic(
                 )
                 message_count = count_result.scalar_one()
                 if get_platform_insights_enabled() and should_generate_insights(conversation, message_count):
-                    pending_follow_up_question = await _generate_insights_and_pending_question(
+                    await _generate_insights_and_pending_question(
                         conversation=conversation,
                         messages=history_messages + [user_message, assistant_message],
                         user_id=principal.sub,
@@ -1288,18 +1289,6 @@ async def send_chat_message_stream_agentic(
                     )
             except Exception as exc:
                 logger.error("Failed to trigger agentic insights generation: %s", exc, exc_info=True)
-
-            if pending_follow_up_question:
-                interim_payload = {
-                    "type": "interim",
-                    "source": "insights",
-                    "message": pending_follow_up_question,
-                    "data": {
-                        "kind": "profile_follow_up",
-                        "bridge_channels": payload.metadata.get("bridge_channels", []) if payload.metadata else [],
-                    },
-                }
-                yield f"event: interim\ndata: {json.dumps(interim_payload)}\n\n"
 
             # Online eval: sample a percentage of production conversations for
             # background LLM quality grading (fire-and-forget).

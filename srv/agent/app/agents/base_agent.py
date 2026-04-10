@@ -2378,12 +2378,34 @@ class BaseStreamingAgent(StreamingAgent):
                     parts.append("")
                     parts.append("## Onboarding Mode")
                     parts.append(
-                        "The user has asked you to learn about them. Start a friendly, conversational "
-                        "profile-building session. Ask about the following fields ONE AT A TIME, using "
-                        "quick-reply buttons where possible. After each answer, acknowledge it and ask "
-                        "the next question. Keep it brief and friendly."
+                        "The user has asked you to learn about them. Run a friendly profile-building "
+                        "session. Ask about ONE missing field per response. Keep it brief and conversational.\n"
+                        "\n"
+                        "For each question:\n"
+                        "- Acknowledge any answer they just gave (if applicable)\n"
+                        "- Ask about the next missing field\n"
+                        "- If the field has common choices (like communication_tone), suggest options\n"
+                        "- If they redirect to a different topic, help with that and stop onboarding\n"
+                        "- When all fields are filled, thank them and say you're ready to help\n"
                     )
                     parts.append("Missing profile fields: " + ", ".join(context.missing_profile_fields))
+                    context.metadata["onboarding_active"] = True
+
+        if "create_task" in self.config.tools:
+            parts.append("")
+            parts.append("## Task Creation")
+            parts.append(
+                "You can create scheduled recurring tasks using the create_task tool. "
+                "Only use this when the user EXPLICITLY requests it (e.g., 'create a task', "
+                "'send me daily', 'remind me every week', 'set up a recurring...').\n"
+                "- notification_recipient defaults to the user's email, so you can omit it\n"
+                "- Use schedule presets: daily, daily_morning, daily_evening, weekly, monthly, hourly\n\n"
+                "IMPORTANT two-step confirmation flow:\n"
+                "1. First, describe the task you plan to create (name, schedule, agent, prompt) "
+                "and ask: 'Should I create this task?'\n"
+                "2. Only call create_task AFTER the user confirms (says yes/confirm/go ahead).\n"
+                "3. After creation, summarize: task name, schedule, next run time, and how they'll be notified."
+            )
 
         if any(t in self.config.tools for t in ("document_search", "web_search")):
             parts.append("")

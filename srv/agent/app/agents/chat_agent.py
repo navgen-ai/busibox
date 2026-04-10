@@ -506,6 +506,44 @@ class ChatAgent(BaseStreamingAgent):
             logger.warning("Fast ack generation fallback after %dms: %s", round((time.monotonic() - t_llm) * 1000) if 't_llm' in dir() else -1, exc)
             return default
 
+    # Onboarding field → prompt config mapping
+    _ONBOARDING_PROMPTS: Dict[str, Dict[str, Any]] = {
+        "communication_tone": {
+            "prompt_type": "choice",
+            "options": ["Concise & direct", "Detailed & thorough", "Casual & friendly", "Formal & professional"],
+        },
+        "primary_language": {
+            "prompt_type": "choice",
+            "options": ["English", "Spanish", "French", "Other"],
+        },
+    }
+
+    async def _emit_onboarding_prompt(
+        self,
+        agent_context: "AgentContext",
+        stream: "StreamCallback",
+    ) -> None:
+        """Emit a structured prompt event for the next missing onboarding field."""
+        if not agent_context.metadata.get("onboarding_active"):
+            return
+        missing = agent_context.missing_profile_fields or []
+        if not missing:
+            return
+        field = missing[0]
+        cfg = self._ONBOARDING_PROMPTS.get(field)
+        if cfg:
+            await stream(prompt(
+                source=self.name,
+                message=f"What is your {field.replace('_', ' ')}?",
+                data=cfg,
+            ))
+        else:
+            await stream(prompt(
+                source=self.name,
+                message=f"What is your {field.replace('_', ' ')}?",
+                data={"prompt_type": "open", "options": []},
+            ))
+
     async def _generate_quick_findings(self, query: str, tool_results: Dict[str, Any]) -> str:
         """
         Create a concise interim "what I found so far" message from tool outputs.
@@ -1265,6 +1303,9 @@ class ChatAgent(BaseStreamingAgent):
                 message=final_text.rsplit("\n", 1)[-1].strip(),
                 data={"prompt_type": "confirm", "options": ["Yes", "No"]},
             ))
+
+        # Emit structured prompt for onboarding questions
+        await self._emit_onboarding_prompt(agent_context, stream)
 
         total_ms = round((time.monotonic() - t0) * 1000)
         logger.info(

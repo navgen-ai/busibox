@@ -41,6 +41,15 @@ def _generate_webhook_secret() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _cancel_scheduler_job(task_id: uuid.UUID) -> None:
+    """Best-effort removal of an APScheduler job for this task."""
+    try:
+        from app.services.scheduler import task_scheduler
+        task_scheduler.cancel_task(task_id)
+    except Exception as e:
+        logger.debug("Scheduler cancel for task %s (may not exist): %s", task_id, e)
+
+
 async def create_task(
     session: AsyncSession,
     principal: Principal,
@@ -207,6 +216,34 @@ async def create_task(
         f"Created task {task.id} for user {principal.sub}, "
         f"trigger_type={task.trigger_type}, {target_type}={target_name}"
     )
+
+    # Hot-register with APScheduler so cron tasks run without a restart
+    if task.trigger_type == "cron" and task.status == "active":
+        cron = (task.trigger_config or {}).get("cron")
+        if cron:
+            try:
+                from app.services.scheduler import task_scheduler
+                from app.database import SessionLocal
+                task_scheduler.schedule_task(
+                    task_id=task.id,
+                    cron=cron,
+                    session_factory=SessionLocal,
+                )
+                logger.info("Hot-registered cron task %s with scheduler", task.id)
+            except Exception as e:
+                logger.warning("Failed to hot-register task %s with scheduler: %s", task.id, e)
+    elif task.trigger_type == "one_time" and task.status == "active" and next_run_at:
+        try:
+            from app.services.scheduler import task_scheduler
+            from app.database import SessionLocal
+            task_scheduler.schedule_task_one_time(
+                task_id=task.id,
+                run_at=next_run_at,
+                session_factory=SessionLocal,
+            )
+            logger.info("Hot-registered one-time task %s with scheduler", task.id)
+        except Exception as e:
+            logger.warning("Failed to hot-register task %s with scheduler: %s", task.id, e)
     
     return task
 
@@ -377,6 +414,9 @@ async def delete_task(
     if not task:
         return False
     
+    # Remove from scheduler before deleting
+    _cancel_scheduler_job(task_id)
+
     await session.delete(task)
     await session.commit()
     
@@ -398,6 +438,8 @@ async def pause_task(
     task.updated_at = _now()
     await session.commit()
     await session.refresh(task)
+
+    _cancel_scheduler_job(task_id)
     
     logger.info(f"Paused task {task_id}")
     return task
@@ -427,6 +469,17 @@ async def resume_task(
     
     await session.commit()
     await session.refresh(task)
+
+    # Re-register with scheduler
+    if task.trigger_type == "cron":
+        cron = (task.trigger_config or {}).get("cron")
+        if cron:
+            try:
+                from app.services.scheduler import task_scheduler
+                from app.database import SessionLocal
+                task_scheduler.schedule_task(task_id=task.id, cron=cron, session_factory=SessionLocal)
+            except Exception as e:
+                logger.warning("Failed to re-register resumed task %s: %s", task.id, e)
     
     logger.info(f"Resumed task {task_id}")
     return task

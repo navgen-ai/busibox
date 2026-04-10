@@ -69,8 +69,8 @@ class TaskCreationInput(BaseModel):
         description="How to notify: 'email', 'teams', 'slack', or 'webhook'"
     )
     notification_recipient: str = Field(
-        ...,
-        description="Where to send notifications (email address or webhook URL)"
+        "",
+        description="Where to send notifications (email address or webhook URL). If empty for email, defaults to user's email."
     )
 
 
@@ -121,8 +121,8 @@ async def create_task(
     agent_name: str,
     prompt: str,
     schedule: str,
-    notification_channel: str,
-    notification_recipient: str,
+    notification_channel: str = "email",
+    notification_recipient: str = "",
     description: Optional[str] = None,
 ) -> TaskCreationOutput:
     """
@@ -140,7 +140,7 @@ async def create_task(
         prompt: Instructions for the agent
         schedule: Schedule preset or cron expression
         notification_channel: email, teams, slack, or webhook
-        notification_recipient: Where to send results
+        notification_recipient: Where to send results (auto-fills from user email if empty)
         description: Optional description
         
     Returns:
@@ -168,6 +168,17 @@ async def create_task(
             )
         
         principal = deps.principal
+
+        # Auto-fill notification_recipient from user's email if not provided
+        if not notification_recipient and notification_channel == "email":
+            notification_recipient = principal.email or ""
+        if not notification_recipient:
+            return TaskCreationOutput(
+                success=False,
+                task_name=name,
+                schedule_description=_get_schedule_description(schedule),
+                error="Notification recipient is required. Please provide an email address or webhook URL.",
+            )
         
         # Resolve agent name to ID
         agent_key = AGENT_NAME_MAPPING.get(agent_name.lower().replace("-", "_"), agent_name)
@@ -333,9 +344,7 @@ The task will run on the specified schedule and send results via the chosen noti
             "name",
             "agent_name",
             "prompt",
-            "schedule",
-            "notification_channel",
-            "notification_recipient"
+            "schedule"
         ]
     }
 }

@@ -509,11 +509,13 @@ async def resolve_pending_question(
     Returns a ConversationInsight (category=fact/preference) if an answer was
     found, or None if the question remains unanswered.
     """
+    # Only look at the last 3 user messages — if the answer isn't recent,
+    # the user likely redirected and we should not force-match old messages.
     recent_user_messages = [
         str(msg.content or "").strip()
-        for msg in messages[-8:]
+        for msg in messages[-6:]
         if msg.role == "user" and msg.content
-    ]
+    ][-3:]
     if not recent_user_messages:
         return None
 
@@ -522,23 +524,21 @@ async def resolve_pending_question(
     prompt = (
         "A profile question was previously asked to the user:\n"
         f'Question: "{pending_question_content}"\n\n'
-        "Here are the user's recent messages:\n"
+        "Here are the user's most recent messages (newest last):\n"
         f"{user_text}\n\n"
-        "Does any message contain an answer (even partial or indirect) to the question?\n"
-        "IMPORTANT: Answers can be colloquial or indirect. Examples:\n"
-        "  - Question about timezone: 'east coast usa' → User's timezone is US/Eastern (ET)\n"
-        "  - Question about timezone: 'EST' or 'pacific time' → timezone answer\n"
-        "  - Question about location: 'Boston' → User is based in Boston\n"
-        "  - Question about work: 'construction' → User works in construction\n\n"
-        "If YES, respond with JSON:\n"
-        "  For factual information (location, job, timezone, etc.):\n"
-        "    {\"answered\": true, \"insight\": \"User is based in Boston\", \"category\": \"fact\"}\n"
-        "  For preferences or style choices:\n"
-        "    {\"answered\": true, \"insight\": \"User prefers detailed responses\", \"category\": \"preference\"}\n\n"
-        "Choose the category that best matches the answer:\n"
-        "  - 'fact' for verifiable personal information (location, role, timezone, experience, etc.)\n"
-        "  - 'preference' for subjective choices and style (preferred format, communication style, interests, etc.)\n\n"
-        "If NO answer is found, respond with: {\"answered\": false}\n"
+        "Determine if the user ANSWERED the question or REDIRECTED to a different topic.\n\n"
+        "REDIRECTED means the user ignored the question and asked/discussed something "
+        "unrelated. In that case respond: {\"answered\": false}\n\n"
+        "ANSWERED means a message directly or indirectly provides information the question "
+        "was asking for. Answers can be brief or colloquial:\n"
+        "  - 'east coast usa' answers a timezone question → US/Eastern\n"
+        "  - 'Boston' answers a location question\n"
+        "  - 'construction' answers an occupation question\n\n"
+        "If ANSWERED, respond with JSON:\n"
+        "  {\"answered\": true, \"insight\": \"<concise fact>\", \"category\": \"fact\"}\n"
+        "  or {\"answered\": true, \"insight\": \"<preference>\", \"category\": \"preference\"}\n\n"
+        "Categories: 'fact' for verifiable info, 'preference' for subjective choices.\n"
+        "If not answered: {\"answered\": false}\n"
         "Return ONLY valid JSON."
     )
 

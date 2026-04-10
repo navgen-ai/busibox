@@ -564,17 +564,19 @@ Choose the most appropriate single agent for the query.""",
                     current_conversation_id = None
                     if metadata and metadata.get("conversation_id"):
                         current_conversation_id = str(metadata.get("conversation_id"))
-                    if current_conversation_id:
-                        relevant_insights = [
-                            i for i in relevant_insights
-                            if i.get("category") not in _THREAD_SCOPED_CATEGORIES
-                            or str(i.get("conversation_id", "")) == current_conversation_id
-                        ]
-                    else:
-                        relevant_insights = [
-                            i for i in relevant_insights
-                            if i.get("category") not in _THREAD_SCOPED_CATEGORIES
-                        ]
+
+                    def _is_relevant_insight(i: Dict[str, Any]) -> bool:
+                        cat = i.get("category")
+                        if cat not in _THREAD_SCOPED_CATEGORIES:
+                            return True
+                        conv_id = str(i.get("conversation_id", "") or "")
+                        if not conv_id or not current_conversation_id:
+                            return False
+                        return conv_id == current_conversation_id
+
+                    relevant_insights = [
+                        i for i in relevant_insights if _is_relevant_insight(i)
+                    ]
                     
                     if relevant_insights:
                         logger.info(

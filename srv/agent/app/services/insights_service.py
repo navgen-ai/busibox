@@ -361,6 +361,70 @@ class InsightsService:
             logger.info(f"Dedup filtered out {skipped} duplicate insight(s)")
         return deduped
 
+    _SEMANTIC_DEDUP_THRESHOLD = 0.92
+
+    def _find_semantic_duplicates(self, insights: List[ChatInsight]) -> List[ChatInsight]:
+        """Filter out insights that are semantically near-duplicate of existing ones.
+
+        Uses Milvus vector search per insight. When a match with cosine
+        similarity >= threshold is found in the same category, the new insight
+        is dropped (or the existing one is updated if the new text is longer).
+        """
+        if not insights or not self.collection:
+            return insights
+
+        user_ids = list({i.user_id for i in insights})
+        if len(user_ids) != 1:
+            return insights
+        user_id = user_ids[0]
+
+        kept: list[ChatInsight] = []
+        for insight in insights:
+            if not insight.embedding:
+                kept.append(insight)
+                continue
+            try:
+                results = self.collection.search(
+                    data=[insight.embedding],
+                    anns_field="embedding",
+                    param={"metric_type": "COSINE", "params": {"nprobe": 16}},
+                    limit=1,
+                    expr=f'userId == "{user_id}" and category == "{insight.category}"',
+                    output_fields=["id", "content"],
+                )
+                if results and results[0]:
+                    hit = results[0][0]
+                    score = float(hit.score)  # cosine similarity 0..1
+                    if score >= self._SEMANTIC_DEDUP_THRESHOLD:
+                        existing_content = str(hit.entity.get("content", ""))
+                        if len(insight.content) > len(existing_content) + 20:
+                            # New version is substantially richer — update in place
+                            existing_id = str(hit.entity.get("id", ""))
+                            if existing_id:
+                                try:
+                                    self.collection.delete(f'id == "{existing_id}"')
+                                    kept.append(insight)
+                                    logger.info(
+                                        "Semantic dedup: replacing shorter insight (%.2f sim): %s",
+                                        score, existing_content[:60],
+                                    )
+                                    continue
+                                except Exception:
+                                    pass
+                        logger.debug(
+                            "Semantic dedup: skipping near-duplicate (%.2f sim): %s",
+                            score, insight.content[:60],
+                        )
+                        continue
+            except Exception as e:
+                logger.debug("Semantic dedup search failed for one insight: %s", e)
+            kept.append(insight)
+
+        skipped = len(insights) - len(kept)
+        if skipped:
+            logger.info("Semantic dedup filtered out %d near-duplicate insight(s)", skipped)
+        return kept
+
     def insert_insights(self, insights: List[ChatInsight]):
         """
         Insert insights into Milvus, skipping exact duplicates.
@@ -437,6 +501,26 @@ class InsightsService:
         valid_insights = self._find_exact_duplicates(valid_insights)
         if not valid_insights:
             logger.info("All insights filtered as duplicates, nothing to insert")
+            return
+
+        # Semantic near-duplicate dedup (cosine >= 0.92 in same category)
+        valid_insights = self._find_semantic_duplicates(valid_insights)
+        if not valid_insights:
+            logger.info("All insights filtered as semantic duplicates, nothing to insert")
+            return
+
+        # Category validation: goal and context must have a conversation_id
+        validated = []
+        for insight in valid_insights:
+            if insight.category in ("goal", "context") and not insight.conversation_id:
+                logger.warning(
+                    "Rejecting %s insight without conversation_id: %s",
+                    insight.category, insight.content[:60],
+                )
+                continue
+            validated.append(insight)
+        valid_insights = validated
+        if not valid_insights:
             return
         
         # Prepare data for insertion (order must match schema field order)
@@ -906,7 +990,7 @@ class InsightsService:
         except Exception as e:
             logger.debug(f"Collection load (may already be loaded): {e}")
         
-        output_fields = ["category", "conversationId"] if conversation_id else ["category"]
+        output_fields = ["category", "conversationId"]
         results = self.collection.query(
             expr=f'userId == "{user_id}"',
             output_fields=output_fields,
@@ -917,7 +1001,12 @@ class InsightsService:
             results = [
                 r for r in results
                 if r.get("category") not in _THREAD_SCOPED
-                or r.get("conversationId", "") == conversation_id
+                or (r.get("conversationId") and r.get("conversationId") == conversation_id)
+            ]
+        else:
+            results = [
+                r for r in results
+                if r.get("category") not in _THREAD_SCOPED
             ]
         
         counts: Dict[str, int] = {}
