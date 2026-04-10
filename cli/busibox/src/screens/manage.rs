@@ -65,8 +65,8 @@ fn service_to_deploy_version_info(display_name: &str) -> Option<(u32, &'static s
         // API services (busibox repo, .deploy_version)
         "authz"       => Some((210, "/opt/authz/.deploy_version")),
         "agent"       => Some((202, "/opt/agent-api/.deploy_version")),
-        "data"        => Some((206, "/opt/data-api/.deploy_version")),
-        "data-worker" => Some((206, "/opt/data-worker/.deploy_version")),
+        "data"        => Some((206, "/srv/data/.deploy_version_api")),
+        "data-worker" => Some((206, "/srv/data/.deploy_version_worker")),
         "search"      => Some((204, "/opt/search-api/.deploy_version")),
         "deploy"      => Some((210, "/opt/deploy/.deploy_version")),
         "docs"        => Some((202, "/srv/docs/.deploy_version")),
@@ -210,10 +210,11 @@ fn is_upstream_service(name: &str) -> bool {
 }
 
 /// Parse a semver-like version string into (major, minor, patch) for comparison.
-/// Returns None if it can't be parsed.
+/// Strips pre-release/build metadata after `-` or `+` (e.g. `1.82.3-stable.patch.4` -> `1.82.3`).
 fn parse_semver(v: &str) -> Option<(u32, u32, u32)> {
     let v = v.trim().trim_start_matches('v');
-    let parts: Vec<&str> = v.split('.').collect();
+    let base = v.split(['-', '+']).next().unwrap_or(v);
+    let parts: Vec<&str> = base.split('.').collect();
     if parts.len() >= 2 {
         let major = parts[0].parse().ok()?;
         let minor = parts[1].parse().ok()?;
@@ -228,6 +229,29 @@ fn parse_semver(v: &str) -> Option<(u32, u32, u32)> {
 /// within the same major version as `current`.
 pub fn is_upstream_update_available_pub(current: &str, latest: &str) -> bool {
     is_upstream_update_available(current, latest)
+}
+
+/// Returns true if the deployed version does NOT match the available version
+/// (i.e. an update is needed). Handles SHA prefix comparison and upstream semver.
+pub fn compute_needs_update(svc: &crate::app::ServiceStatus) -> bool {
+    if svc.available_version.is_empty() {
+        return false;
+    }
+    if svc.source_repo == "upstream" {
+        if svc.version.is_empty() {
+            return false;
+        }
+        return is_upstream_update_available(&svc.version, &svc.available_version);
+    }
+    // If deployed version is unknown we can't determine update status
+    if svc.version.is_empty() {
+        return false;
+    }
+    let min_len = svc.version.len().min(svc.available_version.len());
+    if min_len < 4 {
+        return false;
+    }
+    svc.version[..min_len] != svc.available_version[..min_len]
 }
 
 fn is_upstream_update_available(current: &str, latest: &str) -> bool {
@@ -559,7 +583,11 @@ pub fn render(f: &mut Frame, app: &App) {
         help_spans.push(Span::styled(" Enter Load  Esc Back", theme::muted()));
     } else {
         let update_count: usize = app.manage_services.iter()
-            .filter(|s| s.needs_update && (s.source_repo != "upstream" || is_busibox_managed_upstream(&s.name)))
+            .filter(|s| {
+                s.needs_update
+                && !["user-apps", "busibox-cli", "core-apps"].contains(&s.name.as_str())
+                && (s.source_repo != "upstream" || is_busibox_managed_upstream(&s.name))
+            })
             .count();
         help_spans.push(Span::styled("f Fetch  u Update  ", theme::muted()));
         if update_count > 0 {
@@ -1769,12 +1797,16 @@ fn run_update_selected(app: &mut App) {
     spawn_update_worker(app, &make_name);
 }
 
-/// Update all services that need updating or have never been deployed.
+/// Update all services that need updating.
 fn run_update_all(app: &mut App) {
+    const EXCLUDED: &[&str] = &["user-apps", "busibox-cli", "core-apps"];
     let services_to_update: Vec<String> = app
         .manage_services
         .iter()
         .filter(|s| {
+            if EXCLUDED.contains(&s.name.as_str()) {
+                return false;
+            }
             if s.source_repo == "upstream" {
                 s.needs_update && is_busibox_managed_upstream(&s.name)
             } else {
@@ -1909,7 +1941,23 @@ fn spawn_update_worker(app: &mut App, service_list: &str) {
         let _ = tx.send(ManageUpdate::Log(format!("Running: make {make_args}")));
 
         let stream_tx = tx.clone();
+        let mut last_line = String::new();
+        let mut censored_count: usize = 0;
         let on_line = move |line: &str| {
+            if line.contains("censored due to no_log") {
+                censored_count += 1;
+                return;
+            }
+            if censored_count > 0 {
+                let _ = stream_tx.send(ManageUpdate::Log(
+                    format!("  ... ({censored_count} censored lines suppressed)")
+                ));
+                censored_count = 0;
+            }
+            if line == last_line {
+                return;
+            }
+            last_line = line.to_string();
             let _ = stream_tx.send(ManageUpdate::Log(format!("  {line}")));
         };
 
@@ -2382,7 +2430,23 @@ fn spawn_action_worker(app: &mut App, service_name: &str, action: &str) {
         let _ = tx.send(ManageUpdate::Log(format!("Running: make {make_args}")));
 
         let stream_tx = tx.clone();
+        let mut last_line_m = String::new();
+        let mut censored_count_m: usize = 0;
         let on_line = move |line: &str| {
+            if line.contains("censored due to no_log") {
+                censored_count_m += 1;
+                return;
+            }
+            if censored_count_m > 0 {
+                let _ = stream_tx.send(ManageUpdate::Log(
+                    format!("  ... ({censored_count_m} censored lines suppressed)")
+                ));
+                censored_count_m = 0;
+            }
+            if line == last_line_m {
+                return;
+            }
+            last_line_m = line.to_string();
             let _ = stream_tx.send(ManageUpdate::Log(format!("  {line}")));
         };
 
@@ -2889,7 +2953,23 @@ pub fn spawn_install_with_env(app: &mut App, services: &str, extra_env: &str) {
         let _ = tx.send(ManageUpdate::Log(format!("Running: make {make_args}")));
 
         let stream_tx = tx.clone();
+        let mut last_line_i = String::new();
+        let mut censored_count_i: usize = 0;
         let on_line = move |line: &str| {
+            if line.contains("censored due to no_log") {
+                censored_count_i += 1;
+                return;
+            }
+            if censored_count_i > 0 {
+                let _ = stream_tx.send(ManageUpdate::Log(
+                    format!("  ... ({censored_count_i} censored lines suppressed)")
+                ));
+                censored_count_i = 0;
+            }
+            if line == last_line_i {
+                return;
+            }
+            last_line_i = line.to_string();
             let _ = stream_tx.send(ManageUpdate::Log(format!("  {line}")));
         };
 

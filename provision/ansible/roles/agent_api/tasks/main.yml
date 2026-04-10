@@ -656,7 +656,6 @@
     group: "{{ agent_api_user }}"
     mode: "0644"
   ignore_errors: true
-  when: agent_deployment_needed
   tags: [agent_api, agent_api_deploy]
 
 - name: Restart agent service (always restart on deploy)

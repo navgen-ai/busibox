@@ -67,7 +67,7 @@ get_ansible_tag() {
 
             # APIs
             authz|authz-api) echo "authz" ;;
-            agent|agent-api) echo "apis_agent" ;;
+            agent|agent-api) echo "agent_api" ;;
             data|ingest|data-api|data-worker) echo "data" ;;
             search|search-api) echo "apis_search" ;;
             deploy|deploy-api) echo "deploy_api" ;;

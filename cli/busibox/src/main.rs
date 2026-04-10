@@ -265,7 +265,7 @@ fn main() -> Result<()> {
                     match rx.try_recv() {
                         Ok(app::ManageUpdate::Log(msg)) => {
                             app.manage_log.push(msg);
-                            const MAX_LOG_LINES: usize = 5000;
+                            const MAX_LOG_LINES: usize = 10000;
                             if app.manage_log.len() > MAX_LOG_LINES {
                                 let excess = app.manage_log.len() - MAX_LOG_LINES;
                                 app.manage_log.drain(..excess);
@@ -296,6 +296,7 @@ fn main() -> Result<()> {
                                 if let Some(t) = deployed_type {
                                     svc.deployed_type = t;
                                 }
+                                svc.needs_update = crate::screens::manage::compute_needs_update(svc);
                             }
                         }
                         Ok(app::ManageUpdate::RemoteVersionResult { repo, available_version, available_ref }) => {
@@ -303,6 +304,7 @@ fn main() -> Result<()> {
                                 if svc.source_repo == repo {
                                     svc.available_version = available_version.clone();
                                     svc.available_ref = available_ref.clone();
+                                    svc.needs_update = crate::screens::manage::compute_needs_update(svc);
                                 }
                             }
                         }
@@ -322,7 +324,11 @@ fn main() -> Result<()> {
                             if let Some(svc) =
                                 app.manage_services.iter_mut().find(|s| s.name == name)
                             {
-                                svc.needs_update = needs_update;
+                                // Only escalate — never clear a needs_update that was
+                                // already set by version comparison.
+                                if needs_update {
+                                    svc.needs_update = true;
+                                }
                             }
                         }
                         Ok(app::ManageUpdate::WaitForConfirm { prompt, response }) => {

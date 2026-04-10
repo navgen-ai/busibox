@@ -74,6 +74,7 @@
   pip:
     name: "litellm{% if litellm_version != 'latest' %}=={{ litellm_version }}{% endif %}[proxy]"
     virtualenv: "{{ litellm_venv_dir }}"
+    state: "{{ 'latest' if litellm_version == 'latest' else 'present' }}"
   become: true
   become_user: "{{ litellm_user }}"
   tags: [litellm_install]
