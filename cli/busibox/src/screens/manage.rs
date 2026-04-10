@@ -75,7 +75,7 @@ fn service_to_deploy_version_info(display_name: &str) -> Option<(u32, &'static s
         // Infrastructure services
         "minio"       => Some((205, "/opt/minio/.deploy_version")),
         "litellm"     => Some((207, "/opt/litellm/.deploy_version")),
-        "bridge"      => Some((211, "/opt/bridge/.deploy_version")),
+        "bridge"      => Some((211, "/srv/bridge/.deploy_version")),
         // Frontend apps (busibox-frontend repo, .deployed-version written by app_deployer)
         "portal"      => Some((201, "/srv/apps/busibox-portal/.deployed-version")),
         "admin"       => Some((201, "/srv/apps/busibox-admin/.deployed-version")),

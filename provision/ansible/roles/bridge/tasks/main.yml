@@ -187,7 +187,7 @@
         "timestamp": "{{ now(utc=true).isoformat() }}",
         "deployed_by": "ansible"
       }
-    dest: /opt/bridge/.deploy_version
+    dest: "{{ bridge_dir }}/.deploy_version"
     owner: "{{ bridge_user }}"
     group: "{{ bridge_group }}"
     mode: "0644"
