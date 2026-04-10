@@ -62,18 +62,28 @@ fn service_to_docker_container(display_name: &str) -> Option<&'static str> {
 /// Production CTIDs are 2xx; staging adds +100 (3xx).
 fn service_to_deploy_version_info(display_name: &str) -> Option<(u32, &'static str)> {
     match display_name {
+        // API services (busibox repo, .deploy_version)
         "authz"       => Some((210, "/opt/authz/.deploy_version")),
         "agent"       => Some((202, "/opt/agent-api/.deploy_version")),
         "data"        => Some((206, "/opt/data-api/.deploy_version")),
         "data-worker" => Some((206, "/opt/data-worker/.deploy_version")),
-        "search"      => Some((206, "/opt/search-api/.deploy_version")),
-        "deploy"      => Some((206, "/opt/deploy/.deploy_version")),
-        "docs"        => Some((206, "/opt/docs-api/.deploy_version")),
-        "embedding"   => Some((202, "/opt/embedding/.deploy_version")),
+        "search"      => Some((204, "/opt/search-api/.deploy_version")),
+        "deploy"      => Some((210, "/opt/deploy/.deploy_version")),
+        "docs"        => Some((202, "/srv/docs/.deploy_version")),
+        "embedding"   => Some((206, "/opt/embedding/.deploy_version")),
         "config"      => Some((210, "/opt/config/.deploy_version")),
+        // Infrastructure services
         "minio"       => Some((205, "/opt/minio/.deploy_version")),
         "litellm"     => Some((207, "/opt/litellm/.deploy_version")),
         "bridge"      => Some((211, "/opt/bridge/.deploy_version")),
+        // Frontend apps (busibox-frontend repo, .deployed-version written by app_deployer)
+        "portal"      => Some((201, "/srv/apps/busibox-portal/.deployed-version")),
+        "admin"       => Some((201, "/srv/apps/busibox-admin/.deployed-version")),
+        "agents"      => Some((201, "/srv/apps/busibox-agents/.deployed-version")),
+        "chat"        => Some((201, "/srv/apps/busibox-chat/.deployed-version")),
+        "appbuilder"  => Some((201, "/srv/apps/busibox-appbuilder/.deployed-version")),
+        "media"       => Some((201, "/srv/apps/busibox-media/.deployed-version")),
+        "documents"   => Some((201, "/srv/apps/busibox-documents/.deployed-version")),
         _ => None,
     }
 }
@@ -216,6 +226,10 @@ fn parse_semver(v: &str) -> Option<(u32, u32, u32)> {
 
 /// Compare two semver versions. Returns true if `latest` is a newer minor/patch
 /// within the same major version as `current`.
+pub fn is_upstream_update_available_pub(current: &str, latest: &str) -> bool {
+    is_upstream_update_available(current, latest)
+}
+
 fn is_upstream_update_available(current: &str, latest: &str) -> bool {
     match (parse_semver(current), parse_semver(latest)) {
         (Some((cmaj, cmin, cpat)), Some((lmaj, lmin, lpat))) => {
@@ -1802,6 +1816,25 @@ fn spawn_update_worker(app: &mut App, service_list: &str) {
     let profile_env: Option<String> = app.active_profile().map(|(_, p)| p.environment.clone());
     let profile_backend: Option<String> = app.active_profile().map(|(_, p)| p.backend.to_lowercase());
 
+    // Capture the local git commit and branch so remote deploys (where .git/ is
+    // not synced) can still write accurate .deploy_version files.
+    let git_commit: Option<String> = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(&repo_root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    let git_branch: Option<String> = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(&repo_root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+
     let ssh_details: Option<(String, String, String)> = if is_remote {
         app.active_profile().and_then(|(_, p)| {
             p.effective_host().map(|h| (
@@ -1867,9 +1900,11 @@ fn spawn_update_worker(app: &mut App, service_list: &str) {
         let vault_prefix_export = profile_vault_prefix.as_deref().map(|vp| format!("VAULT_PREFIX={vp} ")).unwrap_or_default();
         let admin_email_export = profile_admin_email.as_deref().map(|e| format!("ADMIN_EMAIL={e} ")).unwrap_or_default();
         let allowed_domains_export = profile_allowed_email_domains.as_deref().map(|d| format!("ALLOWED_DOMAINS={d} ")).unwrap_or_default();
+        let git_commit_export = git_commit.as_deref().map(|c| format!("GIT_COMMIT={c} ")).unwrap_or_default();
+        let git_branch_export = git_branch.as_deref().map(|b| format!("GIT_BRANCH={b} ")).unwrap_or_default();
 
         let make_args = format!(
-            "{site_domain_export}{llm_backend_export}{vault_prefix_export}{admin_email_export}{allowed_domains_export}install SERVICE={services} ENV={env_val} BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
+            "{site_domain_export}{llm_backend_export}{vault_prefix_export}{admin_email_export}{allowed_domains_export}{git_commit_export}{git_branch_export}install SERVICE={services} ENV={env_val} BUSIBOX_ENV={env_val} BUSIBOX_BACKEND={backend_val}"
         );
         let _ = tx.send(ManageUpdate::Log(format!("Running: make {make_args}")));
 

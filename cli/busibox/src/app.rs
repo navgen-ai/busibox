@@ -331,8 +331,10 @@ pub struct App {
     // Clean install confirmation flow
     pub pending_clean_install_confirm: bool,
     pub clean_install_confirm_input: String,
-    // Update confirmation flow
+    // Update confirmation flow (reserved for future use)
+    #[allow(dead_code)]
     pub pending_update_confirm: bool,
+    #[allow(dead_code)]
     pub update_confirm_input: String,
 
     // Health check state (welcome screen status panel)

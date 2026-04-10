@@ -1528,6 +1528,7 @@ struct AgentChatResult {
     elapsed_ms: f64,
     ttft_ms: f64,
     success: bool,
+    #[allow(dead_code)]
     error: Option<String>,
     prompt_tokens: usize,
     completion_tokens: usize,
@@ -1666,6 +1667,7 @@ struct ConcurrencyStats {
     p95_lat: f64,
     avg_tokens_in: f64,
     avg_tokens_out: f64,
+    #[allow(dead_code)]
     total_completion_tokens: usize,
     system_tps: f64,
     per_user_tps: f64,

@@ -157,6 +157,9 @@ export GITHUB_AUTH_TOKEN
 # Profile-sourced protected config (passed by TUI for vault sync on redeploy)
 export ADMIN_EMAIL
 export ALLOWED_DOMAINS
+# Git metadata from the admin workstation for accurate .deploy_version files
+export GIT_COMMIT
+export GIT_BRANCH
 
 # ============================================================================
 # MAIN MENU (Default)

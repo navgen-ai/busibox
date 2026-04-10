@@ -660,6 +660,7 @@ pub fn build_agent_chat_curl(
 }
 
 /// Build a shell snippet that runs N parallel agent-api chat requests.
+#[allow(dead_code)]
 pub fn build_parallel_agent_chat_command(
     agent_api_url: &str,
     token: &str,

@@ -310,6 +310,11 @@ fn main() -> Result<()> {
                             if let Some(svc) =
                                 app.manage_services.iter_mut().find(|s| s.name == name)
                             {
+                                if !svc.version.is_empty()
+                                    && crate::screens::manage::is_upstream_update_available_pub(&svc.version, &latest_version)
+                                {
+                                    svc.needs_update = true;
+                                }
                                 svc.available_version = latest_version;
                             }
                         }

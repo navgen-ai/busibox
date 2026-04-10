@@ -331,6 +331,15 @@ deploy_service() {
             cmd="${cmd} -e docker_pull_images=true"
         fi
     fi
+
+    # Forward git commit/branch from the admin workstation so .deploy_version
+    # files are accurate even when .git/ is not present on the remote host.
+    if [[ -n "${GIT_COMMIT:-}" ]]; then
+        cmd="${cmd} -e git_deploy_commit=${GIT_COMMIT}"
+    fi
+    if [[ -n "${GIT_BRANCH:-}" ]]; then
+        cmd="${cmd} -e git_deploy_branch=${GIT_BRANCH}"
+    fi
     
     # Vault password: use vault-pass-from-env.sh when ANSIBLE_VAULT_PASSWORD is set.
     # This is the primary mechanism — the CLI injects the env var, and the script echoes it.
