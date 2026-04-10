@@ -142,6 +142,7 @@ pub fn proxmox_make_target(service: &str) -> &str {
         "busibox-agents" => "deploy-busibox-agents",
         "busibox-appbuilder" => "deploy-busibox-appbuilder",
         "nginx" | "proxy" => "nginx",
+        "user-apps" => "user-apps",
         other => other,
     }
 }

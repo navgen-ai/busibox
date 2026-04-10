@@ -341,12 +341,14 @@ async def create_run(
                         for e in (run_record.events or [])
                         if e.get("type") == "tool_call"
                     ]
+                    raw_model = getattr(agent, 'model', None) if agent else None
+                    model_str = str(raw_model) if raw_model is not None and not isinstance(raw_model, str) else raw_model
                     provenance_event = build_run_provenance(
                         run_input=payload,
                         tool_calls=tool_calls,
                         run_output=run_record.output,
                         agent_id=str(agent_id),
-                        model_version=getattr(agent, 'model', None) if agent else None,
+                        model_version=model_str,
                     )
                     run_record.events.append(provenance_event)
                     attributes.flag_modified(run_record, "events")

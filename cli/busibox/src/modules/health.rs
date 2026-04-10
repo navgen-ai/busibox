@@ -261,7 +261,7 @@ const APP_SERVICES: &[ServiceHealthDef] = &[
         check: CheckMethod::Cli {
             command: "docker ps --filter name=^{PREFIX}-user-apps$ --filter status=running --format '{{.Names}}' 2>/dev/null",
         },
-        proxmox_container_id: Some(201),
+        proxmox_container_id: Some(212),
         proxmox_health: None,
     },
     ServiceHealthDef {

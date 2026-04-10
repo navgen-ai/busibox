@@ -685,8 +685,8 @@ class BaseStreamingAgent(StreamingAgent):
 
         - **MLX**: ``extra_body.max_thinking_tokens`` for the custom MLX server's
           ``ThinkingBudgetProcessor`` logits processor.
-        - **vLLM**: ``extra_body.thinking_token_budget`` for vLLM's native hard-limit
-          logits processor, plus ``extra_body.chat_template_kwargs.enable_thinking``.
+        - **vLLM**: ``extra_body.thinking_token_budget`` only when the server has
+          ``--reasoning-config`` set (requires explicit opt-in).
         - **Frontier** (Claude/OpenAI): ``reasoning_effort`` which LiteLLM maps
           to the provider's native effort/reasoning parameter.
         """
@@ -708,16 +708,32 @@ class BaseStreamingAgent(StreamingAgent):
             )
             return
 
+        backend = get_settings().llm_backend.lower()
         budget = self._THINKING_BUDGET_TOKENS.get(
             model_name, self._DEFAULT_THINKING_BUDGET
         )
         extra = model_settings.setdefault("extra_body", {})
-        extra["max_thinking_tokens"] = budget
-        extra["thinking_token_budget"] = budget
-        logger.info(
-            "Thinking settings [local]: model=%s budget=%d tokens",
-            model_name, budget,
-        )
+
+        if backend == "mlx":
+            extra["max_thinking_tokens"] = budget
+            logger.info(
+                "Thinking settings [mlx]: model=%s budget=%d tokens",
+                model_name, budget,
+            )
+        elif backend == "vllm":
+            # vLLM rejects thinking_token_budget unless the server was started
+            # with --reasoning-config.  Skip it to avoid 503 errors.
+            logger.info(
+                "Thinking settings [vllm]: model=%s — skipping thinking_token_budget "
+                "(server requires --reasoning-config)",
+                model_name,
+            )
+        else:
+            extra["max_thinking_tokens"] = budget
+            logger.info(
+                "Thinking settings [%s]: model=%s budget=%d tokens",
+                backend or "unknown", model_name, budget,
+            )
 
     def pipeline_steps(self, query: str, context: AgentContext) -> List[PipelineStep]:
         """

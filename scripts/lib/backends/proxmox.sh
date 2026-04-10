@@ -278,8 +278,14 @@ backend_service_action() {
         start)
             info "Starting ${service}..."
             if [[ -n "$container_ip" ]]; then
-                ssh "root@${container_ip}" "systemctl start ${systemd_service}" 2>/dev/null || error "Failed to start"
-                success "Service started"
+                if [[ "$service" == "user-apps" ]]; then
+                    # user-apps LXC hosts multiple app services — start all enabled
+                    ssh "root@${container_ip}" "systemctl list-unit-files --type=service --state=enabled --no-legend 2>/dev/null | awk '{print \$1}' | grep -v '^ssh' | xargs -r systemctl start" 2>/dev/null || error "Failed to start user app services"
+                    success "User app services started"
+                else
+                    ssh "root@${container_ip}" "systemctl start ${systemd_service}" 2>/dev/null || error "Failed to start"
+                    success "Service started"
+                fi
             else
                 error "Unknown service IP for ${service}"
             fi
@@ -288,8 +294,13 @@ backend_service_action() {
         stop)
             info "Stopping ${service}..."
             if [[ -n "$container_ip" ]]; then
-                ssh "root@${container_ip}" "systemctl stop ${systemd_service}" 2>/dev/null || error "Failed to stop"
-                success "Service stopped"
+                if [[ "$service" == "user-apps" ]]; then
+                    ssh "root@${container_ip}" "systemctl list-unit-files --type=service --state=enabled --no-legend 2>/dev/null | awk '{print \$1}' | grep -v '^ssh' | xargs -r systemctl stop" 2>/dev/null || error "Failed to stop user app services"
+                    success "User app services stopped"
+                else
+                    ssh "root@${container_ip}" "systemctl stop ${systemd_service}" 2>/dev/null || error "Failed to stop"
+                    success "Service stopped"
+                fi
             else
                 error "Unknown service IP for ${service}"
             fi
@@ -298,8 +309,13 @@ backend_service_action() {
         restart)
             info "Restarting ${service}..."
             if [[ -n "$container_ip" ]]; then
-                ssh "root@${container_ip}" "systemctl restart ${systemd_service}" 2>/dev/null || error "Failed to restart"
-                success "Service restarted"
+                if [[ "$service" == "user-apps" ]]; then
+                    ssh "root@${container_ip}" "systemctl list-unit-files --type=service --state=enabled --no-legend 2>/dev/null | awk '{print \$1}' | grep -v '^ssh' | xargs -r systemctl restart" 2>/dev/null || error "Failed to restart user app services"
+                    success "User app services restarted"
+                else
+                    ssh "root@${container_ip}" "systemctl restart ${systemd_service}" 2>/dev/null || error "Failed to restart"
+                    success "Service restarted"
+                fi
             else
                 error "Unknown service IP for ${service}"
             fi
@@ -309,7 +325,12 @@ backend_service_action() {
             info "Showing logs for ${service} (Ctrl+C to exit)..."
             echo ""
             if [[ -n "$container_ip" ]]; then
-                ssh "root@${container_ip}" "journalctl -u ${systemd_service} -f --no-pager -n 100" 2>&1 || echo "Could not get logs for ${service}"
+                if [[ "$service" == "user-apps" ]]; then
+                    # user-apps LXC hosts multiple app services — show all journal output
+                    ssh "root@${container_ip}" "journalctl -f --no-pager -n 100" 2>&1 || echo "Could not get logs for ${service}"
+                else
+                    ssh "root@${container_ip}" "journalctl -u ${systemd_service} -f --no-pager -n 100" 2>&1 || echo "Could not get logs for ${service}"
+                fi
             else
                 echo "ERROR: Unknown service IP for ${service}"
             fi
@@ -317,9 +338,22 @@ backend_service_action() {
 
         status)
             if [[ -n "$container_ip" ]]; then
-                local status
-                status=$(ssh "root@${container_ip}" "systemctl is-active ${systemd_service}" 2>/dev/null || echo "unknown")
-                echo "  ${BOLD}${service}${NC}: ${status}"
+                if [[ "$service" == "user-apps" ]]; then
+                    # user-apps LXC hosts multiple app services — show status of all
+                    echo "  ${BOLD}${service}${NC} (container: ${container_ip}):"
+                    ssh "root@${container_ip}" "systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | grep -v -E '^(ssh|systemd|dbus|cron|getty)'" 2>/dev/null | while IFS= read -r line; do
+                        echo "    $line"
+                    done
+                    local running_count
+                    running_count=$(ssh "root@${container_ip}" "systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | grep -v -E '^(ssh|systemd|dbus|cron|getty)' | wc -l" 2>/dev/null || echo "0")
+                    if [[ "$running_count" -eq 0 ]]; then
+                        echo "    (no user app services running)"
+                    fi
+                else
+                    local status
+                    status=$(ssh "root@${container_ip}" "systemctl is-active ${systemd_service}" 2>/dev/null || echo "unknown")
+                    echo "  ${BOLD}${service}${NC}: ${status}"
+                fi
             else
                 echo "  ${BOLD}${service}${NC}: unknown (no IP mapping)"
             fi
@@ -363,6 +397,14 @@ backend_service_action() {
                             error "Failed to redeploy frontend"
                             return 1
                         fi
+                    fi
+                    ;;
+                user-apps)
+                    # user-apps LXC: re-provision the container prerequisites (Node.js, git, etc.)
+                    # Individual apps are deployed at runtime via the Deploy API.
+                    if ! make user-apps INV="$inventory"; then
+                        error "Failed to redeploy user-apps container"
+                        return 1
                     fi
                     ;;
                 *)

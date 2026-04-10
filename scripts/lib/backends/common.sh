@@ -271,6 +271,7 @@ get_proxmox_make_target() {
         busibox-agents) echo "deploy-busibox-agents" ;;
         busibox-appbuilder) echo "deploy-busibox-appbuilder" ;;
         nginx|proxy) echo "nginx" ;;
+        user-apps) echo "user-apps" ;;
         *) echo "$service" ;;
     esac
 }
