@@ -2330,6 +2330,13 @@ class BaseStreamingAgent(StreamingAgent):
         """
         parts = [self.config.instructions]
 
+        from datetime import datetime as _dt, timezone as _tz
+        now = _dt.now(_tz.utc)
+        parts.append("")
+        parts.append(f"## Current Date and Time")
+        parts.append(f"Today is {now.strftime('%A, %B %d, %Y, %H:%M UTC')}.")
+        parts.append("When the user refers to a month or time period without specifying a year, assume the current year unless context clearly indicates otherwise.")
+
         try:
             skills_prompt = get_skills_service().render_skills_prompt(context.principal)
             if skills_prompt:
