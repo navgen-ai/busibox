@@ -55,17 +55,22 @@ else
   DATA_BASE="/var/lib/data"
 fi
 
-# Track created containers for cleanup on error
+# Track only NEWLY created containers for cleanup on error.
+# Pre-existing containers must never be touched.
 CREATED_CONTAINERS=()
 
 cleanup_on_error() {
+  if [[ ${#CREATED_CONTAINERS[@]} -eq 0 ]]; then
+    echo "No newly created containers to clean up."
+    exit 1
+  fi
   echo ""
   echo "=========================================="
-  echo "Error occurred - cleaning up created containers"
+  echo "Error occurred - cleaning up newly created containers only"
   echo "=========================================="
   for ctid in "${CREATED_CONTAINERS[@]}"; do
     if pct status "$ctid" &>/dev/null; then
-      echo "Removing container $ctid..."
+      echo "Removing newly created container $ctid..."
       pct stop "$ctid" 2>/dev/null || true
       sleep 2
       pct destroy "$ctid" --purge 2>/dev/null || true
@@ -75,12 +80,24 @@ cleanup_on_error() {
   exit 1
 }
 
+# Helper: create container and track only if it was newly created
+create_and_track() {
+  local ctid="$1"
+  local existed=false
+  pct status "$ctid" &>/dev/null && existed=true
+
+  create_ct "$@" || cleanup_on_error
+
+  if ! $existed; then
+    CREATED_CONTAINERS+=("$ctid")
+  fi
+}
+
 # Create data worker container
 # Data needs more memory for Marker models (OCR, layout detection, etc.)
 # With 255GB system RAM available, give it 32GB for comfortable headroom
 MEM_MB_DATA=32768
-create_ct "$CT_DATA" "$IP_DATA" "${PREFIX}data-lxc" unpriv || cleanup_on_error
-CREATED_CONTAINERS+=("$CT_DATA")
+create_and_track "$CT_DATA" "$IP_DATA" "${PREFIX}data-lxc" unpriv
 
 # Increase memory allocation for data container (needs 32GB for Marker models)
 pct set "$CT_DATA" -memory "$MEM_MB_DATA"
@@ -122,8 +139,7 @@ add_data_mount "$CT_DATA" "${DATA_BASE}/redis" "/var/lib/redis" "1" || {
 }
 
 # Create liteLLM container
-create_ct "$CT_LITELLM" "$IP_LITELLM" "${PREFIX}litellm-lxc" unpriv || cleanup_on_error
-CREATED_CONTAINERS+=("$CT_LITELLM")
+create_and_track "$CT_LITELLM" "$IP_LITELLM" "${PREFIX}litellm-lxc" unpriv
 
 echo ""
 echo "=========================================="

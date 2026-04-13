@@ -60,17 +60,22 @@ source "${PCT_DIR}/lib/functions.sh"
 # Validate environment
 validate_env || exit 1
 
-# Track created containers for cleanup on error
+# Track only NEWLY created containers for cleanup on error.
+# Pre-existing containers must never be touched.
 CREATED_CONTAINERS=()
 
 cleanup_on_error() {
+  if [[ ${#CREATED_CONTAINERS[@]} -eq 0 ]]; then
+    echo "No newly created containers to clean up."
+    exit 1
+  fi
   echo ""
   echo "=========================================="
-  echo "Error occurred - cleaning up created containers"
+  echo "Error occurred - cleaning up newly created containers only"
   echo "=========================================="
   for ctid in "${CREATED_CONTAINERS[@]}"; do
     if pct status "$ctid" &>/dev/null; then
-      echo "Removing container $ctid..."
+      echo "Removing newly created container $ctid..."
       pct stop "$ctid" 2>/dev/null || true
       sleep 2
       pct destroy "$ctid" --purge 2>/dev/null || true
@@ -80,29 +85,36 @@ cleanup_on_error() {
   exit 1
 }
 
+# Helper: create container and track only if it was newly created
+create_and_track() {
+  local ctid="$1"
+  local existed=false
+  pct status "$ctid" &>/dev/null && existed=true
+
+  create_ct "$@" || cleanup_on_error
+
+  if ! $existed; then
+    CREATED_CONTAINERS+=("$ctid")
+  fi
+}
+
 # Create proxy container
-create_ct "$CT_PROXY" "$IP_PROXY" "${PREFIX}proxy-lxc" unpriv || cleanup_on_error
-CREATED_CONTAINERS+=("$CT_PROXY")
+create_and_track "$CT_PROXY" "$IP_PROXY" "${PREFIX}proxy-lxc" unpriv
 
 # Create core-apps container (busibox-portal, busibox-agents)
-create_ct "$CT_CORE_APPS" "$IP_CORE_APPS" "${PREFIX}core-apps-lxc" unpriv || cleanup_on_error
-CREATED_CONTAINERS+=("$CT_CORE_APPS")
+create_and_track "$CT_CORE_APPS" "$IP_CORE_APPS" "${PREFIX}core-apps-lxc" unpriv
 
 # Create user-apps container (external/user-deployed apps)
-create_ct "$CT_USER_APPS" "$IP_USER_APPS" "${PREFIX}user-apps-lxc" unpriv || cleanup_on_error
-CREATED_CONTAINERS+=("$CT_USER_APPS")
+create_and_track "$CT_USER_APPS" "$IP_USER_APPS" "${PREFIX}user-apps-lxc" unpriv
 
 # Create custom-services container (custom Docker Compose stacks)
-create_ct "$CT_CUSTOM_SERVICES" "$IP_CUSTOM_SERVICES" "${PREFIX}custom-services-lxc" unpriv || cleanup_on_error
-CREATED_CONTAINERS+=("$CT_CUSTOM_SERVICES")
+create_and_track "$CT_CUSTOM_SERVICES" "$IP_CUSTOM_SERVICES" "${PREFIX}custom-services-lxc" unpriv
 
 # Create agent container
-create_ct "$CT_AGENT" "$IP_AGENT" "${PREFIX}agent-lxc" unpriv || cleanup_on_error
-CREATED_CONTAINERS+=("$CT_AGENT")
+create_and_track "$CT_AGENT" "$IP_AGENT" "${PREFIX}agent-lxc" unpriv
 
 # Create authz container
-create_ct "$CT_AUTHZ" "$IP_AUTHZ" "${PREFIX}authz-lxc" unpriv || cleanup_on_error
-CREATED_CONTAINERS+=("$CT_AUTHZ")
+create_and_track "$CT_AUTHZ" "$IP_AUTHZ" "${PREFIX}authz-lxc" unpriv
 
 echo ""
 echo "=========================================="

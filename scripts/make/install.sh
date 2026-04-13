@@ -21,6 +21,10 @@
 
 set -euo pipefail
 
+# Make exports ENV= into the environment. Perl taint mode (used by pct)
+# considers ENV and BASH_ENV insecure. Unset them early.
+unset ENV BASH_ENV 2>/dev/null || true
+
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"

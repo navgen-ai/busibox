@@ -49,17 +49,22 @@ source "${PCT_DIR}/lib/functions.sh"
 # Validate environment
 validate_env || exit 1
 
-# Track created containers for cleanup on error (same pattern as other create-* scripts)
+# Track only NEWLY created containers for cleanup on error.
+# Pre-existing containers must never be touched.
 CREATED_CONTAINERS=()
 
 cleanup_on_error() {
+  if [[ ${#CREATED_CONTAINERS[@]} -eq 0 ]]; then
+    echo "No newly created containers to clean up."
+    exit 1
+  fi
   echo ""
   echo "=========================================="
-  echo "Error occurred - cleaning up created containers"
+  echo "Error occurred - cleaning up newly created containers only"
   echo "=========================================="
   for ctid in "${CREATED_CONTAINERS[@]}"; do
     if pct status "$ctid" &>/dev/null; then
-      echo "Removing container $ctid..."
+      echo "Removing newly created container $ctid..."
       pct stop "$ctid" 2>/dev/null || true
       sleep 2
       pct destroy "$ctid" --purge 2>/dev/null || true

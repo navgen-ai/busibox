@@ -65,17 +65,22 @@ else
   DATA_BASE="/var/lib/data"
 fi
 
-# Track created containers for cleanup on error
+# Track only NEWLY created containers for cleanup on error.
+# Pre-existing containers must never be touched.
 CREATED_CONTAINERS=()
 
 cleanup_on_error() {
+  if [[ ${#CREATED_CONTAINERS[@]} -eq 0 ]]; then
+    echo "No newly created containers to clean up."
+    exit 1
+  fi
   echo ""
   echo "=========================================="
-  echo "Error occurred - cleaning up created containers"
+  echo "Error occurred - cleaning up newly created containers only"
   echo "=========================================="
   for ctid in "${CREATED_CONTAINERS[@]}"; do
     if pct status "$ctid" &>/dev/null; then
-      echo "Removing container $ctid..."
+      echo "Removing newly created container $ctid..."
       pct stop "$ctid" 2>/dev/null || true
       sleep 2
       pct destroy "$ctid" --purge 2>/dev/null || true
@@ -85,14 +90,25 @@ cleanup_on_error() {
   exit 1
 }
 
+# Helper: create container and track only if it was newly created
+create_and_track() {
+  local ctid="$1"
+  local existed=false
+  pct status "$ctid" &>/dev/null && existed=true
+
+  create_ct "$@" || cleanup_on_error
+
+  if ! $existed; then
+    CREATED_CONTAINERS+=("$ctid")
+  fi
+}
+
 # Create PostgreSQL container
-create_ct "$CT_PG" "$IP_PG" "${PREFIX}pg-lxc" unpriv || cleanup_on_error
-CREATED_CONTAINERS+=("$CT_PG")
+create_and_track "$CT_PG" "$IP_PG" "${PREFIX}pg-lxc" unpriv
 add_data_mount "$CT_PG" "${DATA_BASE}/postgres" "/var/lib/postgresql/data" "0"
 
 # Create Milvus container (privileged for better performance)
-create_ct "$CT_MILVUS" "$IP_MILVUS" "${PREFIX}milvus-lxc" priv || cleanup_on_error
-CREATED_CONTAINERS+=("$CT_MILVUS")
+create_and_track "$CT_MILVUS" "$IP_MILVUS" "${PREFIX}milvus-lxc" priv
 add_data_mount "$CT_MILVUS" "${DATA_BASE}/milvus" "/srv/milvus/data" "0"
 
 # Configure Milvus container for Docker sysctls support
@@ -115,8 +131,7 @@ EOF
 fi
 
 # Create MinIO container (privileged for storage access and Docker sysctls)
-create_ct "$CT_FILES" "$IP_FILES" "${PREFIX}files-lxc" priv || cleanup_on_error
-CREATED_CONTAINERS+=("$CT_FILES")
+create_and_track "$CT_FILES" "$IP_FILES" "${PREFIX}files-lxc" priv
 add_data_mount "$CT_FILES" "${DATA_BASE}/minio" "/srv/minio/data" "0"
 
 # Configure sysctls support for Docker-in-LXC (MinIO container needs to set sysctls)

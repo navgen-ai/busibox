@@ -16,6 +16,10 @@
 #
 set -eo pipefail
 
+# Make exports ENV= into the environment. Perl taint mode (used by pct)
+# considers ENV and BASH_ENV insecure. Unset them early.
+unset ENV BASH_ENV 2>/dev/null || true
+
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -307,12 +311,11 @@ get_service_ctid() {
 }
 
 # Ensure a Proxmox LXC container exists before deploying to it.
-# If missing, runs the idempotent container creation script.
+# Creates just the one missing container via direct pct commands.
 ensure_container_exists() {
     local service="$1"
     local env="$2"
 
-    # Only relevant on Proxmox where pct is available
     if ! command -v pct &>/dev/null; then
         return 0
     fi
@@ -331,27 +334,174 @@ ensure_container_exists() {
     fi
 
     warn "Container $ctid for ${service} does not exist - creating..."
-    local create_script="${REPO_ROOT}/provision/pct/containers/create_lxc_base.sh"
-    if [[ ! -f "$create_script" ]]; then
-        error "Container creation script not found: $create_script"
+
+    # Read vars directly from vars.env without sourcing into current shell
+    local pct_dir="${REPO_ROOT}/provision/pct"
+    local vars_file="${pct_dir}/vars.env"
+    if [[ ! -f "$vars_file" ]]; then
+        error "PCT vars not found: $vars_file"
         return 1
     fi
 
-    local inventory_name
-    case "$env" in
-        staging) inventory_name="staging" ;;
-        *) inventory_name="production" ;;
+    # Extract values we need by sourcing in a subshell
+    local ct_ip ct_name ct_template ct_storage ct_bridge ct_cidr ct_gw ct_mem ct_cpus ct_disk ct_ssh_key
+    eval "$(bash -c "
+        source '$vars_file'
+        if [[ '$env' == 'staging' ]]; then
+            source '${pct_dir}/stage-vars.env'
+        fi
+        echo \"ct_template=\$TEMPLATE\"
+        echo \"ct_storage=\$STORAGE\"
+        echo \"ct_bridge=\$BRIDGE\"
+        echo \"ct_cidr=\$CIDR\"
+        echo \"ct_gw=\$GW\"
+        echo \"ct_mem=\$MEM_MB\"
+        echo \"ct_cpus=\$CPUS\"
+        echo \"ct_disk=\$DISK_GB\"
+        echo \"ct_ssh_key=\$SSH_PUBKEY_PATH\"
+    ")"
+
+    # Determine container IP and name from the CT ID
+    local ip name priv="unpriv"
+    local prefix=""
+    if [[ "$env" == "staging" ]]; then
+        prefix="STAGE-"
+        eval "$(bash -c "
+            source '${pct_dir}/vars.env'
+            source '${pct_dir}/stage-vars.env'
+            case $base_ctid in
+                200) echo 'ip='\$IP_PROXY_STAGING ;;
+                201) echo 'ip='\$IP_CORE_APPS_STAGING ;;
+                202) echo 'ip='\$IP_AGENT_STAGING ;;
+                203) echo 'ip='\$IP_PG_STAGING ;;
+                204) echo 'ip='\$IP_MILVUS_STAGING ;;
+                205) echo 'ip='\$IP_FILES_STAGING ;;
+                206) echo 'ip='\$IP_DATA_STAGING ;;
+                207) echo 'ip='\$IP_LITELLM_STAGING ;;
+                208) echo 'ip='\$IP_VLLM_STAGING ;;
+                210) echo 'ip='\$IP_AUTHZ_STAGING ;;
+                211) echo 'ip='\$IP_BRIDGE_STAGING ;;
+                212) echo 'ip='\$IP_USER_APPS_STAGING ;;
+                213) echo 'ip='\$IP_NEO4J_STAGING ;;
+                214) echo 'ip='\$IP_CUSTOM_SERVICES_STAGING ;;
+            esac
+        ")"
+    else
+        eval "$(bash -c "
+            source '${pct_dir}/vars.env'
+            case $base_ctid in
+                200) echo 'ip='\$IP_PROXY ;;
+                201) echo 'ip='\$IP_CORE_APPS ;;
+                202) echo 'ip='\$IP_AGENT ;;
+                203) echo 'ip='\$IP_PG ;;
+                204) echo 'ip='\$IP_MILVUS ;;
+                205) echo 'ip='\$IP_FILES ;;
+                206) echo 'ip='\$IP_DATA ;;
+                207) echo 'ip='\$IP_LITELLM ;;
+                208) echo 'ip='\$IP_VLLM ;;
+                210) echo 'ip='\$IP_AUTHZ ;;
+                211) echo 'ip='\$IP_BRIDGE ;;
+                212) echo 'ip='\$IP_USER_APPS ;;
+                213) echo 'ip='\$IP_NEO4J ;;
+                214) echo 'ip='\$IP_CUSTOM_SERVICES ;;
+            esac
+        ")"
+    fi
+
+    case "$base_ctid" in
+        200) name="${prefix}proxy-lxc" ;;
+        201) name="${prefix}core-apps-lxc" ;;
+        202) name="${prefix}agent-lxc" ;;
+        203) name="${prefix}pg-lxc" ;;
+        204) name="${prefix}milvus-lxc" ;;
+        205) name="${prefix}files-lxc" ;;
+        206) name="${prefix}data-lxc" ;;
+        207) name="${prefix}litellm-lxc" ;;
+        208) name="${prefix}vllm-lxc"; priv="priv" ;;
+        210) name="${prefix}authz-lxc" ;;
+        211) name="${prefix}bridge-lxc" ;;
+        212) name="${prefix}user-apps-lxc" ;;
+        213) name="${prefix}neo4j-lxc" ;;
+        214) name="${prefix}custom-services-lxc" ;;
+        *)   error "Unknown container ID: $base_ctid"; return 1 ;;
     esac
 
-    if bash "$create_script" "$inventory_name" 2>&1 | grep -E "(Creating|Starting|Skipping|ERROR|SUCCESS|Step|already exists)" ; then
-        if pct status "$ctid" &>/dev/null; then
-            success "Container $ctid created for ${service}"
-            sleep 2
-            return 0
+    if [[ -z "${ip:-}" ]]; then
+        error "Could not resolve IP for container $ctid"
+        return 1
+    fi
+
+    info "Creating $name ($ctid) at $ip..."
+
+    # Build pct create args — same as create_ct in functions.sh
+    local pct_args=(
+        "$ctid" "$ct_template"
+        -hostname "$name"
+        -net0 "name=eth0,bridge=${ct_bridge},ip=${ip}${ct_cidr},gw=${ct_gw}"
+        -storage "$ct_storage"
+        -memory "$ct_mem" -cores "$ct_cpus"
+        -rootfs "${ct_storage}:${ct_disk}"
+        -features nesting=1,keyctl=1
+        -onboot 1 -start 1
+    )
+    if [[ "$priv" == "priv" ]]; then
+        pct_args+=(-unprivileged 0)
+    fi
+    if [[ -f "$ct_ssh_key" ]]; then
+        pct_args+=(-ssh-public-keys "$ct_ssh_key")
+    fi
+
+    if ! pct create "${pct_args[@]}"; then
+        # Retry without SSH key if that was the failure
+        if [[ -f "$ct_ssh_key" ]]; then
+            warn "pct create failed with SSH key, retrying without..."
+            pct_args=("${pct_args[@]/-ssh-public-keys/}")
+            # Rebuild without ssh key
+            pct_args=(
+                "$ctid" "$ct_template"
+                -hostname "$name"
+                -net0 "name=eth0,bridge=${ct_bridge},ip=${ip}${ct_cidr},gw=${ct_gw}"
+                -storage "$ct_storage"
+                -memory "$ct_mem" -cores "$ct_cpus"
+                -rootfs "${ct_storage}:${ct_disk}"
+                -features nesting=1,keyctl=1
+                -onboot 1 -start 1
+            )
+            if [[ "$priv" == "priv" ]]; then
+                pct_args+=(-unprivileged 0)
+            fi
+            if ! pct create "${pct_args[@]}"; then
+                error "Failed to create container $ctid even without SSH key"
+                return 1
+            fi
+            # Inject SSH key manually after creation
+            warn "Injecting SSH key into container manually..."
+            pct start "$ctid" 2>/dev/null || true
+            sleep 3
+            pct exec "$ctid" -- mkdir -p /root/.ssh
+            pct exec "$ctid" -- chmod 700 /root/.ssh
+            pct exec "$ctid" -- bash -c "cat > /root/.ssh/authorized_keys" < "$ct_ssh_key"
+            pct exec "$ctid" -- chmod 600 /root/.ssh/authorized_keys
+        else
+            error "Failed to create container $ctid"
+            return 1
         fi
     fi
 
-    error "Failed to create container $ctid for ${service}"
+    # Post-create setup (same as create_ct in functions.sh)
+    echo "lxc.cgroup2.devices.allow: c 10:200 rwm" >> "/etc/pve/lxc/${ctid}.conf"
+    echo "lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file" >> "/etc/pve/lxc/${ctid}.conf"
+
+    pct start "$ctid" 2>/dev/null || true
+    sleep 3
+    pct exec "$ctid" -- bash -lc "apt update && apt install -y curl ca-certificates sudo gnupg ufw" || true
+
+    if pct status "$ctid" &>/dev/null; then
+        success "Container $ctid ($name) created and running"
+        return 0
+    fi
+
+    error "Container $ctid created but not running"
     return 1
 }
 

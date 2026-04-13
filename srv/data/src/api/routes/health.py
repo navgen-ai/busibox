@@ -6,16 +6,19 @@ Checks connectivity to all dependencies:
 - MinIO
 - Redis
 - Milvus
+- Neo4j
 - liteLLM
 
 Returns status: healthy (all up), degraded (some down), unhealthy (critical down)
 """
 
+import hashlib
+import os
 import time
-from typing import Dict, Optional
+from typing import Dict
 
 import structlog
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 
 from api.services.minio_service import MinIOService
@@ -101,7 +104,6 @@ async def check_redis() -> Dict[str, any]:
 async def check_milvus() -> Dict[str, any]:
     """Check Milvus connectivity with timeout protection."""
     import asyncio
-    import concurrent.futures
     
     def _check_milvus_sync():
         """Synchronous Milvus check to be run in executor."""
@@ -118,8 +120,7 @@ async def check_milvus() -> Dict[str, any]:
                 timeout=2,
             )
             
-            # Check if collections exist
-            collections = utility.list_collections()
+            collections = utility.list_collections(using="health_check")
             connections.disconnect("health_check")
             
             response_time = round((time.time() - start) * 1000, 2)
@@ -182,8 +183,35 @@ async def check_litellm() -> Dict[str, any]:
         }
 
 
+async def check_neo4j(request: Request | None = None) -> Dict[str, any]:
+    """Check Neo4j connectivity via graph service singleton."""
+    try:
+        graph_service = None
+        if request:
+            graph_service = getattr(request.app.state, "graph_service", None)
+
+        if not graph_service:
+            uri = os.getenv("NEO4J_URI", "")
+            if not uri:
+                return {"status": "not_configured", "reason": "NEO4J_URI not set"}
+            return {"status": "unavailable", "reason": "graph service not initialized"}
+
+        if not graph_service.available:
+            return {"status": "unavailable", "reason": "connection failed at startup"}
+
+        start = time.time()
+        await graph_service._driver.verify_connectivity()
+        response_time = round((time.time() - start) * 1000, 2)
+        return {
+            "status": "healthy",
+            "response_time_ms": response_time,
+        }
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}
+
+
 @router.get("")
-async def health_check():
+async def health_check(request: Request):
     """
     Health check endpoint.
     
@@ -195,6 +223,7 @@ async def health_check():
         "minio": await check_minio(),
         "redis": await check_redis(),
         "milvus": await check_milvus(),
+        "neo4j": await check_neo4j(request),
         "litellm": await check_litellm(),
     }
     
@@ -228,4 +257,69 @@ async def health_check():
         status_code=http_status,
         content=response_data,
     )
+
+
+def _secret_fingerprint(value: str | None) -> str:
+    """SHA256 prefix of a secret value for comparison without exposing it."""
+    if not value:
+        return "empty"
+    return hashlib.sha256(value.encode()).hexdigest()[:12]
+
+
+@router.get("/secrets")
+async def secrets_check():
+    """
+    Reports the status of deployed secrets.
+
+    Returns for each secret:
+    - whether it is set
+    - whether it uses an insecure/default value
+    - a SHA256 fingerprint (first 12 hex chars) for comparing against vault
+    - the configured host/endpoint (non-secret) for infrastructure vars
+
+    Does NOT return actual secret values.
+    """
+    try:
+        from busibox_common.secrets import is_insecure_value
+    except ImportError:
+        is_insecure_value = lambda v: not v  # noqa: E731
+
+    secret_vars = {
+        "POSTGRES_PASSWORD": os.getenv("POSTGRES_PASSWORD"),
+        "MINIO_ACCESS_KEY": os.getenv("MINIO_ACCESS_KEY") or os.getenv("MINIO_USER"),
+        "MINIO_SECRET_KEY": os.getenv("MINIO_SECRET_KEY") or os.getenv("MINIO_PASS"),
+        "NEO4J_PASSWORD": os.getenv("NEO4J_PASSWORD"),
+        "LITELLM_API_KEY": os.getenv("LITELLM_API_KEY"),
+    }
+
+    infra_vars = {
+        "POSTGRES_HOST": os.getenv("POSTGRES_HOST", "not set"),
+        "MINIO_ENDPOINT": os.getenv("MINIO_ENDPOINT", "not set"),
+        "MILVUS_HOST": os.getenv("MILVUS_HOST", "not set"),
+        "NEO4J_URI": os.getenv("NEO4J_URI", "not set"),
+        "LITELLM_BASE_URL": os.getenv("LITELLM_BASE_URL", "not set"),
+        "REDIS_HOST": os.getenv("REDIS_HOST", "not set"),
+        "AUTHZ_BASE_URL": os.getenv("AUTHZ_BASE_URL", "not set"),
+        "EMBEDDING_API_URL": os.getenv("EMBEDDING_API_URL", "not set"),
+    }
+
+    secrets_status = {}
+    insecure_count = 0
+    for name, value in secret_vars.items():
+        is_set = bool(value)
+        insecure = is_insecure_value(value)
+        if insecure:
+            insecure_count += 1
+        secrets_status[name] = {
+            "set": is_set,
+            "insecure": insecure,
+            "fingerprint": _secret_fingerprint(value) if is_set else None,
+        }
+
+    return JSONResponse(content={
+        "secrets": secrets_status,
+        "infrastructure": infra_vars,
+        "insecure_count": insecure_count,
+        "total_secrets": len(secret_vars),
+    })
 
