@@ -77,11 +77,11 @@ backend_get_services_for_group() {
             ;;
         "Frontend")
             if [[ "$backend" == "docker" ]]; then
-                echo "core-apps user-apps"
+                echo "core-apps user-apps custom-services"
             elif [[ "$backend" == "k8s" ]]; then
                 echo "proxy"
             else
-                echo "core-apps user-apps"
+                echo "core-apps user-apps custom-services"
             fi
             ;;
         "User Apps"|"User_Apps")
@@ -149,6 +149,9 @@ get_container_for_service() {
 
         # User apps
         user-apps) echo "user-apps" ;;
+
+        # Custom services (Docker Compose stacks)
+        custom-services) echo "custom-services" ;;
 
         # Build (K8s only)
         build-server) echo "build-server" ;;
@@ -241,6 +244,7 @@ get_ansible_tag() {
         neo4j|graph) echo "neo4j" ;;
         core-apps|apps|busibox-portal|busibox-admin|busibox-agents|busibox-chat|busibox-appbuilder|busibox-media|busibox-documents) echo "core-apps" ;;
         nginx|proxy) echo "nginx" ;;
+        custom-services) echo "custom_services" ;;
         *) echo "$service" ;;
     esac
 }
@@ -272,6 +276,7 @@ get_proxmox_make_target() {
         busibox-appbuilder) echo "deploy-busibox-appbuilder" ;;
         nginx|proxy) echo "nginx" ;;
         user-apps) echo "user-apps" ;;
+        custom-services) echo "custom_services" ;;
         *) echo "$service" ;;
     esac
 }

@@ -265,6 +265,15 @@ const APP_SERVICES: &[ServiceHealthDef] = &[
         proxmox_health: None,
     },
     ServiceHealthDef {
+        name: "custom-services",
+        group: "Apps",
+        check: CheckMethod::Cli {
+            command: "docker ps --filter name=^{PREFIX}-custom-services$ --filter status=running --format '{{.Names}}' 2>/dev/null",
+        },
+        proxmox_container_id: Some(214),
+        proxmox_health: None, // ping-only: container runs Docker, no single health endpoint
+    },
+    ServiceHealthDef {
         name: "portal",
         group: "Apps",
         check: CheckMethod::Cli {

@@ -21,7 +21,7 @@
 #   bash provision/pct/create_lxc_base.sh staging --with-ollama   # Staging with Ollama
 #
 # Containers Created (in order):
-#   1. Core Services:    proxy, apps, agent, authz, user-apps
+#   1. Core Services:    proxy, apps, agent, authz, user-apps, custom-services
 #   2. Data Services:    postgres, milvus, minio
 #   3. Graph Service:    neo4j
 #   4. Worker Services:  data, litellm

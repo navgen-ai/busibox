@@ -413,6 +413,7 @@ fn get_all_services(app: &App) -> Vec<(&'static str, String, &'static str)> {
     services.push(("Frontend", "proxy".to_string(), "upstream"));
     services.push(("Frontend", "core-apps".to_string(), "busibox-frontend"));
     services.push(("Frontend", "user-apps".to_string(), "busibox"));
+    services.push(("Frontend", "custom-services".to_string(), "busibox"));
     services.push(("Frontend", "portal".to_string(), "busibox-frontend"));
     services.push(("Frontend", "admin".to_string(), "busibox-frontend"));
     services.push(("Frontend", "agents".to_string(), "busibox-frontend"));
@@ -455,6 +456,7 @@ fn service_to_source_paths(name: &str) -> Vec<&'static str> {
         "media" => vec!["apps/media/"],
         "documents" => vec!["apps/documents/"],
         "core-apps" => vec!["apps/", "packages/"],
+        "custom-services" => vec!["provision/ansible/roles/custom_services/"],
         "busibox-cli" => vec!["cli/"],
         _ => vec![],
     }

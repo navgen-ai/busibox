@@ -281,6 +281,7 @@ async def exchange_token_zero_trust(
     scopes: str = "",
     authz_url: Optional[str] = None,
     use_cache: bool = True,
+    resource_id: Optional[str] = None,
 ) -> Optional[TokenExchangeResult]:
     """
     Exchange a user's token for a downstream service token (Zero Trust).
@@ -300,13 +301,18 @@ async def exchange_token_zero_trust(
         scopes: Requested scopes (optional, scopes come from RBAC)
         authz_url: Token endpoint URL (defaults to env var AUTHZ_TOKEN_URL)
         use_cache: Whether to cache tokens (default True)
+        resource_id: App UUID for app-scoped tokens. When set, authz includes
+                     only app-bound roles so the downstream token can access
+                     app-specific data documents.
         
     Returns:
         TokenExchangeResult with access_token and expires_in, or None if exchange fails
     """
+    cache_suffix = f":{resource_id}" if resource_id else ""
+
     # Check cache first
     if use_cache:
-        cache_key = f"zt:{user_id}:{target_audience}"
+        cache_key = f"zt:{user_id}:{target_audience}{cache_suffix}"
         cached_result = _zero_trust_cache.get(cache_key)
         if cached_result:
             logger.debug(
@@ -329,16 +335,20 @@ async def exchange_token_zero_trust(
             target_audience=target_audience,
         )
         
+        exchange_data: Dict[str, str] = {
+            "grant_type": TOKEN_EXCHANGE_GRANT,
+            "subject_token": subject_token,
+            "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+            "audience": target_audience,
+            "scope": scopes,
+        }
+        if resource_id:
+            exchange_data["resource_id"] = resource_id
+
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
                 token_url,
-                data={
-                    "grant_type": TOKEN_EXCHANGE_GRANT,
-                    "subject_token": subject_token,
-                    "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
-                    "audience": target_audience,
-                    "scope": scopes,
-                },
+                data=exchange_data,
             )
             
             if response.status_code != 200:
@@ -367,7 +377,7 @@ async def exchange_token_zero_trust(
                 
                 # Cache the token
                 if use_cache:
-                    cache_key = f"zt:{user_id}:{target_audience}"
+                    cache_key = f"zt:{user_id}:{target_audience}{cache_suffix}"
                     _zero_trust_cache[cache_key] = result
                 
                 return result

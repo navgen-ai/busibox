@@ -24,3 +24,4 @@ class Principal(BaseModel):
     roles: List[str] = Field(default_factory=list)
     scopes: List[str] = Field(default_factory=list)
     token: Optional[str] = None
+    app_id: Optional[str] = None

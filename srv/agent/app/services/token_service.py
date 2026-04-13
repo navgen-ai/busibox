@@ -81,7 +81,10 @@ async def get_or_exchange_token(
     now_naive = now.replace(tzinfo=None)
 
     audience = _audience_for_purpose(purpose, scopes)
-    scopes_key = _normalize_scopes(scopes + [f"aud:{audience}"])
+    extra_tags = [f"aud:{audience}"]
+    if principal.app_id:
+        extra_tags.append(f"app:{principal.app_id}")
+    scopes_key = _normalize_scopes(scopes + extra_tags)
     scopes_out = _normalize_scopes(scopes)
 
     # Try the caller-provided session first

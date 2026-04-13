@@ -87,6 +87,9 @@ get_ansible_tag() {
             # User apps
             user-apps) echo "user_apps" ;;
 
+            # Custom services (Docker Compose stacks)
+            custom-services) echo "custom_services" ;;
+
             # Unknown
             *) echo "" ;;
         esac
@@ -121,6 +124,9 @@ get_ansible_tag() {
 
             # User apps
             user-apps) echo "user-apps" ;;
+
+            # Custom services (Docker Compose stacks)
+            custom-services) echo "custom_services" ;;
 
             # Unknown
             *) echo "" ;;
@@ -275,6 +281,78 @@ get_container_prefix() {
         production) echo "prod" ;;
         *) echo "dev" ;;
     esac
+}
+
+# Map a service to its expected Proxmox container ID (production base).
+# Returns empty string for services that don't have a dedicated LXC.
+get_service_ctid() {
+    local service="$1"
+    case "$service" in
+        nginx|proxy) echo "200" ;;
+        core-apps|apps) echo "201" ;;
+        agent|agent-api) echo "202" ;;
+        postgres|pg) echo "203" ;;
+        milvus) echo "204" ;;
+        minio|files) echo "205" ;;
+        data|ingest|data-api|data-worker) echo "206" ;;
+        litellm) echo "207" ;;
+        vllm) echo "208" ;;
+        authz|authz-api) echo "210" ;;
+        bridge|bridge-api) echo "211" ;;
+        user-apps) echo "212" ;;
+        neo4j|graph) echo "213" ;;
+        custom-services) echo "214" ;;
+        *) echo "" ;;
+    esac
+}
+
+# Ensure a Proxmox LXC container exists before deploying to it.
+# If missing, runs the idempotent container creation script.
+ensure_container_exists() {
+    local service="$1"
+    local env="$2"
+
+    # Only relevant on Proxmox where pct is available
+    if ! command -v pct &>/dev/null; then
+        return 0
+    fi
+
+    local base_ctid
+    base_ctid=$(get_service_ctid "$service")
+    [[ -z "$base_ctid" ]] && return 0
+
+    local ctid="$base_ctid"
+    if [[ "$env" == "staging" ]]; then
+        ctid=$((base_ctid + 100))
+    fi
+
+    if pct status "$ctid" &>/dev/null; then
+        return 0
+    fi
+
+    warn "Container $ctid for ${service} does not exist - creating..."
+    local create_script="${REPO_ROOT}/provision/pct/containers/create_lxc_base.sh"
+    if [[ ! -f "$create_script" ]]; then
+        error "Container creation script not found: $create_script"
+        return 1
+    fi
+
+    local inventory_name
+    case "$env" in
+        staging) inventory_name="staging" ;;
+        *) inventory_name="production" ;;
+    esac
+
+    if bash "$create_script" "$inventory_name" 2>&1 | grep -E "(Creating|Starting|Skipping|ERROR|SUCCESS|Step|already exists)" ; then
+        if pct status "$ctid" &>/dev/null; then
+            success "Container $ctid created for ${service}"
+            sleep 2
+            return 0
+        fi
+    fi
+
+    error "Failed to create container $ctid for ${service}"
+    return 1
 }
 
 # Deploy a single service
@@ -602,6 +680,14 @@ main() {
             error "Unknown service: $service"
             failed_services="${failed_services} ${service}"
             continue
+        fi
+
+        # On Proxmox, ensure the target LXC exists before Ansible tries to reach it
+        if [[ "$backend" == "proxmox" ]]; then
+            if ! ensure_container_exists "$service" "$env"; then
+                failed_services="${failed_services} ${service}"
+                continue
+            fi
         fi
         
         if deploy_service "$service" "$env" "$backend" "$inventory" "$prefix"; then

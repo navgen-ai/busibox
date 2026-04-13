@@ -46,7 +46,7 @@ pub fn services_for_group(group: &str, backend: &str, is_mlx: bool) -> Vec<&'sta
             if backend == "k8s" {
                 vec!["proxy"]
             } else {
-                vec!["core-apps", "user-apps"]
+                vec!["core-apps", "user-apps", "custom-services"]
             }
         }
         _ => vec![],
@@ -86,6 +86,7 @@ pub fn container_for_service(service: &str) -> Option<&'static str> {
         "nginx" | "proxy" => Some("proxy"),
 
         "user-apps" => Some("user-apps"),
+        "custom-services" => Some("custom-services"),
 
         "build-server" => Some("build-server"),
         "registry" => Some("registry"),
@@ -114,6 +115,7 @@ pub fn ansible_tag(service: &str) -> &str {
         | "busibox-agents" | "busibox-chat" | "busibox-appbuilder"
         | "busibox-media" | "busibox-documents" => "core-apps",
         "nginx" | "proxy" => "nginx",
+        "custom-services" => "custom_services",
         other => other,
     }
 }
@@ -143,6 +145,7 @@ pub fn proxmox_make_target(service: &str) -> &str {
         "busibox-appbuilder" => "deploy-busibox-appbuilder",
         "nginx" | "proxy" => "nginx",
         "user-apps" => "user-apps",
+        "custom-services" => "custom_services",
         other => other,
     }
 }

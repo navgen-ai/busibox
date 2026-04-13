@@ -15,7 +15,8 @@ async def exchange_token_zero_trust(
     subject_token: str,
     target_audience: str,
     user_id: str,
-    scopes: Optional[str] = ""
+    scopes: Optional[str] = "",
+    resource_id: Optional[str] = None,
 ) -> Optional[str]:
     """
     Exchange a user's token for a downstream service token (Zero Trust).
@@ -28,6 +29,7 @@ async def exchange_token_zero_trust(
         target_audience: Target service audience (e.g., "data-api")
         user_id: User ID for logging purposes
         scopes: Requested scopes (optional, scopes come from RBAC)
+        resource_id: App UUID for app-scoped tokens (optional)
         
     Returns:
         Access token string, or None if exchange fails
@@ -40,4 +42,5 @@ async def exchange_token_zero_trust(
         user_id=user_id,
         scopes=scopes or "",
         authz_url=str(settings.auth_token_url),
+        resource_id=resource_id,
     )

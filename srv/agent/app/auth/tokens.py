@@ -111,6 +111,7 @@ async def validate_bearer(token: str) -> Principal:
         roles=_extract_roles(payload),
         email=payload.get("email"),
         token=token,
+        app_id=payload.get("app_id"),
     )
 
 
@@ -122,6 +123,10 @@ async def exchange_token(
     
     Uses the user's JWT as subject_token - NO client credentials required.
     Tokens are audience-bound to a single downstream service.
+    
+    When the principal carries an app_id (from an app-scoped incoming token),
+    it is forwarded as resource_id so that authz includes the correct
+    app-bound roles in the downstream token.
     
     Args:
         principal: The authenticated user's principal (must include their JWT token)
@@ -146,6 +151,7 @@ async def exchange_token(
         user_id=principal.sub,
         scopes=" ".join(scopes),
         authz_url=str(settings.auth_token_url),
+        resource_id=principal.app_id,
     )
     
     if not result:

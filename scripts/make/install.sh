@@ -2392,8 +2392,8 @@ bootstrap_proxmox_ansible() {
             # Note: vLLM (208) is always created in production, but optional in staging
             # (staging can use production vLLM via use_production_vllm flag)
             # Neo4j runs in dedicated LXC: 213 (prod), 313 (staging)
-            production) expected_ctids=(200 201 202 203 204 205 206 207 208 210 211 212 213) ;;
-            staging)    expected_ctids=(300 301 302 303 304 305 306 307 310 311 312 313) ;;
+            production) expected_ctids=(200 201 202 203 204 205 206 207 208 210 211 212 213 214) ;;
+            staging)    expected_ctids=(300 301 302 303 304 305 306 307 310 311 312 313 314) ;;
         esac
         
         for ctid in "${expected_ctids[@]}"; do

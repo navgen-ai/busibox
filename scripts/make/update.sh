@@ -461,6 +461,7 @@ check_missing_containers_proxmox() {
             "307:${prefix}litellm-lxc"
             "310:${prefix}authz-lxc"
             "312:${prefix}user-apps-lxc"
+            "314:${prefix}custom-services-lxc"
         )
     else
         # Production
@@ -475,6 +476,7 @@ check_missing_containers_proxmox() {
             "207:litellm-lxc"
             "210:authz-lxc"
             "212:user-apps-lxc"
+            "214:custom-services-lxc"
         )
     fi
     
