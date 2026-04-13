@@ -221,6 +221,23 @@ fn is_upstream_service(name: &str) -> bool {
     UPSTREAM_SERVICES.iter().any(|u| u.name == name)
 }
 
+/// Returns true if the version string looks like a pre-release (RC, alpha, beta, nightly, dev).
+/// Handles both hyphen-separated (`1.2.3-rc.1`) and dot-separated (`1.2.3.rc.1`) conventions.
+fn is_prerelease_version(v: &str) -> bool {
+    let lower = v.to_lowercase();
+    // Check for common pre-release indicators anywhere in the version string
+    for marker in &["rc", "alpha", "beta", "nightly", "dev", "pre", "snapshot", "canary"] {
+        // Match as a distinct segment: preceded by `.` or `-` and followed by `.`, `-`, digit, or end
+        for sep in &['.', '-', '_'] {
+            let with_sep = format!("{sep}{marker}");
+            if lower.contains(&with_sep) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Parse a semver-like version string into (major, minor, patch) for comparison.
 /// Strips pre-release/build metadata after `-` or `+` (e.g. `1.82.3-stable.patch.4` -> `1.82.3`).
 fn parse_semver(v: &str) -> Option<(u32, u32, u32)> {
@@ -1495,9 +1512,10 @@ fn fetch_upstream_latest_versions(
     }
 }
 
-/// Fetch the latest release tag from a GitHub repo.
-/// Returns the version string with the tag prefix stripped.
+/// Fetch the latest stable release tag from a GitHub repo.
+/// Skips pre-releases, RCs, alphas, betas, nightlies, etc.
 fn fetch_github_latest_release(repo: &str, tag_prefix: &str, name: &str) -> Option<String> {
+    // First try /releases/latest (fast path)
     let url = format!("https://api.github.com/repos/{repo}/releases/latest");
     let output = std::process::Command::new("curl")
         .args([
@@ -1507,12 +1525,23 @@ fn fetch_github_latest_release(repo: &str, tag_prefix: &str, name: &str) -> Opti
         ])
         .output()
         .ok()?;
-    if !output.status.success() {
-        // Fallback: try tags endpoint for repos that don't use GitHub Releases
-        return fetch_github_latest_tag(repo, tag_prefix, name);
+
+    if output.status.success() {
+        let body = String::from_utf8_lossy(&output.stdout);
+        if let Some(version) = parse_release_version(&body, tag_prefix, name) {
+            if !is_prerelease_version(&version) {
+                return Some(version);
+            }
+        }
     }
-    let body = String::from_utf8_lossy(&output.stdout);
-    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+
+    // /releases/latest returned a pre-release or failed — scan recent releases
+    fetch_github_latest_stable_from_releases(repo, tag_prefix, name)
+}
+
+/// Parse a version string from a GitHub release JSON response.
+fn parse_release_version(body: &str, tag_prefix: &str, name: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
     let tag = v.get("tag_name")?.as_str()?;
 
     let version = if !tag_prefix.is_empty() {
@@ -1520,7 +1549,6 @@ fn fetch_github_latest_release(repo: &str, tag_prefix: &str, name: &str) -> Opti
     } else {
         tag
     };
-    // Special case for postgres: REL_16_4 -> 16.4
     let version = if name == "postgres" {
         version.replace('_', ".")
     } else {
@@ -1529,9 +1557,59 @@ fn fetch_github_latest_release(repo: &str, tag_prefix: &str, name: &str) -> Opti
     if version.is_empty() { None } else { Some(version) }
 }
 
-/// Fallback: fetch the latest tag (sorted semver) from a GitHub repo.
+/// Scan recent GitHub releases (up to 20) and return the highest semver that isn't a pre-release.
+fn fetch_github_latest_stable_from_releases(repo: &str, tag_prefix: &str, name: &str) -> Option<String> {
+    let url = format!("https://api.github.com/repos/{repo}/releases?per_page=20");
+    let output = std::process::Command::new("curl")
+        .args([
+            "-s", "-f", "--max-time", "10",
+            "-H", "Accept: application/vnd.github+json",
+            &url,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return fetch_github_latest_tag(repo, tag_prefix, name);
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let releases: Vec<serde_json::Value> = serde_json::from_str(&body).ok()?;
+
+    let mut versions: Vec<(u32, u32, u32, String)> = Vec::new();
+    for rel in &releases {
+        if rel.get("prerelease").and_then(|v| v.as_bool()).unwrap_or(false) {
+            continue;
+        }
+        let tag = match rel.get("tag_name").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => continue,
+        };
+        let stripped = if !tag_prefix.is_empty() {
+            match tag.strip_prefix(tag_prefix) {
+                Some(s) => s.to_string(),
+                None => continue,
+            }
+        } else {
+            tag.to_string()
+        };
+        let clean = if name == "postgres" {
+            stripped.replace('_', ".")
+        } else {
+            stripped.trim_start_matches('v').to_string()
+        };
+        if is_prerelease_version(&clean) {
+            continue;
+        }
+        if let Some((maj, min, pat)) = parse_semver(&clean) {
+            versions.push((maj, min, pat, clean));
+        }
+    }
+    versions.sort_by(|a, b| (b.0, b.1, b.2).cmp(&(a.0, a.1, a.2)));
+    versions.into_iter().next().map(|(_, _, _, v)| v)
+}
+
+/// Fallback: fetch the latest tag (sorted semver, excluding pre-releases) from a GitHub repo.
 fn fetch_github_latest_tag(repo: &str, tag_prefix: &str, name: &str) -> Option<String> {
-    let url = format!("https://api.github.com/repos/{repo}/tags?per_page=20");
+    let url = format!("https://api.github.com/repos/{repo}/tags?per_page=30");
     let output = std::process::Command::new("curl")
         .args([
             "-s", "-f", "--max-time", "10",
@@ -1562,6 +1640,9 @@ fn fetch_github_latest_tag(repo: &str, tag_prefix: &str, name: &str) -> Option<S
         } else {
             stripped.trim_start_matches('v').to_string()
         };
+        if is_prerelease_version(&clean) {
+            continue;
+        }
         if let Some((maj, min, pat)) = parse_semver(&clean) {
             versions.push((maj, min, pat, clean));
         }
@@ -1604,6 +1685,9 @@ fn fetch_github_latest_stable_release(repo: &str, tag_prefix: &str, name: &str) 
         } else {
             stripped.trim_start_matches('v').to_string()
         };
+        if is_prerelease_version(&clean) {
+            continue;
+        }
         if let Some((maj, min, pat)) = parse_semver(&clean) {
             if min % 2 == 0 {
                 versions.push((maj, min, pat, clean));

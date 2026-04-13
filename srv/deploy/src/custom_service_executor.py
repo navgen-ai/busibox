@@ -20,7 +20,8 @@ Docker Backend:
 
 LXC Backend:
   - SSH to target container
-  - Clone repo, generate .env, run docker compose or systemd services
+  - Clone repo, SCP busibox_common into build context, generate .env
+  - Run docker compose build && up -d
 
 Project naming: {CONTAINER_PREFIX}-custom-{app_id}
 """
@@ -173,6 +174,33 @@ async def _ssh(host: str, command: str, timeout: int = 300) -> Tuple[str, str, i
     except asyncio.TimeoutError:
         proc.kill()
         return "", "SSH command timed out", 1
+
+
+async def _scp_recursive(local_path: str, host: str, remote_path: str,
+                         timeout: int = 120) -> Tuple[str, str, int]:
+    """Copy a local directory to a remote host via scp."""
+    scp_cmd = [
+        "scp",
+        "-r",
+        "-i", config.ssh_key_path,
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ConnectTimeout=10",
+        "-o", "LogLevel=ERROR",
+        local_path,
+        f"root@{host}:{remote_path}",
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *scp_cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return stdout.decode(), stderr.decode(), proc.returncode or 0
+    except asyncio.TimeoutError:
+        proc.kill()
+        return "", "SCP command timed out", 1
 
 
 # ---------------------------------------------------------------------------
@@ -592,6 +620,40 @@ async def get_custom_service_status(app_id: str) -> Optional[Dict]:
 # LXC backend implementation
 # ---------------------------------------------------------------------------
 
+async def copy_busibox_common_remote(
+    host: str, remote_path: str, logs: List[str],
+) -> bool:
+    """Copy busibox_common shared library to a remote host's build context via SCP."""
+    local_common = os.path.join(BUSIBOX_COMMON_SRC, "busibox_common")
+    if not os.path.isdir(local_common):
+        logs.append(f"busibox_common not found at {local_common}, skipping copy")
+        return True
+
+    remote_shared = f"{remote_path}/shared"
+    # Ensure shared/ dir exists and clean any stale copy
+    _, _, code = await _ssh(host, f"rm -rf {remote_shared}/busibox_common && mkdir -p {remote_shared}")
+    if code != 0:
+        logs.append("Failed to prepare shared/ directory on remote host")
+        return False
+
+    # SCP the busibox_common package
+    _, stderr, code = await _scp_recursive(local_common, host, f"{remote_shared}/")
+    if code != 0:
+        logs.append(f"Failed to copy busibox_common to remote: {stderr.strip()}")
+        return False
+
+    # Copy setup.py / pyproject.toml so pip install ./shared works
+    for filename in ("setup.py", "pyproject.toml"):
+        local_file = os.path.join(BUSIBOX_COMMON_SRC, filename)
+        if os.path.exists(local_file):
+            _, stderr, code = await _scp_recursive(local_file, host, f"{remote_shared}/{filename}")
+            if code != 0:
+                logs.append(f"Warning: Could not copy {filename} to remote: {stderr.strip()}")
+
+    logs.append("Copied busibox_common shared library to remote host")
+    return True
+
+
 async def deploy_custom_service_lxc(
     manifest: BusiboxManifest,
     deploy_config: DeploymentConfig,
@@ -646,7 +708,11 @@ async def deploy_custom_service_lxc(
         logs.append(f"Git operation failed on remote: {stderr.strip() or stdout.strip()}")
         return False
 
-    # Step 3: Generate .env on remote
+    # Step 3: Copy busibox_common shared library to remote build context
+    if not await copy_busibox_common_remote(host, remote_path, logs):
+        return False
+
+    # Step 4: Generate .env on remote
     env_vars = generate_custom_env(manifest, deploy_config)
     env_lines = []
     for key, value in sorted(env_vars.items()):
@@ -661,7 +727,7 @@ async def deploy_custom_service_lxc(
         return False
     logs.append(f"Generated .env with {len(env_vars)} variables on remote")
 
-    # Step 4: Build and start
+    # Step 5: Build and start
     compose_cmd = f"cd {remote_path} && docker compose -p {project} -f {compose_file} build && docker compose -p {project} -f {compose_file} up -d"
     logs.append("Building and starting containers on remote host...")
     stdout, stderr, code = await _ssh(host, compose_cmd, timeout=900)
@@ -672,7 +738,7 @@ async def deploy_custom_service_lxc(
         logs.append(f"Remote deployment failed: {combined or 'no output'}")
         return False
 
-    # Step 5: Register
+    # Step 6: Register
     register_custom_service(app_id, remote_path, project, manifest.model_dump())
     logs.append(f"Custom service {manifest.name} deployed on {host}")
     return True
