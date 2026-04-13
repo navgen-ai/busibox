@@ -286,6 +286,31 @@ async def delete_deployment_config(config_id: str) -> bool:
     return True
 
 
+async def ensure_deployment_config_for_app(app_id: str) -> str:
+    """Get or create a minimal deployment_config for a custom app. Returns config_id.
+
+    Custom services store encrypted secrets via app_secrets, which requires a
+    deployment_config row. Unlike frontend/prisma apps, custom services don't
+    have a github_connection; the nullable columns added in migration 014 allow
+    a lightweight row with just app_id.
+    """
+    existing = await get_deployment_config_by_app(app_id)
+    if existing:
+        return existing['id']
+
+    sql = f"""
+        INSERT INTO deployment_configs (app_id, github_branch)
+        VALUES ({_escape(app_id)}, 'main')
+        ON CONFLICT (app_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+        RETURNING id
+    """
+    result = await _query(sql)
+    rows = _parse_rows(result, ['id'])
+    if not rows:
+        raise RuntimeError(f"Failed to ensure deployment config for {app_id}")
+    return rows[0]['id']
+
+
 async def get_used_ports() -> List[int]:
     """Get all ports currently used by deployment configs."""
     sql = "SELECT port, staging_port FROM deployment_configs"

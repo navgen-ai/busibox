@@ -55,7 +55,9 @@ from .custom_service_executor import (
     undeploy_custom_service_lxc,
     is_custom_service,
     is_docker_environment as custom_is_docker,
+    resolve_app_secrets,
 )
+from . import deployment_db
 from .env_generator import generate_env_vars
 from .nginx_config import NginxConfigurator
 from .config import config
@@ -211,6 +213,15 @@ async def execute_deployment(
             logger.info(f"Deploying custom service {manifest.name} via custom_service_executor")
             status.logs.append(f"[{datetime.utcnow().isoformat()}] Using custom_service_executor")
             await broadcast_status(deployment_id)
+
+            # Auto-generate and persist secrets for unresolved requiredEnvVars
+            try:
+                config_id = await deployment_db.ensure_deployment_config_for_app(manifest.id)
+                resolved = await resolve_app_secrets(config_id, manifest, deploy_config, deploy_logs)
+                deploy_config.secrets.update(resolved)
+            except Exception as exc:
+                logger.warning("Secret resolution failed (non-fatal): %s", exc)
+                deploy_logs.append(f"Warning: could not resolve secrets: {exc}")
 
             if custom_is_docker():
                 success = await deploy_custom_service(manifest, deploy_config, deploy_logs)

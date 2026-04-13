@@ -30,10 +30,12 @@ import asyncio
 import json
 import logging
 import os
+import secrets as secrets_mod
 import shutil
 from typing import Dict, List, Optional, Tuple
 
 from .config import config
+from . import deployment_db
 from .env_generator import get_service_endpoints
 from .models import BusiboxManifest, DeploymentConfig
 
@@ -313,6 +315,52 @@ def write_env_file(app_path: str, env_vars: Dict[str, str]) -> None:
     env_path = os.path.join(app_path, ".env")
     with open(env_path, "w") as f:
         f.write("\n".join(lines) + "\n")
+
+
+async def resolve_app_secrets(
+    config_id: str,
+    manifest: BusiboxManifest,
+    deploy_config: DeploymentConfig,
+    logs: List[str],
+) -> Dict[str, str]:
+    """Auto-generate and persist secrets for requiredEnvVars not provided elsewhere.
+
+    On first deploy, generates random 32-char passwords and stores them
+    encrypted in app_secrets. On subsequent deploys, loads the persisted
+    values so passwords stay stable across redeployments.
+    """
+    endpoints = get_service_endpoints(deploy_config.environment)
+    resolved: Dict[str, str] = {}
+
+    for var in manifest.requiredEnvVars:
+        if var in endpoints or var in deploy_config.secrets or var in deploy_config.envVars:
+            continue
+
+        try:
+            existing = await deployment_db.get_secret_decrypted(config_id, var)
+        except Exception as exc:
+            logger.warning("Could not read persisted secret %s: %s", var, exc)
+            existing = None
+
+        if existing:
+            resolved[var] = existing
+            logs.append(f"Loaded persisted secret: {var}")
+        else:
+            value = secrets_mod.token_urlsafe(32)[:32]
+            try:
+                await deployment_db.upsert_secret(
+                    config_id=config_id,
+                    key=var,
+                    value=value,
+                    secret_type="CUSTOM",
+                    description="Auto-generated on first deploy",
+                )
+            except Exception as exc:
+                logger.warning("Could not persist secret %s: %s", var, exc)
+            resolved[var] = value
+            logs.append(f"Generated new secret: {var}")
+
+    return resolved
 
 
 def copy_busibox_common(app_path: str, logs: List[str]) -> bool:
