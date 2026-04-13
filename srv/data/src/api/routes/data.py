@@ -1078,6 +1078,7 @@ async def query_records(
     
     errors = query_engine.validate_query(query)
     if errors:
+        logger.warning("Query validation failed", document_id=document_id, errors=errors, where=body.where)
         raise HTTPException(status_code=400, detail={"errors": errors})
     
     try:
@@ -1103,7 +1104,7 @@ async def query_records(
             aggregations=result.get("aggregations"),
         )
     except Exception as e:
-        logger.error("Failed to query records", document_id=document_id, error=str(e))
+        logger.error("Failed to query records", document_id=document_id, error=str(e), where=body.where)
         raise HTTPException(status_code=500, detail=str(e))
 
 

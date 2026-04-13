@@ -331,6 +331,13 @@ fn main() -> Result<()> {
                                 }
                             }
                         }
+                        Ok(app::ManageUpdate::SecretsResult { name, secrets_status }) => {
+                            if let Some(svc) =
+                                app.manage_services.iter_mut().find(|s| s.name == name)
+                            {
+                                svc.secrets_status = secrets_status;
+                            }
+                        }
                         Ok(app::ManageUpdate::WaitForConfirm { prompt, response }) => {
                             app.manage_confirm_prompt = prompt;
                             app.manage_waiting_confirm = Some(response);
@@ -340,6 +347,15 @@ fn main() -> Result<()> {
                             app.manage_action_running = false;
                             app.manage_log_streaming = false;
                             app.manage_log_child_pid = None;
+                            // Clear stale "checking..." in both status and secrets columns
+                            for svc in &mut app.manage_services {
+                                if svc.status == "checking..." {
+                                    svc.status = "unknown".to_string();
+                                }
+                                if svc.secrets_status == "checking..." {
+                                    svc.secrets_status = "\u{2014}".to_string(); // em-dash
+                                }
+                            }
                             if app.manage_log_visible {
                                 app.manage_action_complete = true;
                                 app.manage_log_scroll =

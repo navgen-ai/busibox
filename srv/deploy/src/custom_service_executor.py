@@ -155,6 +155,10 @@ async def _run_shell(cmd_str: str, cwd: Optional[str] = None, timeout: int = 600
 # ---------------------------------------------------------------------------
 
 async def _ssh(host: str, command: str, timeout: int = 300) -> Tuple[str, str, int]:
+    # Ensure PATH includes standard binary locations — non-interactive SSH
+    # sessions on LXC containers often have a minimal PATH that omits
+    # /usr/local/bin (where Docker CE installs its binaries).
+    wrapped = f'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"; {command}'
     ssh_cmd = [
         "ssh",
         "-F", "/dev/null",
@@ -164,7 +168,7 @@ async def _ssh(host: str, command: str, timeout: int = 300) -> Tuple[str, str, i
         "-o", "ConnectTimeout=10",
         "-o", "LogLevel=ERROR",
         f"root@{host}",
-        command,
+        wrapped,
     ]
     proc = await asyncio.create_subprocess_exec(
         *ssh_cmd,

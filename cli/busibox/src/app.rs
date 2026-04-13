@@ -521,6 +521,8 @@ pub enum ManageUpdate {
     },
     /// Per-service change detection result.
     NeedsUpdateResult { name: String, needs_update: bool },
+    /// Per-service secrets sync result from vault comparison.
+    SecretsResult { name: String, secrets_status: String },
     Complete { success: bool },
     /// Worker pauses and asks a yes/no question.
     /// The user's answer (true = yes/overwrite, false = no/keep) is sent back.
@@ -689,6 +691,8 @@ pub struct ServiceStatus {
     pub needs_update: bool,
     /// Which repo this service tracks ("busibox" or "busibox-frontend").
     pub source_repo: String,
+    /// Secrets sync status: "checking...", "synced", "mismatch: VAR1, VAR2", "down", "error", or "—" (no secrets).
+    pub secrets_status: String,
 }
 
 impl App {

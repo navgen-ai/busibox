@@ -466,6 +466,16 @@ class QueryEngine:
         
         json_path = self._field_to_jsonb_path(field)
         
+        # Normalize: if a list value is passed to a scalar operator, fix it
+        if isinstance(value, list) and op in ("eq", "ne", "gt", "gte", "lt", "lte", "contains", "startswith", "endswith", "regex"):
+            if len(value) == 0:
+                return "TRUE", params, param_idx
+            elif len(value) == 1:
+                value = value[0]
+            else:
+                # Multiple values with scalar op → convert to in/nin
+                op = "in" if op != "ne" else "nin"
+
         if op == "eq":
             params.append(json.dumps(value))
             clause = f"{col}{json_path} = ${param_idx}::jsonb"
@@ -483,22 +493,32 @@ class QueryEngine:
                 clause = f"({col}->>{json_path[2:]}) {op_symbol} ${param_idx}::text"
             param_idx += 1
         elif op == "in":
-            params.append(value)
+            if not isinstance(value, list):
+                value = [value]
+            params.append(json.dumps(value))
             clause = f"{col}{json_path} <@ ${param_idx}::jsonb"
             param_idx += 1
         elif op == "nin":
-            params.append(value)
+            if not isinstance(value, list):
+                value = [value]
+            params.append(json.dumps(value))
             clause = f"NOT ({col}{json_path} <@ ${param_idx}::jsonb)"
             param_idx += 1
         elif op == "contains":
+            if isinstance(value, list):
+                value = value[0] if value else ""
             params.append(f"%{value}%")
             clause = f"({col}->>{json_path[2:]}) LIKE ${param_idx}"
             param_idx += 1
         elif op == "startswith":
+            if isinstance(value, list):
+                value = value[0] if value else ""
             params.append(f"{value}%")
             clause = f"({col}->>{json_path[2:]}) LIKE ${param_idx}"
             param_idx += 1
         elif op == "endswith":
+            if isinstance(value, list):
+                value = value[0] if value else ""
             params.append(f"%{value}")
             clause = f"({col}->>{json_path[2:]}) LIKE ${param_idx}"
             param_idx += 1

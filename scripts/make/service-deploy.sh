@@ -842,6 +842,30 @@ main() {
         
         if deploy_service "$service" "$env" "$backend" "$inventory" "$prefix"; then
             deployed_services="${deployed_services} ${service}"
+
+            # After installing custom-services or user-apps for the first time,
+            # refresh deploy-api SSH keys so it can reach the new container.
+            if [[ "$service" == "custom-services" || "$service" == "user-apps" ]]; then
+                info "Refreshing deploy-api SSH keys for ${service}..."
+                local ssh_cmd="ansible-playbook -i ${inventory} site.yml --tags deploy_api_ssh"
+                local vault_env="${VAULT_PREFIX:-$prefix}"
+                if [[ -n "$vault_env" ]]; then
+                    ssh_cmd="${ssh_cmd} -e deployment_environment=${vault_env}"
+                fi
+                local env_script="${REPO_ROOT}/scripts/lib/vault-pass-from-env.sh"
+                if [[ -n "${ANSIBLE_VAULT_PASSWORD:-}" && -f "$env_script" ]]; then
+                    [[ -x "$env_script" ]] || chmod +x "$env_script"
+                    ssh_cmd="${ssh_cmd} --vault-password-file ${env_script}"
+                elif [[ -n "${VAULT_PASS_FILE:-}" && -f "${VAULT_PASS_FILE}" ]]; then
+                    ssh_cmd="${ssh_cmd} --vault-password-file ${VAULT_PASS_FILE}"
+                fi
+                cd "${REPO_ROOT}/provision/ansible"
+                if eval "$ssh_cmd" 2>/dev/null; then
+                    success "Deploy-api SSH keys refreshed for ${service}"
+                else
+                    warn "Could not refresh deploy-api SSH keys (run 'make install SERVICE=deploy' to fix)"
+                fi
+            fi
         else
             failed_services="${failed_services} ${service}"
         fi

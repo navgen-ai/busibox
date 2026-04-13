@@ -22,9 +22,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes
 
 from app.agents.core import BusiboxDeps
-from app.agents.base_agent import BaseStreamingAgent
+from app.agents.base_agent import BaseStreamingAgent, TOOL_SCOPES
+from app.auth.tokens import _audience_for_purpose
 from app.clients.busibox import BusiboxClient
-from app.models.domain import RunRecord
+from app.models.domain import AgentDefinition, RunRecord
 from app.schemas.auth import Principal
 from app.services.agent_registry import agent_registry
 from app.services.token_service import get_or_exchange_token
@@ -213,20 +214,56 @@ async def create_run(
         },
     ) as span:
         try:
-            # Get token for downstream services
-            if scopes:
-                # Always exchange: principal.token is for agent-api audience,
-                # but downstream services (search-api, data-api) need their own tokens
-                logger.info(f"Exchanging token for run {run_record.id} (scopes={scopes}, purpose={purpose})")
+            # Get token for downstream services.
+            # When scopes are explicitly provided, use them. Otherwise, infer
+            # required scopes from the agent's tool definitions so that
+            # PydanticAI Agents (not just BaseStreamingAgent) get real tokens.
+            effective_scopes = list(scopes)
+            if not effective_scopes:
+                try:
+                    stmt = select(AgentDefinition.tools).where(AgentDefinition.id == agent_id)
+                    row = await session.execute(stmt)
+                    tools_config = row.scalar()
+                    if tools_config and isinstance(tools_config, dict):
+                        tool_names = tools_config.get("names", [])
+                        for tn in tool_names:
+                            effective_scopes.extend(TOOL_SCOPES.get(tn, []))
+                        effective_scopes = list(set(effective_scopes))
+                        if effective_scopes:
+                            logger.info(
+                                f"Inferred scopes from agent tools for run {run_record.id}: {effective_scopes}"
+                            )
+                except Exception as e:
+                    logger.warning(f"Could not infer tool scopes for agent {agent_id}: {e}")
+
+            if effective_scopes:
+                logger.info(f"Exchanging token for run {run_record.id} (scopes={effective_scopes}, purpose={purpose})")
                 add_run_event(run_record, "token_exchange_started")
-                
-                token = await get_or_exchange_token(session, principal, scopes=scopes, purpose=purpose)
-                client = BusiboxClient(token.access_token)
-                
-                add_run_event(run_record, "token_exchange_completed")
+
+                # Exchange per-audience so the BusiboxClient can route tokens
+                audience_scopes: Dict[str, List[str]] = {}
+                for scope in effective_scopes:
+                    scope_purpose = scope.split(".")[0]
+                    aud = _audience_for_purpose(scope_purpose, [scope])
+                    audience_scopes.setdefault(aud, []).append(scope)
+
+                tokens_by_audience: Dict[str, str] = {}
+                first_token = None
+                for aud, aud_scope_list in audience_scopes.items():
+                    exchanged = await get_or_exchange_token(
+                        session, principal, scopes=aud_scope_list, purpose=aud_scope_list[0].split(".")[0]
+                    )
+                    tokens_by_audience[aud] = exchanged.access_token
+                    if first_token is None:
+                        first_token = exchanged.access_token
+
+                client = BusiboxClient(
+                    access_token=first_token or "no-token",
+                    tokens_by_audience=tokens_by_audience,
+                )
+                add_run_event(run_record, "token_exchange_completed", data={"audiences": list(tokens_by_audience.keys())})
             else:
                 # No scopes needed - agent doesn't use downstream services
-                # Create a dummy client that won't be used
                 logger.info(f"Skipping token exchange for run {run_record.id} (no scopes required)")
                 client = BusiboxClient("dummy-token-not-used")
                 add_run_event(run_record, "token_exchange_skipped")

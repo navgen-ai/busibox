@@ -3,6 +3,11 @@ Dynamic agent loader with tool registry support.
 
 Loads agent definitions from database and dynamically attaches tools
 based on tool names registered in BUILTIN_TOOL_METADATA.
+
+All database-defined agents are now loaded as BaseStreamingAgent instances
+via create_agent_from_definition(), which gives them proper token exchange,
+streaming, and workflow support.  The legacy PydanticAI Agent construction
+is retained only in helper functions for backward compatibility.
 """
 import logging
 import uuid
@@ -15,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.core import BusiboxDeps, data_tool, rag_tool, search_tool
+from app.agents.base_agent import BaseStreamingAgent, create_agent_from_definition
 from app.config.settings import get_settings
 from app.models.domain import AgentDefinition
 from app.schemas.definitions import AgentDefinitionCreate
@@ -144,29 +150,30 @@ def _register_tool_on_agent(agent: Agent, tool_name: str) -> bool:
         return False
 
 
-async def load_active_agents(session: AsyncSession) -> Dict[uuid.UUID, Agent[BusiboxDeps, object]]:
+async def load_active_agents(
+    session: AsyncSession,
+) -> Dict[uuid.UUID, Union[Agent[BusiboxDeps, object], BaseStreamingAgent]]:
     """
-    Hydrate active agent definitions from the database and register allowed tools.
+    Hydrate active agent definitions from the database as BaseStreamingAgent
+    instances, which support streaming, token exchange, and workflow config.
     """
-    # Configure OpenAI client to use LiteLLM
     _configure_litellm_env()
-    
+
     stmt = select(AgentDefinition).where(AgentDefinition.is_active.is_(True))
     result = await session.execute(stmt)
-    agents: Dict[uuid.UUID, Agent[BusiboxDeps, object]] = {}
+    agents: Dict[uuid.UUID, Union[Agent[BusiboxDeps, object], BaseStreamingAgent]] = {}
     for definition in result.scalars().all():
-        # Create OpenAI-compatible model for LiteLLM
-        model = OpenAIModel(
-            model_name=definition.model,
-            provider="openai",
-        )
-        agent = Agent[BusiboxDeps, object](
-            model=model,
-            instructions=definition.instructions,
-        )
-        for tool_name in definition.tools.get("names", []):
-            _register_tool_on_agent(agent, tool_name)
-        agents[definition.id] = agent
+        try:
+            agent = create_agent_from_definition(definition)
+            logger.info(
+                f"Loaded DB agent '{definition.name}' (id={definition.id}) as BaseStreamingAgent"
+            )
+            agents[definition.id] = agent
+        except Exception as e:
+            logger.error(
+                f"Failed to load agent '{definition.name}' (id={definition.id}) "
+                f"as BaseStreamingAgent, skipping: {e}"
+            )
     return agents
 
 
@@ -195,9 +202,9 @@ async def register_agent(
     payload: AgentDefinitionCreate,
     created_by: Optional[str] = None,
     is_builtin: bool = False
-) -> tuple[uuid.UUID, Agent[BusiboxDeps, object]]:
+) -> tuple[uuid.UUID, Union[Agent[BusiboxDeps, object], BaseStreamingAgent]]:
     """
-    Persist a new agent definition and return a hydrated Agent instance.
+    Persist a new agent definition and return a hydrated BaseStreamingAgent.
     
     Args:
         session: Database session
@@ -208,7 +215,6 @@ async def register_agent(
     Raises:
         ValueError: If any tool references are invalid
     """
-    # Validate tool references before persisting
     tool_names = payload.tools.get("names", [])
     validate_tool_references(tool_names)
     
@@ -234,15 +240,6 @@ async def register_agent(
     await session.commit()
     await session.refresh(definition)
     
-    # Configure OpenAI client to use LiteLLM
     _configure_litellm_env()
-    
-    # Create OpenAI-compatible model for LiteLLM
-    model = OpenAIModel(
-        model_name=definition.model,
-        provider="openai",
-    )
-    agent = Agent[BusiboxDeps, object](model=model, instructions=definition.instructions)
-    for tool_name in tool_names:
-        _register_tool_on_agent(agent, tool_name)
+    agent = create_agent_from_definition(definition)
     return definition.id, agent

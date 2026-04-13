@@ -295,6 +295,26 @@ fn is_upstream_update_available(current: &str, latest: &str) -> bool {
     }
 }
 
+/// Format the "Secrets" column text and style.
+fn format_secrets_cell(svc: &ServiceStatus) -> (String, Style) {
+    let s = &svc.secrets_status;
+    if s == "synced" {
+        ("synced".to_string(), theme::success())
+    } else if s.starts_with("mismatch") {
+        (s.clone(), theme::error())
+    } else if s == "down" {
+        ("down".to_string(), theme::warning())
+    } else if s == "checking..." {
+        ("\u{2026}".to_string(), theme::dim())
+    } else if s == "no vault pw" {
+        ("no vault pw".to_string(), theme::dim())
+    } else if s == "error" || s.starts_with("err:") {
+        (s.clone(), theme::error())
+    } else {
+        ("\u{2014}".to_string(), theme::dim())
+    }
+}
+
 /// Format the "Deployed" column text and style.
 fn format_deployed_cell(svc: &ServiceStatus) -> (String, Style) {
     if svc.version.is_empty() {
@@ -518,6 +538,7 @@ pub fn render(f: &mut Frame, app: &App) {
 
                 let (deployed_text, deployed_style) = format_deployed_cell(svc);
                 let (available_text, available_style) = format_available_cell(svc);
+                let (secrets_text, secrets_style) = format_secrets_cell(svc);
 
                 let row_style = if i == app.manage_selected {
                     theme::selected()
@@ -531,6 +552,7 @@ pub fn render(f: &mut Frame, app: &App) {
                     Cell::from(svc.status.clone()).style(status_style),
                     Cell::from(deployed_text).style(deployed_style),
                     Cell::from(available_text).style(available_style),
+                    Cell::from(secrets_text).style(secrets_style),
                 ])
                 .style(row_style)
             })
@@ -569,11 +591,12 @@ pub fn render(f: &mut Frame, app: &App) {
         let table = Table::new(
             visible_rows,
             [
-                Constraint::Length(16),
                 Constraint::Length(14),
+                Constraint::Length(16),
                 Constraint::Length(10),
                 Constraint::Length(10),
-                Constraint::Min(14),
+                Constraint::Length(14),
+                Constraint::Min(20),
             ],
         )
         .header(
@@ -583,6 +606,7 @@ pub fn render(f: &mut Frame, app: &App) {
                 Cell::from("Status").style(theme::muted()),
                 Cell::from("Deployed").style(theme::muted()),
                 Cell::from("Available").style(theme::muted()),
+                Cell::from("Secrets").style(theme::muted()),
             ])
             .bottom_margin(1),
         )
@@ -927,12 +951,13 @@ pub fn load_service_status(app: &mut App) {
             commits_behind: None,
             needs_update: false,
             source_repo: source_repo.to_string(),
+            secrets_status: "checking...".into(),
         });
     }
 
     // Get profile info for health checks
-    let profile = match app.active_profile() {
-        Some((_, p)) => p.clone(),
+    let (profile_id, profile) = match app.active_profile() {
+        Some((id, p)) => (id.to_string(), p.clone()),
         None => {
             // No profile - mark all unknown
             for svc in &mut app.manage_services {
@@ -1009,6 +1034,20 @@ pub fn load_service_status(app: &mut App) {
     let upstream_prefix = prefix.clone();
     let latest_tx = tx.clone();
     let latest_service_names = service_names.clone();
+
+    // Clone values needed by the secrets check thread (must happen before health
+    // thread consumes ssh_details/prefix via move closure).
+    let secrets_tx = tx.clone();
+    let secrets_ssh_details = ssh_details.clone();
+    let secrets_is_proxmox = is_proxmox;
+    let secrets_is_staging = is_staging;
+    let secrets_prefix = prefix.clone();
+    let secrets_vault_prefix = profile.vault_prefix.clone().unwrap_or_else(|| profile_id.clone());
+    let secrets_backend = profile.backend.clone();
+    let secrets_remote_path = profile.remote_busibox_path.clone();
+    let secrets_repo_root = repo_root.clone();
+    let secrets_is_remote = is_remote;
+    let secrets_vault_password = app.vault_password.clone();
 
     // Thread 1: health checks (existing logic)
     let health_tx = tx.clone();
@@ -1127,6 +1166,24 @@ pub fn load_service_status(app: &mut App) {
         fetch_upstream_latest_versions(&latest_service_names, &latest_tx);
     });
 
+    // Thread 6: secrets sync check (vault vs container env vars)
+    // (clones already captured above, before health thread consumed originals)
+    let secrets_handle = std::thread::spawn(move || {
+        fetch_secrets_sync(
+            &secrets_tx,
+            secrets_ssh_details.as_ref(),
+            secrets_is_remote,
+            secrets_is_proxmox,
+            secrets_is_staging,
+            &secrets_prefix,
+            &secrets_vault_prefix,
+            &secrets_backend,
+            secrets_remote_path.as_deref(),
+            &secrets_repo_root,
+            secrets_vault_password.as_deref(),
+        );
+    });
+
     // Coordinator thread: wait for all, then send Complete
     std::thread::spawn(move || {
         let _ = health_handle.join();
@@ -1134,6 +1191,7 @@ pub fn load_service_status(app: &mut App) {
         let _ = remote_handle.join();
         let _ = upstream_handle.join();
         let _ = latest_handle.join();
+        let _ = secrets_handle.join();
         let _ = tx.send(ManageUpdate::Complete { success: true });
     });
 }
@@ -3161,4 +3219,137 @@ pub fn spawn_install_with_env(app: &mut App, services: &str, extra_env: &str) {
             }
         }
     });
+}
+
+// ─── Secrets sync check ─────────────────────────────────────────────────────
+
+/// Run secrets-sync.sh locally (vault decryption needs local ansible-vault + vault password).
+/// The script SSHs to the Proxmox host itself to read container env files.
+fn fetch_secrets_sync(
+    tx: &std::sync::mpsc::Sender<ManageUpdate>,
+    ssh_details: Option<&(String, String, String)>,
+    _is_remote: bool,
+    _is_proxmox: bool,
+    is_staging: bool,
+    prefix: &str,
+    vault_prefix: &str,
+    backend: &str,
+    _remote_busibox_path: Option<&str>,
+    repo_root: &std::path::Path,
+    vault_password: Option<&str>,
+) {
+    if vault_password.is_none() {
+        send_all_secrets_status(tx, "no vault pw");
+        return;
+    }
+
+    let script = repo_root.join("scripts/check/secrets-sync.sh");
+    if !script.exists() {
+        send_all_secrets_status(tx, "\u{2014}");
+        return;
+    }
+
+    let mut args = vec![
+        script.to_string_lossy().to_string(),
+        "--backend".to_string(), backend.to_string(),
+        "--prefix".to_string(), prefix.to_string(),
+    ];
+    if is_staging {
+        args.push("--staging".to_string());
+    }
+    if !vault_prefix.is_empty() {
+        args.push("--vault-prefix".to_string());
+        args.push(vault_prefix.to_string());
+    }
+    if let Some((host, user, key)) = ssh_details {
+        args.push("--ssh-host".to_string());
+        args.push(host.clone());
+        args.push("--ssh-user".to_string());
+        args.push(user.clone());
+        if !key.is_empty() {
+            args.push("--ssh-key".to_string());
+            args.push(key.clone());
+        }
+    }
+
+    let mut cmd = std::process::Command::new("bash");
+    cmd.args(&args);
+    if let Some(pw) = vault_password {
+        cmd.env("ANSIBLE_VAULT_PASSWORD", pw);
+    }
+    let raw_output = cmd.output().ok();
+    // Log stderr debug lines to the manage log
+    if let Some(ref out) = raw_output {
+        if let Ok(stderr) = String::from_utf8(out.stderr.clone()) {
+            for line in stderr.lines().filter(|l| l.starts_with("[DEBUG]")) {
+                let _ = tx.send(ManageUpdate::Log(format!("secrets: {line}")));
+            }
+        }
+    }
+    let output = raw_output.and_then(|o| String::from_utf8(o.stdout).ok());
+
+    let json_str = match output {
+        Some(s) if !s.trim().is_empty() => s,
+        _ => {
+            // Mark all services as unchecked
+            send_all_secrets_status(tx, "\u{2014}"); // em-dash
+            return;
+        }
+    };
+
+    // Parse JSON: {"services":{"authz":{"status":"synced","mismatched":[]},...}}
+    // or {"error":"..."}
+    let parsed: serde_json::Value = match serde_json::from_str(json_str.trim()) {
+        Ok(v) => v,
+        Err(_) => {
+            send_all_secrets_status(tx, "error");
+            return;
+        }
+    };
+
+    if let Some(err) = parsed.get("error").and_then(|v| v.as_str()) {
+        let msg = if err.len() > 20 { &err[..20] } else { err };
+        send_all_secrets_status(tx, &format!("err: {msg}"));
+        return;
+    }
+
+    if let Some(services) = parsed.get("services").and_then(|v| v.as_object()) {
+        for (name, info) in services {
+            let status = info.get("status").and_then(|v| v.as_str()).unwrap_or("error");
+            let mismatched: Vec<&str> = info.get("mismatched")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+
+            let display = if status == "synced" {
+                "synced".to_string()
+            } else if status == "mismatch" {
+                format!("mismatch: {}", mismatched.join(", "))
+            } else if status == "down" {
+                "down".to_string()
+            } else {
+                status.to_string()
+            };
+
+            let _ = tx.send(ManageUpdate::SecretsResult {
+                name: name.clone(),
+                secrets_status: display,
+            });
+        }
+    }
+}
+
+/// Send a blanket secrets status to all services.
+fn send_all_secrets_status(tx: &std::sync::mpsc::Sender<ManageUpdate>, status: &str) {
+    // Services that have secrets to check
+    let services = [
+        "authz", "agent", "data", "search", "deploy", "litellm",
+        "portal", "bridge", "postgres", "minio",
+    ];
+    for name in &services {
+        let _ = tx.send(ManageUpdate::SecretsResult {
+            name: name.to_string(),
+            secrets_status: status.to_string(),
+        });
+    }
 }
