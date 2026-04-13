@@ -590,6 +590,19 @@ deploy_service() {
         else
             export DOCKER_DEV_MODE="github"
         fi
+        # Ensure BASE_DOMAIN is set so full_domain resolves correctly for
+        # WEBAUTHN_RP_ID, portal URLs, and SSL cert SANs.
+        if [[ -z "${BASE_DOMAIN:-}" ]]; then
+            local _sd=""
+            if [[ -n "$_active_profile" ]]; then
+                _sd=$(profile_get "$_active_profile" "site_domain" 2>/dev/null || true)
+            fi
+            if [[ -z "$_sd" ]]; then
+                _sd=$(get_state "SITE_DOMAIN" "" 2>/dev/null || true)
+                [[ -z "$_sd" ]] && _sd=$(get_state "BASE_DOMAIN" "localhost" 2>/dev/null || true)
+            fi
+            export BASE_DOMAIN="${_sd:-localhost}"
+        fi
     fi
     
     echo ""
@@ -845,7 +858,8 @@ main() {
 
             # After installing custom-services or user-apps for the first time,
             # refresh deploy-api SSH keys so it can reach the new container.
-            if [[ "$service" == "custom-services" || "$service" == "user-apps" ]]; then
+            # Only needed for Proxmox — Docker uses container networking, not SSH.
+            if [[ "$backend" == "proxmox" && ("$service" == "custom-services" || "$service" == "user-apps") ]]; then
                 info "Refreshing deploy-api SSH keys for ${service}..."
                 local ssh_cmd="ansible-playbook -i ${inventory} site.yml --tags deploy_api_ssh"
                 local vault_env="${VAULT_PREFIX:-$prefix}"

@@ -102,8 +102,9 @@ enabled_apps: "{{ applications | selectattr('auto_deploy', 'defined') | selectat
 # ============================================================================
 # Domain Configuration - Docker
 # ============================================================================
-# Use localhost for local development
-base_domain: "{{ lookup('env', 'BASE_DOMAIN') | default('localhost', true) }}"
+# Accept SITE_DOMAIN (from CLI profile), BASE_DOMAIN, or default to localhost.
+# SITE_DOMAIN is the canonical name (e.g. Tailscale hostname); BASE_DOMAIN is legacy.
+base_domain: "{{ site_domain | default(lookup('env', 'SITE_DOMAIN'), true) | default(lookup('env', 'BASE_DOMAIN'), true) | default('localhost', true) }}"
 domain: "{{ base_domain }}"
 full_domain: "{{ base_domain }}"
 env_subdomain_suffix: ""

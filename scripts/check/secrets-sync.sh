@@ -118,12 +118,17 @@ fi
 
 # ── Remote command execution ──────────────────────────────────────────────────
 
+# PATH preamble: ensures /usr/local/bin, /opt/homebrew/bin, etc. are in PATH
+# for non-interactive SSH sessions (macOS doesn't source .profile for ssh commands).
+# Also handles macOS Docker config quirks (credsStore/currentContext).
+REMOTE_PATH_PREAMBLE='for d in /usr/local/bin /opt/homebrew/bin "$HOME/.local/bin"; do [ -d "$d" ] && export PATH="$d:$PATH"; done; '
+
 ssh_cmd() {
     local cmd="$1"
     if [[ -n "$SSH_HOST" ]]; then
         local ssh_args=(-o StrictHostKeyChecking=no -o ConnectTimeout=5)
         [[ -n "$SSH_KEY" ]] && ssh_args+=(-i "$SSH_KEY")
-        ssh "${ssh_args[@]}" "${SSH_USER}@${SSH_HOST}" "$cmd" 2>/dev/null
+        ssh "${ssh_args[@]}" "${SSH_USER}@${SSH_HOST}" "${REMOTE_PATH_PREAMBLE}${cmd}" 2>/dev/null
     else
         bash -c "$cmd" 2>/dev/null
     fi
@@ -228,13 +233,26 @@ check_docker() {
         return
     fi
     local mismatched="" sep=""
-    for pair in "$@"; do
-        local var_name="${pair%%=*}" expected="${pair#*=}"
+    for check in "$@"; do
+        local mode="exact"
+        if [[ "$check" == ~* ]]; then
+            mode="embedded"; check="${check#\~}"
+        fi
+        local var_name="${check%%=*}" expected="${check#*=}"
         [[ -z "$expected" ]] && continue
-        local actual
-        actual=$(read_docker_var "$container" "$var_name")
-        if [[ "$actual" != "$expected" ]]; then
-            mismatched+="${sep}\"${var_name}\""; sep=","
+
+        if [[ "$mode" == "embedded" ]]; then
+            local actual
+            actual=$(read_docker_var "$container" "$var_name")
+            if [[ "$actual" != *"$expected"* ]]; then
+                mismatched+="${sep}\"${var_name}\""; sep=","
+            fi
+        else
+            local actual
+            actual=$(read_docker_var "$container" "$var_name")
+            if [[ "$actual" != "$expected" ]]; then
+                mismatched+="${sep}\"${var_name}\""; sep=","
+            fi
         fi
     done
     if [[ -z "$mismatched" ]]; then
@@ -263,15 +281,14 @@ if [[ "$BACKEND" == "proxmox" ]]; then
         "~DATABASE_URL=$V_PG_PASS" \
         "LITELLM_API_KEY=$V_LITELLM_MASTER_KEY"
 
-    # data (CT 206): /srv/data-api/.env
+    # data + data-worker (CT 206): /srv/data/.env (single env file shared by both)
     #   POSTGRES_PASSWORD, MINIO_SECRET_KEY, LITELLM_API_KEY
-    emit_sep; check_proxmox data "$CT_DATA" "/srv/data-api/.env" \
+    emit_sep; check_proxmox data "$CT_DATA" "/srv/data/.env" \
         "POSTGRES_PASSWORD=$V_PG_PASS" \
         "MINIO_SECRET_KEY=$V_MINIO_ROOT_PASS" \
         "LITELLM_API_KEY=$V_LITELLM_MASTER_KEY"
 
-    # data-worker (CT 206): /srv/data/.env (shared env file with data service)
-    #   POSTGRES_PASSWORD, MINIO_SECRET_KEY, LITELLM_API_KEY
+    # data-worker shares the same env file; emit the same status
     emit_sep; check_proxmox data-worker "$CT_DATA" "/srv/data/.env" \
         "POSTGRES_PASSWORD=$V_PG_PASS" \
         "MINIO_SECRET_KEY=$V_MINIO_ROOT_PASS" \
@@ -320,7 +337,8 @@ else
         "AUTHZ_MASTER_KEY=$V_AUTHZ_MASTER_KEY" "POSTGRES_PASSWORD=$V_PG_PASS"
 
     emit_sep; check_docker agent "${P}agent-api" \
-        "POSTGRES_PASSWORD=$V_PG_PASS"
+        "~DATABASE_URL=$V_PG_PASS" \
+        "LITELLM_API_KEY=$V_LITELLM_MASTER_KEY"
 
     emit_sep; check_docker data "${P}data-api" \
         "POSTGRES_PASSWORD=$V_PG_PASS" "MINIO_SECRET_KEY=$V_MINIO_ROOT_PASS" \

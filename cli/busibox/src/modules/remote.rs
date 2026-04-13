@@ -1579,9 +1579,10 @@ pub fn live_check_remote_docker(
 ) -> std::collections::HashMap<String, LiveState> {
     let mut results = std::collections::HashMap::new();
 
-    // Helper: run a command via SSH and return (success, output)
+    // Helper: run a command via SSH with PATH preamble so docker is found
     let ssh_run = |cmd: &str| -> (bool, String) {
-        match ssh.run(cmd) {
+        let full_cmd = format!("{}{cmd}", SHELL_PATH_PREAMBLE);
+        match ssh.run(&full_cmd) {
             Ok(output) => (true, output.trim().to_string()),
             Err(e) => (false, format!("{e}")),
         }

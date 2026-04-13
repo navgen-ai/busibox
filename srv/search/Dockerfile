@@ -21,7 +21,11 @@ WORKDIR /app
 # Copy requirements first (for caching)
 COPY search/requirements.txt .
 
-# Install Python dependencies
+# Install CPU-only PyTorch first (saves ~2GB vs default CUDA-bundled build).
+# Search-api uses sentence-transformers for reranking — no NVIDIA GPU needed.
+RUN pip install --no-cache-dir "torch>=2.1.0,<3.0.0" --index-url https://download.pytorch.org/whl/cpu
+
+# Install remaining dependencies (torch already satisfied from CPU index above)
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Download nltk data (if needed for text processing)

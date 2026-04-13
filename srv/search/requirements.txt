@@ -19,10 +19,10 @@ psycopg2-binary==2.9.9
 # Caching
 redis==5.0.1
 
-# Embeddings & Reranking
+# Embeddings & Reranking (CPU-only torch — no NVIDIA/CUDA needed in this container)
+# torch is installed separately in the Dockerfile from the CPU-only index
 sentence-transformers>=3.0.0,<4.0.0
 transformers>=4.40.0,<5.0.0
-torch>=2.1.0,<3.0.0
 
 # Text processing
 nltk==3.8.1

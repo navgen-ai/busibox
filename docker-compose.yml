@@ -1257,6 +1257,8 @@ services:
     container_name: ${CONTAINER_PREFIX:-dev}-proxy
     hostname: proxy
     entrypoint: ["/bin/sh", "/usr/local/bin/proxy-entrypoint.sh"]
+    environment:
+      BASE_DOMAIN: ${BASE_DOMAIN:-localhost}
     labels:
       - "config_version=${GIT_COMMIT:-unknown}"
     ports:

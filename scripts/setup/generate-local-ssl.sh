@@ -24,11 +24,16 @@
 set -euo pipefail
 
 AUTO_INSTALL_MKCERT=true
+EXTRA_HOSTS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-auto-install)
             AUTO_INSTALL_MKCERT=false
             shift
+            ;;
+        --host)
+            EXTRA_HOSTS+=("$2")
+            shift 2
             ;;
         *)
             shift
@@ -39,6 +44,14 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SSL_DIR="${REPO_ROOT}/ssl"
+
+# Also check SITE_DOMAIN from state file for additional SANs
+if [[ -f "${REPO_ROOT}/.busibox-state" ]]; then
+    _state_domain=$(grep -E '^SITE_DOMAIN=' "${REPO_ROOT}/.busibox-state" 2>/dev/null | cut -d= -f2- || true)
+    if [[ -n "$_state_domain" && "$_state_domain" != "localhost" ]]; then
+        EXTRA_HOSTS+=("$_state_domain")
+    fi
+fi
 
 echo "=== Generating SSL Certificates for Local Development ==="
 echo ""
@@ -121,9 +134,14 @@ if install_mkcert_if_possible && command -v mkcert &> /dev/null; then
     # Install local CA if not already done
     mkcert -install 2>/dev/null || true
     
-    # Generate certificate
+    # Generate certificate with all hostnames
     cd "${SSL_DIR}"
-    mkcert -cert-file localhost.crt -key-file localhost.key localhost 127.0.0.1 ::1
+    if [[ ${#EXTRA_HOSTS[@]} -gt 0 ]]; then
+        echo "Including additional SANs: ${EXTRA_HOSTS[*]}"
+        mkcert -cert-file localhost.crt -key-file localhost.key localhost 127.0.0.1 ::1 "${EXTRA_HOSTS[@]}"
+    else
+        mkcert -cert-file localhost.crt -key-file localhost.key localhost 127.0.0.1 ::1
+    fi
     
     echo ""
     echo "=== SSL Certificates Generated (mkcert - locally trusted) ==="
@@ -143,12 +161,18 @@ else
     echo "Generating self-signed certificate..."
     echo ""
     
+    # Build SAN list including any extra hosts
+    SAN_LIST="DNS:localhost,DNS:*.localhost,IP:127.0.0.1"
+    for host in "${EXTRA_HOSTS[@]}"; do
+        SAN_LIST="${SAN_LIST},DNS:${host}"
+    done
+
     # Generate self-signed certificate
     openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
         -keyout "${SSL_DIR}/localhost.key" \
         -out "${SSL_DIR}/localhost.crt" \
         -subj "/C=US/ST=Local/L=Development/O=Busibox/OU=Dev/CN=localhost" \
-        -addext "subjectAltName=DNS:localhost,DNS:*.localhost,IP:127.0.0.1"
+        -addext "subjectAltName=${SAN_LIST}"
     
     echo ""
     echo "=== SSL Certificates Generated (self-signed) ==="
