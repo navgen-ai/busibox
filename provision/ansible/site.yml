@@ -417,7 +417,17 @@
     - role: node_common
       tags: [user_apps, node_common]
 
-# 4.1.2 Reconfigure nginx after app deployment
+# 4.1.2 Custom Services Container (custom Docker Compose stacks)
+# Provisions custom-services-lxc with Docker CE so deploy-api can SSH in
+# and deploy multi-container services (appMode: "custom") at runtime
+# NOTE: Only runs with explicit custom_services tag
+- hosts: custom_services
+  tags: [custom_services]
+  roles:
+    - role: custom_services
+      tags: [custom_services]
+
+# 4.1.3 Reconfigure nginx after app deployment
 # This ensures nginx routes are updated after apps are deployed
 - hosts: proxy
   tags: [apps, apps_frontend, nginx_post_apps]

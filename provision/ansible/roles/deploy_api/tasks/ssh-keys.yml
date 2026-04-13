@@ -114,6 +114,30 @@
   tags: [deploy_api, deploy_api_ssh]
 
 # ============================================================================
+# Custom Services Container (custom-services-lxc) - for Docker Compose stacks
+# ============================================================================
+
+- name: Ensure .ssh directory exists on custom-services container
+  file:
+    path: /root/.ssh
+    state: directory
+    mode: '0700'
+    owner: root
+    group: root
+  delegate_to: "{{ hostvars[groups['custom_services'][0]]['ansible_host'] }}"
+  when: groups['custom_services'] is defined and groups['custom_services'] | length > 0
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Add authz container public key to custom-services container authorized_keys
+  authorized_key:
+    user: root
+    key: "{{ authz_public_key.content | b64decode }}"
+    state: present
+  delegate_to: "{{ hostvars[groups['custom_services'][0]]['ansible_host'] }}"
+  when: groups['custom_services'] is defined and groups['custom_services'] | length > 0
+  tags: [deploy_api, deploy_api_ssh]
+
+# ============================================================================
 # Core Apps Container (core-apps-lxc) - for busibox-portal and busibox-agents
 # ============================================================================
 
@@ -389,6 +413,14 @@
   when: groups['bridge'] is defined and groups['bridge'] | length > 0
   tags: [deploy_api, deploy_api_ssh]
 
+- name: Test SSH connection from authz to custom-services
+  shell: "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@custom-services 'echo SSH_OK'"
+  register: ssh_test_custom_services
+  changed_when: false
+  failed_when: false
+  when: groups['custom_services'] is defined and groups['custom_services'] | length > 0
+  tags: [deploy_api, deploy_api_ssh]
+
 - name: Test SSH connection from authz to Proxmox host
   shell: "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 root@{{ deploy_api_proxmox_host }} 'echo SSH_OK'"
   register: ssh_test_proxmox
@@ -404,6 +436,7 @@
       - Proxmox Host: {{ 'NOT CONFIGURED' if not proxmox_host_configured else ('OK' if ssh_test_proxmox.rc == 0 else 'FAILED (required for make install)') }}
       - Core Apps: {{ 'OK' if ssh_test_core_apps.rc == 0 else 'FAILED' }}
       - User Apps: {{ 'NOT CONFIGURED' if (groups['user_apps'] is not defined or groups['user_apps'] | length == 0) else ('OK' if ssh_test_user_apps.rc == 0 else 'FAILED (required for user app deployments)') }}
+      - Custom Services: {{ 'NOT CONFIGURED' if (groups['custom_services'] is not defined or groups['custom_services'] | length == 0) else ('OK' if ssh_test_custom_services.rc == 0 else 'FAILED (required for custom service deployments)') }}
       - Data (Redis): {{ 'OK' if ssh_test_data.rc == 0 else 'FAILED' }}
       - Agent: {{ 'OK' if ssh_test_agent.rc == 0 else 'FAILED' }}
       - Milvus: {{ 'OK' if ssh_test_milvus.rc == 0 else 'FAILED' }}

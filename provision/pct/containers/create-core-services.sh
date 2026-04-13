@@ -16,6 +16,7 @@
 #   - proxy-lxc      - nginx reverse proxy (main entry point)
 #   - core-apps-lxc  - Core Next.js applications (busibox-portal, busibox-agents)
 #   - user-apps-lxc  - External/user-deployed applications
+#   - custom-services-lxc - Custom Docker Compose service stacks
 #   - agent-lxc      - Agent API server
 #   - authz-lxc      - Authorization service (RLS token issuer)
 
@@ -37,12 +38,14 @@ if [[ "$MODE" == "staging" ]]; then
   CT_PROXY="$CT_PROXY_STAGING"
   CT_CORE_APPS="$CT_CORE_APPS_STAGING"
   CT_USER_APPS="$CT_USER_APPS_STAGING"
+  CT_CUSTOM_SERVICES="$CT_CUSTOM_SERVICES_STAGING"
   CT_AGENT="$CT_AGENT_STAGING"
   CT_AUTHZ="$CT_AUTHZ_STAGING"
   
   IP_PROXY="$IP_PROXY_STAGING"
   IP_CORE_APPS="$IP_CORE_APPS_STAGING"
   IP_USER_APPS="$IP_USER_APPS_STAGING"
+  IP_CUSTOM_SERVICES="$IP_CUSTOM_SERVICES_STAGING"
   IP_AGENT="$IP_AGENT_STAGING"
   IP_AUTHZ="$IP_AUTHZ_STAGING"
 else
@@ -89,6 +92,10 @@ CREATED_CONTAINERS+=("$CT_CORE_APPS")
 create_ct "$CT_USER_APPS" "$IP_USER_APPS" "${PREFIX}user-apps-lxc" unpriv || cleanup_on_error
 CREATED_CONTAINERS+=("$CT_USER_APPS")
 
+# Create custom-services container (custom Docker Compose stacks)
+create_ct "$CT_CUSTOM_SERVICES" "$IP_CUSTOM_SERVICES" "${PREFIX}custom-services-lxc" unpriv || cleanup_on_error
+CREATED_CONTAINERS+=("$CT_CUSTOM_SERVICES")
+
 # Create agent container
 create_ct "$CT_AGENT" "$IP_AGENT" "${PREFIX}agent-lxc" unpriv || cleanup_on_error
 CREATED_CONTAINERS+=("$CT_AGENT")
@@ -105,6 +112,7 @@ echo "Containers:"
 echo "  - ${PREFIX}proxy-lxc:      $CT_PROXY @ $IP_PROXY"
 echo "  - ${PREFIX}core-apps-lxc:  $CT_CORE_APPS @ $IP_CORE_APPS"
 echo "  - ${PREFIX}user-apps-lxc:  $CT_USER_APPS @ $IP_USER_APPS"
+echo "  - ${PREFIX}custom-services-lxc: $CT_CUSTOM_SERVICES @ $IP_CUSTOM_SERVICES"
 echo "  - ${PREFIX}agent-lxc:      $CT_AGENT @ $IP_AGENT"
 echo "  - ${PREFIX}authz-lxc:      $CT_AUTHZ @ $IP_AUTHZ"
 echo "=========================================="

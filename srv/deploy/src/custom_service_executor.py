@@ -45,7 +45,10 @@ CUSTOM_SERVICES_BASE = os.environ.get(
     "CUSTOM_SERVICES_DIR",
     os.path.join(BUSIBOX_HOST_PATH, "custom-services"),
 )
-BUSIBOX_COMMON_SRC = os.path.join(BUSIBOX_HOST_PATH, "srv", "shared")
+BUSIBOX_COMMON_SRC = os.environ.get(
+    "BUSIBOX_COMMON_DIR",
+    os.path.join(BUSIBOX_HOST_PATH, "srv", "shared"),
+)
 BUSIBOX_NET = f"{CONTAINER_PREFIX}-busibox-net"
 
 CUSTOM_SERVICES_REGISTRY = "/tmp/busibox_custom_services_registry.json"

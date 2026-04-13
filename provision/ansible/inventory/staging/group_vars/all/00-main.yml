@@ -49,6 +49,7 @@ minio_ip: "{{ network_base_octets }}.205"
 data_ip: "{{ network_base_octets }}.206"
 user_apps_ip: "{{ network_base_octets }}.212"  # User/external apps
 neo4j_ip: "{{ network_base_octets }}.213"
+custom_services_ip: "{{ network_base_octets }}.214"  # Custom Docker Compose service stacks
 
 # LLM Service IPs: .207-.208 (to allow room for more infrastructure)
 # NOTE: .209 was previously ollama (now deprecated)

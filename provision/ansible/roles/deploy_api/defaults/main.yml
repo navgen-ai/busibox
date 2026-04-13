@@ -36,6 +36,11 @@ deploy_api_apps_container_ip_staging: busibox-portal
 deploy_api_user_apps_container_ip: "{{ user_apps_ip | default('user-apps') }}"
 deploy_api_user_apps_container_ip_staging: "{{ user_apps_ip | default('user-apps') }}"
 
+# Custom services host (for appMode: "custom" multi-container deployments)
+# deploy-api SSHes here to clone repos and run docker compose
+# Targets dedicated custom-services LXC with Docker CE installed
+deploy_api_custom_services_host: "{{ custom_services_ip | default('custom-services') }}"
+
 # SSH key for remote operations
 deploy_api_ssh_key_path: /root/.ssh/id_rsa
 

@@ -1,0 +1,5 @@
+---
+# Custom Services container defaults
+
+# Base directory for custom service deployments
+custom_services_base_dir: /srv/custom-services

@@ -113,6 +113,17 @@
   notify: Restart deploy-api service
   tags: [deploy_api]
 
+- name: Copy shared library packaging files (for custom service builds)
+  copy:
+    src: "{{ playbook_dir }}/../../srv/shared/{{ item }}"
+    dest: "{{ deploy_api_app_dir }}/src/{{ item }}"
+    mode: '0644'
+  loop:
+    - setup.py
+    - pyproject.toml
+  failed_when: false
+  tags: [deploy_api]
+
 - name: Copy requirements.txt
   copy:
     src: "{{ deploy_api_src_dir }}/requirements.txt"
