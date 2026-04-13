@@ -13,7 +13,7 @@ license = {text = "Proprietary"}
 dependencies = [
     "sqlalchemy>=2.0",
     # Auth dependencies
-    "pyjwt>=2.8",
+    "pyjwt[crypto]>=2.8",
     "httpx>=0.24",
     "structlog>=23.0",
     "cachetools>=5.3",

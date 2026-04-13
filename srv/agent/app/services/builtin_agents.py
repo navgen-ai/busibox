@@ -225,6 +225,8 @@ def get_builtin_agent_definitions() -> List[AgentDefinitionRead]:
         # Use current timestamp
         now = datetime.now(timezone.utc)
         
+        from app.schemas.definitions import AgentVisibility
+
         definition = AgentDefinitionRead(
             id=agent_uuid,
             name=metadata["name"],
@@ -232,11 +234,13 @@ def get_builtin_agent_definitions() -> List[AgentDefinitionRead]:
             description=metadata["description"],
             model=metadata["model"],
             instructions=instructions,
-            tools={"names": tool_names},  # Use explicit tool list from metadata
+            tools={"names": tool_names},
             workflow=None,
             scopes=[],
             is_active=True,
             is_builtin=True,
+            visibility=AgentVisibility.BUILTIN,
+            app_id=None,
             created_by=None,
             version=metadata["version"],
             created_at=now,

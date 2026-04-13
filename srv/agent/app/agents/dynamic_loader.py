@@ -201,7 +201,9 @@ async def register_agent(
     session: AsyncSession,
     payload: AgentDefinitionCreate,
     created_by: Optional[str] = None,
-    is_builtin: bool = False
+    is_builtin: bool = False,
+    visibility: Optional[str] = None,
+    app_id: Optional[str] = None,
 ) -> tuple[uuid.UUID, Union[Agent[BusiboxDeps, object], BaseStreamingAgent]]:
     """
     Persist a new agent definition and return a hydrated BaseStreamingAgent.
@@ -211,10 +213,14 @@ async def register_agent(
         payload: Agent definition data
         created_by: User ID who created the agent (for personal agents)
         is_builtin: Whether this is a built-in system agent (default: False)
+        visibility: Agent visibility category (builtin/application/shared/personal)
+        app_id: Application ID for application-scoped agents
     
     Raises:
         ValueError: If any tool references are invalid
     """
+    from app.models.domain import AGENT_VISIBILITY_PERSONAL
+
     tool_names = payload.tools.get("names", [])
     validate_tool_references(tool_names)
     
@@ -234,6 +240,8 @@ async def register_agent(
         mcp_servers=mcp_servers_data,
         is_active=payload.is_active,
         is_builtin=is_builtin,
+        visibility=visibility or AGENT_VISIBILITY_PERSONAL,
+        app_id=app_id,
         created_by=created_by,
     )
     session.add(definition)

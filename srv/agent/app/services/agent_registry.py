@@ -37,10 +37,18 @@ class AgentRegistry:
         session: AsyncSession,
         payload: AgentDefinitionCreate,
         created_by: str | None = None,
-        is_builtin: bool = False
+        is_builtin: bool = False,
+        visibility: str | None = None,
+        app_id: str | None = None,
     ) -> uuid.UUID:
         async with self._lock:
-            agent_id, agent = await register_agent(session, payload, created_by=created_by, is_builtin=is_builtin)
+            agent_id, agent = await register_agent(
+                session, payload,
+                created_by=created_by,
+                is_builtin=is_builtin,
+                visibility=visibility,
+                app_id=app_id,
+            )
             self._agents[agent_id] = agent
             return agent_id
 

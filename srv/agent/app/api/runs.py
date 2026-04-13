@@ -140,7 +140,9 @@ async def _resolve_agent_id(
     agent_id: Optional[uuid.UUID],
     agent_name: Optional[str],
 ) -> uuid.UUID:
-    """Resolve agent by id or name with user visibility checks."""
+    """Resolve agent by id or name with visibility checks."""
+    from app.services.agent_visibility import can_access_agent
+
     if agent_id:
         return agent_id
 
@@ -155,7 +157,7 @@ async def _resolve_agent_id(
         if metadata["name"] == agent_name:
             return uuid.uuid5(uuid.NAMESPACE_DNS, f"busibox.builtin.{agent_name}")
 
-    # Fallback to DB agent by name: owner or DB-level built-in.
+    # Fallback to DB agent by name with visibility check.
     stmt = select(AgentDefinition).where(
         AgentDefinition.name == agent_name,
         AgentDefinition.is_active.is_(True),
@@ -166,7 +168,7 @@ async def _resolve_agent_id(
     if not definition:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
-    if not definition.is_builtin and definition.created_by != principal.sub:
+    if not can_access_agent(principal, definition):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
     return definition.id

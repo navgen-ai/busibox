@@ -24,6 +24,18 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+AGENT_VISIBILITY_BUILTIN = "builtin"
+AGENT_VISIBILITY_APPLICATION = "application"
+AGENT_VISIBILITY_SHARED = "shared"
+AGENT_VISIBILITY_PERSONAL = "personal"
+VALID_AGENT_VISIBILITIES = {
+    AGENT_VISIBILITY_BUILTIN,
+    AGENT_VISIBILITY_APPLICATION,
+    AGENT_VISIBILITY_SHARED,
+    AGENT_VISIBILITY_PERSONAL,
+}
+
+
 class AgentDefinition(Base):
     __tablename__ = "agent_definitions"
 
@@ -38,6 +50,14 @@ class AgentDefinition(Base):
     scopes: Mapped[list] = mapped_column(JSON, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    visibility: Mapped[str] = mapped_column(
+        String(20), default=AGENT_VISIBILITY_PERSONAL,
+        comment="Agent visibility: builtin, application, shared, personal"
+    )
+    app_id: Mapped[Optional[str]] = mapped_column(
+        String(120), nullable=True,
+        comment="Application ID for application-scoped agents"
+    )
     allow_frontier_fallback: Mapped[bool] = mapped_column(
         Boolean, default=False,
         comment="Allow automatic fallback to frontier cloud model when context window is exceeded"
@@ -54,7 +74,7 @@ class AgentDefinition(Base):
     )
     
     def __repr__(self) -> str:
-        return f"<AgentDefinition(id={self.id}, name={self.name}, is_builtin={self.is_builtin}, version={self.version})>"
+        return f"<AgentDefinition(id={self.id}, name={self.name}, visibility={self.visibility}, version={self.version})>"
 
 
 class ToolDefinition(Base):

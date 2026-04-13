@@ -314,12 +314,95 @@ async def test_agent_crud_workflow(test_client: AsyncClient, mock_jwt_token: str
         headers={"Authorization": f"Bearer {mock_jwt_token}"},
     )
     assert response.status_code == 200
-    # Note: Count may vary due to session-scoped DB, just verify agent exists
     
     # 4. Verify agent appears in list
     agents = response.json()
     agent_names = [a["name"] for a in agents]
     assert unique_name in agent_names
+
+
+@pytest.mark.asyncio
+async def test_create_agent_with_visibility_and_app_id(test_client: AsyncClient, mock_jwt_token: str):
+    """Test creating an application-scoped agent with visibility and app_id."""
+    unique_name = f"app-agent-{uuid.uuid4().hex[:8]}"
+    payload = {
+        "name": unique_name,
+        "model": "agent",
+        "instructions": "Application agent",
+        "tools": {"names": []},
+        "visibility": "application",
+        "app_id": "my-cool-app",
+    }
+
+    response = await test_client.post(
+        "/agents/definitions",
+        json=payload,
+        headers={"Authorization": f"Bearer {mock_jwt_token}"},
+    )
+    assert response.status_code == 201, f"Failed: {response.text}"
+    data = response.json()
+    assert data["visibility"] == "application"
+    assert data["app_id"] == "my-cool-app"
+    assert data["is_builtin"] is True  # backward compat
+
+
+@pytest.mark.asyncio
+async def test_create_personal_agent_default_visibility(test_client: AsyncClient, mock_jwt_token: str):
+    """Test that agents without visibility default to 'personal'."""
+    unique_name = f"personal-default-{uuid.uuid4().hex[:8]}"
+    payload = {
+        "name": unique_name,
+        "model": "agent",
+        "instructions": "Personal agent",
+        "tools": {"names": []},
+    }
+
+    response = await test_client.post(
+        "/agents/definitions",
+        json=payload,
+        headers={"Authorization": f"Bearer {mock_jwt_token}"},
+    )
+    assert response.status_code == 201, f"Failed: {response.text}"
+    data = response.json()
+    assert data["visibility"] == "personal"
+    assert data["is_builtin"] is False
+    assert data["app_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_upsert_application_agent_preserves_app_id(test_client: AsyncClient, mock_jwt_token: str):
+    """Test that re-syncing an application agent preserves and updates fields."""
+    unique_name = f"resync-app-agent-{uuid.uuid4().hex[:8]}"
+    payload = {
+        "name": unique_name,
+        "model": "agent",
+        "instructions": "Version 1",
+        "tools": {"names": []},
+        "visibility": "application",
+        "app_id": "workforce-app",
+    }
+
+    # First create
+    response = await test_client.post(
+        "/agents/definitions",
+        json=payload,
+        headers={"Authorization": f"Bearer {mock_jwt_token}"},
+    )
+    assert response.status_code == 201
+
+    # Upsert with updated instructions
+    payload["instructions"] = "Version 2"
+    response = await test_client.post(
+        "/agents/definitions",
+        json=payload,
+        headers={"Authorization": f"Bearer {mock_jwt_token}"},
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["instructions"] == "Version 2"
+    assert data["visibility"] == "application"
+    assert data["app_id"] == "workforce-app"
+    assert data["version"] > 1
 
 
 

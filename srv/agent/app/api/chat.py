@@ -859,14 +859,15 @@ async def send_chat_message_stream(
             if user_settings and user_settings.enabled_tools:
                 enabled_tools = [t for t in enabled_tools if t in user_settings.enabled_tools]
             
-            # Determine available agents for dispatcher
-            # If user selected specific agents, use those as available options
-            # Otherwise, use all active agents
+            # Determine available agents for dispatcher — only those visible to this user
             if payload.selected_agents:
                 available_agents_for_routing = payload.selected_agents
             else:
-                # Get all active agents
-                stmt = select(AgentDefinition).where(AgentDefinition.is_active.is_(True))
+                from app.services.agent_visibility import visibility_filter
+                stmt = select(AgentDefinition).where(
+                    AgentDefinition.is_active.is_(True),
+                    visibility_filter(principal),
+                )
                 result = await session.execute(stmt)
                 all_agents = result.scalars().all()
                 available_agents_for_routing = [str(agent.id) for agent in all_agents]

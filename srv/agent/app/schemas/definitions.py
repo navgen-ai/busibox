@@ -2,7 +2,16 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from enum import Enum
+
 from pydantic import BaseModel, Field
+
+
+class AgentVisibility(str, Enum):
+    BUILTIN = "builtin"
+    APPLICATION = "application"
+    SHARED = "shared"
+    PERSONAL = "personal"
 
 
 class ContextCompressionConfig(BaseModel):
@@ -60,8 +69,17 @@ class AgentDefinitionCreate(BaseModel):
     is_active: bool = True
     is_builtin: bool = Field(
         default=False,
-        description="Mark as built-in agent visible to all users. "
-        "When True, the agent is shared across all users and cannot be deleted by non-admins."
+        description="Deprecated: use visibility instead. "
+        "Kept for backward compat — is_builtin=True maps to visibility='application'."
+    )
+    visibility: Optional[AgentVisibility] = Field(
+        default=None,
+        description="Agent visibility category: builtin, application, shared, personal. "
+        "When omitted, derived from is_builtin (True→application, False→personal)."
+    )
+    app_id: Optional[str] = Field(
+        default=None,
+        description="Application ID for application-scoped agents (required when visibility='application')."
     )
     allow_frontier_fallback: bool = Field(
         default=False,
@@ -72,10 +90,18 @@ class AgentDefinitionCreate(BaseModel):
         description="Configuration for conversation history compression"
     )
 
+    def resolved_visibility(self) -> str:
+        """Return the effective visibility, applying backward compat from is_builtin."""
+        if self.visibility is not None:
+            return self.visibility.value
+        return AgentVisibility.APPLICATION.value if self.is_builtin else AgentVisibility.PERSONAL.value
+
 
 class AgentDefinitionRead(AgentDefinitionCreate):
     id: uuid.UUID
     is_builtin: bool
+    visibility: Optional[AgentVisibility] = AgentVisibility.PERSONAL
+    app_id: Optional[str] = None
     created_by: Optional[str] = None
     version: int
     created_at: datetime
@@ -97,6 +123,8 @@ class AgentDefinitionUpdate(BaseModel):
     mcp_servers: Optional[List[MCPServerEntry]] = None
     is_active: Optional[bool] = None
     is_builtin: Optional[bool] = None
+    visibility: Optional[AgentVisibility] = None
+    app_id: Optional[str] = None
     allow_frontier_fallback: Optional[bool] = None
 
 

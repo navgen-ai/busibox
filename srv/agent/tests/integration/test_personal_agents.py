@@ -169,6 +169,8 @@ async def builtin_agent_id(db_session: AsyncSession) -> uuid.UUID:
     
     Uses a savepoint to ensure cleanup even if test fails.
     """
+    from app.models.domain import AGENT_VISIBILITY_APPLICATION
+
     unique_name = f"builtin-test-agent-{uuid.uuid4().hex[:8]}"
     agent = AgentDefinition(
         name=unique_name,
@@ -180,7 +182,8 @@ async def builtin_agent_id(db_session: AsyncSession) -> uuid.UUID:
         scopes=[],
         is_active=True,
         is_builtin=True,
-        created_by=None,  # System agent, no creator
+        visibility=AGENT_VISIBILITY_APPLICATION,
+        created_by=None,
     )
     db_session.add(agent)
     await db_session.commit()
@@ -377,7 +380,7 @@ async def test_personal_agent_created_with_correct_ownership(
     db_session: AsyncSession,
 ):
     """
-    Test: Personal agents created with is_builtin=False and created_by set to user.
+    Test: Personal agents created with is_builtin=False, visibility=personal, and created_by set to user.
     """
     unique_name = f"ownership-test-agent-{uuid.uuid4().hex[:8]}"
     response = await user_a_client.post(
@@ -393,17 +396,135 @@ async def test_personal_agent_created_with_correct_ownership(
     assert response.status_code == 201
     agent = response.json()
     
-    # Verify ownership fields
-    assert agent["is_builtin"] is False, "User-created agents should not be built-in"
-    assert agent["created_by"] == "user-a", "created_by should match authenticated user"
+    assert agent["is_builtin"] is False
+    assert agent["visibility"] == "personal"
+    assert agent["created_by"] == "user-a"
     
-    # Verify in database
     stmt = select(AgentDefinition).where(AgentDefinition.id == uuid.UUID(agent["id"]))
     result = await db_session.execute(stmt)
     db_agent = result.scalar_one()
     
     assert db_agent.is_builtin is False
+    assert db_agent.visibility == "personal"
     assert db_agent.created_by == "user-a"
+
+
+@pytest.mark.asyncio
+async def test_application_agent_visible_to_all_users(
+    user_a_client: AsyncClient,
+    user_b_client: AsyncClient,
+    db_session: AsyncSession,
+):
+    """
+    Test: Application agents (visibility='application') are visible to all users.
+    """
+    unique_name = f"app-agent-{uuid.uuid4().hex[:8]}"
+    response = await user_a_client.post(
+        "/agents/definitions",
+        json={
+            "name": unique_name,
+            "display_name": "App Agent",
+            "model": "agent",
+            "instructions": "App-managed agent",
+            "tools": {"names": []},
+            "visibility": "application",
+            "app_id": "test-app",
+        },
+    )
+    
+    assert response.status_code == 201
+    agent = response.json()
+    agent_id = agent["id"]
+    assert agent["visibility"] == "application"
+    assert agent["app_id"] == "test-app"
+    assert agent["is_builtin"] is True  # backward compat
+
+    # User B should see this agent
+    response = await user_b_client.get("/agents")
+    assert response.status_code == 200
+    agents = response.json()
+    agent_ids = [a["id"] for a in agents]
+    assert agent_id in agent_ids, "User B should see application agents"
+
+    # User B should access via direct GET
+    response = await user_b_client.get(f"/agents/{agent_id}")
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_application_agent_cannot_be_deleted(
+    user_a_client: AsyncClient,
+    db_session: AsyncSession,
+):
+    """
+    Test: Application agents cannot be deleted (soft-delete blocked).
+    """
+    unique_name = f"no-delete-app-agent-{uuid.uuid4().hex[:8]}"
+    response = await user_a_client.post(
+        "/agents/definitions",
+        json={
+            "name": unique_name,
+            "model": "agent",
+            "instructions": "App agent",
+            "tools": {"names": []},
+            "visibility": "application",
+            "app_id": "test-app",
+        },
+    )
+    assert response.status_code == 201
+    agent_id = response.json()["id"]
+
+    response = await user_a_client.delete(f"/agents/definitions/{agent_id}")
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_backward_compat_is_builtin_maps_to_application(
+    user_a_client: AsyncClient,
+    db_session: AsyncSession,
+):
+    """
+    Test: is_builtin=True without visibility maps to visibility='application'.
+    """
+    unique_name = f"compat-agent-{uuid.uuid4().hex[:8]}"
+    response = await user_a_client.post(
+        "/agents/definitions",
+        json={
+            "name": unique_name,
+            "model": "agent",
+            "instructions": "Backward compat test",
+            "tools": {"names": []},
+            "is_builtin": True,
+        },
+    )
+    
+    assert response.status_code == 201
+    agent = response.json()
+    assert agent["visibility"] == "application"
+    assert agent["is_builtin"] is True
+
+
+@pytest.mark.asyncio
+async def test_builtin_visibility_rejected_via_api(
+    user_a_client: AsyncClient,
+):
+    """
+    Test: visibility='builtin' is rejected — reserved for code-defined agents.
+    """
+    unique_name = f"fake-builtin-{uuid.uuid4().hex[:8]}"
+    response = await user_a_client.post(
+        "/agents/definitions",
+        json={
+            "name": unique_name,
+            "model": "agent",
+            "instructions": "Try to be builtin",
+            "tools": {"names": []},
+            "visibility": "builtin",
+        },
+    )
+    
+    assert response.status_code == 400
+    assert "builtin" in response.json()["detail"].lower()
 
 
 

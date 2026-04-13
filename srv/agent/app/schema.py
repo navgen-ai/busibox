@@ -470,9 +470,28 @@ def get_agent_schema() -> SchemaManager:
     # Indexes
     # ==========================================================================
     
+    # agent_definitions migrations (idempotent column additions)
+    schema.add_migration("""
+        DO $$ BEGIN
+            ALTER TABLE agent_definitions ADD COLUMN visibility VARCHAR(20) NOT NULL DEFAULT 'personal';
+        EXCEPTION WHEN duplicate_column THEN NULL;
+        END $$
+    """)
+    schema.add_migration("""
+        DO $$ BEGIN
+            ALTER TABLE agent_definitions ADD COLUMN app_id VARCHAR(120);
+        EXCEPTION WHEN duplicate_column THEN NULL;
+        END $$
+    """)
+    schema.add_migration("""
+        UPDATE agent_definitions SET visibility = 'application'
+        WHERE is_builtin = true AND visibility = 'personal'
+    """)
+
     # agent_definitions indexes
     schema.add_index("CREATE UNIQUE INDEX IF NOT EXISTS ix_agent_definitions_name ON agent_definitions(name)")
     schema.add_index("CREATE INDEX IF NOT EXISTS idx_agent_definitions_builtin_created ON agent_definitions(is_builtin, created_by) WHERE is_active = true")
+    schema.add_index("CREATE INDEX IF NOT EXISTS idx_agent_defs_visibility_appid ON agent_definitions(visibility, app_id) WHERE is_active = true")
     
     # tool_definitions indexes
     schema.add_index("CREATE UNIQUE INDEX IF NOT EXISTS ix_tool_definitions_name ON tool_definitions(name)")

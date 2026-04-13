@@ -3,7 +3,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_principal
@@ -22,7 +22,9 @@ from app.schemas.definitions import (
     WorkflowDefinitionCreate,
     WorkflowDefinitionRead,
 )
+from app.models.domain import AGENT_VISIBILITY_APPLICATION, AGENT_VISIBILITY_BUILTIN, AGENT_VISIBILITY_PERSONAL
 from app.services.agent_registry import agent_registry
+from app.services.agent_visibility import can_access_agent, visibility_filter
 from app.services.builtin_agents import BUILTIN_AGENT_METADATA
 
 logger = get_logger(__name__)
@@ -47,33 +49,26 @@ async def list_agents(
     session: AsyncSession = Depends(get_session),
 ) -> List[AgentDefinitionRead]:
     """
-    List agents with personal filtering.
+    List agents visible to the current user.
     
     Returns:
-    - All built-in agents (dynamically loaded from app/agents/)
-    - All built-in agents from database (is_builtin=True)
-    - Personal agents created by the authenticated user (created_by=principal.sub)
+    - All code-defined built-in agents (from app/agents/)
+    - All application agents (visibility='application')
+    - Personal agents created by the authenticated user
     
     Other users' personal agents are not visible.
     """
     from app.services.builtin_agents import get_builtin_agent_definitions
     
-    # Get dynamically loaded built-in agents from Python files
     builtin_agents = get_builtin_agent_definitions()
     
-    # Get personal agents and database built-in agents
     stmt = select(AgentDefinition).where(
         AgentDefinition.is_active.is_(True),
-        or_(
-            AgentDefinition.is_builtin.is_(True),
-            AgentDefinition.created_by == principal.sub
-        )
+        visibility_filter(principal),
     )
     result = await session.execute(stmt)
     db_agents = [AgentDefinitionRead.model_validate(a) for a in result.scalars().all()]
     
-    # Combine built-in agents from code with database agents
-    # Use a dict to deduplicate by name (code-based agents take precedence)
     agents_dict = {agent.name: agent for agent in db_agents}
     for builtin in builtin_agents:
         agents_dict[builtin.name] = builtin
@@ -169,14 +164,16 @@ async def create_agent_definition(
     session: AsyncSession = Depends(get_session),
 ) -> AgentDefinitionRead:
     """
-    Create a new agent definition.
-    
-    If is_builtin=True is requested, the agent will be visible to all users.
-    Otherwise it is a personal agent visible only to the creator.
-    
-    If an agent with the same name already exists for this user (or as a
-    built-in), the existing definition is updated instead of creating a
-    duplicate.
+    Create or update (upsert) an agent definition.
+
+    Visibility categories:
+      - 'application': visible to all users, owned by an app (requires app_id)
+      - 'shared': visible to owner + users with matching role (future)
+      - 'personal': visible only to the creator
+      - 'builtin': reserved for code-defined agents
+
+    Backward compat: ``is_builtin=True`` without an explicit ``visibility``
+    is mapped to ``visibility='application'``.
     """
     from sqlalchemy import select as sa_select
 
@@ -186,7 +183,17 @@ async def create_agent_definition(
             detail=f"'{payload.name}' is a reserved built-in agent name and cannot be created or modified via API",
         )
 
-    is_builtin = payload.is_builtin
+    effective_visibility = payload.resolved_visibility()
+    effective_app_id = payload.app_id
+
+    if effective_visibility == AGENT_VISIBILITY_BUILTIN:
+        raise HTTPException(
+            status_code=400,
+            detail="visibility='builtin' is reserved for code-defined agents",
+        )
+
+    # Keep is_builtin in sync with visibility for backward compat
+    effective_is_builtin = effective_visibility in (AGENT_VISIBILITY_APPLICATION, AGENT_VISIBILITY_BUILTIN)
 
     # Check for existing agent with same name (upsert semantics)
     existing_query = sa_select(AgentDefinition).where(
@@ -198,28 +205,36 @@ async def create_agent_definition(
 
     if existing:
         is_owner = existing.created_by == principal.sub
+        has_app_access = (
+            effective_visibility == AGENT_VISIBILITY_APPLICATION
+            and existing.visibility == AGENT_VISIBILITY_APPLICATION
+            and effective_app_id
+            and existing.app_id == effective_app_id
+        )
 
-        if not is_owner and not existing.is_builtin:
+        if not is_owner and not has_app_access:
             raise HTTPException(
                 status_code=409,
                 detail=f"An agent named '{payload.name}' already exists (owned by another user)",
             )
 
-        # Owner of the agent (built-in or personal) — update in place
         update_fields = payload.model_dump(exclude_unset=True)
-        # Allow owner to promote personal→builtin but never demote builtin→personal
-        if "is_builtin" in update_fields:
-            if existing.is_builtin and not update_fields["is_builtin"]:
-                update_fields.pop("is_builtin")
-            elif not is_owner:
-                update_fields.pop("is_builtin")
+        # Remove fields that are computed or should not be blindly set
+        update_fields.pop("is_builtin", None)
+        update_fields.pop("context_compression", None)
+
+        # Set authoritative visibility + derived is_builtin
+        update_fields["visibility"] = effective_visibility
+        update_fields["is_builtin"] = effective_is_builtin
+        if effective_app_id:
+            update_fields["app_id"] = effective_app_id
+
         for key, value in update_fields.items():
             if hasattr(existing, key):
                 setattr(existing, key, value)
         await session.commit()
         await session.refresh(existing)
 
-        # Reload into registry
         await agent_registry.refresh(session)
 
         logger.info(
@@ -227,12 +242,20 @@ async def create_agent_definition(
             agent_id=str(existing.id),
             agent_name=existing.name,
             user_id=principal.sub,
-            is_builtin=existing.is_builtin,
+            visibility=existing.visibility,
+            app_id=existing.app_id,
         )
         return AgentDefinitionRead.model_validate(existing)
 
     try:
-        agent_id = await agent_registry.add(session, payload, created_by=principal.sub, is_builtin=is_builtin)
+        agent_id = await agent_registry.add(
+            session,
+            payload,
+            created_by=principal.sub,
+            is_builtin=effective_is_builtin,
+            visibility=effective_visibility,
+            app_id=effective_app_id,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     definition = await session.get(AgentDefinition, agent_id)
@@ -244,8 +267,9 @@ async def create_agent_definition(
         agent_id=str(agent_id),
         agent_name=definition.name,
         user_id=principal.sub,
-        is_builtin=is_builtin,
-        model=definition.model
+        visibility=definition.visibility,
+        app_id=definition.app_id,
+        model=definition.model,
     )
     
     return AgentDefinitionRead.model_validate(definition)
@@ -259,8 +283,10 @@ async def update_agent_definition(
     session: AsyncSession = Depends(get_session),
 ) -> AgentDefinitionRead:
     """
-    Update an agent definition. Built-in agents may only have tools updated.
-    Personal agents: only the owner can update; all updatable fields allowed.
+    Update an agent definition.
+    
+    Code-defined built-in agents cannot be updated.
+    Application and personal agents: only the owner (or same app_id) can update.
     """
     from app.agents.dynamic_loader import validate_tool_references
 
@@ -270,30 +296,37 @@ async def update_agent_definition(
 
     update_data = payload.model_dump(exclude_unset=True)
 
-    if definition.is_builtin:
+    if definition.visibility == AGENT_VISIBILITY_BUILTIN:
         raise HTTPException(
             status_code=403,
             detail="Built-in agents are code-defined and cannot be updated via API",
         )
-    else:
-        # Personal: must be owner
-        if definition.created_by != principal.sub:
-            raise HTTPException(status_code=404, detail="Agent not found")
-        if "name" in update_data and update_data["name"] in BUILTIN_AGENT_RESERVED_NAMES:
-            raise HTTPException(
-                status_code=409,
-                detail=f"'{update_data['name']}' is a reserved built-in agent name and cannot be used",
-            )
-        if "tools" in update_data and update_data["tools"] is not None:
-            validate_tool_references(update_data["tools"].get("names", []))
-        for key, value in update_data.items():
+
+    if not can_access_agent(principal, definition):
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if "name" in update_data and update_data["name"] in BUILTIN_AGENT_RESERVED_NAMES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{update_data['name']}' is a reserved built-in agent name and cannot be used",
+        )
+    if "tools" in update_data and update_data["tools"] is not None:
+        validate_tool_references(update_data["tools"].get("names", []))
+
+    # Keep is_builtin in sync if visibility changes
+    if "visibility" in update_data and update_data["visibility"]:
+        vis = update_data["visibility"].value if hasattr(update_data["visibility"], "value") else update_data["visibility"]
+        update_data["is_builtin"] = vis in (AGENT_VISIBILITY_APPLICATION, AGENT_VISIBILITY_BUILTIN)
+        update_data["visibility"] = vis
+
+    for key, value in update_data.items():
+        if hasattr(definition, key):
             setattr(definition, key, value)
 
     definition.version += 1
     await session.commit()
     await session.refresh(definition)
 
-    # Refresh registry so runtime uses updated definition
     await agent_registry.refresh(session)
 
     logger.info(
@@ -301,6 +334,7 @@ async def update_agent_definition(
         agent_id=str(agent_id),
         agent_name=definition.name,
         user_id=principal.sub,
+        visibility=definition.visibility,
     )
     return AgentDefinitionRead.model_validate(definition)
 
@@ -311,12 +345,12 @@ async def delete_agent_definition(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    """Soft-delete a personal agent (is_active=False). Built-in agents cannot be deleted."""
+    """Soft-delete an agent (is_active=False). Code-defined and application agents cannot be deleted."""
     definition = await session.get(AgentDefinition, agent_id)
     if not definition:
         raise HTTPException(status_code=404, detail="Agent not found")
-    if definition.is_builtin:
-        raise HTTPException(status_code=403, detail="Cannot delete built-in agents")
+    if definition.visibility in (AGENT_VISIBILITY_BUILTIN, AGENT_VISIBILITY_APPLICATION):
+        raise HTTPException(status_code=403, detail="Cannot delete built-in or application agents")
     if definition.created_by != principal.sub:
         raise HTTPException(status_code=404, detail="Agent not found")
     definition.is_active = False
@@ -511,14 +545,13 @@ async def get_agent(
         )
         raise HTTPException(status_code=404, detail="Agent not found")
     
-    # Check authorization: built-in agents visible to all, personal agents only to creator
-    if not agent.is_builtin and agent.created_by != principal.sub:
+    if not can_access_agent(principal, agent):
         logger.warning(
             "agent_access_denied",
             agent_id=str(agent_id),
             user_id=principal.sub,
             owner=agent.created_by,
-            reason="unauthorized_personal_agent"
+            reason="unauthorized_personal_agent",
         )
         raise HTTPException(status_code=404, detail="Agent not found")
     
