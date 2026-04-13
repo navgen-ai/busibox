@@ -377,15 +377,21 @@ async def resolve_app_secrets(
     manifest: BusiboxManifest,
     deploy_config: DeploymentConfig,
     logs: List[str],
-) -> Dict[str, str]:
+) -> Tuple[Dict[str, str], set]:
     """Auto-generate and persist secrets for requiredEnvVars not provided elsewhere.
 
     On first deploy, generates random 32-char passwords and stores them
     encrypted in app_secrets. On subsequent deploys, loads the persisted
     values so passwords stay stable across redeployments.
+
+    Returns (resolved_secrets_dict, set_of_newly_generated_keys).
+    The caller can use the second value to decide whether volumes need
+    to be wiped (e.g. PostgreSQL won't pick up a new POSTGRES_PASSWORD
+    unless its data volume is empty).
     """
     endpoints = get_service_endpoints(deploy_config.environment)
     resolved: Dict[str, str] = {}
+    newly_generated: set = set()
 
     for var in manifest.requiredEnvVars:
         if var in endpoints or var in deploy_config.secrets or var in deploy_config.envVars:
@@ -413,9 +419,10 @@ async def resolve_app_secrets(
             except Exception as exc:
                 logger.warning("Could not persist secret %s: %s", var, exc)
             resolved[var] = value
+            newly_generated.add(var)
             logs.append(f"Generated new secret: {var}")
 
-    return resolved
+    return resolved, newly_generated
 
 
 def copy_busibox_common(app_path: str, logs: List[str]) -> bool:
@@ -568,6 +575,7 @@ async def deploy_custom_service(
     manifest: BusiboxManifest,
     deploy_config: DeploymentConfig,
     logs: List[str],
+    fresh_secrets: Optional[set] = None,
 ) -> bool:
     """Full deployment pipeline for a custom service (Docker backend)."""
     app_id = manifest.id
@@ -602,6 +610,12 @@ async def deploy_custom_service(
     env_vars = generate_custom_env(manifest, deploy_config)
     write_env_file(app_path, env_vars)
     logs.append(f"Generated .env with {len(env_vars)} variables")
+
+    # Step 4b: Wipe volumes if secrets were freshly generated.
+    if fresh_secrets:
+        logs.append(f"Fresh secrets generated ({', '.join(sorted(fresh_secrets))}), wiping volumes for clean init...")
+        down_cmd = ["docker", "compose", "-p", project, "-f", compose_file, "down", "-v"]
+        await _run(down_cmd, cwd=app_path, timeout=60)
 
     # Step 5: Build
     if not await compose_build(app_path, compose_file, project, logs):
@@ -769,6 +783,7 @@ async def deploy_custom_service_lxc(
     deploy_config: DeploymentConfig,
     logs: List[str],
     target_host: Optional[str] = None,
+    fresh_secrets: Optional[set] = None,
 ) -> bool:
     """Deploy a custom service to a Proxmox LXC container via SSH.
 
@@ -836,6 +851,14 @@ async def deploy_custom_service_lxc(
         logs.append(f"Failed to write .env on remote: {stderr.strip()}")
         return False
     logs.append(f"Generated .env with {len(env_vars)} variables on remote")
+
+    # Step 4b: Wipe volumes if secrets were freshly generated.
+    # PostgreSQL ignores POSTGRES_PASSWORD when pgdata already exists, so a
+    # password change only takes effect on a fresh volume.
+    if fresh_secrets:
+        down_cmd = f"cd {remote_path} && docker compose -p {project} -f {compose_file} down -v 2>&1 || true"
+        logs.append(f"Fresh secrets generated ({', '.join(sorted(fresh_secrets))}), wiping volumes for clean init...")
+        await _ssh(host, down_cmd, timeout=60)
 
     # Step 5a: Build
     build_cmd = f"cd {remote_path} && docker compose -p {project} -f {compose_file} build"

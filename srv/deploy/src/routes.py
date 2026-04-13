@@ -215,18 +215,19 @@ async def execute_deployment(
             await broadcast_status(deployment_id)
 
             # Auto-generate and persist secrets for unresolved requiredEnvVars
+            fresh_secrets: set = set()
             try:
                 config_id = await deployment_db.ensure_deployment_config_for_app(manifest.id)
-                resolved = await resolve_app_secrets(config_id, manifest, deploy_config, deploy_logs)
+                resolved, fresh_secrets = await resolve_app_secrets(config_id, manifest, deploy_config, deploy_logs)
                 deploy_config.secrets.update(resolved)
             except Exception as exc:
                 logger.warning("Secret resolution failed (non-fatal): %s", exc)
                 deploy_logs.append(f"Warning: could not resolve secrets: {exc}")
 
             if custom_is_docker():
-                success = await deploy_custom_service(manifest, deploy_config, deploy_logs)
+                success = await deploy_custom_service(manifest, deploy_config, deploy_logs, fresh_secrets=fresh_secrets)
             else:
-                success = await deploy_custom_service_lxc(manifest, deploy_config, deploy_logs)
+                success = await deploy_custom_service_lxc(manifest, deploy_config, deploy_logs, fresh_secrets=fresh_secrets)
 
             for log in deploy_logs:
                 status.logs.append(f"[{datetime.utcnow().isoformat()}] {log}")
