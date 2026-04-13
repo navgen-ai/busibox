@@ -734,15 +734,25 @@ async def deploy_custom_service_lxc(
         return False
     logs.append(f"Generated .env with {len(env_vars)} variables on remote")
 
-    # Step 5: Build and start
-    compose_cmd = f"cd {remote_path} && docker compose -p {project} -f {compose_file} build && docker compose -p {project} -f {compose_file} up -d"
-    logs.append("Building and starting containers on remote host...")
-    stdout, stderr, code = await _ssh(host, compose_cmd, timeout=900)
+    # Step 5a: Build
+    build_cmd = f"cd {remote_path} && docker compose -p {project} -f {compose_file} build"
+    logs.append("Building containers on remote host...")
+    stdout, stderr, code = await _ssh(host, build_cmd, timeout=900)
     if code != 0:
         combined = "\n".join(filter(None, [stderr.strip(), stdout.strip()]))
         if len(combined) > 2000:
             combined = "...(truncated)...\n" + combined[-2000:]
-        logs.append(f"Remote deployment failed: {combined or 'no output'}")
+        logs.append(f"Build failed: {combined or 'no output'}")
+        return False
+    logs.append("Build completed successfully")
+
+    # Step 5b: Start
+    up_cmd = f"cd {remote_path} && docker compose -p {project} -f {compose_file} up -d"
+    logs.append("Starting containers on remote host...")
+    stdout, stderr, code = await _ssh(host, up_cmd, timeout=120)
+    if code != 0:
+        combined = "\n".join(filter(None, [stderr.strip(), stdout.strip()]))
+        logs.append(f"Failed to start containers: {combined or 'no output'}")
         return False
 
     # Step 6: Register

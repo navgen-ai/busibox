@@ -42,12 +42,96 @@ Supported operators:
 
 import json
 import re
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import asyncpg
 import structlog
 
 logger = structlog.get_logger()
+
+
+# Common date formats ordered from most specific to least specific.
+# Each entry is (regex_pattern, strptime_format, pg_to_date_format).
+_DATE_FORMATS: List[Tuple[re.Pattern, str, str]] = [
+    # ISO: 2025-11-15, 2025-01-01
+    (re.compile(r"^\d{4}-\d{2}-\d{2}$"), "%Y-%m-%d", "YYYY-MM-DD"),
+    # US slash: 11/15/2025, 1/5/2025
+    (re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$"), "%m/%d/%Y", "MM/DD/YYYY"),
+    # US dash: 11-15-2025
+    (re.compile(r"^\d{1,2}-\d{1,2}-\d{4}$"), "%m-%d-%Y", "MM-DD-YYYY"),
+    # EU slash: 15/11/2025 — ambiguous with US, but US is checked first
+    # EU dot: 15.11.2025
+    (re.compile(r"^\d{1,2}\.\d{1,2}\.\d{4}$"), "%d.%m.%Y", "DD.MM.YYYY"),
+    # Mon DD, YYYY: Nov 15, 2025
+    (re.compile(r"^[A-Za-z]{3}\s+\d{1,2},?\s+\d{4}$"), "%b %d, %Y", "Mon DD, YYYY"),
+    # ISO with time: 2025-11-15T00:00:00...  (strip time part)
+    (re.compile(r"^\d{4}-\d{2}-\d{2}T"), "%Y-%m-%dT", "YYYY-MM-DD"),
+]
+
+
+def _try_parse_date(value: str) -> Optional[date]:
+    """Try to parse a string as a date using common formats.
+    
+    Returns a datetime.date on success, None if no format matches.
+    """
+    if not isinstance(value, str) or len(value) < 6:
+        return None
+    for pattern, fmt, _ in _DATE_FORMATS:
+        if pattern.match(value):
+            try:
+                # For ISO-with-time, only parse the date portion
+                if "T" in fmt:
+                    return datetime.strptime(value[:10], "%Y-%m-%d").date()
+                return datetime.strptime(value, fmt).date()
+            except ValueError:
+                continue
+    return None
+
+
+def _pg_date_format(value: str) -> Optional[str]:
+    """Return the PostgreSQL TO_DATE format string for a date value, or None."""
+    if not isinstance(value, str) or len(value) < 6:
+        return None
+    for pattern, _, pg_fmt in _DATE_FORMATS:
+        if pattern.match(value):
+            return pg_fmt
+    return None
+
+
+_DATE_FIELD_PATTERN = re.compile(
+    r"(?i)(date|_at|At$|_on|On$|created|updated|modified|timestamp|time$|dob|birthday|birth)",
+)
+
+
+def _is_date_field_name(field: str) -> bool:
+    """Heuristic: does this field name look like it holds a date?"""
+    return bool(_DATE_FIELD_PATTERN.search(field))
+
+
+def _SQL_PARSE_DATE_EXPR(text_expr: str) -> str:
+    """Generate a PostgreSQL CASE expression that parses a text value as a date.
+    
+    Tries multiple formats so the comparison works regardless of whether the
+    stored value is ISO (2025-11-15), US slash (11/15/2025), US dash, etc.
+    Returns NULL for empty/unparseable values so comparisons safely exclude them.
+    """
+    return (
+        f"CASE"
+        # ISO: YYYY-MM-DD (possibly with trailing time)
+        f" WHEN {text_expr} ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}'"
+        f" THEN TO_DATE(SUBSTRING({text_expr} FROM 1 FOR 10), 'YYYY-MM-DD')"
+        # US slash: M/D/YYYY or MM/DD/YYYY
+        f" WHEN {text_expr} ~ '^\\d{{1,2}}/\\d{{1,2}}/\\d{{4}}$'"
+        f" THEN TO_DATE({text_expr}, 'MM/DD/YYYY')"
+        # US dash: M-D-YYYY or MM-DD-YYYY
+        f" WHEN {text_expr} ~ '^\\d{{1,2}}-\\d{{1,2}}-\\d{{4}}$'"
+        f" THEN TO_DATE({text_expr}, 'MM-DD-YYYY')"
+        # EU dot: D.M.YYYY or DD.MM.YYYY
+        f" WHEN {text_expr} ~ '^\\d{{1,2}}\\.\\d{{1,2}}\\.\\d{{4}}$'"
+        f" THEN TO_DATE({text_expr}, 'DD.MM.YYYY')"
+        f" ELSE NULL END"
+    )
 
 
 class QueryEngine:
@@ -188,14 +272,23 @@ class QueryEngine:
             return record_value == value
         elif op == "ne":
             return record_value != value
-        elif op == "gt":
-            return record_value is not None and record_value > value
-        elif op == "gte":
-            return record_value is not None and record_value >= value
-        elif op == "lt":
-            return record_value is not None and record_value < value
-        elif op == "lte":
-            return record_value is not None and record_value <= value
+        elif op in ("gt", "gte", "lt", "lte"):
+            if record_value is None:
+                return False
+            cmp_rec, cmp_val = record_value, value
+            if isinstance(record_value, str) and isinstance(value, str):
+                parsed_rec = _try_parse_date(record_value)
+                parsed_val = _try_parse_date(value)
+                if parsed_rec and parsed_val:
+                    cmp_rec, cmp_val = parsed_rec, parsed_val
+            if op == "gt":
+                return cmp_rec > cmp_val
+            elif op == "gte":
+                return cmp_rec >= cmp_val
+            elif op == "lt":
+                return cmp_rec < cmp_val
+            else:
+                return cmp_rec <= cmp_val
         elif op == "in":
             return record_value in (value if isinstance(value, list) else [value])
         elif op == "nin":
@@ -413,8 +506,9 @@ class QueryEngine:
                 for spec in order_by:
                     field = spec.get("field")
                     direction = spec.get("direction", "asc").upper()
-                    # Use JSONB extraction for sorting
-                    order_clauses.append(f"(record->>'{field}') {direction} NULLS LAST")
+                    order_clauses.append(
+                        self._build_order_expr(field, f"record->>'{field}'", direction)
+                    )
                 sql += f"\n        ORDER BY {', '.join(order_clauses)}"
             
             # LIMIT and OFFSET
@@ -425,6 +519,14 @@ class QueryEngine:
         
         return sql, params
     
+    @staticmethod
+    def _build_order_expr(field_name: str, text_expr: str, direction: str) -> str:
+        """Build an ORDER BY expression, using date-aware sorting for date-like fields."""
+        if _is_date_field_name(field_name):
+            date_expr = _SQL_PARSE_DATE_EXPR(f"({text_expr})")
+            return f"{date_expr} {direction} NULLS LAST"
+        return f"({text_expr}) {direction} NULLS LAST"
+
     def _build_where_clause(
         self,
         where: Dict,
@@ -485,13 +587,29 @@ class QueryEngine:
             clause = f"{col}{json_path} != ${param_idx}::jsonb"
             param_idx += 1
         elif op in ("gt", "gte", "lt", "lte"):
-            params.append(value)
             op_symbol = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
             if isinstance(value, (int, float)):
+                params.append(value)
                 clause = f"({col}{json_path})::numeric {op_symbol} ${param_idx}"
+                param_idx += 1
             else:
-                clause = f"({col}->>{json_path[2:]}) {op_symbol} ${param_idx}::text"
-            param_idx += 1
+                filter_date = _try_parse_date(str(value)) if isinstance(value, str) else None
+                if filter_date:
+                    # Both sides → DATE for correct comparison regardless of format.
+                    # The record value might be in a different format than the filter,
+                    # so we parse the record value using _busibox_parse_date (a SQL
+                    # helper we inline) and compare to the pre-parsed filter date.
+                    params.append(filter_date)  # asyncpg handles datetime.date natively
+                    text_expr = f"({col}->>{json_path[2:]})"
+                    clause = (
+                        f"{_SQL_PARSE_DATE_EXPR(text_expr)} "
+                        f"{op_symbol} ${param_idx}::date"
+                    )
+                    param_idx += 1
+                else:
+                    params.append(value)
+                    clause = f"({col}->>{json_path[2:]}) {op_symbol} ${param_idx}::text"
+                    param_idx += 1
         elif op == "in":
             if not isinstance(value, list):
                 value = [value]
@@ -681,7 +799,9 @@ class QueryEngine:
                 for spec in order_by:
                     field = spec.get("field")
                     direction = spec.get("direction", "asc").upper()
-                    order_clauses.append(f"(record->>'{field}') {direction} NULLS LAST")
+                    order_clauses.append(
+                        self._build_order_expr(field, f"record->>'{field}'", direction)
+                    )
                 sql += f"\n        ORDER BY {', '.join(order_clauses)}"
             
             limit = query.get("limit", 100)
@@ -940,8 +1060,17 @@ class SortKey:
     def __eq__(self, other):
         return self.value == other.value
     
+    @staticmethod
+    def _maybe_parse_date(v):
+        """Parse a date string if possible, otherwise return original."""
+        if isinstance(v, str):
+            d = _try_parse_date(v)
+            if d is not None:
+                return d
+        return v
+
     def _compare(self, a, b):
-        """Compare two values, handling None and different types."""
+        """Compare two values, handling None, dates, and different types."""
         # Tuples from our sort key (priority, value)
         if isinstance(a, tuple) and isinstance(b, tuple):
             if a[0] != b[0]:
@@ -952,8 +1081,10 @@ class SortKey:
                 return False  # None sorts last
             if b[1] is None:
                 return True
+            av = self._maybe_parse_date(a[1])
+            bv = self._maybe_parse_date(b[1])
             try:
-                return a[1] < b[1]
+                return av < bv
             except TypeError:
                 return str(a[1]) < str(b[1])
         
@@ -965,7 +1096,9 @@ class SortKey:
         if b is None:
             return True
         
+        av = self._maybe_parse_date(a)
+        bv = self._maybe_parse_date(b)
         try:
-            return a < b
+            return av < bv
         except TypeError:
             return str(a) < str(b)

@@ -110,6 +110,23 @@ create_and_track "$CT_USER_APPS" "$IP_USER_APPS" "${PREFIX}user-apps-lxc" unpriv
 # Create custom-services container (custom Docker Compose stacks)
 create_and_track "$CT_CUSTOM_SERVICES" "$IP_CUSTOM_SERVICES" "${PREFIX}custom-services-lxc" unpriv
 
+# Configure Docker sysctls support for custom-services (runs Docker-in-LXC)
+CONFIG_FILE="/etc/pve/lxc/${CT_CUSTOM_SERVICES}.conf"
+if ! grep -q "lxc.apparmor.profile" "$CONFIG_FILE"; then
+  echo "    Configuring Docker/AppArmor support for custom-services..."
+  pct stop "$CT_CUSTOM_SERVICES" 2>/dev/null || true
+  sleep 2
+  cat >> "$CONFIG_FILE" << 'EOF'
+# Docker-in-LXC support - newer containerd requires unconfined AppArmor
+# to avoid "sysctl net.ipv4.ip_unprivileged_port_start permission denied"
+lxc.apparmor.profile: unconfined
+lxc.mount.entry: /dev/null sys/module/apparmor/parameters/enabled none bind 0 0
+EOF
+  pct start "$CT_CUSTOM_SERVICES"
+  sleep 3
+  echo "    Docker/AppArmor support configured"
+fi
+
 # Create agent container
 create_and_track "$CT_AGENT" "$IP_AGENT" "${PREFIX}agent-lxc" unpriv
 
