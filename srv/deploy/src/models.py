@@ -23,6 +23,7 @@ class ServiceEndpoint(BaseModel):
     port: int = Field(..., ge=1, le=65535)
     path: str = Field(..., pattern=r'^/[a-z0-9-_/]+$')
     stripPath: bool = True
+    stripPrefix: Optional[str] = None
     healthEndpoint: str = "/health"
 
 

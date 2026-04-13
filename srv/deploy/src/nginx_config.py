@@ -154,10 +154,10 @@ location ^~ {path} {{
             path = svc.path.rstrip("/")
 
             if svc.stripPath:
-                # Rewrite strips the service path prefix before forwarding
+                strip = (svc.stripPrefix or path).rstrip("/")
                 block = f"""location ^~ {path}/ {{
     set $backend_{var_name} http://{backend};
-    rewrite ^{path}(/.*)?$ $1 break;
+    rewrite ^{strip}(/.*)?$ $1 break;
     proxy_pass $backend_{var_name};
     proxy_http_version 1.1;
 
