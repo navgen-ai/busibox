@@ -30,8 +30,10 @@ import asyncio
 import json
 import logging
 import os
+import re
 import secrets as secrets_mod
 import shutil
+import socket
 from typing import Dict, List, Optional, Tuple
 
 from .config import config
@@ -261,6 +263,53 @@ async def clone_or_update_repo(
     return True, app_path
 
 
+def _resolve_hostname(hostname: str) -> str:
+    """Resolve an internal hostname to an IP address.
+
+    Only resolves hostnames that look like internal service names (no dots).
+    Public hostnames (e.g. ai.jaycashman.com) are left unchanged since Docker
+    containers can resolve those via normal DNS.
+    """
+    if "." in hostname:
+        return hostname
+    try:
+        return socket.gethostbyname(hostname)
+    except (socket.gaierror, OSError):
+        return hostname
+
+
+_URL_HOST_RE = re.compile(r"^(https?://)([^:/]+)((?::\d+)?(?:/.*)?)$")
+_BARE_HOST_RE = re.compile(r"^([^:/]+)(:\d+)$")
+
+
+def _resolve_urls_in_env(env: Dict[str, str]) -> Dict[str, str]:
+    """Replace DNS hostnames with IPs in env var values.
+
+    Custom services on LXC run their own Docker containers that don't
+    share the LXC host's /etc/hosts. This resolves hostnames on the
+    deploy-api side (which has /etc/hosts) so the generated .env
+    contains routable IPs.
+    """
+    _HOST_KEYS = {"POSTGRES_HOST", "REDIS_HOST"}
+    resolved: Dict[str, str] = {}
+    for key, value in env.items():
+        m = _URL_HOST_RE.match(value)
+        if m:
+            ip = _resolve_hostname(m.group(2))
+            resolved[key] = f"{m.group(1)}{ip}{m.group(3)}"
+            continue
+        m = _BARE_HOST_RE.match(value)
+        if m:
+            ip = _resolve_hostname(m.group(1))
+            resolved[key] = f"{ip}{m.group(2)}"
+            continue
+        if key in _HOST_KEYS and value and "." not in value and "/" not in value:
+            resolved[key] = _resolve_hostname(value)
+            continue
+        resolved[key] = value
+    return resolved
+
+
 def generate_custom_env(
     manifest: BusiboxManifest,
     deploy_config: DeploymentConfig,
@@ -302,6 +351,9 @@ def generate_custom_env(
 
     for key, value in deploy_config.envVars.items():
         env[key] = value
+
+    if not is_docker_environment():
+        env = _resolve_urls_in_env(env)
 
     return env
 

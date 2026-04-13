@@ -207,7 +207,12 @@ async def create_agent_definition(
 
         # Owner of the agent (built-in or personal) — update in place
         update_fields = payload.model_dump(exclude_unset=True)
-        update_fields.pop("is_builtin", None)  # don't change builtin status
+        # Allow owner to promote personal→builtin but never demote builtin→personal
+        if "is_builtin" in update_fields:
+            if existing.is_builtin and not update_fields["is_builtin"]:
+                update_fields.pop("is_builtin")
+            elif not is_owner:
+                update_fields.pop("is_builtin")
         for key, value in update_fields.items():
             if hasattr(existing, key):
                 setattr(existing, key, value)

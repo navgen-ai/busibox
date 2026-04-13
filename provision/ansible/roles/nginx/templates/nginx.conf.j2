@@ -40,6 +40,11 @@ http {
     proxy_send_timeout {{ nginx_proxy_timeout }};
     proxy_read_timeout {{ nginx_proxy_timeout }};
 
+    # Proxy buffer sizes - JWT tokens in Set-Cookie can exceed the default 4k
+    proxy_buffer_size 16k;
+    proxy_buffers 4 16k;
+    proxy_busy_buffers_size 16k;
+
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
 
