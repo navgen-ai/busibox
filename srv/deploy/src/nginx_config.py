@@ -142,9 +142,15 @@ location ^~ {path} {{
         )
 
         blocks: List[str] = []
+        is_docker = is_docker_environment()
         for svc in manifest.services:
             var_name = f"{manifest.id}_{svc.name}".replace("-", "_")
-            backend = f"{backend_prefix}-{svc.name}:{svc.port}"
+            if is_docker:
+                # Docker DNS resolves compose service names: project-service:port
+                backend = f"{backend_prefix}-{svc.name}:{svc.port}"
+            else:
+                # LXC: services expose ports on the container IP directly
+                backend = f"{backend_prefix}:{svc.port}"
             path = svc.path.rstrip("/")
 
             if svc.stripPath:

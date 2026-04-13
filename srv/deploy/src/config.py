@@ -77,6 +77,8 @@ class Config:
     # User apps container (external apps deployed via Busibox Portal)
     user_apps_container_ip: str = os.getenv('USER_APPS_CONTAINER_IP', 'user-apps')
     user_apps_container_ip_staging: str = os.getenv('USER_APPS_CONTAINER_IP_STAGING', 'user-apps')
+    # Custom services container (Docker Compose stacks)
+    custom_services_container_ip: str = os.getenv('CUSTOM_SERVICES_HOST', 'custom-services')
     # Legacy alias for backwards compatibility
     apps_container_ip: str = os.getenv('APPS_CONTAINER_IP', 'busibox-portal')
     apps_container_ip_staging: str = os.getenv('APPS_CONTAINER_IP_STAGING', 'busibox-portal')

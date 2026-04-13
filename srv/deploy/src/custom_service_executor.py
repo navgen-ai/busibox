@@ -281,6 +281,9 @@ def generate_custom_env(
     if portal_url:
         env["BUSIBOX_PORTAL_URL"] = portal_url
 
+    if manifest.defaultPath:
+        env["BASE_PATH"] = manifest.defaultPath.rstrip("/")
+
     for var in manifest.requiredEnvVars:
         if var in endpoints:
             env[var] = endpoints[var]

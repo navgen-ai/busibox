@@ -343,8 +343,10 @@ async def execute_deployment(
                 # Docker: use service name
                 nginx_success, nginx_msg = await configurator.configure_app(manifest, None, port_override=user_app_port)
             else:
-                # LXC: use container IP
-                if deploy_config.environment == 'staging':
+                # LXC: use container IP — custom services run on a different container
+                if app_is_custom:
+                    container_ip = config.custom_services_container_ip
+                elif deploy_config.environment == 'staging':
                     container_ip = config.user_apps_container_ip_staging
                 else:
                     container_ip = config.user_apps_container_ip
