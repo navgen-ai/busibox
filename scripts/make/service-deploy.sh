@@ -558,6 +558,14 @@ deploy_service() {
         if [[ "${IMAGE_SOURCE:-}" == "ghcr" ]]; then
             cmd="${cmd} -e docker_pull_images=true"
         fi
+        # When (re)deploying core-apps, enable all apps so every previously
+        # running app comes back up after the container is recreated.
+        # Without this, ENABLED_APPS defaults to "portal,admin" (auto_deploy
+        # apps only), leaving agents/chat/media/documents/appbuilder stopped.
+        if [[ "$service" == "core-apps" ]]; then
+            cmd="${cmd} -e enabled_apps=all"
+            export ENABLED_APPS="all"
+        fi
     fi
 
     # Forward git commit/branch from the admin workstation so .deploy_version
