@@ -79,9 +79,9 @@ services:
       # SSO
       SSO_JWT_SECRET: ${SSO_JWT_SECRET:?SSO_JWT_SECRET must be set}
       # Service URLs (for SSO redirect via nginx proxy)
-      NEXT_PUBLIC_BUSIBOX_AGENTS_URL: https://localhost/agents
-      NEXT_PUBLIC_APP_URL: https://localhost/portal
-      WEBAUTHN_RP_ID: localhost
+      NEXT_PUBLIC_BUSIBOX_AGENTS_URL: https://${BASE_DOMAIN:-localhost}/agents
+      NEXT_PUBLIC_APP_URL: https://${BASE_DOMAIN:-localhost}/portal
+      WEBAUTHN_RP_ID: ${BASE_DOMAIN:-localhost}
       # NOTE: NEXT_PUBLIC_BASE_PATH is set per-app in core-apps-entrypoint.sh
       # because both apps run in the same container but need different values
       # Backend service URLs (for server-side API calls)
@@ -113,11 +113,11 @@ services:
       # Agent Manager Environment (PORT 3001, /agents path)
       # =======================================================================
       # API URLs - use nginx proxy paths for CORS compliance
-      NEXT_PUBLIC_AGENT_API_URL: https://localhost/api/agent
-      NEXT_PUBLIC_DATA_API_URL: https://localhost/api/data
-      NEXT_PUBLIC_SEARCH_API_URL: https://localhost/api/search
+      NEXT_PUBLIC_AGENT_API_URL: https://${BASE_DOMAIN:-localhost}/api/agent
+      NEXT_PUBLIC_DATA_API_URL: https://${BASE_DOMAIN:-localhost}/api/data
+      NEXT_PUBLIC_SEARCH_API_URL: https://${BASE_DOMAIN:-localhost}/api/search
       # Busibox Portal (SSO) via nginx
-      NEXT_PUBLIC_BUSIBOX_PORTAL_URL: https://localhost/portal
+      NEXT_PUBLIC_BUSIBOX_PORTAL_URL: https://${BASE_DOMAIN:-localhost}/portal
       # NOTE: NEXT_PUBLIC_BASE_PATH is set per-app in core-apps-entrypoint.sh
       # because both apps run in the same container but need different values
       # (/portal for busibox-portal, /agents for busibox-agents)

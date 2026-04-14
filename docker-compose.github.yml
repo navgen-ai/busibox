@@ -46,8 +46,8 @@ services:
       # =========================================================================
       # Database
       DATABASE_URL: postgresql://${POSTGRES_USER:-busibox_user}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/ai_portal
-      # Auth - use https://localhost for SSL
-      BETTER_AUTH_URL: https://localhost/portal
+      # Auth - use https for SSL
+      BETTER_AUTH_URL: https://${BASE_DOMAIN:-localhost}/portal
       # Email (optional - uses console logging in dev)
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-noreply@localhost}
@@ -62,9 +62,11 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       # SSO
       SSO_JWT_SECRET: ${SSO_JWT_SECRET:?SSO_JWT_SECRET must be set}
+      # WebAuthn / Passkey RP ID (must be a valid domain or localhost)
+      WEBAUTHN_RP_ID: ${BASE_DOMAIN:-localhost}
       # Service URLs (for SSO redirect via nginx proxy)
-      NEXT_PUBLIC_BUSIBOX_AGENTS_URL: https://localhost/agents
-      NEXT_PUBLIC_APP_URL: https://localhost/portal
+      NEXT_PUBLIC_BUSIBOX_AGENTS_URL: https://${BASE_DOMAIN:-localhost}/agents
+      NEXT_PUBLIC_APP_URL: https://${BASE_DOMAIN:-localhost}/portal
       # Base paths for nginx subpath routing
       NEXT_PUBLIC_BASE_PATH: /portal
       BUSIBOX_PORTAL_BASE_PATH: /portal
@@ -95,10 +97,10 @@ services:
       # =========================================================================
       # Agent Manager Environment (PORT 3001)
       # =========================================================================
-      NEXT_PUBLIC_AGENT_API_URL: https://localhost/api/agent
-      NEXT_PUBLIC_DATA_API_URL: https://localhost/api/data
-      NEXT_PUBLIC_SEARCH_API_URL: https://localhost/api/search
-      NEXT_PUBLIC_BUSIBOX_PORTAL_URL: https://localhost/portal
+      NEXT_PUBLIC_AGENT_API_URL: https://${BASE_DOMAIN:-localhost}/api/agent
+      NEXT_PUBLIC_DATA_API_URL: https://${BASE_DOMAIN:-localhost}/api/data
+      NEXT_PUBLIC_SEARCH_API_URL: https://${BASE_DOMAIN:-localhost}/api/search
+      NEXT_PUBLIC_BUSIBOX_PORTAL_URL: https://${BASE_DOMAIN:-localhost}/portal
       BUILDER_PROJECT_ROOT: /srv/projects
       BUILDER_TEMPLATE_SOURCE: /srv/projects/templates/busibox-template
       BUILDER_LIBRARY_OWNER: ${BUILDER_LIBRARY_OWNER:-jazzmind}

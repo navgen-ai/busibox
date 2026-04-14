@@ -62,12 +62,17 @@ def upgrade() -> None:
     ))
 
     # New index for visibility-based queries
-    op.create_index(
-        'idx_agent_defs_visibility_appid',
-        'agent_definitions',
-        ['visibility', 'app_id'],
-        postgresql_where=sa.text('is_active = true'),
-    )
+    result = conn.execute(sa.text(
+        "SELECT 1 FROM pg_indexes "
+        "WHERE indexname = 'idx_agent_defs_visibility_appid'"
+    ))
+    if result.fetchone() is None:
+        op.create_index(
+            'idx_agent_defs_visibility_appid',
+            'agent_definitions',
+            ['visibility', 'app_id'],
+            postgresql_where=sa.text('is_active = true'),
+        )
 
 
 def downgrade() -> None:
