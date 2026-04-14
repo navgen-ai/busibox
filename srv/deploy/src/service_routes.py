@@ -3685,7 +3685,39 @@ async def vllm_status(_: dict = Depends(verify_admin_token)):
 
     vllm_host = os.environ.get("VLLM_HOST", "")
     if not vllm_host:
-        return {"available": False, "message": "No VLLM_HOST configured"}
+        return {"available": False, "message": "No VLLM_HOST configured", "ssh_reachable": False}
+
+    # Quick SSH reachability check
+    ssh_reachable = False
+    ssh_error = None
+    try:
+        probe = await asyncio.create_subprocess_exec(
+            "ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
+            vllm_host, "echo", "ok",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        probe_out, probe_err = await asyncio.wait_for(probe.communicate(), timeout=10.0)
+        if probe.returncode == 0 and probe_out.decode().strip() == "ok":
+            ssh_reachable = True
+        else:
+            ssh_error = probe_err.decode("utf-8", errors="replace").strip()[:200] or f"SSH exit code {probe.returncode}"
+    except asyncio.TimeoutError:
+        ssh_error = "SSH connection timed out"
+    except Exception as e:
+        ssh_error = str(e)[:200]
+
+    if not ssh_reachable:
+        vllm_host_ip = vllm_host.split("@")[-1] if "@" in vllm_host else vllm_host
+        return {
+            "available": False,
+            "ssh_reachable": False,
+            "vllm_host": vllm_host_ip,
+            "message": f"Cannot reach vLLM host via SSH: {ssh_error}",
+            "models": [],
+            "media": [],
+            "gpus": [],
+        }
 
     # Run all checks concurrently
     port_tasks = [_vllm_port_status(vllm_host, p) for p in _VLLM_PORTS]
@@ -3696,7 +3728,10 @@ async def vllm_status(_: dict = Depends(verify_admin_token)):
         "--format=csv,noheader,nounits"
     )
 
+    gpu_error = None
+
     async def _get_gpus():
+        nonlocal gpu_error
         try:
             proc = await asyncio.create_subprocess_exec(
                 "ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
@@ -3704,8 +3739,9 @@ async def vllm_status(_: dict = Depends(verify_admin_token)):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
             if proc.returncode != 0:
+                gpu_error = stderr.decode("utf-8", errors="replace").strip()[:200] or f"nvidia-smi exit code {proc.returncode}"
                 return []
             gpus = []
             reader = csv.reader(io.StringIO(stdout.decode("utf-8", errors="replace")))
@@ -3725,7 +3761,8 @@ async def vllm_status(_: dict = Depends(verify_admin_token)):
                 except (ValueError, TypeError):
                     continue
             return gpus
-        except Exception:
+        except Exception as e:
+            gpu_error = str(e)[:200]
             return []
 
     all_results = await asyncio.gather(
@@ -3741,13 +3778,26 @@ async def vllm_status(_: dict = Depends(verify_admin_token)):
 
     vllm_host_ip = vllm_host.split("@")[-1] if "@" in vllm_host else vllm_host
 
-    return {
+    errors = []
+    if isinstance(all_results[0], Exception):
+        errors.append(f"model status: {all_results[0]}")
+    if isinstance(all_results[1], Exception):
+        errors.append(f"media status: {all_results[1]}")
+    if gpu_error:
+        errors.append(f"GPU query: {gpu_error}")
+
+    result = {
         "available": True,
+        "ssh_reachable": True,
         "vllm_host": vllm_host_ip,
         "models": list(models_result),
         "media": list(media_result),
         "gpus": list(gpus_result),
     }
+    if errors:
+        result["errors"] = errors
+
+    return result
 
 
 class VllmAssignmentRequest(BaseModel):

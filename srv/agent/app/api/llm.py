@@ -1412,26 +1412,59 @@ async def _get_v1_models() -> List[Dict[str, Any]]:
 
 
 async def _get_registered_model_names() -> set:
-    """Get the set of model_name values currently registered in LiteLLM."""
-    # Try /model/info first (richer data)
+    """Get the set of model_name values currently registered in LiteLLM.
+
+    Merges names from /model/info (router) AND the LiteLLM DB so that
+    models persisted via /model/new but not yet loaded by the router
+    (e.g. due to stale encrypted data from other entries) are still
+    recognised as registered.
+    """
+    names: set = set()
+
+    # 1. /model/info -- router-loaded models (richest data)
     model_infos = await _get_model_info()
-    if model_infos:
-        names = set()
-        for entry in model_infos:
-            mname = entry.get("model_name", "")
-            if mname:
-                names.add(mname)
-            # Also check litellm_params.model
-            model_id = entry.get("litellm_params", {}).get("model", "")
-            if model_id:
-                names.add(model_id)
-                if "/" in model_id:
-                    names.add(model_id.split("/", 1)[-1])
+    for entry in model_infos:
+        mname = entry.get("model_name", "")
+        if mname:
+            names.add(mname)
+        model_id = entry.get("litellm_params", {}).get("model", "")
+        if model_id:
+            names.add(model_id)
+            if "/" in model_id:
+                names.add(model_id.split("/", 1)[-1])
+
+    # 2. DB -- catches models stored but not loaded into router
+    db_names = await _get_db_registered_model_names()
+    names.update(db_names)
+
+    if names:
         return names
-    
-    # Fallback to /v1/models
+
+    # 3. Fallback to /v1/models
     v1_models = await _get_v1_models()
     return {m.get("id", "") for m in v1_models if m.get("id")}
+
+
+async def _get_db_registered_model_names() -> set:
+    """Read model_name values directly from LiteLLM_ProxyModelTable."""
+    if not (hasattr(settings, "litellm_database_url") and settings.litellm_database_url):
+        return set()
+    try:
+        import asyncpg
+    except ImportError:
+        return set()
+    try:
+        conn = await asyncpg.connect(str(settings.litellm_database_url))
+        try:
+            rows = await conn.fetch(
+                'SELECT model_name FROM "LiteLLM_ProxyModelTable"'
+            )
+            return {r["model_name"] for r in rows if r["model_name"]}
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.debug(f"Could not read LiteLLM DB model names: {e}")
+        return set()
 
 
 def _detect_provider(model_name: str, litellm_params: Dict) -> str:
@@ -1488,7 +1521,8 @@ def _merge_model_entries(model_info_entries: List[Dict], config_entries: List[Di
     Merge model entries from /model/info (DB/runtime) and config/model_list (file).
 
     - Keep config-defined models even if DB only has a subset.
-    - Overlay DB metadata (db_model/id) when the same model_name exists.
+    - DB entries (db_model=True) always take priority over config-file entries
+      for the same model_name, so purpose mapping overrides work correctly.
     """
     by_name: Dict[str, Dict[str, Any]] = {}
 
@@ -1502,7 +1536,16 @@ def _merge_model_entries(model_info_entries: List[Dict], config_entries: List[Di
             "model_info": dict(entry.get("model_info", {}) or {}),
         }
 
+    non_db_entries = []
+    db_entries = []
     for entry in model_info_entries:
+        info = entry.get("model_info") or {}
+        if info.get("db_model", False):
+            db_entries.append(entry)
+        else:
+            non_db_entries.append(entry)
+
+    for entry in non_db_entries + db_entries:
         name = entry.get("model_name", "")
         if not name:
             continue
@@ -2903,6 +2946,14 @@ async def list_cloud_models(
             f"{provider} key is in LiteLLM but not accessible to agent-api "
             f"for direct API calls. Re-save the key to enable live model listing."
         )
+        # For Bedrock, still show the curated list so models can be registered
+        # even when the key needs re-saving.
+        if provider == "bedrock" and not models:
+            models = _get_bedrock_curated_models()
+            if models:
+                registered = await _get_registered_model_names()
+                for m in models:
+                    m.registered = m.id in registered
     
     return CloudModelsResponse(
         provider=provider,
@@ -2975,18 +3026,18 @@ async def register_cloud_models(
     )
     
     if registered_count > 0:
-        # Verify models actually loaded into LiteLLM's router.
-        # LiteLLM's /model/new returns 200 even when its background reload
-        # will fail due to stale encrypted data from a previous salt key.
-        await asyncio.sleep(2)
+        # Check models exist in LiteLLM's router.  DB-level names are
+        # already included by _get_registered_model_names, so "missing"
+        # here means not even persisted in the DB.
+        await asyncio.sleep(1)
         current = await _get_registered_model_names()
         expected_names = {m["model_name"] for m in new_models}
         missing = expected_names - current
-        
+
         if missing:
             logger.warning(
-                f"Models registered but not loaded ({len(missing)} missing). "
-                f"Cleaning stale encrypted data and retrying."
+                f"Models registered but not found ({len(missing)} missing). "
+                f"Cleaning stale config models and retrying."
             )
             config = _read_local_litellm_config()
             config_model_names = None
@@ -2996,26 +3047,28 @@ async def register_cloud_models(
                     for e in config.get("model_list", [])
                     if e.get("model_name")
                 ]
+            # Only clean config-file model entries, NOT user credentials/env
+            # vars.  Purging credentials during registration is destructive
+            # and can break Bedrock auth.
             await _clean_stale_litellm_db(
-                config_model_names=config_model_names, purge_user_data=True,
+                config_model_names=config_model_names, purge_user_data=False,
             )
             try:
                 await sync_config_models_to_litellm()
             except Exception as e:
                 logger.warning(f"Config model re-sync after cleanup: {e}")
-            
-            # Retry registration for the missing models
+
             retry_models = [m for m in new_models if m["model_name"] in missing]
             retry_count, retry_errors = await _register_models_in_litellm(
                 retry_models, base_url, headers
             )
             registered_count = registered_count - len(missing) + retry_count
             errors.extend(retry_errors)
-            
+
             if retry_count > 0:
                 result_msg = (
                     f"Registered {registered_count} model(s) "
-                    f"(cleaned stale encrypted data automatically)"
+                    f"(cleaned stale data automatically)"
                 )
             else:
                 result_msg = (

@@ -51,12 +51,13 @@ def detect_backend() -> str:
             if gpu_count > 0:
                 logger.info(f"Detected NVIDIA GPU ({gpu_count} GPUs) - using vLLM backend")
                 return "vllm"
-    except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
-        # nvidia-smi not available or timed out
-        pass
+    except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError) as e:
+        logger.warning(f"nvidia-smi not available or failed: {e}. "
+                       "If this is a Proxmox/vLLM deployment, set LLM_BACKEND=vllm in the environment.")
     
     # No local AI hardware available
-    logger.info("No local AI hardware detected - using cloud backend")
+    logger.warning("No local AI hardware detected - using cloud backend. "
+                   "Set LLM_BACKEND env var to override (vllm, mlx, or cloud).")
     return "cloud"
 
 

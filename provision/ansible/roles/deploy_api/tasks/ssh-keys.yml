@@ -314,6 +314,30 @@
   tags: [deploy_api, deploy_api_ssh]
 
 # ============================================================================
+# vLLM Container (vllm-lxc) - for GPU model servers, nvidia-smi, model cache
+# ============================================================================
+
+- name: Ensure .ssh directory exists on vLLM container
+  file:
+    path: /root/.ssh
+    state: directory
+    mode: '0700'
+    owner: root
+    group: root
+  delegate_to: "{{ hostvars[groups['vllm'][0]]['ansible_host'] }}"
+  when: groups['vllm'] is defined and groups['vllm'] | length > 0
+  tags: [deploy_api, deploy_api_ssh]
+
+- name: Add authz container public key to vLLM container authorized_keys
+  authorized_key:
+    user: root
+    key: "{{ authz_public_key.content | b64decode }}"
+    state: present
+  delegate_to: "{{ hostvars[groups['vllm'][0]]['ansible_host'] }}"
+  when: groups['vllm'] is defined and groups['vllm'] | length > 0
+  tags: [deploy_api, deploy_api_ssh]
+
+# ============================================================================
 # Bridge Container (bridge-lxc) - for bridge service (email, Signal)
 # ============================================================================
 
@@ -429,6 +453,14 @@
   when: proxmox_host_configured
   tags: [deploy_api, deploy_api_ssh]
 
+- name: Test SSH connection from authz to vLLM
+  shell: "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ vllm_ip }} 'echo SSH_OK'"
+  register: ssh_test_vllm
+  changed_when: false
+  failed_when: false
+  when: groups['vllm'] is defined and groups['vllm'] | length > 0
+  tags: [deploy_api, deploy_api_ssh]
+
 - name: Display SSH test results
   debug:
     msg: |
@@ -444,6 +476,7 @@
       - PostgreSQL: {{ 'OK' if ssh_test_pg.rc == 0 else 'FAILED' }}
       - LiteLLM: {{ 'OK' if ssh_test_litellm.rc == 0 else 'FAILED' }}
       - Proxy (Nginx): {{ 'OK' if ssh_test_proxy.rc == 0 else 'FAILED' }}
+      - vLLM: {{ 'NOT CONFIGURED' if (groups['vllm'] is not defined or groups['vllm'] | length == 0) else ('OK' if ssh_test_vllm.rc == 0 else 'FAILED (required for GPU status and model management)') }}
       - Bridge: {{ 'NOT CONFIGURED' if (groups['bridge'] is not defined or groups['bridge'] | length == 0) else ('OK' if ssh_test_bridge.rc == 0 else 'FAILED') }}
   tags: [deploy_api, deploy_api_ssh]
 
