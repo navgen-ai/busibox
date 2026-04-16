@@ -1468,6 +1468,7 @@ class BaseStreamingAgent(StreamingAgent):
                             deps_for_tool = BusiboxDeps(
                                 principal=context.principal,
                                 busibox_client=BusiboxClient(access_token=exchanged_token.access_token),
+                                metadata=context.deps.metadata if context.deps else {},
                             )
                         except Exception as exc:
                             logger.warning(

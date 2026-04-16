@@ -1451,8 +1451,12 @@ async def _get_db_registered_model_names() -> set:
     return {r["model_name"] for r in rows if r.get("model_name")}
 
 
-async def _get_db_model_rows() -> List[Dict[str, str]]:
-    """Read model_name and model_id from LiteLLM_ProxyModelTable."""
+async def _get_db_model_rows() -> List[Dict[str, Any]]:
+    """Read model rows from LiteLLM_ProxyModelTable.
+
+    Returns dicts with model_id, model_name, and litellm_model (the
+    ``model`` value from the litellm_params JSON column, if readable).
+    """
     if not (hasattr(settings, "litellm_database_url") and settings.litellm_database_url):
         return []
     try:
@@ -1463,9 +1467,24 @@ async def _get_db_model_rows() -> List[Dict[str, str]]:
         conn = await asyncpg.connect(str(settings.litellm_database_url))
         try:
             rows = await conn.fetch(
-                'SELECT model_id, model_name FROM "LiteLLM_ProxyModelTable"'
+                'SELECT model_id, model_name, litellm_params FROM "LiteLLM_ProxyModelTable"'
             )
-            return [dict(r) for r in rows]
+            result = []
+            for r in rows:
+                row: Dict[str, Any] = {"model_id": r["model_id"], "model_name": r["model_name"]}
+                params = r.get("litellm_params")
+                if isinstance(params, str):
+                    try:
+                        import json as _json
+                        params = _json.loads(params)
+                    except Exception:
+                        params = None
+                if isinstance(params, dict):
+                    row["litellm_model"] = params.get("model", "")
+                else:
+                    row["litellm_model"] = ""
+                result.append(row)
+            return result
         finally:
             await conn.close()
     except Exception as e:
@@ -1641,15 +1660,16 @@ async def list_models(
                 mname = row.get("model_name", "")
                 if not mname or mname in seen_names:
                     continue
-                inferred_model = _infer_litellm_model(mname)
-                provider = _detect_provider(mname, {"model": inferred_model})
+                db_litellm_model = row.get("litellm_model", "") or ""
+                actual_model = db_litellm_model or _infer_litellm_model(mname)
+                provider = _detect_provider(mname, {"model": actual_model})
                 models.append(ModelInfo(
                     id=mname,
                     provider=provider,
                     description=f"Registered cloud model",
                     db_model=True,
                     model_id=row.get("model_id", ""),
-                    actual_model=inferred_model,
+                    actual_model=actual_model,
                 ))
 
             purpose_map = _build_purpose_map(merged_entries)
@@ -3216,18 +3236,24 @@ async def get_purpose_mappings(
                 })
                 seen_names.add(mname)
 
-            # Include DB-stored models not loaded by the router
+            # Include DB-stored models not loaded by the router, and
+            # update purpose_map for any DB entries that represent purposes
+            # (e.g. a newly-saved "chat" mapping not yet in the router).
             db_rows = await _get_db_model_rows()
             for row in db_rows:
                 mname = row.get("model_name", "")
-                if not mname or mname in seen_names:
+                if not mname:
                     continue
-                inferred_model = _infer_litellm_model(mname)
-                available_models.append({
-                    "model_name": mname,
-                    "actual_model": inferred_model,
-                    "description": "Registered cloud model",
-                })
+                db_litellm_model = row.get("litellm_model", "") or ""
+                actual_model = db_litellm_model or _infer_litellm_model(mname)
+                if mname in CONFIGURABLE_PURPOSES:
+                    purpose_map[mname] = _strip_provider_prefix(actual_model)
+                if mname not in seen_names:
+                    available_models.append({
+                        "model_name": mname,
+                        "actual_model": actual_model,
+                        "description": "Registered cloud model",
+                    })
 
             return {
                 "purposes": purpose_map,
@@ -3297,11 +3323,12 @@ async def update_purpose_mapping(
             detail="Cannot read LiteLLM model configuration"
         )
     
-    # Verify the target model exists in LiteLLM
-    all_model_names = set()
-    for entry in model_entries:
-        all_model_names.add(entry.get("model_name", ""))
-    
+    # Verify the target model exists in LiteLLM (router OR DB)
+    all_model_names = {entry.get("model_name", "") for entry in model_entries}
+    db_rows = await _get_db_model_rows()
+    db_by_name = {r["model_name"]: r for r in db_rows if r.get("model_name")}
+    all_model_names.update(db_by_name.keys())
+
     if request.model_name not in all_model_names:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -3309,7 +3336,8 @@ async def update_purpose_mapping(
                    f"Register it first via the cloud models endpoint."
         )
     
-    # Find the target model's litellm_params
+    # Find the target model's litellm_params from merged entries,
+    # or look up from DB rows for models not loaded by the router.
     target_params = None
     target_info = None
     for entry in model_entries:
@@ -3319,36 +3347,56 @@ async def update_purpose_mapping(
             break
     
     if not target_params:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not find config for model '{request.model_name}'"
-        )
+        db_row = db_by_name.get(request.model_name, {})
+        db_litellm_model = db_row.get("litellm_model", "") or ""
+        actual_model = db_litellm_model or _infer_litellm_model(request.model_name)
+        target_params = {"model": actual_model}
+        target_info = {"description": "Registered cloud model", "db_model": True}
     
     base_url = _get_litellm_base_url()
     headers = _get_litellm_headers()
     
-    # Check if purpose already has a DB-stored model entry that we need to 
-    # delete first. Config-file entries (db_model=False) can't be deleted
-    # via API, but adding a DB entry with the same model_name will override.
+    # Delete any existing DB-stored entries for this purpose before creating
+    # the new one.  Check both the router-loaded model_entries AND direct DB
+    # rows, because the router may not have loaded the entry we created on
+    # a previous save (causing duplicates that "revert" the mapping).
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            # Find and delete any existing DB model entry for this purpose
+            deleted_ids: set = set()
+
+            # 1. Router-loaded DB entries
             for entry in model_entries:
                 if entry.get("model_name") == request.purpose:
                     entry_info = entry.get("model_info", {})
                     if entry_info.get("db_model", False):
-                        # This is a DB-stored entry, delete it by its UUID
                         model_id = entry_info.get("id", "")
-                        if model_id:
+                        if model_id and model_id not in deleted_ids:
                             try:
                                 await client.post(
                                     f"{base_url}/model/delete",
                                     headers=headers,
                                     json={"id": model_id},
                                 )
+                                deleted_ids.add(model_id)
                                 logger.info(f"Deleted existing DB purpose entry: {request.purpose} (id={model_id})")
                             except Exception as e:
                                 logger.warning(f"Failed to delete old purpose DB entry: {e}")
+
+            # 2. DB rows not loaded by router
+            for row in db_rows:
+                if row.get("model_name") == request.purpose:
+                    model_id = row.get("model_id", "")
+                    if model_id and model_id not in deleted_ids:
+                        try:
+                            await client.post(
+                                f"{base_url}/model/delete",
+                                headers=headers,
+                                json={"id": model_id},
+                            )
+                            deleted_ids.add(model_id)
+                            logger.info(f"Deleted DB-only purpose entry: {request.purpose} (id={model_id})")
+                        except Exception as e:
+                            logger.warning(f"Failed to delete DB-only purpose entry: {e}")
             
             # Create new purpose entry pointing to the target model.
             # IMPORTANT: Only pass minimal fields. The full model_info from

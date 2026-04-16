@@ -126,7 +126,9 @@ async def exchange_token(
     
     When the principal carries an app_id (from an app-scoped incoming token),
     it is forwarded as resource_id so that authz includes the correct
-    app-bound roles in the downstream token.
+    app-bound roles in the downstream token — EXCEPT for search-api, which
+    needs all user roles to search across all accessible libraries and
+    app document collections.
     
     Args:
         principal: The authenticated user's principal (must include their JWT token)
@@ -144,6 +146,12 @@ async def exchange_token(
     
     audience = _audience_for_purpose(purpose, scopes)
     
+    # For search-api, don't pass resource_id so the token includes ALL user
+    # roles. Document search needs access to personal libraries, shared
+    # libraries, and app document collections across all apps. Result-level
+    # filtering (file_ids) handles scoping for doc-specific agents.
+    resource_id = None if audience == "search-api" else principal.app_id
+    
     # Use Zero Trust exchange - pass user's JWT as subject_token
     result = await exchange_token_zero_trust(
         subject_token=principal.token,
@@ -151,7 +159,7 @@ async def exchange_token(
         user_id=principal.sub,
         scopes=" ".join(scopes),
         authz_url=str(settings.auth_token_url),
-        resource_id=principal.app_id,
+        resource_id=resource_id,
     )
     
     if not result:
