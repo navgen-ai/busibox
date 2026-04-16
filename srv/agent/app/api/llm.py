@@ -1447,24 +1447,50 @@ async def _get_registered_model_names() -> set:
 
 async def _get_db_registered_model_names() -> set:
     """Read model_name values directly from LiteLLM_ProxyModelTable."""
+    rows = await _get_db_model_rows()
+    return {r["model_name"] for r in rows if r.get("model_name")}
+
+
+async def _get_db_model_rows() -> List[Dict[str, str]]:
+    """Read model_name and model_id from LiteLLM_ProxyModelTable."""
     if not (hasattr(settings, "litellm_database_url") and settings.litellm_database_url):
-        return set()
+        return []
     try:
         import asyncpg
     except ImportError:
-        return set()
+        return []
     try:
         conn = await asyncpg.connect(str(settings.litellm_database_url))
         try:
             rows = await conn.fetch(
-                'SELECT model_name FROM "LiteLLM_ProxyModelTable"'
+                'SELECT model_id, model_name FROM "LiteLLM_ProxyModelTable"'
             )
-            return {r["model_name"] for r in rows if r["model_name"]}
+            return [dict(r) for r in rows]
         finally:
             await conn.close()
     except Exception as e:
-        logger.debug(f"Could not read LiteLLM DB model names: {e}")
-        return set()
+        logger.debug(f"Could not read LiteLLM DB model rows: {e}")
+        return []
+
+
+def _infer_litellm_model(model_name: str) -> str:
+    """Infer the litellm_params.model value from a model_name.
+
+    Used for DB-stored models whose encrypted params can't be read.
+    Heuristic: if the name looks like a Bedrock/OpenAI/Anthropic model ID,
+    add the appropriate provider prefix.
+    """
+    lower = model_name.lower()
+    if any(
+        lower.startswith(p)
+        for p in ("us.", "eu.", "ap.", "anthropic.", "amazon.", "meta.", "mistral.", "cohere.", "ai21.", "deepseek.")
+    ):
+        return f"bedrock/{model_name}"
+    if lower.startswith("gpt-") or lower.startswith("o1-") or lower.startswith("o3-") or lower.startswith("o4-"):
+        return f"openai/{model_name}"
+    if lower.startswith("claude-"):
+        return f"anthropic/{model_name}"
+    return model_name
 
 
 def _detect_provider(model_name: str, litellm_params: Dict) -> str:
@@ -1590,6 +1616,7 @@ async def list_models(
 
         if merged_entries:
             models = []
+            seen_names: set = set()
             for entry in merged_entries:
                 mname = entry.get("model_name", "")
                 params = entry.get("litellm_params") or {}
@@ -1604,6 +1631,27 @@ async def list_models(
                     model_id=info.get("id", "") if is_db else None,
                     actual_model=params.get("model", ""),
                 ))
+                seen_names.add(mname)
+
+            # Include DB-stored models not loaded by the router (e.g.
+            # cloud models registered via /model/new that failed to
+            # decrypt due to stale data from other entries).
+            db_rows = await _get_db_model_rows()
+            for row in db_rows:
+                mname = row.get("model_name", "")
+                if not mname or mname in seen_names:
+                    continue
+                inferred_model = _infer_litellm_model(mname)
+                provider = _detect_provider(mname, {"model": inferred_model})
+                models.append(ModelInfo(
+                    id=mname,
+                    provider=provider,
+                    description=f"Registered cloud model",
+                    db_model=True,
+                    model_id=row.get("model_id", ""),
+                    actual_model=inferred_model,
+                ))
+
             purpose_map = _build_purpose_map(merged_entries)
             return ModelsResponse(models=models, purposes=purpose_map)
 
@@ -3155,6 +3203,7 @@ async def get_purpose_mappings(
             purpose_map_all = _build_purpose_map(merged_entries)
             purpose_map = {p: purpose_map_all.get(p, "") for p in CONFIGURABLE_PURPOSES if p in purpose_map_all}
             available_models = []
+            seen_names: set = set()
             for entry in merged_entries:
                 mname = entry.get("model_name", "")
                 params = entry.get("litellm_params") or {}
@@ -3165,6 +3214,21 @@ async def get_purpose_mappings(
                     "actual_model": actual_model,
                     "description": info.get("description", ""),
                 })
+                seen_names.add(mname)
+
+            # Include DB-stored models not loaded by the router
+            db_rows = await _get_db_model_rows()
+            for row in db_rows:
+                mname = row.get("model_name", "")
+                if not mname or mname in seen_names:
+                    continue
+                inferred_model = _infer_litellm_model(mname)
+                available_models.append({
+                    "model_name": mname,
+                    "actual_model": inferred_model,
+                    "description": "Registered cloud model",
+                })
+
             return {
                 "purposes": purpose_map,
                 "configurable_purposes": CONFIGURABLE_PURPOSES,
