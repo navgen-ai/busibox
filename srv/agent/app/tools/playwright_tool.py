@@ -5,8 +5,6 @@ screenshots. For plain content extraction, prefer `web_scraper` which auto-escal
 through curl_cffi -> Playwright -> Camoufox.
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import random

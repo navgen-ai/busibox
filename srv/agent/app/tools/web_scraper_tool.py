@@ -19,8 +19,6 @@ Structured error codes (see `scraper_config.ScraperErrorCode`) let the LLM
 decide whether to retry with a higher tier or give up.
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import os

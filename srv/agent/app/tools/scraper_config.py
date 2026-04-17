@@ -15,8 +15,6 @@ The scraper is used as a general capability for agentic search across job-finder
 market-intel, and any future app that needs robust web access.
 """
 
-from __future__ import annotations
-
 import asyncio
 import hashlib
 import json

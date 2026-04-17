@@ -5,8 +5,6 @@ to readability-lxml, and finally to a regex-based stripper so we never return
 empty content. Also handles title + link extraction.
 """
 
-from __future__ import annotations
-
 import logging
 import re
 from typing import List, Tuple

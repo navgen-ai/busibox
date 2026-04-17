@@ -90,11 +90,15 @@
     state: stopped
   failed_when: false
 
+# First deploy: initialise the auth store with the vault password.
+# This is a no-op on redeploys (creates: guard skips when auth file exists),
+# so vault password rotations need the re-sync block below to take effect.
 - name: Set initial Neo4j password if auth db not initialized
   ansible.builtin.command: >
     neo4j-admin dbms set-initial-password {{ neo4j_password | default('changeme') }}
   args:
     creates: /srv/neo4j/data/dbms/auth
+  no_log: true
 
 - name: Ensure Neo4j service is enabled and running
   ansible.builtin.systemd:
@@ -121,6 +125,95 @@
   until: neo4j_health.status in [200, 401]
   retries: 30
   delay: 2
+
+# ---------------------------------------------------------------------------
+# Auth-store resync (idempotent)
+#
+# The `creates:` guard on set-initial-password above means Neo4j only honours
+# the vault password on its very first boot. If NEO4J_PASSWORD is later
+# rotated in the vault, data-api's env updates but Neo4j keeps validating
+# against the old credential, producing Neo.ClientError.Security.Unauthorized.
+#
+# This block probes the current password via cypher-shell and, if rejected,
+# stops Neo4j, removes only the auth file (graph data is preserved under
+# /srv/neo4j/data), re-seeds the password, and restarts.
+# ---------------------------------------------------------------------------
+
+- name: Probe Neo4j auth with the vault password
+  ansible.builtin.shell: |
+    set -o pipefail
+    cypher-shell \
+      -a bolt://127.0.0.1:{{ neo4j_bolt_port | default(7687) }} \
+      -u {{ neo4j_user | default('neo4j') }} \
+      -p "$NEO4J_PASSWORD" \
+      --non-interactive \
+      "RETURN 1" >/dev/null 2>&1
+  args:
+    executable: /bin/bash
+  environment:
+    NEO4J_PASSWORD: "{{ neo4j_password | default('changeme') }}"
+  register: neo4j_auth_probe
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Neo4j auth-store resync required
+  when: neo4j_auth_probe.rc is defined and neo4j_auth_probe.rc != 0
+  block:
+    - name: Log auth-store drift (password does not match vault)
+      ansible.builtin.debug:
+        msg: >
+          Neo4j rejected the vault password. Resetting its auth store to
+          re-sync with NEO4J_PASSWORD. Graph data is untouched.
+
+    - name: Stop Neo4j for auth reset
+      ansible.builtin.systemd:
+        name: neo4j
+        state: stopped
+
+    - name: Remove stale Neo4j auth file
+      ansible.builtin.file:
+        path: /srv/neo4j/data/dbms/auth
+        state: absent
+
+    - name: Re-seed Neo4j initial password from vault
+      ansible.builtin.command: >
+        neo4j-admin dbms set-initial-password {{ neo4j_password | default('changeme') }}
+      no_log: true
+
+    - name: Start Neo4j after auth reset
+      ansible.builtin.systemd:
+        name: neo4j
+        state: started
+
+    - name: Wait for Neo4j bolt port after auth reset
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ neo4j_bolt_port | default(7687) }}"
+        state: started
+        timeout: 120
+
+    - name: Verify re-synced password works
+      ansible.builtin.shell: |
+        set -o pipefail
+        cypher-shell \
+          -a bolt://127.0.0.1:{{ neo4j_bolt_port | default(7687) }} \
+          -u {{ neo4j_user | default('neo4j') }} \
+          -p "$NEO4J_PASSWORD" \
+          --non-interactive \
+          "RETURN 1"
+      args:
+        executable: /bin/bash
+      environment:
+        NEO4J_PASSWORD: "{{ neo4j_password | default('changeme') }}"
+      register: neo4j_auth_reverify
+      changed_when: true
+      no_log: true
+
+    - name: Auth reset succeeded
+      ansible.builtin.debug:
+        msg: "Neo4j auth store re-synced with vault password"
+      when: neo4j_auth_reverify.rc == 0
 
 - name: Display Neo4j status
   ansible.builtin.debug:
