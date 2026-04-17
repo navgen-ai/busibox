@@ -71,7 +71,7 @@ NOTICE_COLLECTION_WORKFLOW_DEFINITION: Dict[str, Any] = {
                         "tool": "playwright_browser",
                         "tool_args": {
                             "url": "$.current_site.url",
-                            "extract_links": True,
+                            "include_links": True,
                             "max_content_length": 20000,
                         },
                         "description": "Fetch page content with Playwright",

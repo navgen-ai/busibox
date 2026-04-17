@@ -694,7 +694,7 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                     )
                     try:
                         from processors.entity_extractor import EntityExtractor
-                        from services.graph_service import GraphService
+                        from services.graph_service import get_graph_service
                         text_from_chunks = "\n\n".join(c.text for c in existing_chunks if c.text)
                         if text_from_chunks:
                             library_id = None
@@ -717,12 +717,14 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                                 litellm_base_url=os.getenv("LITELLM_BASE_URL", "http://litellm:4000"),
                                 litellm_api_key=os.getenv("LITELLM_API_KEY", ""),
                             )
-                            graph = GraphService()
+                            # Use the process-wide singleton so any connection
+                            # failures land in the shared ring buffer and are
+                            # visible to the admin UI alongside API-side errors.
                             loop = asyncio.new_event_loop()
                             asyncio.set_event_loop(loop)
                             try:
-                                connected = loop.run_until_complete(graph.connect())
-                                if connected:
+                                graph = loop.run_until_complete(get_graph_service())
+                                if graph.available:
                                     loop.run_until_complete(
                                         entity_extractor.extract_and_store_graph(
                                             text=text_from_chunks,
@@ -734,8 +736,12 @@ class IngestWorker(PipelineMixin, TriggerMixin):
                                             library_id=library_id,
                                         )
                                     )
+                                else:
+                                    logger.debug(
+                                        "Neo4j not available, skipping entity extraction reprocess",
+                                        file_id=file_id,
+                                    )
                             finally:
-                                loop.run_until_complete(graph.disconnect())
                                 loop.close()
                     except Exception as e:
                         logger.warning(

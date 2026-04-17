@@ -21,11 +21,16 @@ Usage:
     neighbors = await graph.get_neighbors("p1", depth=2, owner_id="user1")
 """
 
+import asyncio
 import os
 import re
+import socket
+import time
+from collections import deque
 from datetime import datetime, timezone
 from itertools import combinations
-from typing import Any, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional
+from urllib.parse import urlparse
 
 import structlog
 
@@ -38,6 +43,45 @@ try:
 except ImportError:
     NEO4J_AVAILABLE = False
     AsyncDriver = None
+
+try:
+    import neo4j as _neo4j_pkg
+    NEO4J_DRIVER_VERSION = getattr(_neo4j_pkg, "__version__", "unknown")
+except Exception:
+    NEO4J_DRIVER_VERSION = "unknown"
+
+# Ring buffer for recent [GRAPH] warnings/errors. Shared across all
+# GraphService instances in the process so worker-side errors surface
+# in the admin UI alongside API-side errors.
+_SHARED_ERROR_BUFFER: Deque[Dict[str, Any]] = deque(maxlen=200)
+
+
+def _record_graph_error(
+    method: str,
+    message: str,
+    level: str = "warning",
+    context: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Append an entry to the shared ring buffer.
+
+    Kept module-level so worker processes and route handlers funnel into
+    the same buffer via get_graph_service().
+    """
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "level": level,
+        "method": method,
+        "message": message,
+    }
+    if context:
+        safe_ctx: Dict[str, Any] = {}
+        for k, v in context.items():
+            if isinstance(v, (str, int, float, bool)) or v is None:
+                safe_ctx[k] = v
+            else:
+                safe_ctx[k] = str(v)[:200]
+        entry["context"] = safe_ctx
+    _SHARED_ERROR_BUFFER.append(entry)
 
 
 class GraphService:
@@ -67,25 +111,62 @@ class GraphService:
         self._password = password or os.getenv("NEO4J_PASSWORD", "")
         self._driver: Optional[Any] = None
         self._available = False
-    
+        self._last_connect_error: Optional[str] = None
+        self._last_connect_at: Optional[str] = None
+        self._connected_at: Optional[str] = None
+        self._apoc_available: Optional[bool] = None
+
     @property
     def available(self) -> bool:
         """Whether the graph database is connected and available."""
         return self._available
+
+    def _record_error(
+        self,
+        method: str,
+        message: str,
+        level: str = "warning",
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        _record_graph_error(method=method, message=message, level=level, context=context)
+
+    @staticmethod
+    def recent_errors(limit: int = 50) -> List[Dict[str, Any]]:
+        """Return the most recent [GRAPH] warnings/errors (newest first)."""
+        if limit <= 0:
+            return []
+        items = list(_SHARED_ERROR_BUFFER)
+        items.reverse()
+        return items[:limit]
+
+    @staticmethod
+    def clear_recent_errors() -> int:
+        """Clear the shared error buffer. Returns number of entries removed."""
+        n = len(_SHARED_ERROR_BUFFER)
+        _SHARED_ERROR_BUFFER.clear()
+        return n
     
     async def connect(self) -> bool:
         """
         Connect to Neo4j. Returns True if successful, False otherwise.
         Never raises - logs warnings on failure.
         """
+        self._last_connect_at = datetime.now(timezone.utc).isoformat()
+
         if not NEO4J_AVAILABLE:
-            logger.info("[GRAPH] neo4j Python driver not installed, graph features disabled")
+            msg = "neo4j Python driver not installed, graph features disabled"
+            logger.info(f"[GRAPH] {msg}")
+            self._last_connect_error = msg
+            self._record_error("connect", msg, level="info")
             return False
-        
+
         if not self._uri:
-            logger.info("[GRAPH] NEO4J_URI not configured, graph features disabled")
+            msg = "NEO4J_URI not configured, graph features disabled"
+            logger.info(f"[GRAPH] {msg}")
+            self._last_connect_error = msg
+            self._record_error("connect", msg, level="info")
             return False
-        
+
         try:
             self._driver = AsyncGraphDatabase.driver(
                 self._uri,
@@ -96,23 +177,73 @@ class GraphService:
             # Verify connectivity
             await self._driver.verify_connectivity()
             self._available = True
+            self._last_connect_error = None
+            self._connected_at = datetime.now(timezone.utc).isoformat()
             logger.info(
                 "[GRAPH] Connected to Neo4j",
                 uri=self._uri,
             )
-            
+
             # Create indexes for performance
             await self._ensure_indexes()
-            
+
             return True
         except Exception as e:
+            err = str(e)
             logger.warning(
                 "[GRAPH] Failed to connect to Neo4j, graph features disabled",
                 uri=self._uri,
-                error=str(e),
+                error=err,
             )
+            self._last_connect_error = err
             self._available = False
+            self._record_error(
+                "connect",
+                f"Failed to connect to Neo4j: {err}",
+                level="error",
+                context={"uri": self._uri, "user": self._user},
+            )
             return False
+
+    async def reconnect(self) -> Dict[str, Any]:
+        """
+        Force-close the driver and re-run connect().
+
+        Used by the admin UI to recover from a startup-time connection
+        failure without redeploying the service.
+        """
+        try:
+            if self._driver is not None:
+                try:
+                    await self._driver.close()
+                except Exception:
+                    pass
+            self._driver = None
+            self._available = False
+
+            # Re-read env vars in case they were hot-reloaded
+            self._uri = os.getenv("NEO4J_URI", self._uri)
+            self._user = os.getenv("NEO4J_USER", self._user)
+            self._password = os.getenv("NEO4J_PASSWORD", self._password)
+
+            ok = await self.connect()
+            return {
+                "available": ok,
+                "uri": self._uri,
+                "user": self._user,
+                "last_connect_error": self._last_connect_error,
+                "connected_at": self._connected_at,
+            }
+        except Exception as e:
+            err = str(e)
+            self._record_error("reconnect", err, level="error")
+            return {
+                "available": False,
+                "uri": self._uri,
+                "user": self._user,
+                "last_connect_error": err,
+                "connected_at": None,
+            }
     
     async def disconnect(self):
         """Close the Neo4j driver connection."""
@@ -124,36 +255,77 @@ class GraphService:
             self._driver = None
             self._available = False
     
-    async def _ensure_indexes(self):
+    # Indexes we always want present. Edits here are safe (IF NOT EXISTS).
+    _REQUIRED_INDEXES: List[Dict[str, str]] = [
+        {"name": "node_id_index", "label": "GraphNode", "property": "node_id"},
+        {"name": "owner_id_index", "label": "GraphNode", "property": "owner_id"},
+        {"name": "document_node_index", "label": "Document", "property": "node_id"},
+        {"name": "entity_node_index", "label": "Entity", "property": "name"},
+    ]
+
+    async def _ensure_indexes(self) -> Dict[str, Any]:
         """Create indexes for efficient lookups."""
         if not self._available:
-            return
-        
+            return {"created": [], "errors": ["not connected"]}
+
+        created: List[str] = []
+        errors: List[str] = []
         try:
             async with self._driver.session() as session:
-                # Index on node_id for fast lookups
-                await session.run(
-                    "CREATE INDEX node_id_index IF NOT EXISTS "
-                    "FOR (n:GraphNode) ON (n.node_id)"
-                )
-                # Index on owner_id for tenant filtering
-                await session.run(
-                    "CREATE INDEX owner_id_index IF NOT EXISTS "
-                    "FOR (n:GraphNode) ON (n.owner_id)"
-                )
-                # Index on document nodes
-                await session.run(
-                    "CREATE INDEX document_node_index IF NOT EXISTS "
-                    "FOR (n:Document) ON (n.node_id)"
-                )
-                # Index on entity nodes
-                await session.run(
-                    "CREATE INDEX entity_node_index IF NOT EXISTS "
-                    "FOR (n:Entity) ON (n.name)"
-                )
-                logger.debug("[GRAPH] Indexes ensured")
+                for idx in self._REQUIRED_INDEXES:
+                    try:
+                        await session.run(
+                            f"CREATE INDEX {idx['name']} IF NOT EXISTS "
+                            f"FOR (n:{idx['label']}) ON (n.{idx['property']})"
+                        )
+                        created.append(idx["name"])
+                    except Exception as e:
+                        errors.append(f"{idx['name']}: {e}")
+                logger.debug("[GRAPH] Indexes ensured", created=created, errors=errors)
         except Exception as e:
-            logger.warning("[GRAPH] Failed to create indexes", error=str(e))
+            msg = str(e)
+            logger.warning("[GRAPH] Failed to create indexes", error=msg)
+            errors.append(msg)
+            self._record_error("_ensure_indexes", msg, level="error")
+        return {"created": created, "errors": errors}
+
+    async def rebuild_indexes(self) -> Dict[str, Any]:
+        """Public wrapper around index ensure for admin UI."""
+        result = await self._ensure_indexes()
+        # Also fetch the current list of indexes for context
+        existing = await self._list_indexes()
+        return {**result, "existing": existing}
+
+    async def _list_indexes(self) -> List[Dict[str, Any]]:
+        """Query SHOW INDEXES (Neo4j 4.x+) and return a simplified list."""
+        if not self._available:
+            return []
+        try:
+            async with self._driver.session() as session:
+                result = await session.run("SHOW INDEXES")
+                rows: List[Dict[str, Any]] = []
+                async for rec in result:
+                    r = dict(rec)
+                    rows.append({
+                        "name": r.get("name"),
+                        "state": r.get("state"),
+                        "type": r.get("type"),
+                        "labelsOrTypes": r.get("labelsOrTypes"),
+                        "properties": r.get("properties"),
+                    })
+                return rows
+        except Exception as e:
+            # Older Neo4j versions use a different call
+            try:
+                async with self._driver.session() as session:
+                    result = await session.run("CALL db.indexes()")
+                    rows = []
+                    async for rec in result:
+                        rows.append(dict(rec))
+                    return rows
+            except Exception as e2:
+                self._record_error("_list_indexes", f"{e} / {e2}", level="warning")
+                return []
     
     # ========================================================================
     # Node Operations
@@ -1460,7 +1632,730 @@ class GraphService:
                 error=str(e),
             )
             return {"nodes": [], "edges": []}
-    
+
+    # ========================================================================
+    # Admin / Diagnostic Methods
+    # ========================================================================
+
+    async def get_config(self) -> Dict[str, Any]:
+        """
+        Return connection config, indexes, and APOC availability.
+
+        Safe to call when not connected. Does not leak the password; returns
+        a fingerprint (first 12 chars of sha256) instead.
+        """
+        import hashlib
+        password_fingerprint = None
+        if self._password:
+            password_fingerprint = hashlib.sha256(self._password.encode()).hexdigest()[:12]
+
+        config: Dict[str, Any] = {
+            "uri": self._uri,
+            "user": self._user,
+            "password_set": bool(self._password),
+            "password_fingerprint": password_fingerprint,
+            "driver_version": NEO4J_DRIVER_VERSION,
+            "driver_installed": NEO4J_AVAILABLE,
+            "available": self._available,
+            "connected_at": self._connected_at,
+            "last_connect_at": self._last_connect_at,
+            "last_connect_error": self._last_connect_error,
+            "apoc_available": self._apoc_available,
+            "indexes": [],
+            "neo4j_version": None,
+            "neo4j_edition": None,
+        }
+
+        if not self._available or self._driver is None:
+            return config
+
+        try:
+            config["indexes"] = await self._list_indexes()
+        except Exception as e:
+            self._record_error("get_config.indexes", str(e))
+
+        try:
+            async with self._driver.session() as session:
+                result = await session.run(
+                    "CALL dbms.components() YIELD name, versions, edition "
+                    "WHERE name = 'Neo4j Kernel' RETURN versions[0] AS version, edition"
+                )
+                rec = await result.single()
+                if rec:
+                    config["neo4j_version"] = rec.get("version")
+                    config["neo4j_edition"] = rec.get("edition")
+        except Exception as e:
+            self._record_error("get_config.version", str(e))
+
+        # APOC probe (cached)
+        if self._apoc_available is None:
+            try:
+                async with self._driver.session() as session:
+                    result = await session.run(
+                        "SHOW PROCEDURES YIELD name "
+                        "WHERE name STARTS WITH 'apoc.' RETURN count(*) AS n"
+                    )
+                    rec = await result.single()
+                    self._apoc_available = bool(rec and rec.get("n", 0) > 0)
+            except Exception:
+                try:
+                    async with self._driver.session() as session:
+                        result = await session.run(
+                            "CALL dbms.procedures() YIELD name "
+                            "WHERE name STARTS WITH 'apoc.' RETURN count(*) AS n"
+                        )
+                        rec = await result.single()
+                        self._apoc_available = bool(rec and rec.get("n", 0) > 0)
+                except Exception:
+                    self._apoc_available = False
+        config["apoc_available"] = self._apoc_available
+        return config
+
+    async def reachability_check(self) -> Dict[str, Any]:
+        """
+        Run a 7-step diagnostic to identify why Neo4j isn't reachable.
+
+        Each step returns {step, ok, message, duration_ms} and includes a
+        fix_hint for common failures to help the admin resolve the issue.
+        """
+        steps: List[Dict[str, Any]] = []
+
+        def _step(name: str, ok: bool, message: str, duration_ms: float,
+                  fix_hint: Optional[str] = None) -> Dict[str, Any]:
+            s: Dict[str, Any] = {
+                "step": name,
+                "ok": ok,
+                "message": message,
+                "duration_ms": round(duration_ms, 2),
+            }
+            if fix_hint:
+                s["fix_hint"] = fix_hint
+            return s
+
+        # 1. Driver installed
+        start = time.time()
+        steps.append(_step(
+            "driver_installed",
+            NEO4J_AVAILABLE,
+            f"neo4j Python driver {NEO4J_DRIVER_VERSION}" if NEO4J_AVAILABLE
+            else "neo4j Python driver not installed",
+            (time.time() - start) * 1000,
+            fix_hint=None if NEO4J_AVAILABLE
+            else "Add 'neo4j' to srv/data/requirements.txt and redeploy data-api",
+        ))
+        if not NEO4J_AVAILABLE:
+            return {"steps": steps, "ok": False}
+
+        # 2. Env vars present
+        start = time.time()
+        uri_set = bool(self._uri)
+        pw_set = bool(self._password)
+        env_ok = uri_set and pw_set
+        steps.append(_step(
+            "env_vars",
+            env_ok,
+            f"NEO4J_URI {'set' if uri_set else 'MISSING'}, "
+            f"NEO4J_USER='{self._user}', "
+            f"NEO4J_PASSWORD {'set' if pw_set else 'MISSING'}",
+            (time.time() - start) * 1000,
+            fix_hint=(
+                "Check provision/ansible/roles/data/templates/data.env.j2 and "
+                "provision/ansible/roles/secrets/vars/shared_secrets.yml, then "
+                "redeploy with `make install SERVICE=data`"
+            ) if not env_ok else None,
+        ))
+        if not env_ok:
+            return {"steps": steps, "ok": False}
+
+        # 3. Parse URI and DNS resolve
+        start = time.time()
+        host: Optional[str] = None
+        port = 7687
+        dns_ok = False
+        try:
+            parsed = urlparse(self._uri)
+            host = parsed.hostname
+            port = parsed.port or 7687
+            if host:
+                # Run DNS resolution in a thread to avoid blocking the loop
+                addrinfo = await asyncio.get_running_loop().run_in_executor(
+                    None, lambda: socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+                )
+                dns_ok = len(addrinfo) > 0
+                resolved = addrinfo[0][4][0] if addrinfo else "unknown"
+                msg = f"{host}:{port} resolves to {resolved}"
+            else:
+                msg = f"Could not parse host from URI '{self._uri}'"
+        except Exception as e:
+            msg = f"DNS resolution failed: {e}"
+        steps.append(_step(
+            "dns_resolve", dns_ok, msg, (time.time() - start) * 1000,
+            fix_hint=(
+                "Check /etc/hosts on data-api and the internal DNS "
+                "(provision/ansible/roles/internal_dns/). On Proxmox, neo4j "
+                "should resolve to the neo4j-lxc IP."
+            ) if not dns_ok else None,
+        ))
+        if not dns_ok or not host:
+            return {"steps": steps, "ok": False}
+
+        # 4. TCP connect to bolt port
+        start = time.time()
+        tcp_ok = False
+        tcp_msg = ""
+        try:
+            def _probe_tcp() -> None:
+                with socket.create_connection((host, port), timeout=5):
+                    pass
+            await asyncio.get_running_loop().run_in_executor(None, _probe_tcp)
+            tcp_ok = True
+            tcp_msg = f"TCP connection to {host}:{port} established"
+        except Exception as e:
+            tcp_msg = f"TCP connect to {host}:{port} failed: {e}"
+        steps.append(_step(
+            "tcp_connect", tcp_ok, tcp_msg, (time.time() - start) * 1000,
+            fix_hint=(
+                "Verify neo4j-lxc is running (`pct status <CT>` on Proxmox), "
+                "bolt listener is enabled, and firewall allows port 7687 from "
+                "data-api's subnet."
+            ) if not tcp_ok else None,
+        ))
+        if not tcp_ok:
+            return {"steps": steps, "ok": False}
+
+        # 5. Driver verify_connectivity
+        start = time.time()
+        driver = self._driver
+        temp_driver = None
+        verify_ok = False
+        verify_msg = ""
+        try:
+            if driver is None:
+                temp_driver = AsyncGraphDatabase.driver(
+                    self._uri,
+                    auth=(self._user, self._password),
+                    connection_acquisition_timeout=5.0,
+                )
+                driver = temp_driver
+            await driver.verify_connectivity()
+            verify_ok = True
+            verify_msg = "Driver verify_connectivity succeeded"
+        except Exception as e:
+            verify_msg = f"verify_connectivity failed: {e}"
+        steps.append(_step(
+            "driver_verify", verify_ok, verify_msg, (time.time() - start) * 1000,
+            fix_hint=(
+                "Bolt is open but the driver can't handshake. Check that the "
+                "URI scheme matches the server (bolt:// vs neo4j://) and that "
+                "Neo4j isn't still starting up."
+            ) if not verify_ok else None,
+        ))
+        if not verify_ok:
+            if temp_driver is not None:
+                try:
+                    await temp_driver.close()
+                except Exception:
+                    pass
+            return {"steps": steps, "ok": False}
+
+        # 6. Auth (run RETURN 1) and sample count
+        start = time.time()
+        auth_ok = False
+        auth_msg = ""
+        node_count: Optional[int] = None
+        try:
+            async with driver.session() as session:
+                r1 = await session.run("RETURN 1 AS one")
+                rec = await r1.single()
+                if rec and rec.get("one") == 1:
+                    auth_ok = True
+                r2 = await session.run("MATCH (n) RETURN count(n) AS c")
+                rec2 = await r2.single()
+                if rec2:
+                    node_count = int(rec2.get("c", 0))
+                auth_msg = (
+                    f"Auth OK, database contains {node_count} node(s)"
+                    if auth_ok else "Sample query returned no result"
+                )
+        except Exception as e:
+            msg_str = str(e)
+            if "Unauthorized" in msg_str or "authentication" in msg_str.lower():
+                auth_msg = f"Authentication failed: {msg_str}"
+            else:
+                auth_msg = f"Sample query failed: {msg_str}"
+        steps.append(_step(
+            "auth_and_query", auth_ok, auth_msg, (time.time() - start) * 1000,
+            fix_hint=(
+                "Password mismatch between data-api env and Neo4j. Compare "
+                "fingerprints on /health/secrets across services, or rotate "
+                "via the vault (secrets.neo4j.password) and redeploy."
+            ) if not auth_ok else None,
+        ))
+
+        # 7. APOC check (non-fatal)
+        start = time.time()
+        apoc_ok = False
+        try:
+            async with driver.session() as session:
+                result = await session.run(
+                    "SHOW PROCEDURES YIELD name "
+                    "WHERE name STARTS WITH 'apoc.' RETURN count(*) AS n"
+                )
+                rec = await result.single()
+                apoc_ok = bool(rec and rec.get("n", 0) > 0)
+        except Exception:
+            try:
+                async with driver.session() as session:
+                    result = await session.run(
+                        "CALL dbms.procedures() YIELD name "
+                        "WHERE name STARTS WITH 'apoc.' RETURN count(*) AS n"
+                    )
+                    rec = await result.single()
+                    apoc_ok = bool(rec and rec.get("n", 0) > 0)
+            except Exception as e:
+                apoc_ok = False
+        steps.append(_step(
+            "apoc_available",
+            apoc_ok,
+            "APOC procedures available" if apoc_ok else "APOC procedures NOT installed",
+            (time.time() - start) * 1000,
+            fix_hint=(
+                "APOC is used for advanced subgraph expansion. Install the "
+                "matching APOC plugin in the Neo4j container; without it the "
+                "fallback path is used (slower for deep traversals)."
+            ) if not apoc_ok else None,
+        ))
+        self._apoc_available = apoc_ok
+
+        if temp_driver is not None:
+            try:
+                await temp_driver.close()
+            except Exception:
+                pass
+
+        overall_ok = all(s["ok"] for s in steps if s["step"] != "apoc_available")
+        return {"steps": steps, "ok": overall_ok, "node_count": node_count}
+
+    async def list_labels_with_counts(self, owner_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List all node labels with counts. Admin view shows all owners."""
+        if not self._available:
+            return []
+        owner_clause = ""
+        params: Dict[str, Any] = {}
+        if owner_id:
+            owner_clause = "WHERE (n.owner_id = $owner_id OR n.visibility = 'shared') "
+            params["owner_id"] = owner_id
+        cypher = (
+            f"MATCH (n:GraphNode) {owner_clause}"
+            f"UNWIND labels(n) AS label "
+            f"WITH label WHERE label <> 'GraphNode' "
+            f"RETURN label, count(*) AS count ORDER BY count DESC"
+        )
+        try:
+            async with self._driver.session() as session:
+                result = await session.run(cypher, params)
+                return [dict(r) async for r in result]
+        except Exception as e:
+            self._record_error("list_labels_with_counts", str(e))
+            return []
+
+    async def list_rel_types_with_counts(self, owner_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List relationship types with counts."""
+        if not self._available:
+            return []
+        owner_clause = ""
+        params: Dict[str, Any] = {}
+        if owner_id:
+            owner_clause = "WHERE (a.owner_id = $owner_id OR a.visibility = 'shared') "
+            params["owner_id"] = owner_id
+        cypher = (
+            f"MATCH (a:GraphNode)-[r]->(b:GraphNode) {owner_clause}"
+            f"RETURN type(r) AS type, count(*) AS count ORDER BY count DESC"
+        )
+        try:
+            async with self._driver.session() as session:
+                result = await session.run(cypher, params)
+                return [dict(r) async for r in result]
+        except Exception as e:
+            self._record_error("list_rel_types_with_counts", str(e))
+            return []
+
+    async def visibility_breakdown(self, user_id: Optional[str]) -> Dict[str, Any]:
+        """
+        Return what a given user can see vs the total in the database.
+
+        If user_id is None, returns only global totals.
+        """
+        if not self._available:
+            return {"total_nodes": 0, "visible_to_user": 0, "per_label": []}
+        try:
+            async with self._driver.session() as session:
+                total_result = await session.run(
+                    "MATCH (n:GraphNode) RETURN count(n) AS total"
+                )
+                total_rec = await total_result.single()
+                total_nodes = int(total_rec.get("total", 0)) if total_rec else 0
+
+                visible_nodes = 0
+                per_label: List[Dict[str, Any]] = []
+                if user_id:
+                    vis_result = await session.run(
+                        "MATCH (n:GraphNode) "
+                        "WHERE n.owner_id = $owner_id OR n.visibility = 'shared' "
+                        "RETURN count(n) AS visible",
+                        owner_id=user_id,
+                    )
+                    vis_rec = await vis_result.single()
+                    visible_nodes = int(vis_rec.get("visible", 0)) if vis_rec else 0
+
+                    # Per-label breakdown
+                    per_label_result = await session.run(
+                        "MATCH (n:GraphNode) "
+                        "WITH n, labels(n) AS lbls "
+                        "UNWIND lbls AS label "
+                        "WITH label, n WHERE label <> 'GraphNode' "
+                        "WITH label, "
+                        "count(n) AS total, "
+                        "count(CASE WHEN (n.owner_id = $owner_id OR n.visibility = 'shared') "
+                        "THEN 1 END) AS visible "
+                        "RETURN label, total, visible ORDER BY total DESC",
+                        owner_id=user_id,
+                    )
+                    per_label = [dict(r) async for r in per_label_result]
+                else:
+                    per_label_result = await session.run(
+                        "MATCH (n:GraphNode) "
+                        "UNWIND labels(n) AS label "
+                        "WITH label WHERE label <> 'GraphNode' "
+                        "RETURN label, count(*) AS total ORDER BY total DESC"
+                    )
+                    per_label = [
+                        {"label": r["label"], "total": r["total"], "visible": r["total"]}
+                        async for r in per_label_result
+                    ]
+
+                return {
+                    "total_nodes": total_nodes,
+                    "visible_to_user": visible_nodes if user_id else total_nodes,
+                    "user_id": user_id,
+                    "per_label": per_label,
+                }
+        except Exception as e:
+            self._record_error("visibility_breakdown", str(e))
+            return {"total_nodes": 0, "visible_to_user": 0, "per_label": [], "error": str(e)}
+
+    async def browse_nodes(
+        self,
+        label: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+        search: Optional[str] = None,
+        owner_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Paginated node listing for the admin Explorer tab.
+
+        Admin view does not apply owner filter by default; passing owner_id
+        scopes to that user. Returns both the page of nodes and a total count.
+        """
+        if not self._available:
+            return {"nodes": [], "total": 0, "limit": limit, "offset": offset}
+
+        limit = max(1, min(int(limit), 500))
+        offset = max(0, int(offset))
+
+        where_clauses: List[str] = []
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+        if owner_id:
+            where_clauses.append("(n.owner_id = $owner_id OR n.visibility = 'shared')")
+            params["owner_id"] = owner_id
+        if search:
+            where_clauses.append(
+                "(toLower(coalesce(n.name, '')) CONTAINS toLower($search) OR "
+                "toLower(coalesce(n.node_id, '')) CONTAINS toLower($search))"
+            )
+            params["search"] = search
+        where = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+        if label:
+            safe_label = self._sanitize_label(label)
+            match_clause = f"MATCH (n:{safe_label}) "
+        else:
+            match_clause = "MATCH (n:GraphNode) "
+
+        try:
+            async with self._driver.session() as session:
+                count_result = await session.run(
+                    f"{match_clause}{where}RETURN count(n) AS total",
+                    params,
+                )
+                count_rec = await count_result.single()
+                total = int(count_rec.get("total", 0)) if count_rec else 0
+
+                page_result = await session.run(
+                    f"{match_clause}{where}"
+                    f"RETURN properties(n) AS props, labels(n) AS lbls "
+                    f"ORDER BY coalesce(n.name, n.node_id) "
+                    f"SKIP $offset LIMIT $limit",
+                    params,
+                )
+                nodes: List[Dict[str, Any]] = []
+                async for rec in page_result:
+                    node = dict(rec.get("props", {}))
+                    node["_labels"] = rec.get("lbls", [])
+                    nodes.append(node)
+
+                return {
+                    "nodes": nodes,
+                    "total": total,
+                    "limit": limit,
+                    "offset": offset,
+                    "label": label,
+                }
+        except Exception as e:
+            self._record_error("browse_nodes", str(e), context={"label": label})
+            return {"nodes": [], "total": 0, "limit": limit, "offset": offset, "error": str(e)}
+
+    async def find_orphans(self) -> Dict[str, Any]:
+        """
+        Identify orphan nodes/relationships without deleting them.
+
+        Categories:
+        - no_node_id: GraphNode nodes missing node_id property
+        - no_relationships: GraphNode nodes with no relationships and not
+          a DataDocument or Document (which are allowed to stand alone).
+        - dangling_rels: relationships whose start or end node lacks node_id.
+        """
+        if not self._available:
+            return {"no_node_id": 0, "no_relationships": 0, "dangling_rels": 0}
+        result: Dict[str, Any] = {}
+        try:
+            async with self._driver.session() as session:
+                r1 = await session.run(
+                    "MATCH (n:GraphNode) "
+                    "WHERE n.node_id IS NULL OR n.node_id = '' "
+                    "RETURN count(n) AS c"
+                )
+                rec = await r1.single()
+                result["no_node_id"] = int(rec.get("c", 0)) if rec else 0
+
+                r2 = await session.run(
+                    "MATCH (n:GraphNode) "
+                    "WHERE NOT (n)--() "
+                    "AND NOT n:DataDocument AND NOT n:Document "
+                    "RETURN count(n) AS c"
+                )
+                rec = await r2.single()
+                result["no_relationships"] = int(rec.get("c", 0)) if rec else 0
+
+                r3 = await session.run(
+                    "MATCH (a)-[r]->(b) "
+                    "WHERE a.node_id IS NULL OR b.node_id IS NULL "
+                    "RETURN count(r) AS c"
+                )
+                rec = await r3.single()
+                result["dangling_rels"] = int(rec.get("c", 0)) if rec else 0
+
+                return result
+        except Exception as e:
+            self._record_error("find_orphans", str(e))
+            return {"no_node_id": 0, "no_relationships": 0, "dangling_rels": 0, "error": str(e)}
+
+    async def purge_orphans(self, dry_run: bool = True) -> Dict[str, Any]:
+        """
+        Count (and optionally delete) orphan nodes/relationships.
+
+        Dry-run is the default. Callers MUST have data.admin scope.
+        """
+        preview = await self.find_orphans()
+        if dry_run:
+            return {"dry_run": True, "preview": preview, "deleted": {}}
+        if not self._available:
+            return {"dry_run": False, "preview": preview, "deleted": {}, "error": "not available"}
+
+        deleted: Dict[str, int] = {"no_node_id": 0, "no_relationships": 0, "dangling_rels": 0}
+        try:
+            async with self._driver.session() as session:
+                r = await session.run(
+                    "MATCH (n:GraphNode) "
+                    "WHERE n.node_id IS NULL OR n.node_id = '' "
+                    "WITH n LIMIT 10000 DETACH DELETE n "
+                    "RETURN count(*) AS c"
+                )
+                rec = await r.single()
+                deleted["no_node_id"] = int(rec.get("c", 0)) if rec else 0
+
+                r = await session.run(
+                    "MATCH (n:GraphNode) "
+                    "WHERE NOT (n)--() "
+                    "AND NOT n:DataDocument AND NOT n:Document "
+                    "WITH n LIMIT 10000 DETACH DELETE n "
+                    "RETURN count(*) AS c"
+                )
+                rec = await r.single()
+                deleted["no_relationships"] = int(rec.get("c", 0)) if rec else 0
+
+                r = await session.run(
+                    "MATCH (a)-[rel]->(b) "
+                    "WHERE a.node_id IS NULL OR b.node_id IS NULL "
+                    "WITH rel LIMIT 10000 DELETE rel "
+                    "RETURN count(*) AS c"
+                )
+                rec = await r.single()
+                deleted["dangling_rels"] = int(rec.get("c", 0)) if rec else 0
+
+                return {"dry_run": False, "preview": preview, "deleted": deleted}
+        except Exception as e:
+            self._record_error("purge_orphans", str(e))
+            return {"dry_run": False, "preview": preview, "deleted": deleted, "error": str(e)}
+
+    async def execute_cypher(
+        self,
+        cypher: str,
+        params: Optional[Dict[str, Any]] = None,
+        allow_write: bool = False,
+        timeout_sec: float = 30.0,
+    ) -> Dict[str, Any]:
+        """
+        Execute an arbitrary Cypher query with a read/write transaction.
+
+        Returns columns, rows, and a summary with counters and notifications.
+        Use allow_write=True only for admin-triggered writes.
+        """
+        if not self._available:
+            return {
+                "ok": False,
+                "error": "graph service not available",
+                "columns": [],
+                "rows": [],
+                "summary": {},
+            }
+
+        query = (cypher or "").strip()
+        if not query:
+            return {
+                "ok": False,
+                "error": "empty query",
+                "columns": [],
+                "rows": [],
+                "summary": {},
+            }
+
+        params = params or {}
+        access_mode = "WRITE" if allow_write else "READ"
+
+        def _serialize(val: Any) -> Any:
+            """Best-effort conversion of Neo4j types to JSON-safe values."""
+            try:
+                from neo4j.graph import Node, Relationship, Path
+            except Exception:
+                Node = Relationship = Path = None  # type: ignore
+
+            if val is None or isinstance(val, (str, int, float, bool)):
+                return val
+            if isinstance(val, (list, tuple)):
+                return [_serialize(x) for x in val]
+            if isinstance(val, dict):
+                return {str(k): _serialize(v) for k, v in val.items()}
+            if Node is not None and isinstance(val, Node):
+                return {
+                    "_type": "node",
+                    "element_id": getattr(val, "element_id", None),
+                    "labels": list(val.labels),
+                    "properties": {k: _serialize(v) for k, v in dict(val).items()},
+                }
+            if Relationship is not None and isinstance(val, Relationship):
+                return {
+                    "_type": "relationship",
+                    "element_id": getattr(val, "element_id", None),
+                    "type": val.type,
+                    "start_element_id": getattr(val.start_node, "element_id", None)
+                    if val.start_node else None,
+                    "end_element_id": getattr(val.end_node, "element_id", None)
+                    if val.end_node else None,
+                    "properties": {k: _serialize(v) for k, v in dict(val).items()},
+                }
+            if Path is not None and isinstance(val, Path):
+                return {
+                    "_type": "path",
+                    "nodes": [_serialize(n) for n in val.nodes],
+                    "relationships": [_serialize(r) for r in val.relationships],
+                }
+            return str(val)
+
+        start = time.time()
+        try:
+            async def _run() -> Dict[str, Any]:
+                async with self._driver.session(default_access_mode=access_mode) as session:
+                    result = await session.run(query, params)
+                    columns = list(await result.keys())
+                    rows: List[List[Any]] = []
+                    async for rec in result:
+                        rows.append([_serialize(rec[k]) for k in columns])
+                    summary = await result.consume()
+
+                    counters = summary.counters
+                    notifications = [
+                        {
+                            "code": getattr(n, "code", None),
+                            "title": getattr(n, "title", None),
+                            "description": getattr(n, "description", None),
+                            "severity": getattr(n, "severity", None),
+                        }
+                        for n in getattr(summary, "notifications", []) or []
+                    ]
+                    return {
+                        "columns": columns,
+                        "rows": rows,
+                        "summary": {
+                            "result_available_after_ms": summary.result_available_after,
+                            "result_consumed_after_ms": summary.result_consumed_after,
+                            "counters": {
+                                "nodes_created": counters.nodes_created,
+                                "nodes_deleted": counters.nodes_deleted,
+                                "relationships_created": counters.relationships_created,
+                                "relationships_deleted": counters.relationships_deleted,
+                                "properties_set": counters.properties_set,
+                                "labels_added": counters.labels_added,
+                                "labels_removed": counters.labels_removed,
+                                "indexes_added": counters.indexes_added,
+                                "indexes_removed": counters.indexes_removed,
+                                "contains_updates": counters.contains_updates,
+                            },
+                            "notifications": notifications,
+                            "query_type": summary.query_type,
+                        },
+                    }
+
+            res = await asyncio.wait_for(_run(), timeout=timeout_sec)
+            res["ok"] = True
+            res["duration_ms"] = round((time.time() - start) * 1000, 2)
+            return res
+        except asyncio.TimeoutError:
+            msg = f"Query exceeded timeout ({timeout_sec}s)"
+            self._record_error("execute_cypher.timeout", msg,
+                               context={"query_preview": query[:120]})
+            return {
+                "ok": False,
+                "error": msg,
+                "columns": [],
+                "rows": [],
+                "summary": {},
+                "duration_ms": round((time.time() - start) * 1000, 2),
+            }
+        except Exception as e:
+            err = str(e)
+            self._record_error("execute_cypher", err,
+                               context={"query_preview": query[:120]})
+            return {
+                "ok": False,
+                "error": err,
+                "columns": [],
+                "rows": [],
+                "summary": {},
+                "duration_ms": round((time.time() - start) * 1000, 2),
+            }
+
     # ========================================================================
     # Internal Helpers
     # ========================================================================

@@ -177,10 +177,15 @@ BUILTIN_TOOL_METADATA = {
     },
     "web_scraper_tool": {
         "name": "web_scraper",
-        "description": "Fetch and extract content from a web page URL. Retrieves HTML, removes markup, and returns clean text content.",
+        "description": (
+            "Fetch and extract content from a web page URL using a tiered stealth engine "
+            "(curl_cffi chrome impersonation -> Playwright+stealth -> Camoufox). Auto-escalates "
+            "on 403/Cloudflare/CAPTCHA/timeout. PDFs are auto-detected and can be ingested into "
+            "a data-api library when `ingest_library_id` is provided. Responses are cached in Redis."
+        ),
         "entrypoint": "app.tools.web_scraper_tool:scrape_webpage",
         "scopes": [],
-        "version": 1,
+        "version": 3,
         "schema": {
             "input": {
                 "type": "object",
@@ -189,15 +194,54 @@ BUILTIN_TOOL_METADATA = {
                         "type": "string",
                         "description": "URL of the web page to scrape"
                     },
-                    "extract_links": {
+                    "include_links": {
                         "type": "boolean",
-                        "description": "Whether to extract links from the page (default: false)",
+                        "description": "Extract up to 50 links from the page",
                         "default": False
                     },
                     "max_content_length": {
                         "type": "integer",
-                        "description": "Maximum characters to return (default: 10000)",
+                        "description": "Max characters of content to return",
                         "default": 10000
+                    },
+                    "use_browser": {
+                        "type": "boolean",
+                        "description": "Force Tier 2 (Playwright). Use after a BLOCKED_403 / JS_REQUIRED signal.",
+                        "default": False
+                    },
+                    "use_camoufox": {
+                        "type": "boolean",
+                        "description": (
+                            "Force Tier 3 (Camoufox anti-detect Firefox). Only use after "
+                            "BLOCKED_CLOUDFLARE / CAPTCHA_REQUIRED. Requires ENABLE_CAMOUFOX=true on server."
+                        ),
+                        "default": False
+                    },
+                    "cache_ttl": {
+                        "type": "integer",
+                        "description": "Response cache TTL in seconds (0 to bypass cache)",
+                        "default": 3600
+                    },
+                    "ingest_library_id": {
+                        "type": "string",
+                        "description": (
+                            "If the URL is a PDF, upload it to this data-api library_id and "
+                            "return a file_id. Use a document_search tool later to query the content."
+                        )
+                    },
+                    "extract_mode": {
+                        "type": "string",
+                        "description": "Content extraction mode: 'auto' (default), 'article' (precision), 'full_page' (raw)",
+                        "default": "auto"
+                    },
+                    "block_resources": {
+                        "type": "boolean",
+                        "description": "Block images/fonts/CSS/analytics in browser tiers (saves bandwidth)",
+                        "default": True
+                    },
+                    "profile_name": {
+                        "type": "string",
+                        "description": "Override UA profile (chrome131_win, chrome131_mac, firefox121_win, safari17_mac, ...)"
                     }
                 },
                 "required": ["url"]
@@ -206,52 +250,81 @@ BUILTIN_TOOL_METADATA = {
                 "type": "object",
                 "properties": {
                     "success": {"type": "boolean", "description": "Whether the page was successfully scraped"},
-                    "url": {"type": "string", "description": "The URL that was scraped"},
+                    "url": {"type": "string", "description": "Final URL after redirects"},
                     "title": {"type": "string", "description": "Page title"},
-                    "content": {"type": "string", "description": "Extracted text content"},
-                    "word_count": {"type": "integer", "description": "Number of words in the content"},
+                    "content": {"type": "string", "description": "Extracted text/markdown content"},
+                    "word_count": {"type": "integer", "description": "Word count of returned content"},
                     "links": {"type": "array", "description": "Extracted links (if requested)"},
-                    "error": {"type": "string", "description": "Error message if scraping failed"}
+                    "method": {"type": "string", "description": "Tier used: curl_cffi | playwright | camoufox | cache"},
+                    "extractor": {"type": "string", "description": "Extractor used: trafilatura | readability | regex | pdf"},
+                    "error_code": {
+                        "type": "string",
+                        "description": (
+                            "Structured error code: OK | BLOCKED_403 | BLOCKED_429 | BLOCKED_CLOUDFLARE | "
+                            "CAPTCHA_REQUIRED | TIMEOUT | DNS_FAILED | TLS_FAILED | JS_REQUIRED | "
+                            "PDF_INGESTED | PDF_INGEST_FAILED | UNSUPPORTED_CONTENT_TYPE | INVALID_URL | UNKNOWN"
+                        )
+                    },
+                    "error": {"type": "string", "description": "Human-readable error message"},
+                    "from_cache": {"type": "boolean", "description": "Whether result came from cache"},
+                    "raw_html_len": {"type": "integer", "description": "Raw HTML length (0 for PDFs / cache hits)"},
+                    "file_id": {"type": "string", "description": "data-api file_id if PDF was ingested"},
+                    "ingested": {"type": "boolean", "description": "Whether the PDF was uploaded to data-api"}
                 }
             }
         }
     },
     "playwright_tool": {
         "name": "playwright_browser",
-        "description": "Browse a web page using a full headless browser with JavaScript support. Handles JS-rendered pages, SPAs, and interactive sites.",
+        "description": (
+            "Browse a web page with a stealth headless browser (JS + scripted interaction). "
+            "Use when you need click/type/scroll actions or screenshots. For plain content, prefer "
+            "`web_scraper` which auto-escalates tiers."
+        ),
         "entrypoint": "app.tools.playwright_tool:browse_webpage",
         "scopes": [],
-        "version": 1,
+        "version": 2,
         "schema": {
             "input": {
                 "type": "object",
                 "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "URL of the web page to browse"
-                    },
+                    "url": {"type": "string", "description": "URL of the web page to browse"},
                     "wait_for_selector": {
                         "type": "string",
-                        "description": "CSS selector to wait for before extracting content"
+                        "description": "CSS selector to wait for before extraction"
                     },
                     "actions": {
                         "type": "array",
-                        "description": "List of actions: click(selector), type(selector, text), scroll, wait(ms)"
+                        "description": "List of actions: click(selector), type(selector,text), scroll, wait(ms)"
                     },
-                    "extract_links": {
+                    "include_links": {
                         "type": "boolean",
-                        "description": "Whether to extract links from the page",
+                        "description": "Extract up to 50 links",
                         "default": False
                     },
                     "screenshot": {
                         "type": "boolean",
-                        "description": "Whether to take a screenshot",
+                        "description": "Save a PNG screenshot",
                         "default": False
                     },
                     "max_content_length": {
                         "type": "integer",
-                        "description": "Maximum characters to return (default: 15000)",
+                        "description": "Max characters of content to return",
                         "default": 15000
+                    },
+                    "block_resources": {
+                        "type": "boolean",
+                        "description": "Block images/fonts/CSS/analytics (saves bandwidth)",
+                        "default": True
+                    },
+                    "extract_mode": {
+                        "type": "string",
+                        "description": "'auto' | 'article' | 'full_page'",
+                        "default": "auto"
+                    },
+                    "profile_name": {
+                        "type": "string",
+                        "description": "Override UA profile"
                     }
                 },
                 "required": ["url"]
@@ -260,11 +333,12 @@ BUILTIN_TOOL_METADATA = {
                 "type": "object",
                 "properties": {
                     "success": {"type": "boolean", "description": "Whether the page was successfully loaded"},
-                    "url": {"type": "string", "description": "The URL that was browsed"},
+                    "url": {"type": "string", "description": "Final URL"},
                     "title": {"type": "string", "description": "Page title"},
                     "content": {"type": "string", "description": "Extracted text content"},
                     "links": {"type": "array", "description": "Extracted links (if requested)"},
-                    "screenshot_path": {"type": "string", "description": "Path to screenshot (if taken)"},
+                    "screenshot_path": {"type": "string", "description": "Screenshot path (if taken)"},
+                    "error_code": {"type": "string", "description": "Structured error code"},
                     "error": {"type": "string", "description": "Error message if browsing failed"}
                 }
             }

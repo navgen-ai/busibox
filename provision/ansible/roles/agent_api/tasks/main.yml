@@ -28,6 +28,27 @@
       - build-essential
       - git
       - rsync
+      # Playwright Chromium runtime dependencies
+      - libnss3
+      - libnspr4
+      - libatk1.0-0
+      - libatk-bridge2.0-0
+      - libcups2
+      - libdrm2
+      - libxkbcommon0
+      - libxcomposite1
+      - libxdamage1
+      - libxrandr2
+      - libgbm1
+      - libpango-1.0-0
+      - libcairo2
+      - libasound2
+      - libxshmfence1
+      - libx11-xcb1
+      # Stealth scraper dependencies (curl_cffi + trafilatura/readability-lxml)
+      - libcurl4
+      - libxml2-dev
+      - libxslt1-dev
     state: present
     update_cache: yes
   tags: [agent_api, agent_api_install]
@@ -202,6 +223,27 @@
   become_user: "{{ agent_api_user }}"
   when: agent_deployment_needed
   tags: [agent_api, agent_api_install]
+
+- name: Install Playwright Chromium browser (Tier 2 of stealth scraper)
+  shell: |
+    . {{ agent_api_venv_path }}/bin/activate
+    python -m playwright install chromium
+  become: yes
+  become_user: "{{ agent_api_user }}"
+  when: agent_deployment_needed
+  tags: [agent_api, agent_api_install]
+
+- name: Install Camoufox (Tier 3 of stealth scraper, optional)
+  shell: |
+    . {{ agent_api_venv_path }}/bin/activate
+    pip install "camoufox[geoip]>=0.4.0"
+    python -m camoufox fetch
+  become: yes
+  become_user: "{{ agent_api_user }}"
+  when:
+    - agent_deployment_needed
+    - enable_camoufox | default(false) | bool
+  tags: [agent_api, agent_api_install, camoufox]
 
 - name: Deploy agent service environment file
   template:

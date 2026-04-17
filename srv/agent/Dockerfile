@@ -21,11 +21,29 @@ WORKDIR /app
 # Copy requirements first (for caching)
 COPY agent/requirements.txt .
 
-# Install system dependencies (ffmpeg for audio format conversion)
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+# Install system dependencies: ffmpeg for audio, libs needed by Playwright Chromium,
+# plus libcurl/libxml2 used by curl_cffi and trafilatura/readability-lxml.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+    libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 \
+    libcairo2 libasound2 libxshmfence1 libx11-xcb1 \
+    libcurl4 libxml2-dev libxslt1-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Install Python dependencies (includes curl_cffi, playwright-stealth, trafilatura, pypdf)
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Playwright Chromium browser binary (Tier 2 of the stealth scraper)
+RUN python -m playwright install chromium
+
+# Optional: install Camoufox (Tier 3, anti-detect Firefox) when ENABLE_CAMOUFOX=true
+# This adds ~200MB and is only needed for sites blocking Playwright+stealth.
+ARG ENABLE_CAMOUFOX=false
+RUN if [ "$ENABLE_CAMOUFOX" = "true" ]; then \
+      pip install --no-cache-dir "camoufox[geoip]>=0.4.0" && \
+      python -m camoufox fetch; \
+    fi
 
 # Install aider-chat in an isolated venv to avoid dependency conflicts.
 # The BuilderLocalAgent calls `aider` as a subprocess CLI tool.

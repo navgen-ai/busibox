@@ -31,3 +31,11 @@ websockets>=13.0
 jsonschema>=4.0.0
 playwright>=1.40.0
 mcp>=1.0.0
+# Stealth scraper stack
+curl_cffi>=0.7.0
+playwright-stealth>=2.0.0
+trafilatura>=1.12.0
+readability-lxml>=0.8.1
+pypdf>=4.0.0
+# Camoufox (Tier 3) is optional — install only on hosts with ENABLE_CAMOUFOX=true
+# camoufox[geoip]>=0.4.0
