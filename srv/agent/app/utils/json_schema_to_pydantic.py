@@ -9,9 +9,14 @@ response validation with retry.
 Handles the JSON Schema subset used by our extraction and schema-builder
 schemas: basic types, enums, arrays, nested objects, and
 ``additionalProperties`` (both ``true`` and ``{schema}`` forms).
-"""
 
-from __future__ import annotations
+IMPORTANT: This module MUST NOT use ``from __future__ import annotations``.
+Pydantic resolves forward references in dynamically-generated models by
+looking up type names in the defining module's globals. Our fallback class
+name is literally ``"Model"`` (see ``_sanitise_class_name``), and if that
+token ever leaks into an annotation under PEP 563 deferred evaluation,
+pydantic raises "name 'Model' is not defined" at validation time.
+"""
 
 import logging
 from enum import Enum as _Enum

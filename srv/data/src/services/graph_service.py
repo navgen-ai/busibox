@@ -22,6 +22,7 @@ Usage:
 """
 
 import asyncio
+import hashlib
 import os
 import re
 import socket
@@ -1644,7 +1645,6 @@ class GraphService:
         Safe to call when not connected. Does not leak the password; returns
         a fingerprint (first 12 chars of sha256) instead.
         """
-        import hashlib
         password_fingerprint = None
         if self._password:
             password_fingerprint = hashlib.sha256(self._password.encode()).hexdigest()[:12]
@@ -1751,12 +1751,17 @@ class GraphService:
         uri_set = bool(self._uri)
         pw_set = bool(self._password)
         env_ok = uri_set and pw_set
+        pw_fingerprint = ""
+        if pw_set:
+            pw_fingerprint = hashlib.sha256(
+                self._password.encode()
+            ).hexdigest()[:8]
         steps.append(_step(
             "env_vars",
             env_ok,
             f"NEO4J_URI {'set' if uri_set else 'MISSING'}, "
             f"NEO4J_USER='{self._user}', "
-            f"NEO4J_PASSWORD {'set' if pw_set else 'MISSING'}",
+            f"NEO4J_PASSWORD {'set (fingerprint: ' + pw_fingerprint + ')' if pw_set else 'MISSING'}",
             (time.time() - start) * 1000,
             fix_hint=(
                 "Check provision/ansible/roles/data/templates/data.env.j2 and "
@@ -1842,13 +1847,28 @@ class GraphService:
             verify_msg = "Driver verify_connectivity succeeded"
         except Exception as e:
             verify_msg = f"verify_connectivity failed: {e}"
+        if not verify_ok:
+            err_str = verify_msg.lower()
+            if "unauthorized" in err_str or "authentication" in err_str:
+                hint = (
+                    "Authentication failure — data-api's NEO4J_PASSWORD "
+                    f"(fingerprint: {pw_fingerprint}) doesn't match Neo4j's "
+                    "auth store. Redeploy data-api to refresh its .env from "
+                    "the vault: `make install SERVICE=data`. If that doesn't "
+                    "help, also redeploy neo4j to resync its auth store: "
+                    "`make install SERVICE=neo4j`."
+                )
+            else:
+                hint = (
+                    "Bolt is open but the driver can't handshake. Check that "
+                    "the URI scheme matches the server (bolt:// vs neo4j://) "
+                    "and that Neo4j isn't still starting up."
+                )
+        else:
+            hint = None
         steps.append(_step(
             "driver_verify", verify_ok, verify_msg, (time.time() - start) * 1000,
-            fix_hint=(
-                "Bolt is open but the driver can't handshake. Check that the "
-                "URI scheme matches the server (bolt:// vs neo4j://) and that "
-                "Neo4j isn't still starting up."
-            ) if not verify_ok else None,
+            fix_hint=hint,
         ))
         if not verify_ok:
             if temp_driver is not None:
