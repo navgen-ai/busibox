@@ -91,13 +91,21 @@
   failed_when: false
 
 # First deploy: initialise the auth store with the vault password.
-# This is a no-op on redeploys (creates: guard skips when auth file exists),
-# so vault password rotations need the re-sync block below to take effect.
+# Neo4j 5 creates auth.ini (not auth) which is consumed on first start
+# and migrated to the system database. We check for both paths.
+- name: Check if Neo4j auth has been initialized
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: neo4j_auth_files
+  loop:
+    - /srv/neo4j/data/dbms/auth
+    - /srv/neo4j/data/dbms/auth.ini
+    - /srv/neo4j/data/databases/system
+
 - name: Set initial Neo4j password if auth db not initialized
   ansible.builtin.command: >
     neo4j-admin dbms set-initial-password {{ neo4j_password | default('changeme') }}
-  args:
-    creates: /srv/neo4j/data/dbms/auth
+  when: not (neo4j_auth_files.results | map(attribute='stat.exists') | select('true') | list | length > 0)
   no_log: true
 
 - name: Ensure Neo4j service is enabled and running
@@ -129,14 +137,11 @@
 # ---------------------------------------------------------------------------
 # Auth-store resync (idempotent)
 #
-# The `creates:` guard on set-initial-password above means Neo4j only honours
-# the vault password on its very first boot. If NEO4J_PASSWORD is later
-# rotated in the vault, data-api's env updates but Neo4j keeps validating
-# against the old credential, producing Neo.ClientError.Security.Unauthorized.
-#
-# This block probes the current password via cypher-shell and, if rejected,
-# stops Neo4j, removes only the auth file (graph data is preserved under
-# /srv/neo4j/data), re-seeds the password, and restarts.
+# Neo4j 5 stores auth in two places: an auth.ini bootstrap file (consumed on
+# first start) and the system database (data/databases/system/). If the vault
+# password drifts from what Neo4j has, we must wipe BOTH the auth file and the
+# system database, then re-seed via set-initial-password. Graph data in
+# data/databases/neo4j/ is preserved.
 # ---------------------------------------------------------------------------
 
 - name: Probe Neo4j auth with the vault password
@@ -171,10 +176,15 @@
         name: neo4j
         state: stopped
 
-    - name: Remove stale Neo4j auth file
+    - name: Remove Neo4j auth artifacts (auth file + system database)
       ansible.builtin.file:
-        path: /srv/neo4j/data/dbms/auth
+        path: "{{ item }}"
         state: absent
+      loop:
+        - /srv/neo4j/data/dbms/auth
+        - /srv/neo4j/data/dbms/auth.ini
+        - /srv/neo4j/data/databases/system
+        - /srv/neo4j/data/transactions/system
 
     - name: Re-seed Neo4j initial password from vault
       ansible.builtin.command: >
