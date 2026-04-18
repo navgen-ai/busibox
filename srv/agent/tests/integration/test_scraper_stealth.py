@@ -184,11 +184,12 @@ class TestRateLimiterAgainstLiveDomain:
 # =============================================================================
 
 class TestPdfHandling:
-    """PDFs should be detected, previewed, and (when configured) uploaded to data-api."""
+    """PDFs should be detected and a pypdf preview returned. Actual upload to
+    data-api happens at the app layer, outside the scraper tool."""
 
     @pytestmark_network
     async def test_pdf_returns_preview(self) -> None:
-        """A PDF URL without ingest_library_id returns a pypdf preview and PDF marker."""
+        """A PDF URL returns a pypdf preview and is marked as an extracted PDF."""
         # A public, small PDF hosted by w3.org
         result = await scrape_webpage(
             url="https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
@@ -197,7 +198,7 @@ class TestPdfHandling:
         # Either tier 1 returns it, or we degrade to an error — but it should never be mistaken for HTML.
         if result.success:
             assert result.extractor == "pdf"
-            assert result.ingested is False  # no library_id provided
+            assert result.ingested is False
         else:
             # Some hosts 403; just make sure the error is structured
             assert result.error_code in {
@@ -206,9 +207,8 @@ class TestPdfHandling:
                 ScraperErrorCode.UNKNOWN.value,
             }
 
-    async def test_pdf_ingest_requested_without_token_returns_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Requesting ingestion when we can't authenticate to data-api yields PDF_INGEST_FAILED."""
-        # Monkey-patch the HTTP fetch to synthesize a PDF response without hitting the network
+    async def test_synthetic_pdf_returns_preview(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Synthesize a PDF response and confirm the tool returns a preview without crashing."""
         from app.tools import web_scraper_tool
 
         class FakeTier1:
@@ -224,19 +224,16 @@ class TestPdfHandling:
             return FakeTier1(), ScraperErrorCode.OK, None
 
         monkeypatch.setattr(web_scraper_tool, "_tier1_curl_cffi", fake_t1)
-        monkeypatch.delenv("DATA_API_URL", raising=False)
-        monkeypatch.delenv("BUSIBOX_DATA_API_URL", raising=False)
 
         result = await scrape_webpage(
             url="https://example.com/test.pdf",
-            ingest_library_id="00000000-0000-0000-0000-000000000001",
             cache_ttl=0,
         )
-        # We succeeded in fetching, but ingestion failed because no data-api token
         assert result.success is True
         assert result.extractor == "pdf"
         assert result.ingested is False
-        assert result.error_code == ScraperErrorCode.PDF_INGEST_FAILED.value
+        assert result.file_id is None
+        assert result.error_code == ScraperErrorCode.OK.value
 
 
 # =============================================================================

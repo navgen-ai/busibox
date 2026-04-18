@@ -10,10 +10,10 @@ The agent sees a single `web_scraper` tool. `use_browser` forces tier 2+,
 `use_camoufox` forces tier 3; otherwise tier 1 is tried first and we auto-fallback
 to tier 2 on 403/429/Cloudflare/timeout.
 
-PDFs are detected by content-type and URL suffix. When a PDF is fetched and the
-caller provides an `ingest_library_id`, the bytes are POSTed to the data-api
-`/upload` endpoint using the agent's data-api token. The agent receives the
-resulting `file_id` plus a short text preview extracted with `pypdf`.
+PDFs are detected by content-type and URL suffix, and a short text preview is
+returned via pypdf. Automatic upload to the data-api is intentionally done at
+the app layer (it needs the user's token, which the tool code path does not have
+access to in the pydantic_ai Agent flow).
 
 Structured error codes (see `scraper_config.ScraperErrorCode`) let the LLM
 decide whether to retry with a higher tier or give up.
@@ -21,15 +21,12 @@ decide whether to retry with a higher tier or give up.
 
 import asyncio
 import logging
-import os
 import random
-import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
 from pydantic import BaseModel, Field
-from pydantic_ai import RunContext, Tool
 
 from app.tools.scraper_config import (
     BLOCKED_RESOURCE_TYPES,
@@ -564,76 +561,6 @@ def _filename_from_url(url: str) -> str:
     return base
 
 
-async def _ingest_pdf_to_data_api(
-    pdf_bytes: bytes,
-    source_url: str,
-    library_id: str,
-    visibility: str,
-    data_api_url: str,
-    token: str,
-    tier_used: str,
-) -> Tuple[Optional[str], ScraperErrorCode, Optional[str]]:
-    """POST a scraped PDF to the data-api /upload endpoint.
-
-    Returns (file_id, error_code, error_message). On success the error code is OK.
-    """
-    import httpx  # already a dependency
-
-    filename = _filename_from_url(source_url)
-    metadata = {
-        "source": "scraper",
-        "source_url": source_url,
-        "scraped_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
-        "tier_used": tier_used,
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            files = {
-                "file": (filename, pdf_bytes, "application/pdf"),
-            }
-            data = {
-                "metadata": __import__("json").dumps(metadata),
-                "visibility": visibility,
-                "library_id": library_id,
-            }
-            upload_url = data_api_url.rstrip("/") + "/upload"
-            resp = await client.post(
-                upload_url,
-                files=files,
-                data=data,
-                headers={"Authorization": f"Bearer {token}"},
-            )
-    except Exception as e:
-        return None, ScraperErrorCode.PDF_INGEST_FAILED, f"Upload request failed: {e}"
-
-    if resp.status_code >= 400:
-        return None, ScraperErrorCode.PDF_INGEST_FAILED, (
-            f"Upload returned {resp.status_code}: {resp.text[:200]}"
-        )
-    try:
-        payload = resp.json()
-    except Exception:
-        return None, ScraperErrorCode.PDF_INGEST_FAILED, "Upload returned non-JSON response"
-
-    file_id = payload.get("fileId") or payload.get("file_id") or payload.get("id")
-    if not file_id:
-        return None, ScraperErrorCode.PDF_INGEST_FAILED, "Upload response missing fileId"
-    return str(file_id), ScraperErrorCode.OK, None
-
-
-def _resolve_ingest_token(ctx: Optional[RunContext[Any]]) -> Optional[str]:
-    """Extract the user's data-api token from the agent run context, if available."""
-    if ctx is None or ctx.deps is None:
-        return None
-    deps = ctx.deps
-    client = getattr(deps, "busibox_client", None)
-    if client is None:
-        return None
-    tokens = getattr(client, "_tokens", {}) or {}
-    return tokens.get("data-api") or getattr(client, "_default_token", None)
-
-
 # =============================================================================
 # Main entry point
 # =============================================================================
@@ -642,24 +569,17 @@ _MIN_USEFUL_CONTENT_LEN = 120  # anything less is probably a JS shell
 
 
 async def _scrape_webpage_impl(
-    ctx: Optional[RunContext[Any]],
     url: str,
     include_links: bool = False,
     max_content_length: int = 10000,
     use_browser: bool = False,
     use_camoufox: bool = False,
     cache_ttl: int = 3600,
-    ingest_library_id: Optional[str] = None,
     extract_mode: str = "auto",
     block_resources: bool = True,
     profile_name: Optional[str] = None,
 ) -> WebScraperOutput:
-    """Shared implementation used by both the pydantic_ai tool and direct callers.
-
-    `ctx` may be None when invoked directly from a workflow step (no agent run
-    context) — in that case PDF ingestion is skipped because we can't reach the
-    data-api without a user token.
-    """
+    """Core implementation. The public wrappers just forward kwargs."""
     # ---- Validate URL ----
     parsed = urlparse(url)
     if not parsed.scheme or not parsed.netloc:
@@ -696,12 +616,6 @@ async def _scrape_webpage_impl(
     proxy_cfg = get_proxy_config()
     rate_limiter = get_rate_limiter()
 
-    ingest_library_id = ingest_library_id or (os.getenv("SCRAPER_DEFAULT_LIBRARY_ID") or None)
-    pdf_visibility = os.getenv("SCRAPER_PDF_VISIBILITY", "personal")
-
-    data_api_token = _resolve_ingest_token(ctx)
-    data_api_url = os.getenv("DATA_API_URL") or os.getenv("BUSIBOX_DATA_API_URL")
-
     async with await rate_limiter.acquire(url):
         result = await _do_scrape(
             url=url,
@@ -713,14 +627,9 @@ async def _scrape_webpage_impl(
             max_content_length=max_content_length,
             block_resources=block_resources,
             extract_mode=extract_mode,
-            ingest_library_id=ingest_library_id,
-            pdf_visibility=pdf_visibility,
-            data_api_url=data_api_url,
-            data_api_token=data_api_token,
         )
 
-    # Cache successful scrapes (and PDF ingests — file_id is useful to recall)
-    if cache_ttl > 0 and (result.success or result.error_code == ScraperErrorCode.PDF_INGESTED.value):
+    if cache_ttl > 0 and result.success:
         try:
             payload = result.model_dump()
             payload["from_cache"] = False
@@ -742,10 +651,6 @@ async def _do_scrape(
     max_content_length: int,
     block_resources: bool,
     extract_mode: str,
-    ingest_library_id: Optional[str],
-    pdf_visibility: str,
-    data_api_url: Optional[str],
-    data_api_token: Optional[str],
 ) -> WebScraperOutput:
     """Core dispatch — Tier 1 -> Tier 2 -> Tier 3 with auto-escalation."""
 
@@ -773,15 +678,11 @@ async def _do_scrape(
         if t1 is not None and code == ScraperErrorCode.OK:
             # PDF path
             if looks_like_pdf(t1.url, t1.content_type):
-                return await _build_pdf_output(
+                return _build_pdf_output(
                     source_url=t1.url,
                     pdf_bytes=t1.body,
                     tier_used="curl_cffi",
                     max_content_length=max_content_length,
-                    ingest_library_id=ingest_library_id,
-                    pdf_visibility=pdf_visibility,
-                    data_api_url=data_api_url,
-                    data_api_token=data_api_token,
                 )
 
             # HTML path
@@ -818,15 +719,11 @@ async def _do_scrape(
         if t2 is not None and code == ScraperErrorCode.OK:
             # PDF captured by the response listener
             if t2.raw_body_bytes is not None:
-                return await _build_pdf_output(
+                return _build_pdf_output(
                     source_url=t2.final_url or url,
                     pdf_bytes=t2.raw_body_bytes,
                     tier_used="playwright",
                     max_content_length=max_content_length,
-                    ingest_library_id=ingest_library_id,
-                    pdf_visibility=pdf_visibility,
-                    data_api_url=data_api_url,
-                    data_api_token=data_api_token,
                 )
 
             html = t2.html
@@ -949,48 +846,21 @@ def _build_html_output(
     )
 
 
-async def _build_pdf_output(
+def _build_pdf_output(
     *,
     source_url: str,
     pdf_bytes: bytes,
     tier_used: str,
     max_content_length: int,
-    ingest_library_id: Optional[str],
-    pdf_visibility: str,
-    data_api_url: Optional[str],
-    data_api_token: Optional[str],
 ) -> WebScraperOutput:
-    """Assemble a WebScraperOutput for a PDF, ingesting into data-api when configured."""
+    """Assemble a WebScraperOutput for a PDF, returning a pypdf preview.
+
+    Automatic upload to the data-api is intentionally not done here — the tool
+    has no access to user credentials in this code path. The agent returns the
+    preview text and the URL; the calling app can route the PDF through
+    data-api /upload with the user's token if it wants to persist it.
+    """
     preview = _pdf_quick_preview(pdf_bytes, max_content_length)
-
-    file_id: Optional[str] = None
-    ingested = False
-    error_code = ScraperErrorCode.OK
-    error_message: Optional[str] = None
-
-    if ingest_library_id and data_api_url and data_api_token:
-        file_id, up_code, up_err = await _ingest_pdf_to_data_api(
-            pdf_bytes=pdf_bytes,
-            source_url=source_url,
-            library_id=ingest_library_id,
-            visibility=pdf_visibility,
-            data_api_url=data_api_url,
-            token=data_api_token,
-            tier_used=tier_used,
-        )
-        if file_id:
-            ingested = True
-            error_code = ScraperErrorCode.PDF_INGESTED
-        else:
-            error_code = up_code
-            error_message = up_err
-    elif ingest_library_id and not (data_api_url and data_api_token):
-        # User wanted ingestion but we can't do it. Return preview with a clear signal.
-        error_code = ScraperErrorCode.PDF_INGEST_FAILED
-        error_message = (
-            "PDF ingestion requested but no data-api token / URL available in agent context"
-        )
-
     return WebScraperOutput(
         success=True,
         url=source_url,
@@ -1000,64 +870,36 @@ async def _build_pdf_output(
         links=[],
         method=tier_used,
         extractor="pdf",
-        error_code=error_code.value,
-        error=error_message,
+        error_code=ScraperErrorCode.OK.value,
+        error=None,
         from_cache=False,
         raw_html_len=0,
-        file_id=file_id,
-        ingested=ingested,
+        file_id=None,
+        ingested=False,
     )
 
 
 # =============================================================================
-# Public entry points
+# Public entry point (ctx-free so pydantic_ai can introspect the signature)
 # =============================================================================
 
 async def scrape_webpage(
-    ctx: Optional[RunContext[Any]] = None,
-    url: str = "",
-    include_links: bool = False,
-    max_content_length: int = 10000,
-    use_browser: bool = False,
-    use_camoufox: bool = False,
-    cache_ttl: int = 3600,
-    ingest_library_id: Optional[str] = None,
-    extract_mode: str = "auto",
-    block_resources: bool = True,
-    profile_name: Optional[str] = None,
-) -> WebScraperOutput:
-    """Direct-callable entrypoint. Accepts optional ctx (None when called from
-    workflow engine without an agent run context). Required-ctx tool wrapper
-    below is used by pydantic_ai agents."""
-    return await _scrape_webpage_impl(
-        ctx=ctx,
-        url=url,
-        include_links=include_links,
-        max_content_length=max_content_length,
-        use_browser=use_browser,
-        use_camoufox=use_camoufox,
-        cache_ttl=cache_ttl,
-        ingest_library_id=ingest_library_id,
-        extract_mode=extract_mode,
-        block_resources=block_resources,
-        profile_name=profile_name,
-    )
-
-
-async def _scrape_webpage_tool(
-    ctx: RunContext[Any],
     url: str,
     include_links: bool = False,
     max_content_length: int = 10000,
     use_browser: bool = False,
     use_camoufox: bool = False,
     cache_ttl: int = 3600,
-    ingest_library_id: Optional[str] = None,
     extract_mode: str = "auto",
     block_resources: bool = True,
     profile_name: Optional[str] = None,
 ) -> WebScraperOutput:
-    """Pydantic-AI-compatible tool wrapper.
+    """Fetch and extract content from a web page URL using a tiered stealth engine.
+
+    Tiers (auto-escalates on 403 / Cloudflare / CAPTCHA / timeout):
+      1. curl_cffi (Chrome TLS fingerprint) — fast, beats Level 1 bot detection
+      2. Playwright + stealth patches — handles JS-rendered / SPA pages
+      3. Camoufox — anti-detect Firefox, nuclear option (opt-in, slow)
 
     Args:
         url: URL to scrape.
@@ -1069,61 +911,34 @@ async def _scrape_webpage_tool(
             after BLOCKED_CLOUDFLARE / CAPTCHA_REQUIRED. Requires
             ENABLE_CAMOUFOX=true on the server.
         cache_ttl: Response cache TTL in seconds. 0 = bypass cache.
-        ingest_library_id: If the URL turns out to be a PDF, upload it to this
-            data-api library_id and return the resulting file_id. You can then
-            use document_search tools against it.
         extract_mode: "auto" (default), "article" (favor precision), or
             "full_page" (keep all text including nav/footer).
         block_resources: Block images/fonts/CSS/analytics in browser tiers.
         profile_name: Override UA profile (chrome131_win, chrome131_mac, etc).
+
+    PDF URLs are auto-detected and a pypdf text preview is returned in
+    `content`. Automatic upload to the data-api is handled at the app layer
+    (it needs the user's token, which is not available in this tool).
+
+    Responses are cached in Redis for `cache_ttl` seconds (default 3600).
+
+    Structured output includes `error_code` (OK, BLOCKED_403,
+    BLOCKED_CLOUDFLARE, CAPTCHA_REQUIRED, JS_REQUIRED, TIMEOUT, etc.) so you
+    can decide your next action without parsing error strings.
     """
     return await _scrape_webpage_impl(
-        ctx=ctx,
         url=url,
         include_links=include_links,
         max_content_length=max_content_length,
         use_browser=use_browser,
         use_camoufox=use_camoufox,
         cache_ttl=cache_ttl,
-        ingest_library_id=ingest_library_id,
         extract_mode=extract_mode,
         block_resources=block_resources,
         profile_name=profile_name,
     )
 
 
-# =============================================================================
-# Tool registration
-# =============================================================================
-
-web_scraper_tool = Tool(
-    _scrape_webpage_tool,
-    takes_ctx=True,
-    name="web_scraper",
-    description="""Fetch and extract content from a web page URL using a tiered stealth engine.
-
-Tiers (auto-escalates on 403 / Cloudflare / CAPTCHA / timeout):
-  1. curl_cffi (Chrome TLS fingerprint) — fast, beats Level 1 bot detection
-  2. Playwright + stealth patches — handles JS-rendered / SPA pages
-  3. Camoufox — anti-detect Firefox, nuclear option (opt-in, slow)
-
-Behavior:
-- PDF URLs are auto-detected. If `ingest_library_id` is provided, the PDF is
-  uploaded to the data-api for chunking + embedding and you get back a `file_id`
-  plus a short text preview extracted with pypdf.
-- Responses are cached in Redis for `cache_ttl` seconds (default 3600). Set
-  `cache_ttl=0` to bypass.
-- `extract_mode="auto"` runs trafilatura (preserves tables/lists/headings),
-  falls back to readability, then regex. Use `"full_page"` for raw text.
-
-Structured output includes `error_code` (OK, BLOCKED_403, BLOCKED_CLOUDFLARE,
-CAPTCHA_REQUIRED, JS_REQUIRED, PDF_INGESTED, PDF_INGEST_FAILED, TIMEOUT, etc.)
-so you can decide your next action without parsing error strings.
-
-Parameter tips:
-- `use_browser=true`: force tier 2 (use after a BLOCKED_403 / JS_REQUIRED signal).
-- `use_camoufox=true`: force tier 3 (only after BLOCKED_CLOUDFLARE / CAPTCHA_REQUIRED).
-- `include_links=true`: return up to 50 in-page links.
-- `block_resources=true` (default): skip images/CSS/fonts in browser tiers.
-""",
-)
+# Backward-compatible alias — some imports may reference `web_scraper_tool`
+# expecting the raw function. Keep it pointing at the same callable.
+web_scraper_tool = scrape_webpage

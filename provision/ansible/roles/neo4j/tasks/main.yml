@@ -50,7 +50,7 @@
     update_cache: true
     policy_rc_d: 101
 
-- name: Ensure Neo4j data and log directories exist
+- name: Ensure Neo4j data, log, and plugins directories exist
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
@@ -61,6 +61,7 @@
     - /srv/neo4j
     - /srv/neo4j/data
     - /srv/neo4j/logs
+    - /srv/neo4j/plugins
 
 - name: Remove legacy Neo4j managed block (prevents duplicate keys)
   ansible.builtin.blockinfile:
@@ -82,7 +83,79 @@
     - { key: "dbms.security.auth_enabled", value: "true" }
     - { key: "server.directories.data", value: "/srv/neo4j/data" }
     - { key: "server.directories.logs", value: "/srv/neo4j/logs" }
+    - { key: "server.directories.plugins", value: "/srv/neo4j/plugins" }
+    # APOC requires unrestricted access for some procedures (e.g. apoc.cypher.*).
+    # Allow all apoc.* — the plugin itself is community-trusted.
+    - { key: "dbms.security.procedures.unrestricted", value: "apoc.*" }
+    - { key: "dbms.security.procedures.allowlist", value: "apoc.*" }
   notify: Restart Neo4j
+
+# ---------------------------------------------------------------------------
+# APOC plugin install
+#
+# APOC is the Neo4j community plugin library. data-api uses apoc.path.subgraphAll
+# for multi-hop graph traversals; without it, the code falls back to a slower
+# variable-length-path Cypher query that doesn't return relationships.
+#
+# The APOC version must EXACTLY match the installed Neo4j version. We detect
+# the version via dpkg, download the matching apoc-{version}-core.jar from the
+# official Neo4j release on GitHub, and place it in /srv/neo4j/plugins.
+# ---------------------------------------------------------------------------
+
+- name: Get installed Neo4j version
+  ansible.builtin.command: dpkg-query -W -f='${Version}' neo4j
+  register: neo4j_pkg_version
+  changed_when: false
+
+- name: Extract Neo4j semantic version (strip Debian revision)
+  ansible.builtin.set_fact:
+    neo4j_version: "{{ neo4j_pkg_version.stdout.split('-')[0] | trim }}"
+
+- name: Show detected Neo4j version
+  ansible.builtin.debug:
+    msg: "Installed Neo4j version: {{ neo4j_version }}"
+
+- name: Find existing APOC jars in plugins dir
+  ansible.builtin.find:
+    paths: /srv/neo4j/plugins
+    patterns: "apoc-*.jar"
+  register: neo4j_apoc_existing
+
+- name: Compute expected APOC jar path
+  ansible.builtin.set_fact:
+    neo4j_apoc_jar_path: "/srv/neo4j/plugins/apoc-{{ neo4j_version }}-core.jar"
+
+- name: Detect if correct APOC jar is already present
+  ansible.builtin.set_fact:
+    neo4j_apoc_correct_jar_present: "{{ neo4j_apoc_jar_path in (neo4j_apoc_existing.files | map(attribute='path') | list) }}"
+
+- name: Remove stale APOC jars (version drift)
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ neo4j_apoc_existing.files }}"
+  when:
+    - not neo4j_apoc_correct_jar_present
+    - item.path != neo4j_apoc_jar_path
+  notify: Restart Neo4j
+
+- name: Download APOC core jar matching Neo4j version
+  ansible.builtin.get_url:
+    url: "https://github.com/neo4j/apoc/releases/download/{{ neo4j_version }}/apoc-{{ neo4j_version }}-core.jar"
+    dest: "{{ neo4j_apoc_jar_path }}"
+    owner: neo4j
+    group: neo4j
+    mode: "0644"
+    timeout: 60
+  when: not neo4j_apoc_correct_jar_present
+  register: neo4j_apoc_download
+  notify: Restart Neo4j
+
+- name: Show APOC install status
+  ansible.builtin.debug:
+    msg: >-
+      APOC jar={{ neo4j_apoc_jar_path }}
+      ({{ 'newly downloaded' if (neo4j_apoc_download.changed | default(false)) else 'already present' }})
 
 - name: Stop Neo4j before initial password setup
   ansible.builtin.systemd:
@@ -90,9 +163,21 @@
     state: stopped
   failed_when: false
 
+# Ensure the entire data tree is owned by neo4j. Critical because
+# `neo4j-admin dbms set-initial-password` (run as neo4j user) needs to
+# overwrite auth.ini, and a stale root-owned file from a prior deploy
+# will cause AccessDeniedException. Recursive chown is cheap and idempotent.
+- name: Ensure /srv/neo4j is owned by neo4j user (recursive)
+  ansible.builtin.file:
+    path: /srv/neo4j
+    owner: neo4j
+    group: neo4j
+    recurse: true
+    state: directory
+
 # First deploy: initialise the auth store with the vault password.
 # Neo4j 5 creates auth.ini (not auth) which is consumed on first start
-# and migrated to the system database. We check for both paths.
+# and migrated to the system database. We check for all relevant paths.
 - name: Check if Neo4j auth has been initialized
   ansible.builtin.stat:
     path: "{{ item }}"
@@ -105,6 +190,8 @@
 - name: Set initial Neo4j password if auth db not initialized
   ansible.builtin.command: >
     neo4j-admin dbms set-initial-password {{ neo4j_password | default('changeme') }}
+  become: true
+  become_user: neo4j
   when: not (neo4j_auth_files.results | map(attribute='stat.exists') | select('true') | list | length > 0)
   no_log: true
 
@@ -144,26 +231,49 @@
 # data/databases/neo4j/ is preserved.
 # ---------------------------------------------------------------------------
 
-- name: Probe Neo4j auth with the vault password
-  ansible.builtin.shell: |
-    set -o pipefail
-    cypher-shell \
-      -a bolt://127.0.0.1:{{ neo4j_bolt_port | default(7687) }} \
-      -u {{ neo4j_user | default('neo4j') }} \
-      -p "$NEO4J_PASSWORD" \
-      --non-interactive \
-      "RETURN 1" >/dev/null 2>&1
-  args:
-    executable: /bin/bash
-  environment:
-    NEO4J_PASSWORD: "{{ neo4j_password | default('changeme') }}"
+# Probe via HTTP API rather than cypher-shell. The Debian neo4j package's
+# cypher-shell wrapper has a bug where invoking it via the /bin -> /usr/bin
+# symlink breaks its relative path resolution and ClassNotFoundException is
+# raised regardless of whether auth would succeed. Curl + HTTP API is more
+# reliable. Returns 200 on success, 401 on bad password.
+- name: Probe Neo4j auth with the vault password (via HTTP)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ neo4j_http_port | default(7474) }}/db/neo4j/tx/commit"
+    method: POST
+    user: "{{ neo4j_user | default('neo4j') }}"
+    password: "{{ neo4j_password | default('changeme') }}"
+    force_basic_auth: true
+    headers:
+      Content-Type: application/json
+    body_format: json
+    body:
+      statements:
+        - statement: "RETURN 1"
+    status_code: [200, 401]
+    timeout: 10
   register: neo4j_auth_probe
   changed_when: false
   failed_when: false
   no_log: true
 
+- name: Normalize probe outcome (rc=0 if 200, rc=1 otherwise)
+  ansible.builtin.set_fact:
+    neo4j_auth_probe_rc: "{{ 0 if (neo4j_auth_probe.status | default(0)) == 200 else 1 }}"
+
+- name: Show vault-password fingerprint (for cross-checking with data-api)
+  ansible.builtin.debug:
+    msg: >-
+      Vault NEO4J_PASSWORD sha256[:8] =
+      {{ (neo4j_password | default('changeme')) | hash('sha256') | truncate(8, true, '') }}
+
+- name: Neo4j auth probe outcome
+  ansible.builtin.debug:
+    msg: >-
+      Neo4j auth probe http_status={{ neo4j_auth_probe.status | default('?') }}
+      ({{ 'PASS' if (neo4j_auth_probe_rc | int) == 0 else 'FAIL — resync will run' }})
+
 - name: Neo4j auth-store resync required
-  when: neo4j_auth_probe.rc is defined and neo4j_auth_probe.rc != 0
+  when: (neo4j_auth_probe_rc | int) != 0
   block:
     - name: Log auth-store drift (password does not match vault)
       ansible.builtin.debug:
@@ -186,10 +296,60 @@
         - /srv/neo4j/data/databases/system
         - /srv/neo4j/data/transactions/system
 
+    # After deletion, re-chown the parent dirs so neo4j user can re-create
+    # auth.ini and the system database on next start.
+    - name: Re-assert ownership of /srv/neo4j after auth artifact deletion
+      ansible.builtin.file:
+        path: /srv/neo4j
+        owner: neo4j
+        group: neo4j
+        recurse: true
+        state: directory
+
+    - name: List remaining files in /srv/neo4j/data/dbms (post-delete)
+      ansible.builtin.find:
+        paths: /srv/neo4j/data/dbms
+        file_type: any
+      register: neo4j_dbms_after_delete
+
+    - name: Show /srv/neo4j/data/dbms contents post-delete
+      ansible.builtin.debug:
+        msg: "{{ neo4j_dbms_after_delete.files | map(attribute='path') | list }}"
+
     - name: Re-seed Neo4j initial password from vault
       ansible.builtin.command: >
         neo4j-admin dbms set-initial-password {{ neo4j_password | default('changeme') }}
+      become: true
+      become_user: neo4j
+      register: neo4j_seed_result
       no_log: true
+
+    - name: Show set-initial-password rc
+      ansible.builtin.debug:
+        msg: "set-initial-password rc={{ neo4j_seed_result.rc }}"
+
+    - name: Stat the freshly-seeded auth.ini
+      ansible.builtin.stat:
+        path: /srv/neo4j/data/dbms/auth.ini
+      register: neo4j_authini_stat
+
+    - name: Show auth.ini ownership and perms
+      ansible.builtin.debug:
+        msg: >-
+          auth.ini exists={{ neo4j_authini_stat.stat.exists }}
+          owner={{ neo4j_authini_stat.stat.pw_name | default('?') }}
+          mode={{ neo4j_authini_stat.stat.mode | default('?') }}
+          size={{ neo4j_authini_stat.stat.size | default('?') }}
+
+    - name: Force-fix ownership of auth artifacts (belt and suspenders)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        owner: neo4j
+        group: neo4j
+        state: file
+      loop:
+        - /srv/neo4j/data/dbms/auth.ini
+      when: neo4j_authini_stat.stat.exists
 
     - name: Start Neo4j after auth reset
       ansible.builtin.systemd:
@@ -203,27 +363,38 @@
         state: started
         timeout: 120
 
-    - name: Verify re-synced password works
-      ansible.builtin.shell: |
-        set -o pipefail
-        cypher-shell \
-          -a bolt://127.0.0.1:{{ neo4j_bolt_port | default(7687) }} \
-          -u {{ neo4j_user | default('neo4j') }} \
-          -p "$NEO4J_PASSWORD" \
-          --non-interactive \
-          "RETURN 1"
-      args:
-        executable: /bin/bash
-      environment:
-        NEO4J_PASSWORD: "{{ neo4j_password | default('changeme') }}"
+    - name: Wait for Neo4j HTTP port after auth reset
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ neo4j_http_port | default(7474) }}"
+        state: started
+        timeout: 60
+
+    - name: Verify re-synced password works (via HTTP)
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ neo4j_http_port | default(7474) }}/db/neo4j/tx/commit"
+        method: POST
+        user: "{{ neo4j_user | default('neo4j') }}"
+        password: "{{ neo4j_password | default('changeme') }}"
+        force_basic_auth: true
+        headers:
+          Content-Type: application/json
+        body_format: json
+        body:
+          statements:
+            - statement: "RETURN 1"
+        status_code: 200
+        timeout: 10
       register: neo4j_auth_reverify
-      changed_when: true
+      retries: 5
+      delay: 3
+      until: neo4j_auth_reverify.status == 200
       no_log: true
 
     - name: Auth reset succeeded
       ansible.builtin.debug:
         msg: "Neo4j auth store re-synced with vault password"
-      when: neo4j_auth_reverify.rc == 0
+      when: neo4j_auth_reverify.status == 200
 
 - name: Display Neo4j status
   ansible.builtin.debug:

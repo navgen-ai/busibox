@@ -180,8 +180,8 @@ BUILTIN_TOOL_METADATA = {
         "description": (
             "Fetch and extract content from a web page URL using a tiered stealth engine "
             "(curl_cffi chrome impersonation -> Playwright+stealth -> Camoufox). Auto-escalates "
-            "on 403/Cloudflare/CAPTCHA/timeout. PDFs are auto-detected and can be ingested into "
-            "a data-api library when `ingest_library_id` is provided. Responses are cached in Redis."
+            "on 403/Cloudflare/CAPTCHA/timeout. PDFs are auto-detected and a pypdf text preview "
+            "is returned. Responses are cached in Redis."
         ),
         "entrypoint": "app.tools.web_scraper_tool:scrape_webpage",
         "scopes": [],
@@ -222,13 +222,6 @@ BUILTIN_TOOL_METADATA = {
                         "description": "Response cache TTL in seconds (0 to bypass cache)",
                         "default": 3600
                     },
-                    "ingest_library_id": {
-                        "type": "string",
-                        "description": (
-                            "If the URL is a PDF, upload it to this data-api library_id and "
-                            "return a file_id. Use a document_search tool later to query the content."
-                        )
-                    },
                     "extract_mode": {
                         "type": "string",
                         "description": "Content extraction mode: 'auto' (default), 'article' (precision), 'full_page' (raw)",
@@ -262,14 +255,12 @@ BUILTIN_TOOL_METADATA = {
                         "description": (
                             "Structured error code: OK | BLOCKED_403 | BLOCKED_429 | BLOCKED_CLOUDFLARE | "
                             "CAPTCHA_REQUIRED | TIMEOUT | DNS_FAILED | TLS_FAILED | JS_REQUIRED | "
-                            "PDF_INGESTED | PDF_INGEST_FAILED | UNSUPPORTED_CONTENT_TYPE | INVALID_URL | UNKNOWN"
+                            "UNSUPPORTED_CONTENT_TYPE | INVALID_URL | UNKNOWN"
                         )
                     },
                     "error": {"type": "string", "description": "Human-readable error message"},
                     "from_cache": {"type": "boolean", "description": "Whether result came from cache"},
-                    "raw_html_len": {"type": "integer", "description": "Raw HTML length (0 for PDFs / cache hits)"},
-                    "file_id": {"type": "string", "description": "data-api file_id if PDF was ingested"},
-                    "ingested": {"type": "boolean", "description": "Whether the PDF was uploaded to data-api"}
+                    "raw_html_len": {"type": "integer", "description": "Raw HTML length (0 for PDFs / cache hits)"}
                 }
             }
         }

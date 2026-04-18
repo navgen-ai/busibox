@@ -677,52 +677,92 @@ class GraphService:
         depth = min(max(depth, 1), 5)  # Clamp 1-5
         
         try:
-            # Build relationship filter
-            rel_filter = ""
+            # Build relationship filter (sanitized — Cypher injection guard)
+            rel_filter_str = ""
             if rel_types:
                 safe_types = [self._sanitize_label(rt) for rt in rel_types]
-                rel_filter = ":" + "|".join(safe_types)
-            
-            # Build owner filter
-            owner_clause = ""
-            params: Dict[str, Any] = {"node_id": node_id, "limit": limit}
+                rel_filter_str = "|".join(safe_types)
+
+            # Owner filter is enforced in BOTH the APOC and fallback paths.
+            # Without this, APOC subgraphAll returns all neighbors regardless
+            # of ownership — a tenant-isolation leak.
+            params: Dict[str, Any] = {
+                "node_id": node_id,
+                "limit": limit,
+                "rel_filter": rel_filter_str,
+                "depth": depth,
+            }
+            owner_filter_apoc = ""
+            owner_filter_fallback = ""
             if owner_id:
-                owner_clause = (
+                params["owner_id"] = owner_id
+                # APOC path: filter the YIELDED collections post-traversal.
+                # The start node is always included (it's the user's own node
+                # by definition since they asked for it by id).
+                owner_filter_apoc = (
+                    "WITH start, "
+                    "[n IN nodes WHERE n = start "
+                    "OR n.owner_id = $owner_id "
+                    "OR n.visibility = 'shared'] AS nodes, "
+                    "relationships "
+                    "WITH start, nodes, "
+                    "[r IN relationships "
+                    "WHERE startNode(r) IN nodes AND endNode(r) IN nodes] "
+                    "AS relationships "
+                )
+                owner_filter_fallback = (
                     "AND (related.owner_id = $owner_id "
                     "OR related.visibility = 'shared')"
                 )
-                params["owner_id"] = owner_id
-            
-            cypher = (
-                f"MATCH (start:GraphNode {{node_id: $node_id}}) "
-                f"CALL apoc.path.subgraphAll(start, {{maxLevel: {depth}, "
-                f"relationshipFilter: '{rel_filter.lstrip(':')}'}}) "
-                f"YIELD nodes, relationships "
-                f"RETURN nodes, relationships LIMIT $limit"
+
+            # APOC path — uses subgraphAll for fast multi-hop traversal,
+            # then post-filters by ownership and slices to `limit` nodes.
+            apoc_cypher = (
+                "MATCH (start:GraphNode {node_id: $node_id}) "
+                "CALL apoc.path.subgraphAll(start, {"
+                "maxLevel: $depth, "
+                "relationshipFilter: $rel_filter"
+                "}) YIELD nodes, relationships "
+                f"{owner_filter_apoc}"
+                "RETURN nodes[..$limit] AS nodes, "
+                "[r IN relationships "
+                "WHERE startNode(r) IN nodes[..$limit] "
+                "AND endNode(r) IN nodes[..$limit]] AS relationships"
             )
-            
-            # Fallback to simpler query if APOC is not available
+
+            # Fallback — variable-length match. Returns nodes only;
+            # relationships are not included in this path because the original
+            # implementation never returned them either, and reconstructing
+            # them efficiently without APOC is non-trivial.
+            rel_pattern = f":{rel_filter_str}" if rel_filter_str else ""
             fallback_cypher = (
                 f"MATCH path = (start:GraphNode {{node_id: $node_id}})"
-                f"-[r{rel_filter}*1..{depth}]-(related:GraphNode) "
-                f"WHERE related.node_id <> start.node_id {owner_clause} "
-                f"WITH DISTINCT related, r "
+                f"-[r{rel_pattern}*1..{depth}]-(related:GraphNode) "
+                f"WHERE related.node_id <> start.node_id {owner_filter_fallback} "
+                f"WITH DISTINCT related "
                 f"RETURN related LIMIT $limit"
             )
-            
+
             async with self._driver.session() as session:
                 try:
-                    result = await session.run(cypher, params)
+                    result = await session.run(apoc_cypher, params)
                     records = []
                     async for record in result:
                         records.append(dict(record))
-                    
+
                     if records:
-                        return self._format_subgraph(records)
-                except Exception:
-                    # APOC not available, use fallback
-                    pass
-                
+                        formatted = self._format_subgraph(records)
+                        formatted["center_node_id"] = node_id
+                        return formatted
+                except Exception as apoc_err:
+                    # APOC missing or call failed — fall back. We log at
+                    # debug level so APOC absence isn't noisy in prod.
+                    logger.debug(
+                        "[GRAPH] APOC subgraphAll failed, using fallback",
+                        node_id=node_id,
+                        error=str(apoc_err),
+                    )
+
                 # Fallback query
                 result = await session.run(fallback_cypher, params)
                 nodes = []
@@ -730,7 +770,7 @@ class GraphService:
                     node = record.get("related")
                     if node:
                         nodes.append(dict(node))
-                
+
                 return {
                     "nodes": nodes,
                     "relationships": [],
@@ -2185,6 +2225,12 @@ class GraphService:
         """
         Count (and optionally delete) orphan nodes/relationships.
 
+        When APOC is available, uses ``apoc.periodic.iterate`` to stream
+        deletes in committed batches of 1000 — safe on graphs with millions
+        of orphans (no single huge transaction). Falls back to a single
+        ``WITH n LIMIT 10000`` batch when APOC is unavailable, which only
+        partially purges very large orphan sets per call.
+
         Dry-run is the default. Callers MUST have data.admin scope.
         """
         preview = await self.find_orphans()
@@ -2194,8 +2240,86 @@ class GraphService:
             return {"dry_run": False, "preview": preview, "deleted": {}, "error": "not available"}
 
         deleted: Dict[str, int] = {"no_node_id": 0, "no_relationships": 0, "dangling_rels": 0}
+
+        # APOC periodic.iterate batches: (match_query, action_query, config)
+        # Total rows committed = sum(batches.committed * batches.batch_size).
+        # The procedure returns a single row with batches/operations counts.
+        apoc_jobs = [
+            (
+                "no_node_id",
+                "MATCH (n:GraphNode) "
+                "WHERE n.node_id IS NULL OR n.node_id = '' "
+                "RETURN n",
+                "DETACH DELETE n",
+            ),
+            (
+                "no_relationships",
+                "MATCH (n:GraphNode) "
+                "WHERE NOT (n)--() "
+                "AND NOT n:DataDocument AND NOT n:Document "
+                "RETURN n",
+                "DETACH DELETE n",
+            ),
+            (
+                "dangling_rels",
+                "MATCH (a)-[rel]->(b) "
+                "WHERE a.node_id IS NULL OR b.node_id IS NULL "
+                "RETURN rel",
+                "DELETE rel",
+            ),
+        ]
+
         try:
             async with self._driver.session() as session:
+                use_apoc = self._apoc_available
+                # Probe once if unknown; assume true and let the catch fall
+                # through to the legacy path on procedure-not-found.
+                if use_apoc is None:
+                    use_apoc = True
+
+                if use_apoc:
+                    try:
+                        for category, match_q, action_q in apoc_jobs:
+                            r = await session.run(
+                                "CALL apoc.periodic.iterate("
+                                "$match_q, $action_q, "
+                                "{batchSize: 1000, parallel: false}) "
+                                "YIELD batches, total, committedOperations, "
+                                "failedOperations, errorMessages "
+                                "RETURN total, committedOperations, "
+                                "failedOperations, errorMessages",
+                                {"match_q": match_q, "action_q": action_q},
+                            )
+                            rec = await r.single()
+                            if rec:
+                                deleted[category] = int(
+                                    rec.get("committedOperations", 0)
+                                )
+                                failed = int(rec.get("failedOperations", 0))
+                                if failed:
+                                    self._record_error(
+                                        f"purge_orphans.{category}",
+                                        f"apoc.periodic.iterate had "
+                                        f"{failed} failed ops: "
+                                        f"{rec.get('errorMessages')}",
+                                    )
+                        self._apoc_available = True
+                        return {
+                            "dry_run": False,
+                            "preview": preview,
+                            "deleted": deleted,
+                            "method": "apoc.periodic.iterate",
+                        }
+                    except Exception as apoc_err:
+                        # Procedure missing or another APOC failure — flip
+                        # the cached flag and fall through to legacy.
+                        logger.debug(
+                            "[GRAPH] APOC purge_orphans failed, using fallback",
+                            error=str(apoc_err),
+                        )
+                        self._apoc_available = False
+
+                # Legacy single-batch path (caps at 10k per category per call).
                 r = await session.run(
                     "MATCH (n:GraphNode) "
                     "WHERE n.node_id IS NULL OR n.node_id = '' "
@@ -2224,7 +2348,12 @@ class GraphService:
                 rec = await r.single()
                 deleted["dangling_rels"] = int(rec.get("c", 0)) if rec else 0
 
-                return {"dry_run": False, "preview": preview, "deleted": deleted}
+                return {
+                    "dry_run": False,
+                    "preview": preview,
+                    "deleted": deleted,
+                    "method": "single-batch (no APOC)",
+                }
         except Exception as e:
             self._record_error("purge_orphans", str(e))
             return {"dry_run": False, "preview": preview, "deleted": deleted, "error": str(e)}
