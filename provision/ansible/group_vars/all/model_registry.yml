@@ -34,68 +34,53 @@ available_models:
   
 
   # =========================================================================
-  # Qwen3.5 vLLM Models (Production/Staging - 3x RTX 3090)
+  # Qwen3.6 vLLM Models (Production/Staging - 3x RTX 3090)
   # =========================================================================
+  # Qwen3.6-35B-A3B (released Apr 15 2026): MoE with 35B total / 3B active,
+  # native multimodal (image/video/text), 262K ctx (extensible to 1M via YaRN),
+  # qwen3_5_moe architecture (same family as 3.5), Apache-2.0.
+  # FP8 is the official Qwen quant; AWQ for Qwen3.6 has not shipped yet so we
+  # keep the Qwen3.5-AWQ entry below as a single-GPU fallback.
 
-  "qwen3.5-35b-vllm":
+  "qwen3.6-35b-a3b-vllm-fp8":
     provider: "vllm"
-    model: "qwen3.5-35b-a3b-awq-4bit"
-    model_name: "cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit"
-    description: "Primary agent model — deep research, tool calling, single-user (GPU 1)"
-    gpu_memory_utilization: 0.9
-    max_model_len: 32000  # DeltaNet hybrid attention allows longer ctx than dense models
-    max_num_seqs: 3  # Optimized for deep single-user workloads
-    cpu_offload_gb: 0
-    tool_calling: true
-    tool_call_parser: "qwen3_coder"
-    multimodal: true
-    limit_mm_per_prompt:
-      image: 4
-
-  "qwen3.5-35b-multi-vllm":
-    provider: "vllm"
-    model: "qwen3.5-35b-a3b-awq-4bit-multi"
-    model_name: "cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit"
-    description: "Multi-user chat, parsing, vision, cleanup (dedicated GPU, same weights, different tuning)"
-    gpu_memory_utilization: 0.9  # AWQ 4-bit weights ~22GB, needs most of 24GB GPU
-    max_model_len: 8192  # Shorter context for parallel users; leaves room for KV cache
-    max_num_seqs: 8  # MoE advantage: 3B active params = high concurrency
-    cpu_offload_gb: 0
-    tool_calling: true
-    tool_call_parser: "qwen3_coder"
-    multimodal: true
-    limit_mm_per_prompt:
-      image: 4
-
-  "qwen3.5-35b-tp2-vllm":
-    provider: "vllm"
-    model: "qwen3.5-35b-a3b-awq-4bit-tp2"
-    model_name: "cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit"
-    description: "Primary model — agents, chat, tool calling, vision (GPU 0+1, TP=2)"
-    gpu_memory_utilization: 0.9
+    model: "qwen3.6-35b-a3b-fp8"
+    model_name: "Qwen/Qwen3.6-35B-A3B-FP8"
+    description: "Qwen3.6 MoE 35B/A3B, official FP8 (~37GB) — primary agent, chat, vision, tool calling. TP=2 across two RTX 3090s."
+    # FP8 weights ~37GB don't fit in a single 24GB 3090 — must be tensor-parallel.
+    # Set GPU_ASSIGN_qwen3_6_35b_a3b_vllm_fp8=1,2 to deploy on GPUs 1+2.
     tensor_parallel_size: 2
-    max_model_len: 32768        # Good balance of context and concurrency
-    max_num_seqs: 16            # MoE handles concurrency well
+    gpu_memory_utilization: 0.9
+    max_model_len: 65536          # Generous ctx for agentic coding; fits with KV-cache headroom on TP=2 / 48GB
+    max_num_seqs: 16              # MoE (3B active) handles concurrency well
     max_num_batched_tokens: 8192  # Balanced latency for chat
     enable_chunked_prefill: true
+    enable_prefix_caching: true   # Shared system prompts across users
     cpu_offload_gb: 0
-    enable_prefix_caching: true  # Shared system prompts across users
+    kv_cache_dtype: "fp8"         # Per Qwen3.6 vLLM recipe
+    reasoning_parser: "qwen3"     # Required so <think> blocks are split out
     tool_calling: true
     tool_call_parser: "qwen3_coder"
     multimodal: true
     limit_mm_per_prompt:
       image: 4
-    
-  "qwen3.5-27b-vllm":
+
+  # Single-GPU fallback: Qwen3.5-AWQ fits one 24GB RTX 3090 while we wait for
+  # an official Qwen3.6 AWQ release. Same architecture (qwen3_5_moe).
+  "qwen3.5-35b-a3b-vllm-awq":
     provider: "vllm"
-    model: "qwen3.5-27b"
-    model_name: "Qwen/Qwen3.5-27B"
-    description: "Large deep reasoning agent for vLLM (27B total)"
-    enable_chunked_prefill: true
+    model: "qwen3.5-35b-a3b-awq"
+    model_name: "QuantTrio/Qwen3.5-35B-A3B-AWQ"
+    description: "Qwen3.5 MoE 35B/A3B AWQ-4bit (~22GB) — fits a single 24GB GPU. Fallback until Qwen3.6 AWQ ships."
     gpu_memory_utilization: 0.9
-    max_model_len: 32000
-    max_num_seqs: 8
+    max_model_len: 32768
+    max_num_seqs: 16
+    max_num_batched_tokens: 8192
+    enable_chunked_prefill: true
+    enable_prefix_caching: true
+    enable_expert_parallel: true  # Required for MoE with TP>1; harmless on TP=1
     cpu_offload_gb: 0
+    reasoning_parser: "qwen3"
     tool_calling: true
     tool_call_parser: "qwen3_coder"
     multimodal: true
@@ -196,18 +181,21 @@ available_models:
   # =========================================================================
   # MLX Models (Apple Silicon - Development/Demo)
   # =========================================================================
-  # These models run on Apple Silicon Macs via mlx-lm
-  # Tiered by RAM: micro (<16GB), standard (16-32GB), pro (>32GB)
+  # These models run on Apple Silicon Macs via mlx-lm.
+  # Tiered by unified memory:
+  #   micro  (<16GB)   — 0.8B model only
+  #   entry  (24-47GB) — 4B agent (35B-A3B is too tight here)
+  #   standard (48-95GB) — 35B-A3B at 4-bit dynamic (UD)
+  #   enhanced (96GB+) — 35B-A3B at 8-bit dynamic (UD), near-lossless
   #
-  # Qwen3.5 dense models: natively multimodal (text+image+video), tool calling,
-  # 262K context, Gated DeltaNet hybrid attention, thinking mode.
-  # No separate VL models needed — all Qwen3.5 models handle vision.
-  
+  # Qwen3.x dense and MoE models are natively multimodal (text+image+video),
+  # support tool calling, 262K context, and thinking mode. No separate VL.
+
   "qwen3.5-0.8b-mlx":
     provider: "mlx"
     model: "qwen3.5-0.8b"
     model_name: "mlx-community/Qwen3.5-0.8B-4bit"
-    description: "Tiny multimodal model (0.8B, 262K ctx, vision+tools+thinking)"
+    description: "Tiny multimodal model (0.8B, 262K ctx, vision+tools+thinking) — dispatch/classify"
     tool_calling: true
     tool_call_parser: "qwen3_coder"
     multimodal: true
@@ -218,34 +206,36 @@ available_models:
     provider: "mlx"
     model: "qwen3.5-4b"
     model_name: "mlx-community/Qwen3.5-4B-4bit"
-    description: "Primary dev agent — beats Qwen3-30B on GPQA, 262K ctx, vision+tools"
+    description: "Compact dev agent — 262K ctx, vision+tools. Default for entry tier (24GB MacBooks)."
     tool_calling: true
     tool_call_parser: "qwen3_coder"
     multimodal: true
     tier: "standard"
     memory_estimate_gb: 3.0
 
-  "qwen3.5-35b-mlx":
+  "qwen3.6-35b-a3b-mlx-4bit":
     provider: "mlx"
-    model: "qwen3.5-35b-mlx"
-    model_name: "mlx-community/Qwen3.5-35B-A3B-4bit"
-    description: "Large MoE agent for MLX (35B total, 3B active, ~20GB)"
+    model: "qwen3.6-35b-a3b"
+    model_name: "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit"
+    description: "Qwen3.6 MoE 35B/A3B at MLX dynamic 4-bit (~23GB) — best 4-bit quality, fits 48GB+ Macs."
     tool_calling: true
     tool_call_parser: "qwen3_coder"
+    reasoning_parser: "qwen3"
     multimodal: true
     tier: "standard"
-    memory_estimate_gb: 20.0
+    memory_estimate_gb: 23.0
 
-  "qwen3.5-27b-mlx":
+  "qwen3.6-35b-a3b-mlx-8bit":
     provider: "mlx"
-    model: "qwen3.5-27b-mlx"
-    model_name: "mlx-community/Qwen3.5-27B-4bit"
-    description: "Dense 27B reasoning model for MLX (~16GB, frontier-class quality)"
+    model: "qwen3.6-35b-a3b"
+    model_name: "unsloth/Qwen3.6-35B-A3B-UD-MLX-8bit"
+    description: "Qwen3.6 MoE 35B/A3B at MLX dynamic 8-bit (~38GB) — near-lossless. Default for Mac Studio / 96GB+."
     tool_calling: true
     tool_call_parser: "qwen3_coder"
+    reasoning_parser: "qwen3"
     multimodal: true
     tier: "enhanced"
-    memory_estimate_gb: 16.0
+    memory_estimate_gb: 38.0
 
   "whisper-tiny-mlx":
     provider: "mlx"
@@ -336,6 +326,18 @@ available_models:
     memory_estimate_gb: 5.0   # ~5 GB VRAM (4B params Q8 + VAE/encoder)
     service_name: "flux-gpu"
 
+  # Cloud video generation. Auto-registered in LiteLLM by the agent API
+  # (srv/agent/app/api/llm.py) when an OpenAI API key is saved; LiteLLM
+  # routes calls to the OpenAI Sora-2 endpoint as `openai/<model_name>`.
+  "sora-2":
+    provider: "openai"
+    model: "sora-2"
+    model_name: "sora-2"
+    description: "OpenAI Sora-2 cloud video generation"
+    mode: "video_generation"
+    tier: "frontier"
+    requires_api_key: true
+
 # =============================================================================
 # Default Model Purposes — base assignments shared by all environments
 # =============================================================================
@@ -385,9 +387,14 @@ default_purposes:
 # Only overrides that differ from default_purposes.
 #
 # Production GPU strategy (3x RTX 3090, 24GB each):
-# - GPU 0: qwen3.5-0.8b (classify/fast) + qwen3-reranker + on-demand media (whisper/kokoro/flux)
-# - GPU 1: qwen3.5-35b — deep research, agents, tool calling (single-user focus)
-# - GPU 2: qwen3.5-35b-multi — multi-user chat, parsing, vision, cleanup (high concurrency)
+# - GPU 0:    qwen3.5-0.8b-vllm (classify/fast) + qwen3-reranker + on-demand
+#             media (whisper / kokoro / flux)
+# - GPU 1+2:  qwen3.6-35b-a3b-vllm-fp8 (TP=2) — agents, chat, vision, parsing,
+#             cleanup, research. MoE 35B/A3B in FP8 needs ~37GB so it spans
+#             both GPUs via tensor parallelism. Set
+#             GPU_ASSIGN_qwen3_6_35b_a3b_vllm_fp8=1,2 (auto-derived if you let
+#             generate-model-config.sh allocate from gpu_inventory.yml).
+#
 # Production overrides: default_purposes points to MLX keys, but production
 # runs vLLM. Override LLM roles here so generate_model_config.py resolves to
 # vLLM provider models that appear in model_config.yml.
@@ -395,10 +402,10 @@ model_purposes:
   fast: "qwen3.5-0.8b-vllm"
   test: "fast"
   classify: "fast"
-  default: "qwen3.5-35b-vllm"
-  agent: "qwen3.5-35b-vllm"
-  chat: "qwen3.5-35b-vllm"
-  research: "qwen3.5-35b-vllm"
+  default: "qwen3.6-35b-a3b-vllm-fp8"
+  agent: "qwen3.6-35b-a3b-vllm-fp8"
+  chat: "qwen3.6-35b-a3b-vllm-fp8"
+  research: "qwen3.6-35b-a3b-vllm-fp8"
   tool_calling: "agent"
   vision: "agent"
   parsing: "chat"
@@ -413,18 +420,21 @@ model_purposes:
 # Model Purposes - Development (MLX on Apple Silicon)
 # =============================================================================
 # Only entries that differ from default_purposes.
-# Qwen3.5 dense models are all natively multimodal — no separate VL models.
+# Qwen3.x dense and MoE models are all natively multimodal — no separate VL.
+# Default dev assignments target a 24GB MacBook (entry tier). Larger Macs
+# should select an Ansible inventory whose group_vars override `agent` etc.
+# to the Qwen3.6 MoE entries (mlx-4bit on 48GB+, mlx-8bit on 96GB+).
 model_purposes_dev:
-  fast: "qwen3.5-0.8b-mlx"          # MLX micro model
+  fast: "qwen3.5-0.8b-mlx"          # MLX micro model — dispatch / classify
   test: "qwen3.5-0.8b-mlx"          # Same as fast
   default: "qwen3.5-4b-mlx"         # Same as agent
-  agent: "qwen3.5-4b-mlx"         # Beats Qwen3-30B on GPQA, 262K ctx, vision+tools
-  chat: "qwen3.5-4b-mlx"          # Same model as agent, thinking disabled at app level
-  research: "qwen3.5-4b-mlx"      # Same model as agent, longer thinking budget at app level
+  agent: "qwen3.5-4b-mlx"           # 24GB MacBook default (35B-A3B is too tight at 4-bit here)
+  chat: "qwen3.5-4b-mlx"            # Same model as agent, thinking disabled at app level
+  research: "qwen3.5-4b-mlx"        # Same model as agent, longer thinking budget at app level
   image: "flux2-klein-4b-mlx"       # MLX local FLUX
-  transcribe: "whisper-tiny-mlx"     # Whisper Tiny ~150 MB for dev
+  transcribe: "whisper-tiny-mlx"    # Whisper Tiny ~150 MB for dev
   voice: "kokoro-82m-mlx"           # Kokoro MLX
-  embedding: "nomic-embed-cpu"       # CPU-based embedding
+  embedding: "nomic-embed-cpu"      # CPU-based embedding
   reranking: "bge-reranker-v2-m3-cpu"
 
 # =============================================================================
@@ -475,12 +485,15 @@ tiers:
     mlx:
       test: "qwen3.5-0.8b-mlx"
       fast: "qwen3.5-4b-mlx"
-      agent: "qwen3.5-35b-mlx"
+      agent: "qwen3.6-35b-a3b-mlx-4bit"   # ~23GB, leaves room for KV cache + apps
       transcribe: "whisper-large-v3-mlx"
+    # vLLM "standard" tier targets a single 24GB GPU (or LXC with ≤1 GPU).
+    # The Qwen3.6 FP8 MoE doesn't fit one GPU, so we fall back to the AWQ
+    # build of Qwen3.5-35B-A3B (same arch family) which fits in ~22GB.
     vllm:
       test: "qwen3.5-0.8b-vllm"
       fast: "qwen3.5-0.8b-vllm"
-      agent: "qwen3.5-35b-vllm"
+      agent: "qwen3.5-35b-a3b-vllm-awq"
       embed: "nomic-embed-cpu"
       transcribe: "whisper-large-v3-gpu"
       voice: "kokoro-82m-gpu"
@@ -494,19 +507,23 @@ tiers:
     description: "High-performance with large reasoning models"
     mlx:
       test: "qwen3.5-0.8b-mlx"
-      fast: "qwen3.5-35b-mlx"
-      agent: "qwen3.5-35b-mlx"
-      research: "qwen3.5-27b-mlx"
+      fast: "qwen3.5-4b-mlx"               # Keep fast small; reserve big model for agent role
+      agent: "qwen3.6-35b-a3b-mlx-8bit"    # ~38GB UD-8bit, near-lossless on 96GB+ Macs
+      research: "qwen3.6-35b-a3b-mlx-8bit" # Same weights, longer thinking budget at app level
       embed: "nomic-embed-cpu"
       transcribe: "whisper-large-v3-mlx"
       voice: "kokoro-82m-mlx"
       image: "flux2-klein-4b-mlx"
+    # vLLM "enhanced" tier = multi-GPU host (e.g. Proxmox 3x RTX 3090).
+    # Qwen3.6-35B-A3B-FP8 spans 2 GPUs via tensor parallelism (TP=2 from
+    # the model entry). The small qwen3.5-0.8b-vllm fits on the third GPU
+    # alongside the reranker and on-demand media servers.
     vllm:
       test: "qwen3.5-0.8b-vllm"
-      fast: "qwen3.5-35b-vllm"
-      chat: "qwen3.5-35b-vllm"
-      agent: "qwen3.5-35b-vllm"
-      research: "qwen3.5-27b-vllm"
+      fast: "qwen3.5-0.8b-vllm"
+      chat: "qwen3.6-35b-a3b-vllm-fp8"
+      agent: "qwen3.6-35b-a3b-vllm-fp8"
+      research: "qwen3.6-35b-a3b-vllm-fp8"
       embed: "nomic-embed-cpu"
       transcribe: "whisper-large-v3-gpu"
       voice: "kokoro-82m-gpu"

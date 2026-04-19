@@ -169,9 +169,11 @@ Output clean, well-formatted markdown."""
             if self.litellm_api_key:
                 headers["Authorization"] = f"Bearer {self.litellm_api_key}"
             
-            # Calculate max_tokens based on input - cleanup output should be similar length
-            # qwen3.5-35b-multi/cleanup model has ~16K context, so we need input + output < 16K tokens
-            # Rough estimate: 4 chars per token
+            # Calculate max_tokens based on input - cleanup output should be similar length.
+            # The cleanup purpose currently maps to the Qwen3.6-35B-A3B model (see
+            # provision/ansible/group_vars/all/model_registry.yml). We size the
+            # request as if the model has a ~16K usable context, so input + output
+            # must stay under that. Rough estimate: 4 chars per token.
             estimated_input_tokens = len(text) // 4
             system_prompt_tokens = len(self.SYSTEM_PROMPT) // 4
             

@@ -1093,11 +1093,11 @@ main() {
                 echo "  --help, -h           Show this help message"
                 echo ""
                 echo "Examples:"
-                echo "  $0                                     # Analyze all models (interactive)"
-                echo "  $0 Qwen/Qwen3-30B-Instruct            # Analyze specific model"
-                echo "  $0 --force Qwen/Qwen3-30B-Instruct    # Force re-analysis"
-                echo "  $0 --non-interactive                   # Auto-analyze all"
-                echo "  $0 --debug Qwen/Qwen3-30B-Instruct    # Debug mode"
+                echo "  $0                                       # Analyze all models (interactive)"
+                echo "  $0 Qwen/Qwen3.6-35B-A3B-FP8              # Analyze specific model"
+                echo "  $0 --force Qwen/Qwen3.6-35B-A3B-FP8      # Force re-analysis"
+                echo "  $0 --non-interactive                     # Auto-analyze all"
+                echo "  $0 --debug Qwen/Qwen3.6-35B-A3B-FP8      # Debug mode"
                 exit 0
                 ;;
             -*)

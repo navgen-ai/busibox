@@ -222,7 +222,7 @@ start_server_instance() {
     mlx_python=$(get_mlx_python)
     mlx_pip=$(get_mlx_pip)
     
-    # mlx-lm >=0.31.0 required for Qwen3.5 model support
+    # mlx-lm >=0.31.0 required for Qwen3-family model support (Qwen3.5/Qwen3.6)
     local need_install=0
     if ! "$mlx_python" -c "import mlx_lm" 2>/dev/null; then
         need_install=1
@@ -237,7 +237,7 @@ sys.exit(0 if cur >= req else 1)
 " 2>/dev/null; then
             : # version is fine
         else
-            info "Upgrading mlx-lm ${cur_ver} → >=0.31.0 (Qwen3.5 support)..."
+            info "Upgrading mlx-lm ${cur_ver} → >=0.31.0 (Qwen3-family support)..."
             need_install=1
         fi
     fi

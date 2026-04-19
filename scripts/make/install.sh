@@ -3404,6 +3404,53 @@ get_mlx_pip() {
     echo "${MLX_VENV_DIR}/bin/pip3"
 }
 
+# Resolve the MLX test/bootstrap model HF id from the canonical model registry
+# (provision/ansible/group_vars/all/model_registry.yml). This is the model the
+# installer downloads to verify MLX works and that host-agent uses for the
+# initial /mlx/start probe. Resolution order:
+#   1. model_purposes_dev.test
+#   2. model_purposes_dev.fast
+# Falls back to the entry-tier minimum (Qwen3.5-0.8B-4bit) if the registry is
+# unreadable or lacks Python — never returns empty.
+get_registry_mlx_test_model() {
+    local registry="${REPO_ROOT}/provision/ansible/group_vars/all/model_registry.yml"
+    local fallback="mlx-community/Qwen3.5-0.8B-4bit"
+    if [[ ! -f "$registry" ]]; then
+        echo "$fallback"
+        return 0
+    fi
+    local resolved
+    resolved=$(python3 - "$registry" <<'PYEOF' 2>/dev/null
+import sys, yaml
+try:
+    data = yaml.safe_load(open(sys.argv[1])) or {}
+except Exception:
+    sys.exit(0)
+purposes = data.get('model_purposes_dev') or {}
+available = data.get('available_models') or {}
+def resolve(value, depth=0):
+    if depth > 10 or not isinstance(value, str):
+        return None
+    if value in available:
+        return available[value].get('model_name')
+    if value in purposes:
+        return resolve(purposes[value], depth + 1)
+    return None
+for role in ('test', 'fast'):
+    if role in purposes:
+        name = resolve(purposes[role])
+        if name:
+            print(name)
+            sys.exit(0)
+PYEOF
+)
+    if [[ -n "$resolved" ]]; then
+        echo "$resolved"
+    else
+        echo "$fallback"
+    fi
+}
+
 # Global variable to track background model download PID
 MODEL_DOWNLOAD_PID=""
 
@@ -3431,7 +3478,8 @@ start_model_download_background() {
     }
     
     # Check if model is already cached
-    local test_model="mlx-community/Qwen3-0.6B-4bit"
+    local test_model
+    test_model=$(get_registry_mlx_test_model)
     local cache_dir="${HOME}/.cache/huggingface/hub"
     local model_dir="${cache_dir}/models--${test_model//\//-}"
     
@@ -3855,7 +3903,7 @@ sys.exit(0 if cur >= (0, 31, 0) else 1)
 " 2>/dev/null; then
             info "MLX-LM ${cur_ver} already installed"
         else
-            info "Upgrading mlx-lm ${cur_ver} → >=0.31.0 (Qwen3.5 support)..."
+            info "Upgrading mlx-lm ${cur_ver} → >=0.31.0 (Qwen3-family support)..."
             need_mlx_install=1
         fi
     fi
@@ -3867,9 +3915,12 @@ sys.exit(0 if cur >= (0, 31, 0) else 1)
         success "MLX-LM installed"
     fi
     
-    # Download small test model (Qwen3-0.6B-4bit ~400MB)
-    # Larger models are managed by deploy-api and can be downloaded via Busibox Portal
-    local test_model="mlx-community/Qwen3-0.6B-4bit"
+    # Download small test model (resolved from model_purposes_dev.test/fast in
+    # provision/ansible/group_vars/all/model_registry.yml — currently Qwen3.5
+    # 0.8B/4B 4-bit, ~400MB-2.4GB). Larger models are managed by deploy-api and
+    # can be downloaded via Busibox Portal.
+    local test_model
+    test_model=$(get_registry_mlx_test_model)
     
     # Check if model is already cached (may have been downloaded in background)
     local cache_dir="${HOME}/.cache/huggingface/hub"
@@ -4125,9 +4176,14 @@ ensure_mlx_running() {
     if curl -sf http://localhost:8089/health &>/dev/null; then
         info "Using host-agent to start MLX..."
         
-        # Get the test model (small model for quick startup)
+        # Get the test model (small model for quick startup). Falls back to the
+        # registry-resolved model if MLX_TEST_MODEL state is missing (fresh
+        # install, state file deleted, etc).
         local test_model
-        test_model=$(get_state "MLX_TEST_MODEL" 2>/dev/null || echo "mlx-community/Qwen3-0.6B-4bit")
+        test_model=$(get_state "MLX_TEST_MODEL" 2>/dev/null || echo "")
+        if [[ -z "$test_model" ]]; then
+            test_model=$(get_registry_mlx_test_model)
+        fi
         
         # Fire the start request in the background and don't wait for the SSE stream.
         # The /mlx/start endpoint returns a streaming SSE response that can take 2+ minutes

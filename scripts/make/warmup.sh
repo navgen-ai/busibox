@@ -10,8 +10,9 @@
 # can use them immediately without network access.
 #
 # Models downloaded (based on environment):
-#   - Development: bge-small-en-v1.5 (faster, smaller) + Qwen3-0.6B test model
-#   - Staging/Prod: bge-large-en-v1.5 (better quality) + Qwen3-0.6B test model
+#   - Development: bge-small-en-v1.5 + the model_purposes_dev.test MLX model
+#     resolved from provision/ansible/group_vars/all/model_registry.yml
+#   - Staging/Prod: bge-large-en-v1.5 + the same registry-resolved test model
 #
 # Other MLX models are managed by deploy-api and shown as informational.
 #
@@ -94,9 +95,47 @@ get_embedding_model() {
 }
 
 get_warmup_mlx_model() {
-    # For warmup, we only download a small test model
-    # Other models are managed by deploy-api
-    echo "mlx-community/Qwen3-0.6B-4bit"
+    # For warmup we only download a small test model — other models are
+    # managed by deploy-api at runtime. Source of truth is
+    # provision/ansible/group_vars/all/model_registry.yml: we resolve
+    # model_purposes_dev.test then .fast, falling back to the entry-tier
+    # minimum (Qwen3.5-0.8B-4bit) if the registry is unreadable.
+    local registry="${REPO_ROOT}/provision/ansible/group_vars/all/model_registry.yml"
+    local fallback="mlx-community/Qwen3.5-0.8B-4bit"
+    if [[ ! -f "$registry" ]]; then
+        echo "$fallback"
+        return
+    fi
+    local resolved
+    resolved=$(python3 - "$registry" <<'PYEOF' 2>/dev/null
+import sys, yaml
+try:
+    data = yaml.safe_load(open(sys.argv[1])) or {}
+except Exception:
+    sys.exit(0)
+purposes = data.get('model_purposes_dev') or {}
+available = data.get('available_models') or {}
+def resolve(value, depth=0):
+    if depth > 10 or not isinstance(value, str):
+        return None
+    if value in available:
+        return available[value].get('model_name')
+    if value in purposes:
+        return resolve(purposes[value], depth + 1)
+    return None
+for role in ('test', 'fast'):
+    if role in purposes:
+        name = resolve(purposes[role])
+        if name:
+            print(name)
+            sys.exit(0)
+PYEOF
+)
+    if [[ -n "$resolved" ]]; then
+        echo "$resolved"
+    else
+        echo "$fallback"
+    fi
 }
 
 # Media models to cache for dev (Apple Silicon only)
@@ -210,8 +249,8 @@ get_other_cached_mlx_models() {
             local dirname=$(basename "$dir")
             # Skip the warmup model
             if [[ "$dirname" != "$warmup_normalized" ]]; then
-                # Convert back to model name
-                # models--mlx-community--Qwen3-0.6B-4bit -> mlx-community/Qwen3-0.6B-4bit
+                # Convert back to model name (e.g.
+                # models--mlx-community--Qwen3.5-4B-4bit -> mlx-community/Qwen3.5-4B-4bit)
                 local model_name="${dirname#models--}"
                 model_name="${model_name/--//}"  # First -- becomes /
                 echo "$model_name"

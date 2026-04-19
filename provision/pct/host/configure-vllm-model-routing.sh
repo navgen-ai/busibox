@@ -17,7 +17,7 @@
 #
 #   # Configure specific model routing
 #   bash configure-vllm-model-routing.sh --model=phi-4 --gpu=1
-#   bash configure-vllm-model-routing.sh --model=qwen3-30b-instruct --gpu=2,3
+#   bash configure-vllm-model-routing.sh --model=qwen3.6-35b-a3b-fp8 --gpu=0,1
 #
 # REQUIREMENTS:
 #   - vLLM container must exist and have GPU access
@@ -523,8 +523,17 @@ get_model_config() {
             *Qwen3-Embedding*|*qwen3-embedding*)
                 echo "8|fp16|none|16|8B params, verify quantization (fallback)"
                 ;;
-            *Qwen3-30B*|*qwen3-30b*)
-                echo "30|fp16|none|60|30B params, verify quantization (fallback)"
+            *Qwen3.6-35B-A3B-FP8*|*qwen3.6-35b-a3b-fp8*)
+                echo "35|fp8|fp8|37|Qwen3.6 MoE 35B/A3B FP8, requires TP=2 (fallback)"
+                ;;
+            *Qwen3.5-35B-A3B-AWQ*|*qwen3.5-35b-a3b-awq*)
+                echo "35|int4|awq|22|Qwen3.5 MoE 35B/A3B AWQ-4bit, fits 1x 24GB GPU (fallback)"
+                ;;
+            *Qwen3.5-4B*|*qwen3.5-4b*)
+                echo "4|bf16|none|10|Qwen3.5 4B compact agent (fallback)"
+                ;;
+            *Qwen3.5-0.8B*|*qwen3.5-0.8b*)
+                echo "0.8|bf16|none|3|Qwen3.5 0.8B dispatch model (fallback)"
                 ;;
             *Qwen3-VL-8B*|*qwen3-vl-8b*)
                 echo "8|fp16|none|16|8B params, FP16 (fallback)"
@@ -675,7 +684,7 @@ Configure vLLM model-to-GPU routing and automatically update LiteLLM config.
 
 OPTIONS:
     --interactive          Interactive mode - prompts for model routing
-    --model=MODEL          Model name (e.g., phi-4, qwen3-30b-instruct)
+    --model=MODEL          Model name (e.g., phi-4, qwen3.6-35b-a3b-fp8)
     --gpu=GPUS             GPU(s) for model (e.g., "1" or "2,3")
     --auto-update          Automatically update LiteLLM config file (default: prompt)
     --no-auto-update       Don't update LiteLLM config, just show config snippets
@@ -692,10 +701,12 @@ EXAMPLES:
     $0 --model=phi-4 --gpu=1 --auto-update
 
 MODEL ROUTING STRATEGY:
-    Small models (reranker, phi-4, qwen3-embedding): GPU 0 or GPU 1 (single GPU)
+    Tiny models (qwen3.5-0.8b, qwen3-reranker): GPU 0 (single GPU)
+    Small models (phi-4, qwen3-embedding, qwen3.5-4b): GPU 0 or GPU 1 (single GPU)
       Note: GPU 0 may also have ColPali service running
-    Medium models (qwen3-30b): GPUs 2,3 (tensor parallelism)
-    Large models (70B+): GPUs 2,3,4,5 (4+ GPUs)
+    Medium models (qwen3.5-35b-a3b-awq): single 24GB GPU
+    Medium models (qwen3.6-35b-a3b-fp8): GPUs 0,1 (TP=2 across two 24GB GPUs)
+    Large models (70B+): GPUs 0,1,2,3 (4+ GPUs)
 
 LITELLM CONFIG:
     By default, the script will prompt to update LiteLLM config automatically.

@@ -28,6 +28,10 @@ vllm_max_num_seqs: 256
 vllm_trust_remote_code: false
 vllm_max_num_batched_tokens: null
 vllm_enable_prefix_caching: true
+vllm_enable_chunked_prefill: false
+vllm_enable_expert_parallel: false
+vllm_kv_cache_dtype: ""        # e.g. "fp8" for Qwen3.6 FP8 MoE recipe
+vllm_reasoning_parser: ""      # e.g. "qwen3" so vLLM splits <think> blocks
 vllm_disable_log_stats: false
 vllm_cpu_offload_gb: 0
 

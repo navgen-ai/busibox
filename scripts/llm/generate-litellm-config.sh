@@ -99,11 +99,15 @@ import yaml, os
 with open('$MODEL_REGISTRY', 'r') as f:
     data = yaml.safe_load(f)
 
+# default_purposes provides base assignments shared by all environments;
+# environment-specific maps only need to list overrides.
+purposes = dict(data.get('default_purposes', {}) or {})
+
 env = '$ENVIRONMENT'
 if env in ('development', 'demo', 'dev'):
-    purposes = data.get('model_purposes_dev', data.get('model_purposes', {}))
+    purposes.update(data.get('model_purposes_dev', {}) or {})
 else:
-    purposes = data.get('model_purposes', {})
+    purposes.update(data.get('model_purposes', {}) or {})
 
 # Apply tier-based overrides when LLM_TIER is set
 llm_tier = os.environ.get('LLM_TIER', '').strip(\"'\\\"\").strip()
@@ -115,7 +119,20 @@ if llm_tier:
     if tier_models:
         purposes.update(tier_models)
 
-print(purposes.get('$purpose', ''))
+# Resolve aliases: a purpose can point at another purpose (e.g. test -> fast).
+available = data.get('available_models', {}) or {}
+visited = set()
+target = '$purpose'
+while target in purposes and target not in visited:
+    visited.add(target)
+    value = purposes[target]
+    if value in available or value not in purposes:
+        print(value)
+        break
+    target = value
+else:
+    if '$purpose' in purposes:
+        print(purposes['$purpose'])
 " 2>/dev/null)
 
     echo "$model_key"
@@ -315,6 +332,15 @@ EOF
     litellm_params:
       model: bedrock/${model_name}
 EOF
+        elif [[ "$provider" == "openai" ]]; then
+            # Cloud OpenAI (Sora-2, GPT-*, etc.) — LiteLLM picks up
+            # OPENAI_API_KEY from env or its own credential store.
+            cat >> "$OUTPUT_FILE" << EOF
+  - model_name: ${purpose}
+    litellm_params:
+      model: openai/${model_name}
+      api_key: os.environ/OPENAI_API_KEY
+EOF
         elif [[ "$provider" == "mlx" || "$provider" == "vllm" ]]; then
             if [[ -n "$purpose_api_base" ]]; then
                 cat >> "$OUTPUT_FILE" << EOF
@@ -411,6 +437,13 @@ EOF
   - model_name: ${model_key}
     litellm_params:
       model: bedrock/${model_name}
+EOF
+        elif [[ "$provider" == "openai" ]]; then
+            cat >> "$OUTPUT_FILE" << EOF
+  - model_name: ${model_key}
+    litellm_params:
+      model: openai/${model_name}
+      api_key: os.environ/OPENAI_API_KEY
 EOF
         elif [[ "$provider" == "mlx" || "$provider" == "vllm" ]]; then
             if [[ -n "$model_api_base" ]]; then

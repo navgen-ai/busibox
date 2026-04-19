@@ -226,9 +226,10 @@
     msg: "CUDA {{ cuda_major_version.stdout }}, GPU compute {{ gpu_compute_major.stdout }}, wheel index: {{ vllm_wheel_index }}"
   tags: [vllm_install]
 
-# vLLM nightly is required for Qwen3.5 (qwen3_5 architecture) until stable 0.17.0.
+# vLLM nightly is required for the Qwen3-family MoE architectures
+# (qwen3_5 / qwen3_6 / qwen3_moe) until they ship in a stable release.
 # The /nightly/ index sometimes only has aarch64 wheels (x86_64 CI failures upstream).
-# We pin to a known-good commit that has x86_64 wheels.  --index-strategy
+# We pin to a known-good commit that has x86_64 wheels. --index-strategy
 # unsafe-best-match lets uv consider vllm from both the commit index AND PyPI,
 # picking the highest version with a matching platform wheel.
 # See: https://docs.vllm.ai/projects/recipes/en/latest/Qwen/Qwen3.5.html

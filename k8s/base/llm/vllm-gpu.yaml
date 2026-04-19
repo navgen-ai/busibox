@@ -65,13 +65,19 @@ spec:
       containers:
         - name: vllm
           image: vllm/vllm-openai:latest
+          # Model + quantization mirror the single-GPU "standard.vllm.agent"
+          # entry in provision/ansible/group_vars/all/model_registry.yml
+          # (qwen3.5-35b-a3b-vllm-awq, ~22GB AWQ-4bit, fits one 24GB GPU).
+          # When a 2-GPU burst node becomes available, switch to the
+          # qwen3.6-35b-a3b-vllm-fp8 entry (TP=2).
           args:
             - "--model"
-            - "Qwen/Qwen2.5-7B-Instruct-AWQ"
+            - "QuantTrio/Qwen3.5-35B-A3B-AWQ"
             - "--quantization"
-            - "awq"
+            - "awq_marlin"
             - "--max-model-len"
-            - "8192"
+            - "65536"
+            - "--enable-expert-parallel"
             - "--host"
             - "0.0.0.0"
             - "--port"

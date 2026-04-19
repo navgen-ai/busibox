@@ -63,12 +63,18 @@ VALIDATE_ONLY=false
 
 # Model size database (parameters -> approximate GPU memory in GB)
 # Format: model_name:size_gb
+# NOTE: This is a static fallback for capacity planning. The authoritative
+# per-model GPU footprint comes from update-model-config.sh (which inspects
+# downloaded weights) and provision/ansible/group_vars/all/model_registry.yml.
 declare -A MODEL_SIZES=(
-    ["microsoft/Phi-4-multimodal-instruct"]="12"      # 6B params, bfloat16
+    ["microsoft/Phi-4-multimodal-instruct"]="12"       # 6B params, bfloat16
     ["Qwen/Qwen3-Embedding-8B"]="16"                   # 8B params, bfloat16
-    ["Qwen/Qwen3-30B-A3B-Instruct-2507"]="60"         # 30B params, bfloat16
-    ["Qwen/Qwen3-VL-8B-Instruct"]="16"                # 8B params, bfloat16
+    ["Qwen/Qwen3-VL-8B-Instruct"]="16"                 # 8B params, bfloat16
     ["vidore/colpali-v1.3"]="15"                       # 3B base + LoRA, bfloat16
+    ["Qwen/Qwen3.5-0.8B"]="3"                          # 0.8B params, bfloat16
+    ["Qwen/Qwen3.5-4B"]="10"                           # 4B params, bfloat16
+    ["QuantTrio/Qwen3.5-35B-A3B-AWQ"]="22"             # 35B MoE AWQ-4bit, fits 1x 24GB
+    ["Qwen/Qwen3.6-35B-A3B-FP8"]="37"                  # 35B MoE FP8, requires TP=2 across two 24GB GPUs
 )
 
 # GPU memory sizes (default 24GB for RTX 3090/4090)
@@ -132,8 +138,10 @@ GPU ALLOCATION STRATEGY:
       - GPU 1: vLLM (single GPU, limited parallelism)
 
 MODEL MEMORY REQUIREMENTS:
-    Small models (phi-4, qwen3-embedding): ~12-16GB per GPU
-    Medium models (qwen3-30b): ~60GB (requires 2+ GPUs with tensor parallelism)
+    Tiny models (qwen3.5-0.8b): ~3GB per GPU
+    Small models (phi-4, qwen3-embedding, qwen3.5-4b): ~10-16GB per GPU
+    Medium models (qwen3.5-35b-a3b-awq): ~22GB (fits one 24GB GPU)
+    Medium models (qwen3.6-35b-a3b-fp8): ~37GB (requires TP=2 across two 24GB GPUs)
     Large models (70B+): ~140GB+ (requires 4+ GPUs)
 
 EOF
@@ -493,10 +501,13 @@ main() {
         check_model_fits "Qwen/Qwen3-Embedding-8B" "1" "1" || warn "Qwen3-Embedding may not fit on GPU 1"
     fi
     
-    # Large models on multiple GPUs
+    # Medium-large models on multiple GPUs (matches qwen3.6-35b-a3b-vllm-fp8 in registry)
     if [ ${#vllm_gpus_array[@]} -ge 2 ]; then
         local gpu_list=$(IFS=','; echo "${vllm_gpus_array[*]}")
-        check_model_fits "Qwen/Qwen3-30B-A3B-Instruct-2507" "$gpu_list" "${#vllm_gpus_array[@]}" || warn "Qwen3-30B may need more GPUs"
+        check_model_fits "Qwen/Qwen3.6-35B-A3B-FP8" "$gpu_list" "${#vllm_gpus_array[@]}" || warn "Qwen3.6-35B-A3B-FP8 may need more GPUs (TP=2 expected)"
+    elif [ ${#vllm_gpus_array[@]} -eq 1 ]; then
+        # Single-GPU fallback (matches qwen3.5-35b-a3b-vllm-awq in registry)
+        check_model_fits "QuantTrio/Qwen3.5-35B-A3B-AWQ" "${vllm_gpus_array[0]}" "1" || warn "Qwen3.5-35B-A3B-AWQ may not fit on the single vLLM GPU"
     fi
     
     # Summary

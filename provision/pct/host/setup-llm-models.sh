@@ -233,78 +233,100 @@ if not os.path.exists(registry_file):
 try:
     with open(registry_file, 'r') as f:
         data = yaml.safe_load(f)
-    
-    # Extract unique model_name values from available_models
-    # Skip API-based providers (bedrock, openai, etc.) - only download local models
-    models = set()
-    available_models = data.get('available_models', {})
-    
+
+    # Resolve which models we actually need by walking the purpose map for the
+    # current stage and the tier map (if LLM_TIER is set) — keeps the registry
+    # as the single source of truth instead of hardcoding key lists here.
+    available_models = data.get('available_models', {}) or {}
+    default_purposes = dict(data.get('default_purposes', {}) or {})
+    prod_overrides = dict(data.get('model_purposes', {}) or {})
+    dev_overrides = dict(data.get('model_purposes_dev', {}) or {})
+    tiers = data.get('tiers', {}) or {}
+
+    # Stage → purpose map. Development uses dev overrides, staging/prod use
+    # the production overrides on top of defaults.
+    if stage == 'development':
+        purposes = {**default_purposes, **dev_overrides}
+    else:
+        purposes = {**default_purposes, **prod_overrides}
+
+    # Optional: an explicit tier (LLM_TIER env var) further narrows the set.
+    llm_tier = os.environ.get('LLM_TIER', '').strip()
+
     # Providers that don't require local model downloads
     api_providers = {'bedrock', 'openai', 'anthropic', 'fastembed'}
-    
+
     # Hardware-specific providers
-    # mlx = Apple Silicon only, vllm = NVIDIA/CPU only
+    # mlx = Apple Silicon only, vllm = NVIDIA / CPU host
     hardware_providers = {
         'apple_silicon': {'mlx'},
-        'nvidia': {'vllm', 'litellm', 'local'},
-        'cpu': {'vllm', 'litellm', 'local'}
+        'nvidia':         {'vllm', 'litellm', 'local', 'gpu'},
+        'cpu':            {'vllm', 'litellm', 'local'},
     }
-    
     allowed_providers = hardware_providers.get(hardware, {'vllm', 'litellm', 'local'})
-    
-    # Required models based on stage
-    # Development uses MLX qwen3.5-0.8b-mlx, staging/production use vLLM qwen3.5-0.8b-vllm
-    required_models = {
-        'development': {'qwen3.5-0.8b-mlx'},
-        'staging': {'qwen3.5-0.8b-vllm', 'qwen3.5-4b-vllm'},
-        'production': {'qwen3.5-0.8b-vllm', 'qwen3.5-4b-vllm'}
-    }
-    
-    stage_models = required_models.get(stage, required_models['production'])
-    
-    for model_key, model_config in available_models.items():
-        provider = model_config.get('provider', '').lower()
-        model_name = model_config.get('model_name')
-        
-        # Skip API-based providers
+
+    # Resolve a purpose value (which may chain through alias keys) to a model key
+    def resolve_purpose(value, depth=0):
+        if depth > 10 or not isinstance(value, str):
+            return None
+        if value in available_models:
+            return value
+        if value in purposes:
+            return resolve_purpose(purposes[value], depth + 1)
+        return None
+
+    # Collect model keys: every purpose for this stage, plus tier-specific
+    # entries when LLM_TIER is set. Tiers are keyed by backend (mlx/vllm).
+    required_keys = set()
+    for purpose_value in purposes.values():
+        mk = resolve_purpose(purpose_value)
+        if mk:
+            required_keys.add(mk)
+
+    if llm_tier and llm_tier in tiers:
+        tier_cfg = tiers[llm_tier] or {}
+        for backend_models in tier_cfg.values():
+            if isinstance(backend_models, dict):
+                for mk in backend_models.values():
+                    if isinstance(mk, str) and mk in available_models:
+                        required_keys.add(mk)
+        print(f"# Including tier '{llm_tier}' models", file=sys.stderr)
+
+    # Translate to HuggingFace model_name, filtered by hardware compatibility.
+    models = set()
+    for model_key in required_keys:
+        cfg = available_models.get(model_key, {}) or {}
+        provider = (cfg.get('provider') or '').lower()
+        model_name = cfg.get('model_name')
+
         if provider in api_providers:
             continue
-        
-        # Skip providers not compatible with hardware
-        if provider not in allowed_providers:
+        if provider and provider not in allowed_providers:
             continue
-        
-        # Only download models required for this stage
-        if model_key not in stage_models:
-            continue
-        
         if model_name:
             models.add(model_name)
-    
-    # Add PaliGemma base model (required by ColPali)
-    # Check if ColPali is configured in available_models
-    for model_key, model_config in available_models.items():
-        if model_config.get('model_name') == 'vidore/colpali-v1.3':
-            # Add base model
+
+    # ColPali requires the PaliGemma base; both names appear in the wild
+    for cfg in available_models.values():
+        if (cfg or {}).get('model_name') == 'vidore/colpali-v1.3':
             models.add('google/paligemma-3b-pt-448')
-            # Also preserve alternate base model names
             models.add('vidore/colpaligemma-3b-pt-448-base')
             break
-    
-    # Add service dependencies (models used by services but not in registry)
-    # These are hard dependencies that cannot be removed
+
+    # Service-level dependencies that aren't represented in the registry yet.
+    # Marker (data service) needs Surya for layout detection at runtime.
     service_dependencies = [
-        'vikp/surya_det2',  # Marker PDF extraction (layout detection) - used by data service
+        'vikp/surya_det2',
     ]
-    
     for dep_model in service_dependencies:
         models.add(dep_model)
-    
+
+    print(f"# Resolved {len(required_keys)} model key(s) from purposes "
+          f"(stage={stage}, tier={llm_tier or 'none'})", file=sys.stderr)
     print("# Service dependencies added:", file=sys.stderr)
     for dep in service_dependencies:
         print(f"#   - {dep}", file=sys.stderr)
-    
-    # Output models, one per line
+
     for model in sorted(models):
         print(model)
 except Exception as e:

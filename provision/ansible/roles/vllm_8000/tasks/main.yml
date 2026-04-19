@@ -96,7 +96,16 @@
     vllm_gpu_memory_utilization: "{{ model_config_data.models[vllm_assigned_model_key].gpu_memory_utilization | default(0.9) }}"
     vllm_max_model_len: "{{ model_config_data.models[vllm_assigned_model_key].max_model_len | default(8192) }}"
     vllm_max_num_seqs: "{{ model_config_data.models[vllm_assigned_model_key].max_num_seqs | default(256) }}"
+    vllm_max_num_batched_tokens: "{{ model_config_data.models[vllm_assigned_model_key].max_num_batched_tokens | default(None) }}"
     vllm_cpu_offload_gb: "{{ model_config_data.models[vllm_assigned_model_key].cpu_offload_gb | default(0) }}"
+    # Newer tunables propagated from model_registry.yml (see Qwen3.6 FP8 entry).
+    # Templates render these only when explicitly set, so omitting from the
+    # registry produces vanilla vLLM args.
+    vllm_kv_cache_dtype: "{{ model_config_data.models[vllm_assigned_model_key].kv_cache_dtype | default('') }}"
+    vllm_reasoning_parser: "{{ model_config_data.models[vllm_assigned_model_key].reasoning_parser | default('') }}"
+    vllm_enable_chunked_prefill: "{{ model_config_data.models[vllm_assigned_model_key].enable_chunked_prefill | default(False) }}"
+    vllm_enable_prefix_caching: "{{ model_config_data.models[vllm_assigned_model_key].enable_prefix_caching | default(vllm_enable_prefix_caching) }}"
+    vllm_enable_expert_parallel: "{{ model_config_data.models[vllm_assigned_model_key].enable_expert_parallel | default(False) }}"
   when: vllm_assigned_model_key != ""
 
 - name: Check if model has LoRA base model and tool calling config in registry

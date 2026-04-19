@@ -218,12 +218,13 @@ async def list_models(request: Request):
         response = await client.get(f"{EMBEDDING_API_URL}/info")
         
         if response.status_code != 200:
-            # Fallback to default values
-            model = "bge-large-en-v1.5"
+            # Fallback to defaults from EMBEDDING_MODEL/EMBEDDING_DIMENSION env vars
+            # (injected by Ansible from model_registry.yml's embedding purpose).
+            model = config.embedding_model
             dimension = config.embedding_dimension
         else:
             info = response.json()
-            model = info.get("model", "bge-large-en-v1.5").replace("BAAI/", "")
+            model = info.get("model", config.embedding_model).replace("BAAI/", "")
             dimension = info.get("dimension", config.embedding_dimension)
         
         return {
@@ -244,15 +245,16 @@ async def list_models(request: Request):
             "Failed to get model info from embedding-api, using defaults",
             error=str(e),
         )
+        fallback_model = config.embedding_model
         return {
             "object": "list",
             "data": [
                 {
-                    "id": "bge-large-en-v1.5",
+                    "id": fallback_model,
                     "object": "model",
                     "owned_by": "BAAI",
                     "dimension": config.embedding_dimension,
-                    "description": f"FastEmbed bge-large-en-v1.5 ({config.embedding_dimension}-d)",
+                    "description": f"FastEmbed {fallback_model} ({config.embedding_dimension}-d)",
                 }
             ]
         }

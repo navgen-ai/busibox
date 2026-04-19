@@ -1,8 +1,10 @@
 """
 Test Agent.
 
-A minimal agent for validation tests. Uses the smallest available model (Qwen3-0.6B)
-and has no tools enabled. Designed for quick, deterministic testing of the LLM chain.
+A minimal agent for validation tests. Uses the "test" purpose from
+provision/ansible/group_vars/all/model_registry.yml — currently the smallest
+available Qwen model (Qwen3.5-0.8B family) — and has no tools enabled.
+Designed for quick, deterministic testing of the LLM chain.
 
 Used by the deploy service's validate_llm_chain endpoint to verify the full pipeline:
 Direct LLM -> LiteLLM -> Agent API
@@ -44,7 +46,8 @@ This agent is used for automated testing. Responses should be predictable and ve
 class TestAgent(BaseStreamingAgent):
     """
     A minimal test agent that:
-    1. Uses the smallest/fastest model available ("test" model = Qwen3-0.6B)
+    1. Uses the smallest/fastest model available ("test" purpose from the
+       model registry — currently Qwen3.5-0.8B)
     2. Has no tools enabled
     3. Provides direct, deterministic responses
     

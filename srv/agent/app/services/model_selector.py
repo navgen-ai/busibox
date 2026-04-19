@@ -45,7 +45,7 @@ AVAILABLE_MODELS = {
     "test": ModelCapabilities(
         id="test",
         name="Test Model",
-        description="Tiny model for validation tests (Qwen3-0.6B)",
+        description="Tiny model for validation tests (smallest registry-mapped Qwen3 dev model, e.g. Qwen3.5-0.8B)",
         supports_vision=False,
         supports_tools=False,
         supports_reasoning=True,  # Qwen3 has <think> reasoning

@@ -54,8 +54,11 @@ class Config:
         self.minio_external_base_url = os.getenv("MINIO_EXTERNAL_BASE_URL", "/files")
         
         # Embedding API configuration (dedicated embedding service)
-        # When EMBEDDING_API_URL is set, uses remote service instead of local FastEmbed
+        # When EMBEDDING_API_URL is set, uses remote service instead of local FastEmbed.
+        # EMBEDDING_MODEL / EMBEDDING_DIMENSION are injected by Ansible from
+        # provision/ansible/group_vars/all/model_registry.yml (default_purposes.embedding).
         self.embedding_api_url = os.getenv("EMBEDDING_API_URL", "")
+        self.embedding_model = os.getenv("EMBEDDING_MODEL", "bge-large-en-v1.5")
         self.embedding_dimension = int(os.getenv("EMBEDDING_DIMENSION", "768"))
         
         # FastEmbed configuration (local text embeddings - fallback when no API URL)

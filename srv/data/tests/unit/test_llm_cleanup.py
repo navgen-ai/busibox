@@ -40,26 +40,28 @@ def mock_config_disabled():
 
 @pytest.fixture
 def mock_registry():
-    """Mock model registry - returns cleanup model (qwen3.5-35b-multi) from registry."""
+    """Mock model registry — mirrors model_purposes for cleanup/parsing in
+    provision/ansible/group_vars/all/model_registry.yml (currently both point
+    to the qwen3.6-35b-a3b-vllm-fp8 entry on staging/production)."""
     registry = Mock()
     registry.get_model = Mock(side_effect=lambda purpose: {
-        "cleanup": "qwen3.5-35b-multi",
-        "parsing": "qwen3.5-35b-multi",
+        "cleanup": "qwen3.6-35b-a3b-vllm-fp8",
+        "parsing": "qwen3.6-35b-a3b-vllm-fp8",
     }.get(purpose, ValueError(f"Unknown purpose: {purpose}")))
     
     # get_config("cleanup") should return full config
     registry.get_config = Mock(side_effect=lambda purpose: {
         "cleanup": {
-            "model": "qwen3.5-35b-a3b-awq-4bit-multi",
-            "model_name": "cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit",
+            "model": "qwen3.6-35b-a3b-vllm-fp8",
+            "model_name": "Qwen/Qwen3.6-35B-A3B-FP8",
             "temperature": 0.1,
             "max_tokens": 32768,
             "provider": "litellm",
             "endpoint": "/chat/completions",
         },
         "parsing": {
-            "model": "qwen3.5-35b-a3b-awq-4bit-multi",
-            "model_name": "cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit",
+            "model": "qwen3.6-35b-a3b-vllm-fp8",
+            "model_name": "Qwen/Qwen3.6-35B-A3B-FP8",
             "temperature": 0.1,
             "max_tokens": 8192,
             "provider": "litellm",

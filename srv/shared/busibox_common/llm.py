@@ -430,8 +430,9 @@ class LiteLLMClient:
             temperature: Optional temperature override
             max_tokens: Optional max_tokens override
             enable_thinking: If False, disables model thinking/reasoning mode
-                (Qwen3.5 ``<think>`` blocks). Passed as
-                ``chat_template_kwargs`` for vLLM/MLX backends via LiteLLM.
+                (Qwen3-family ``<think>`` blocks, e.g. Qwen3.5/Qwen3.6).
+                Passed as ``chat_template_kwargs`` for vLLM/MLX backends via
+                LiteLLM.
             **kwargs: Additional parameters for the API call
         
         Returns:

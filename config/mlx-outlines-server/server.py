@@ -9,8 +9,13 @@ endpoints that ``mlx_lm.server`` provides, but adds ``response_format``
 support via Outlines' guided-decoding engine.
 
 Usage:
-    python server.py --model mlx-community/Qwen3-4B-Instruct-2507-4bit \
+    python server.py --model mlx-community/Qwen3.5-4B-4bit \
                      --host 0.0.0.0 --port 8080
+
+The ``--model`` value should normally come from the registry-resolved
+``model_purposes_dev.agent`` entry in
+``provision/ansible/group_vars/all/model_registry.yml`` rather than being
+hardcoded by callers.
 
 Environment:
     Requires ``outlines[mlxlm]`` and ``mlx-lm`` in the active venv.
@@ -245,7 +250,7 @@ def _resolve_chat_template_kwargs(req: ChatCompletionRequest) -> Optional[Dict[s
 # ---------------------------------------------------------------------------
 
 class ThinkingBudgetProcessor:
-    """Limit thinking tokens for Qwen3.5-style <think> blocks.
+    """Limit thinking tokens for Qwen3-family <think> blocks (Qwen3.5/Qwen3.6).
 
     After ``max_thinking_tokens`` tokens, forces the model to emit
     ``\\n</think>`` so it transitions to the answer.  Once ``</think>``
@@ -300,7 +305,8 @@ def _resolve_thinking_budget(req: ChatCompletionRequest) -> Optional[int]:
     """Determine thinking budget: explicit param > extra_body > server default.
 
     Auto-disables thinking when tools are active to prevent thinking content
-    from bleeding into tool call output (Qwen3.5 best practice per QwenLM/Qwen3#1831).
+    from bleeding into tool call output (Qwen3-family best practice per
+    QwenLM/Qwen3#1831).
     """
     if req.tools:
         return None
@@ -514,7 +520,7 @@ def _extract_tool_calls(raw_output: str) -> Optional[List[Dict[str, Any]]]:
     """Parse model output into OpenAI-style tool_calls if present.
 
     Handles three formats:
-    1. Qwen3.5 native XML: <tool_call><fn_name><arg>val</arg></fn_name></tool_call>
+    1. Qwen3-family native XML: <tool_call><fn_name><arg>val</arg></fn_name></tool_call>
     2. Qwen JSON-in-tags: <tool_call>{"name":"fn","arguments":{...}}</tool_call>
     3. Raw JSON / fenced JSON fallback
     """
@@ -526,7 +532,7 @@ def _extract_tool_calls(raw_output: str) -> Optional[List[Dict[str, Any]]]:
 
     candidates: List[Dict[str, Any]] = []
 
-    # 1a) Qwen3.5 native XML tool calls: <tool_call><fn_name><arg>val</arg></fn_name></tool_call>
+    # 1a) Qwen3-family native XML tool calls: <tool_call><fn_name><arg>val</arg></fn_name></tool_call>
     for tc_match in re.finditer(r"<tool_call>\s*([\s\S]*?)\s*</tool_call>", cleaned):
         tc_body = tc_match.group(1).strip()
 
@@ -540,7 +546,7 @@ def _extract_tool_calls(raw_output: str) -> Optional[List[Dict[str, Any]]]:
             except Exception:
                 pass
 
-        # Try Qwen3.5 attribute-style XML: <function=name><parameter=key>val</parameter></function>
+        # Try Qwen3-family attribute-style XML: <function=name><parameter=key>val</parameter></function>
         attr_fn_match = re.match(r"<function=([a-zA-Z_][a-zA-Z0-9_]*)>\s*([\s\S]*?)\s*</function>", tc_body)
         if attr_fn_match:
             fn_name = attr_fn_match.group(1)

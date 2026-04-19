@@ -125,6 +125,99 @@ def resolve_model_name(registry: dict, model_key: str) -> tuple[str, dict]:
     return model_key, {}
 
 
+# Last-resort fallback constants used ONLY when the registry cannot be loaded
+# (e.g. bootstrap, missing file). Kept aligned with the corresponding entries
+# in provision/ansible/group_vars/all/model_registry.yml. If you change the
+# registry's tier mappings or available_models, mirror those here.
+_FALLBACK_MLX_TEST_MODEL = "mlx-community/Qwen3.5-0.8B-4bit"      # qwen3.5-0.8b-mlx
+_FALLBACK_MLX_AGENT_MODEL = "mlx-community/Qwen3.5-4B-4bit"       # qwen3.5-4b-mlx
+_FALLBACK_BEDROCK_FRONTIER_MODEL = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"  # claude-sonnet-4-5
+_FALLBACK_BEDROCK_FAST_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"      # claude-haiku-4-5
+
+
+def _resolve_purpose(registry: dict | None, purpose: str, *purpose_maps: str) -> str | None:
+    """Resolve a purpose key (e.g. 'frontier', 'agent') to a model_name via
+    the registry. Walks the provided purpose maps in order, then aliases
+    through available_models.
+    """
+    if not registry:
+        return None
+    available = registry.get('available_models', {}) or {}
+
+    def _walk(value, depth=0):
+        if depth > 10 or not isinstance(value, str):
+            return None
+        if value in available:
+            return available[value].get('model_name')
+        for pmap_name in purpose_maps:
+            pmap = registry.get(pmap_name, {}) or {}
+            if value in pmap:
+                return _walk(pmap[value], depth + 1)
+        return None
+
+    for pmap_name in purpose_maps:
+        pmap = registry.get(pmap_name, {}) or {}
+        if purpose in pmap:
+            resolved = _walk(pmap[purpose])
+            if resolved:
+                return resolved
+    return None
+
+
+def get_default_mlx_test_model(registry: dict | None = None) -> str:
+    """Return the HF model name for the dev/test MLX model.
+
+    Resolution order (matches model_registry.yml semantics):
+      1. model_purposes_dev.test (registry)
+      2. model_purposes_dev.fast
+      3. _FALLBACK_MLX_TEST_MODEL (kept in sync with the registry's minimum tier)
+
+    Used for boot-strap calls to host-agent /mlx/start and as a final fallback
+    when /models/required cannot be queried.
+    """
+    if registry is None:
+        registry = load_model_registry()
+    for role in ('test', 'fast'):
+        resolved = _resolve_purpose(registry, role, 'model_purposes_dev')
+        if resolved:
+            return resolved
+    return _FALLBACK_MLX_TEST_MODEL
+
+
+def get_default_mlx_agent_model(registry: dict | None = None) -> str:
+    """Return the HF model name for the dev/local MLX agent/chat model
+    (the bigger sibling to get_default_mlx_test_model)."""
+    if registry is None:
+        registry = load_model_registry()
+    for role in ('agent', 'chat', 'default'):
+        resolved = _resolve_purpose(registry, role, 'model_purposes_dev')
+        if resolved:
+            return resolved
+    return _FALLBACK_MLX_AGENT_MODEL
+
+
+def get_default_bedrock_frontier_model(registry: dict | None = None) -> str:
+    """Return the bedrock model id for the cloud frontier role (Claude Sonnet)."""
+    if registry is None:
+        registry = load_model_registry()
+    for role in ('frontier', 'agent', 'chat', 'default'):
+        resolved = _resolve_purpose(registry, role, 'default_purposes', 'model_purposes')
+        if resolved and resolved.startswith(('us.anthropic', 'anthropic.', 'bedrock/')):
+            return resolved
+    return _FALLBACK_BEDROCK_FRONTIER_MODEL
+
+
+def get_default_bedrock_fast_model(registry: dict | None = None) -> str:
+    """Return the bedrock model id for the cloud fast/haiku role."""
+    if registry is None:
+        registry = load_model_registry()
+    for role in ('frontier-fast', 'fast', 'fallback'):
+        resolved = _resolve_purpose(registry, role, 'default_purposes', 'model_purposes')
+        if resolved and resolved.startswith(('us.anthropic', 'anthropic.', 'bedrock/')):
+            return resolved
+    return _FALLBACK_BEDROCK_FAST_MODEL
+
+
 def generate_litellm_config_from_registry(
     registry: dict,
     environment: str = None,
@@ -2053,33 +2146,39 @@ async def configure_litellm(
             
             if backend == "mlx":
                 api_base = "http://host.docker.internal:8080/v1"
+                # Fallback model names mirror the minimum/entry tier in
+                # provision/ansible/group_vars/all/model_registry.yml. Only
+                # used when the registry file is unreachable during initial
+                # bootstrap. The helpers re-attempt to read the registry.
+                test_mlx_model = get_default_mlx_test_model()
+                agent_mlx_model = get_default_mlx_agent_model()
                 config_content = f'''# LiteLLM Configuration - Fallback (registry not found)
 # Backend: MLX
 
 model_list:
   - model_name: test
     litellm_params:
-      model: openai/mlx-community/Qwen3-0.6B-4bit
+      model: openai/{test_mlx_model}
       api_base: {api_base}
       api_key: local
   - model_name: fast
     litellm_params:
-      model: openai/mlx-community/Qwen2.5-3B-Instruct-4bit
+      model: openai/{test_mlx_model}
       api_base: {api_base}
       api_key: local
   - model_name: agent
     litellm_params:
-      model: openai/mlx-community/Qwen2.5-7B-Instruct-4bit
+      model: openai/{agent_mlx_model}
       api_base: {api_base}
       api_key: local
   - model_name: chat
     litellm_params:
-      model: openai/mlx-community/Qwen2.5-7B-Instruct-4bit
+      model: openai/{agent_mlx_model}
       api_base: {api_base}
       api_key: local
   - model_name: frontier
     litellm_params:
-      model: openai/mlx-community/Qwen2.5-14B-Instruct-4bit
+      model: openai/{agent_mlx_model}
       api_base: {api_base}
       api_key: local
 
@@ -2096,24 +2195,29 @@ litellm_settings:
   request_timeout: 120
 '''
             else:
-                config_content = '''# LiteLLM Configuration - Fallback (registry not found)
+                # Bedrock fallback — model ids resolved from model_registry.yml
+                # default_purposes / model_purposes via helpers, with constants
+                # used only when the registry file itself can't be loaded.
+                bedrock_fast = get_default_bedrock_fast_model()
+                bedrock_frontier = get_default_bedrock_frontier_model()
+                config_content = f'''# LiteLLM Configuration - Fallback (registry not found)
 
 model_list:
   - model_name: test
     litellm_params:
-      model: bedrock/anthropic.claude-3-haiku-20240307-v1:0
+      model: bedrock/{bedrock_fast}
   - model_name: fast
     litellm_params:
-      model: bedrock/anthropic.claude-3-haiku-20240307-v1:0
+      model: bedrock/{bedrock_fast}
   - model_name: agent
     litellm_params:
-      model: bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0
+      model: bedrock/{bedrock_frontier}
   - model_name: chat
     litellm_params:
-      model: bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0
+      model: bedrock/{bedrock_frontier}
   - model_name: frontier
     litellm_params:
-      model: bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0
+      model: bedrock/{bedrock_frontier}
 
 general_settings:
   debug: true
@@ -2357,7 +2461,7 @@ async def ensure_mlx_running(
                         start_response = await client.post(
                             f'{HOST_AGENT_URL}/mlx/start',
                             headers=host_agent_headers,
-                            json={'model': 'mlx-community/Qwen3-0.6B-4bit'},
+                            json={'model': get_default_mlx_test_model()},
                             timeout=30.0
                         )
                         
@@ -2522,10 +2626,10 @@ async def setup_mlx_full(
                         yield sse_event("info", "All required models already cached")
                 else:
                     yield sse_event("warning", f"Could not query required models ({resp.status_code}), falling back to test model only")
-                    models_to_download = ["mlx-community/Qwen3-0.6B-4bit"]
+                    models_to_download = [get_default_mlx_test_model()]
         except Exception as exc:
             yield sse_event("warning", f"Could not query required models ({exc}), falling back to test model only")
-            models_to_download = ["mlx-community/Qwen3-0.6B-4bit"]
+            models_to_download = [get_default_mlx_test_model()]
 
         # Download each missing model
         for idx, model_name in enumerate(models_to_download, 1):
@@ -2771,7 +2875,7 @@ async def validate_llm_chain(
                         start_response = await client.post(
                             f'{HOST_AGENT_URL}/mlx/start',
                             headers=host_agent_headers,
-                            json={'model': 'mlx-community/Qwen3-0.6B-4bit'}
+                            json={'model': get_default_mlx_test_model()}
                         )
                         if start_response.status_code == 200:
                             await asyncio.sleep(5)  # Wait for startup
@@ -2843,7 +2947,7 @@ async def validate_llm_chain(
                     model_name = loaded_model
                     yield sse_event('info', f'[Direct MLX] Using loaded model: {model_name}')
                 else:
-                    model_name = loaded_model or ('default' if llm_backend == 'vllm' else 'mlx-community/Qwen3-0.6B-4bit')
+                    model_name = loaded_model or ('default' if llm_backend == 'vllm' else get_default_mlx_test_model())
                     yield sse_event('info', f'[Direct {llm_backend.upper()}] Model: {model_name}')
                 
                 # Test with the loaded model
@@ -2908,20 +3012,22 @@ async def validate_llm_chain(
                             llm_backend=llm_backend
                         )
                     else:
-                        # Fallback config
+                        # Fallback config (registry unavailable). Mirrors the
+                        # minimum/entry tier of model_registry.yml.
                         api_base = "http://host.docker.internal:8080/v1" if llm_backend == "mlx" else "http://vllm:8000/v1"
+                        test_mlx_model = get_default_mlx_test_model()
                         expected_config = f'''# LiteLLM Configuration - Fallback (registry not available)
 model_list:
   - model_name: test
     litellm_params:
-      model: openai/mlx-community/Qwen3-0.6B-4bit
+      model: openai/{test_mlx_model}
       api_base: {api_base}
       api_key: local
     model_info:
       description: "Test model for LLM chain validation"
   - model_name: fast
     litellm_params:
-      model: openai/mlx-community/Qwen2.5-3B-Instruct-4bit
+      model: openai/{test_mlx_model}
       api_base: {api_base}
       api_key: local
 

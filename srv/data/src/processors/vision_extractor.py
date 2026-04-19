@@ -1,8 +1,10 @@
 """
 Vision-based page analysis using multimodal LLM.
 
-Renders PDF pages to images and sends them to a vision-language model
-(qwen3.5-35b-multi on prod, qwen3.5-4b on dev) via LiteLLM to:
+Renders PDF pages to images and sends them to whatever model is bound to the
+``vision`` purpose in provision/ansible/group_vars/all/model_registry.yml
+(currently the Qwen3.6-35B-A3B FP8 vLLM build on staging/production and the
+Qwen3.5-4B MLX build in development). LiteLLM is used to:
 - Describe images, charts, graphs, and diagrams
 - Extract data from charts as markdown tables
 - Extract/reconstruct garbled tables as properly formatted markdown
@@ -64,8 +66,9 @@ class VisionExtractor:
     """
     Calls the vision-language model via LiteLLM to analyse page images.
 
-    Uses purpose="vision" from the model registry (qwen3.5-35b-multi on prod,
-    qwen3.5-4b on dev). All Qwen3.5 models are natively multimodal.
+    Uses purpose="vision" from the model registry (Qwen3.6-35B-A3B on
+    staging/production, Qwen3.5-4B on dev). The Qwen3.5+ MoE/dense families
+    are natively multimodal.
     """
 
     def __init__(self, config: dict):

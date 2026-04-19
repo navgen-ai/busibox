@@ -1872,9 +1872,10 @@ class BaseStreamingAgent(StreamingAgent):
         full_text = ""
         has_output_type = self.config.output_type is not None
 
-        # Qwen3.5 chat template injects <think>\n into the prompt when
-        # enable_thinking=True, so the model starts generating thinking
-        # content immediately without emitting an opening <think> tag.
+        # The Qwen3-family chat templates (Qwen3.5/Qwen3.6) inject <think>\n
+        # into the prompt when enable_thinking=True, so the model starts
+        # generating thinking content immediately without emitting an opening
+        # <think> tag.
         # Frontier models (Claude, OpenAI) don't use <think> tags.
         # When tools are active (usage_limits set), the MLX server disables
         # thinking via enable_thinking=False, so the model won't emit thinking

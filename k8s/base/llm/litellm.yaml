@@ -131,8 +131,11 @@ data:
       # When GPU node is down: falls back to cloud provider
       # Model routing priority: vLLM (local) -> cloud fallback
       - model_name: gpu-agent
+        # Model id matches the vLLM gpu-burst deployment in vllm-gpu.yaml,
+        # which mirrors the qwen3.5-35b-a3b-vllm-awq entry in
+        # provision/ansible/group_vars/all/model_registry.yml.
         litellm_params:
-          model: openai/Qwen/Qwen2.5-7B-Instruct-AWQ
+          model: openai/QuantTrio/Qwen3.5-35B-A3B-AWQ
           api_base: http://vllm:8000/v1
           api_key: "not-needed"
           timeout: 10  # Short timeout - fail fast if vLLM is down

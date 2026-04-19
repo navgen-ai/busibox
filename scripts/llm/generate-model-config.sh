@@ -248,8 +248,8 @@ if llm_tier:
         print(f"[INFO] Tier '{llm_tier}' has no vLLM-specific models — using defaults", file=sys.stderr)
 
 # Apply PURPOSE_<ROLE>=<model_key> overrides from environment (highest priority).
-# e.g. PURPOSE_FAST=qwen3.5-0.8b-vllm -> fast: qwen3.5-0.8b-vllm
-# e.g. PURPOSE_TOOL_CALLING=model-key -> tool_calling: model-key
+# e.g. PURPOSE_AGENT=qwen3.6-35b-a3b-vllm-fp8 -> agent: qwen3.6-35b-a3b-vllm-fp8
+# e.g. PURPOSE_FAST=qwen3.5-0.8b-vllm        -> fast:  qwen3.5-0.8b-vllm
 for key, val in os.environ.items():
     if key.startswith("PURPOSE_"):
         role = key[len("PURPOSE_"):].lower()
@@ -295,6 +295,17 @@ def get_explicit_tp_overrides() -> Dict[str, int]:
                 pass
     return overrides
 
+def get_registry_tp(entry: Dict[str, Any]) -> int | None:
+    """Read tensor_parallel_size from a registry entry, if set."""
+    tp = entry.get("tensor_parallel_size")
+    if tp is None:
+        return None
+    try:
+        tp_int = int(tp)
+        return tp_int if tp_int > 0 else None
+    except (TypeError, ValueError):
+        return None
+
 def find_explicit_gpu(model_key: str, explicit: Dict[str, str]) -> str | None:
     """Match a model key against explicit GPU assignments, handling naming variants."""
     if model_key in explicit:
@@ -326,7 +337,9 @@ def assign_models(
     explicit = get_explicit_gpu_assignments()
     tp_overrides = get_explicit_tp_overrides()
 
-    # First pass: assign models with explicit GPU assignments
+    # First pass: assign models with explicit GPU assignments.
+    # Precedence for tensor_parallel: GPU_TP_<KEY> env > #GPUs in GPU_ASSIGN
+    # > registry's tensor_parallel_size > 1.
     explicitly_assigned = set()
     for model_key, entry in vllm_models:
         gpu_val = find_explicit_gpu(model_key, explicit)
@@ -337,7 +350,7 @@ def assign_models(
             elif "," in gpu_val:
                 tp = len(gpu_val.split(","))
             else:
-                tp = 1
+                tp = get_registry_tp(entry) or 1
             assigned[model_key] = {"gpu": gpu_val, "port": port, "tensor_parallel": tp}
             port += 1
             explicitly_assigned.add(model_key)
@@ -345,23 +358,48 @@ def assign_models(
     def _at_cap() -> bool:
         return max_instances > 0 and len(assigned) >= max_instances
 
-    # Second pass: auto-assign remaining models
+    # Second pass: auto-assign remaining models. Models that declare
+    # tensor_parallel_size in the registry will reserve that many contiguous
+    # GPUs starting from the highest unused index.
     remaining = [(k, e) for k, e in vllm_models if k not in explicitly_assigned]
+
+    # Track which GPU indices are already claimed by explicitly-assigned models
+    # so the auto-allocator doesn't double-book them.
+    used_gpus: set[int] = set()
+    for cfg in assigned.values():
+        for g in str(cfg.get("gpu", "")).split(","):
+            g = g.strip()
+            if g.isdigit():
+                used_gpus.add(int(g))
+
+    def _claim_gpus(count: int, prefer_high: bool = True) -> str | None:
+        """Reserve `count` contiguous-by-listing free GPUs; return CSV or None."""
+        free = [i for i in range(gpus) if i not in used_gpus]
+        if len(free) < count:
+            return None
+        chosen = free[-count:] if prefer_high else free[:count]
+        for g in chosen:
+            used_gpus.add(g)
+        return ",".join(str(g) for g in chosen)
 
     # When limited to a single instance, directly assign the model that serves
     # the most important purpose (agent > default > chat) regardless of size.
     if max_instances == 1 and not _at_cap() and purposes and len(remaining) > 1:
         priority_key = None
+        priority_entry: Dict[str, Any] = {}
         for role in ("agent", "default", "chat"):
             candidate = purposes.get(role, "")
-            for k, _ in remaining:
+            for k, e in remaining:
                 if k == candidate:
                     priority_key = k
+                    priority_entry = e
                     break
             if priority_key:
                 break
         if priority_key:
-            assigned[priority_key] = {"gpu": "0", "port": port, "tensor_parallel": 1}
+            tp_hint = get_registry_tp(priority_entry) or 1
+            gpu_csv = _claim_gpus(tp_hint, prefer_high=False) or "0"
+            assigned[priority_key] = {"gpu": gpu_csv, "port": port, "tensor_parallel": tp_hint}
             port += 1
             remaining = [(k, e) for k, e in remaining if k != priority_key]
 
@@ -371,33 +409,56 @@ def assign_models(
         model_name = entry.get("model_name", "")
         (small if classify_size(model_key, model_name) == "small" else large).append((model_key, entry))
 
-    # Small models: prefer GPU 0, then 1
+    # Small models: prefer GPU 0, then 1. Always TP=1.
     small_index = 0
     for model_key, entry in small:
         if gpus <= 0 or _at_cap():
             break
-        if small_index == 0:
+        if small_index == 0 and 0 not in used_gpus:
             gpu = "0"
-        elif gpus >= 2:
+        elif gpus >= 2 and 1 not in used_gpus:
             gpu = "1"
         else:
-            gpu = "0"
+            # Fall back to any free GPU, otherwise share GPU 0.
+            free = [i for i in range(gpus) if i not in used_gpus]
+            gpu = str(free[0]) if free else "0"
         assigned[model_key] = {"gpu": gpu, "port": port, "tensor_parallel": 1}
         port += 1
         small_index += 1
 
-    # Large models: prefer 2,3 with TP=2 when available
+    # Large models: honour registry-declared tensor_parallel_size; otherwise
+    # fall back to the legacy heuristic (TP=2 when 4+ GPUs available).
     for model_key, entry in large:
         if _at_cap():
             break
-        if gpus >= 4:
+        registry_tp = get_registry_tp(entry)
+        if registry_tp and registry_tp >= 1:
+            gpu_csv = _claim_gpus(registry_tp, prefer_high=True)
+            if gpu_csv is None:
+                # Not enough free GPUs; skip rather than misconfigure
+                print(
+                    f"[WARN] Cannot place {model_key}: needs TP={registry_tp} GPUs "
+                    f"but only {sum(1 for i in range(gpus) if i not in used_gpus)} free.",
+                    file=sys.stderr,
+                )
+                continue
+            assigned[model_key] = {
+                "gpu": gpu_csv,
+                "port": port,
+                "tensor_parallel": registry_tp,
+            }
+        elif gpus >= 4:
             assigned[model_key] = {"gpu": "2,3", "port": port, "tensor_parallel": 2}
+            used_gpus.update({2, 3})
         elif gpus >= 3:
             assigned[model_key] = {"gpu": "2", "port": port, "tensor_parallel": 1}
+            used_gpus.add(2)
         elif gpus >= 2:
             assigned[model_key] = {"gpu": "1", "port": port, "tensor_parallel": 1}
+            used_gpus.add(1)
         elif gpus == 1:
             assigned[model_key] = {"gpu": "0", "port": port, "tensor_parallel": 1}
+            used_gpus.add(0)
         else:
             continue
         port += 1
@@ -472,16 +533,28 @@ for model_key in vllm_model_keys:
     merged["model_key"] = model_key
     merged["model_name"] = model_name
 
-    # Preserve technical/tuning hints from registry when present
+    # Preserve technical/tuning hints from registry when present.
+    # These get picked up by provision/ansible/roles/vllm_<port>/tasks/main.yml
+    # and rendered into the systemd service template (vllm.service.j2).
     for key in (
         "gpu_memory_utilization",
         "max_model_len",
         "max_num_seqs",
+        "max_num_batched_tokens",
         "cpu_offload_gb",
         "hf_overrides",
         "tool_calling",
         "tool_call_parser",
         "tool_chat_template",
+        # Newer vLLM tunables (Qwen3.6 / FP8 MoE recipes)
+        "tensor_parallel_size",
+        "kv_cache_dtype",
+        "reasoning_parser",
+        "enable_chunked_prefill",
+        "enable_prefix_caching",
+        "enable_expert_parallel",
+        "multimodal",
+        "limit_mm_per_prompt",
     ):
         if key in entry and entry[key] is not None:
             merged[key] = entry[key]

@@ -4,6 +4,33 @@
 # Deploys Neo4j natively inside dedicated neo4j-lxc.
 # Used when deploy_target != 'docker' (Proxmox/LXC path).
 
+# CRITICAL: Load the vault BEFORE any task that references `secrets.*` or
+# `neo4j_password`. Without this, group_vars line
+#     neo4j_password: "{{ secrets.neo4j.password | default('changeme') }}"
+# silently resolves to 'changeme' (because `secrets` is undefined),
+# and every redeploy of this role re-seeds Neo4j with 'changeme' —
+# leaving every other service unable to authenticate.
+- name: Load vault secrets
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/roles/secrets/vars/vault.{{ deployment_environment | default('dev') }}.yml"
+  no_log: true
+
+- name: Sanity check — neo4j_password is not the literal default
+  ansible.builtin.assert:
+    that:
+      - neo4j_password is defined
+      - neo4j_password | length > 0
+      - neo4j_password != 'changeme'
+    fail_msg: >-
+      neo4j_password resolved to '{{ neo4j_password | default('<undefined>') }}'.
+      The vault did not load correctly. Check that
+      roles/secrets/vars/vault.{{ deployment_environment | default('dev') }}.yml
+      exists and contains secrets.neo4j.password, and that
+      ANSIBLE_VAULT_PASSWORD is set or a vault password file is available.
+    success_msg: >-
+      neo4j_password loaded from vault
+      (sha256[:8] = {{ neo4j_password | hash('sha256') | truncate(8, true, '') }})
+
 - name: Install prerequisites for Neo4j apt repo
   ansible.builtin.apt:
     name:
@@ -107,9 +134,13 @@
   register: neo4j_pkg_version
   changed_when: false
 
-- name: Extract Neo4j semantic version (strip Debian revision)
+- name: Extract Neo4j semantic version (strip Debian epoch and revision)
+  # dpkg may report versions like "1:5.26.21" (epoch:upstream) or
+  # "5.26.21-1" (upstream-revision). APOC releases are tagged with only
+  # the upstream semver (e.g. "5.26.21"), so we must strip both the
+  # leading "<epoch>:" and any trailing "-<revision>".
   ansible.builtin.set_fact:
-    neo4j_version: "{{ neo4j_pkg_version.stdout.split('-')[0] | trim }}"
+    neo4j_version: "{{ (neo4j_pkg_version.stdout.split(':') | last).split('-')[0] | trim }}"
 
 - name: Show detected Neo4j version
   ansible.builtin.debug:

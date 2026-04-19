@@ -1,7 +1,7 @@
 # LiteLLM Configuration - Generated from model_registry.yml
 # Environment: development
 # Backend: mlx
-# Generated: 2026-03-30T21:41:53-04:00
+# Generated: 2026-04-18T20:51:12-04:00
 # DO NOT EDIT - regenerate with: scripts/llm/generate-litellm-config.sh
 
 model_list:
@@ -12,7 +12,7 @@ model_list:
       api_key: local
     model_info:
       display_name: "Default"
-      description: "Primary dev agent — beats Qwen3-30B on GPQA, 262K ctx, vision+tools"
+      description: "Compact dev agent — 262K ctx, vision+tools. Default for entry tier (24GB MacBooks)."
       multimodal: true
       tool_calling: true
 
@@ -23,7 +23,7 @@ model_list:
       api_key: local
     model_info:
       display_name: "Test"
-      description: "Tiny multimodal model (0.8B, 262K ctx, vision+tools+thinking)"
+      description: "Tiny multimodal model (0.8B, 262K ctx, vision+tools+thinking) — dispatch/classify"
       multimodal: true
       tool_calling: true
 
@@ -34,7 +34,40 @@ model_list:
       api_key: local
     model_info:
       display_name: "Fast"
-      description: "Tiny multimodal model (0.8B, 262K ctx, vision+tools+thinking)"
+      description: "Tiny multimodal model (0.8B, 262K ctx, vision+tools+thinking) — dispatch/classify"
+      multimodal: true
+      tool_calling: true
+
+  - model_name: classify
+    litellm_params:
+      model: openai/mlx-community/Qwen3.5-0.8B-4bit
+      api_base: http://host.docker.internal:18081/v1
+      api_key: local
+    model_info:
+      display_name: "Classify"
+      description: "Tiny multimodal model (0.8B, 262K ctx, vision+tools+thinking) — dispatch/classify"
+      multimodal: true
+      tool_calling: true
+
+  - model_name: cleanup
+    litellm_params:
+      model: openai/mlx-community/Qwen3.5-4B-4bit
+      api_base: http://host.docker.internal:8080/v1
+      api_key: local
+    model_info:
+      display_name: "Cleanup"
+      description: "Compact dev agent — 262K ctx, vision+tools. Default for entry tier (24GB MacBooks)."
+      multimodal: true
+      tool_calling: true
+
+  - model_name: parsing
+    litellm_params:
+      model: openai/mlx-community/Qwen3.5-4B-4bit
+      api_base: http://host.docker.internal:8080/v1
+      api_key: local
+    model_info:
+      display_name: "Parsing"
+      description: "Compact dev agent — 262K ctx, vision+tools. Default for entry tier (24GB MacBooks)."
       multimodal: true
       tool_calling: true
 
@@ -45,7 +78,7 @@ model_list:
       api_key: local
     model_info:
       display_name: "Agent"
-      description: "Primary dev agent — beats Qwen3-30B on GPQA, 262K ctx, vision+tools"
+      description: "Compact dev agent — 262K ctx, vision+tools. Default for entry tier (24GB MacBooks)."
       multimodal: true
       tool_calling: true
 
@@ -56,7 +89,7 @@ model_list:
       api_key: local
     model_info:
       display_name: "Chat"
-      description: "Primary dev agent — beats Qwen3-30B on GPQA, 262K ctx, vision+tools"
+      description: "Compact dev agent — 262K ctx, vision+tools. Default for entry tier (24GB MacBooks)."
       multimodal: true
       tool_calling: true
 
@@ -67,9 +100,47 @@ model_list:
       api_key: local
     model_info:
       display_name: "Research"
-      description: "Primary dev agent — beats Qwen3-30B on GPQA, 262K ctx, vision+tools"
+      description: "Compact dev agent — 262K ctx, vision+tools. Default for entry tier (24GB MacBooks)."
       multimodal: true
       tool_calling: true
+
+  - model_name: frontier
+    litellm_params:
+      model: bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0
+    model_info:
+      display_name: "Frontier"
+      description: "Claude 4.5 Sonnet - Most capable, frontier model (Sept 2025)"
+      multimodal: true
+      tool_calling: true
+
+  - model_name: fallback
+    litellm_params:
+      model: bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0
+    model_info:
+      display_name: "Fallback"
+      description: "Claude 4.5 Haiku - Fast, efficient, excellent for most tasks"
+      multimodal: true
+      tool_calling: true
+
+  - model_name: tool_calling
+    litellm_params:
+      model: openai/mlx-community/Qwen3.5-4B-4bit
+      api_base: http://host.docker.internal:8080/v1
+      api_key: local
+    model_info:
+      display_name: "Tool Calling"
+      description: "Compact dev agent — 262K ctx, vision+tools. Default for entry tier (24GB MacBooks)."
+      multimodal: true
+      tool_calling: true
+
+  - model_name: video
+    litellm_params:
+      model: openai/sora-2
+      api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      display_name: "Video"
+      description: "OpenAI Sora-2 cloud video generation"
+      mode: "video_generation"
 
   - model_name: image
     litellm_params:
@@ -107,7 +178,7 @@ model_list:
       api_base: http://host.docker.internal:8080/v1
       api_key: local
     model_info:
-      description: "Primary dev agent — beats Qwen3-30B on GPQA, 262K ctx, vision+tools"
+      description: "Compact dev agent — 262K ctx, vision+tools. Default for entry tier (24GB MacBooks)."
       multimodal: true
       tool_calling: true
 
@@ -117,9 +188,33 @@ model_list:
       api_base: http://host.docker.internal:18081/v1
       api_key: local
     model_info:
-      description: "Tiny multimodal model (0.8B, 262K ctx, vision+tools+thinking)"
+      description: "Tiny multimodal model (0.8B, 262K ctx, vision+tools+thinking) — dispatch/classify"
       multimodal: true
       tool_calling: true
+
+  - model_name: claude-sonnet-4-5
+    litellm_params:
+      model: bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0
+    model_info:
+      description: "Claude 4.5 Sonnet - Most capable, frontier model (Sept 2025)"
+      multimodal: true
+      tool_calling: true
+
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0
+    model_info:
+      description: "Claude 4.5 Haiku - Fast, efficient, excellent for most tasks"
+      multimodal: true
+      tool_calling: true
+
+  - model_name: sora-2
+    litellm_params:
+      model: openai/sora-2
+      api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      description: "OpenAI Sora-2 cloud video generation"
+      mode: "video_generation"
 
   - model_name: flux2-klein-4b-mlx
     litellm_params:

@@ -38,6 +38,18 @@ ExecStart={{ vllm_venv_dir }}/bin/python -m vllm.entrypoints.openai.api_server \
 {% if vllm_enable_prefix_caching %}
   --enable-prefix-caching \
 {% endif %}
+{% if vllm_enable_chunked_prefill is defined and vllm_enable_chunked_prefill %}
+  --enable-chunked-prefill \
+{% endif %}
+{% if vllm_enable_expert_parallel is defined and vllm_enable_expert_parallel %}
+  --enable-expert-parallel \
+{% endif %}
+{% if vllm_kv_cache_dtype is defined and vllm_kv_cache_dtype | length > 0 %}
+  --kv-cache-dtype {{ vllm_kv_cache_dtype }} \
+{% endif %}
+{% if vllm_reasoning_parser is defined and vllm_reasoning_parser | length > 0 %}
+  --enable-reasoning --reasoning-parser {{ vllm_reasoning_parser }} \
+{% endif %}
 {% if vllm_trust_remote_code %}
   --trust-remote-code \
 {% endif %}
