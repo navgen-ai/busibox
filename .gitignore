@@ -112,3 +112,7 @@ k8s/terraform/*.tfvars
 k8s/terraform/.terraform/
 k8s/terraform/*.tfstate*
 provision/.cache/*
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
